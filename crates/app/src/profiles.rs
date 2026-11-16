@@ -119,6 +119,12 @@ impl Client {
         Ok(profiles::home(&bytes))
     }
 
+    /// Whether the provider is the Rust service, told by the shape of its list.
+    pub fn served(&self, live: &dyn Fn() -> bool) -> Result<bool, Error> {
+        let bytes = self.read(&["profiles", "list", "--json"], live, TIMEOUT)?;
+        Ok(profiles::served_list(&bytes))
+    }
+
     /// Read one atomic record and reject a response for a different profile.
     /// A returned record still needs its authenticated connection handshake.
     pub fn show(&self, profile_id: &str, live: &dyn Fn() -> bool) -> Result<Profile, Error> {

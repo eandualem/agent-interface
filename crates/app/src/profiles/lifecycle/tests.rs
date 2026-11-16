@@ -205,3 +205,63 @@ fn cancelled_and_oversized_invocations_preserve_original_request() {
     assert_eq!(operation.apply(&|| true), Err(Error::TooLarge));
     assert_eq!(operation.request_bytes(), original);
 }
+
+#[test]
+fn the_rust_service_makes_a_profile_under_the_requests_own_id() {
+    // The service's answer, as agent-backbone-rs's `machine-profile-created` fixture.
+    let entry = serde_json::json!({
+        "state": "serving", "protocol_version": 1, "backbone_version": "0.1.0",
+        "profile_id": "0a1b2c3d4e5f", "display_name": "-Work",
+        "instance_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d",
+        "machine": {"id": "5f2c9e0d1b7a4e38", "name": "laptop"}, "home": true,
+        "socket": "/home/user/.local/share/backbone/profiles/0a1b2c3d4e5f/api.sock",
+        "tmux_socket": "/home/user/.local/share/backbone/profiles/0a1b2c3d4e5f/tmux.sock",
+        "credential_reference": {"type": "socket"}
+    });
+    let (dir, client) = stub(&format!(
+        r#"
+printf '%s\n' "$*" >> "$CAPTURE"
+case "$2" in
+  list) printf '{{"profiles":[]}}\n';;
+  create) test -f "$CAPTURE.refuse" && exit 1; test -f "$CAPTURE.unknown" && exit 4
+/bin/cat <<'FIXTURE'
+{entry}
+FIXTURE
+;;
+  *) exit 7;;
+esac
+"#
+    ));
+    let request = "0190c3a2c1107a3b8c9d0e1f2a3b4c5d";
+    let calls = dir.path().join("calls");
+    let create =
+        format!("profiles create --starter core-v1 --request-id {request} --json -- -Work");
+    let prepared = || Prepared::create(request, "-Work", "core-v1").unwrap();
+
+    // No answer: the outcome is unknown, and asking again sends the same ID.
+    fs::write(dir.path().join("calls.unknown"), "").unwrap();
+    let mut operation = Operation::new(&client, prepared());
+    assert!(matches!(
+        operation.apply(&|| true),
+        Err(Error::CommandFailed)
+    ));
+    fs::remove_file(dir.path().join("calls.unknown")).unwrap();
+    let receipt = operation.refresh(&|| true).unwrap();
+    assert_eq!(receipt.status, Status::Succeeded);
+    assert_eq!(
+        receipt.identity.unwrap().profile_id,
+        "0a1b2c3d4e5f",
+        "the profile the service made"
+    );
+    assert_eq!(
+        fs::read_to_string(&calls).unwrap(),
+        format!("profiles list --json\n{create}\nprofiles list --json\n{create}\n")
+    );
+
+    // A refusal made nothing, so a new request is safe.
+    fs::write(dir.path().join("calls.refuse"), "").unwrap();
+    let mut refused = Operation::new(&client, prepared());
+    let receipt = refused.apply(&|| true).unwrap();
+    assert_eq!(receipt.status, Status::Failed);
+    assert_eq!(receipt.error_code.as_deref(), Some("refused"));
+}

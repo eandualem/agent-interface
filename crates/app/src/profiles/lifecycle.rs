@@ -91,6 +91,9 @@ impl Operation {
         if !live() {
             return Err(Error::Cancelled);
         }
+        if self.served_create(live)? {
+            return self.create_served(live, timeout);
+        }
         let input = super::invocation_file::InvocationFile::new(self.prepared.bytes())?;
         let args: Vec<OsString> = vec![
             "profiles".into(),
@@ -110,6 +113,11 @@ impl Operation {
     /// Read the original durable receipt without reissuing the action. Unknown
     /// request replies remain errors and preserve all retained request state.
     pub fn refresh(&mut self, live: &dyn Fn() -> bool) -> Result<Receipt, Error> {
+        // The Rust service keeps no operation to read. It answers the same
+        // request ID with its first result, so asking again reads that.
+        if self.served_create(live)? {
+            return self.create_served(live, TIMEOUT);
+        }
         let args: Vec<OsString> = vec![
             "profiles".into(),
             "operation".into(),
@@ -119,6 +127,64 @@ impl Operation {
         ];
         let (status, bytes) = self.run(&args, live, TIMEOUT, None)?;
         self.observe(status, &bytes)
+    }
+
+    /// Whether this is a create request for the Rust service, which makes a
+    /// profile with `profiles create` instead of `profiles apply`.
+    /// A list that fails says nothing: the earlier provider has none until
+    /// its first profile is made, so `profiles apply` is tried as before.
+    fn served_create(&self, live: &dyn Fn() -> bool) -> Result<bool, Error> {
+        if self.prepared.action() != profiles::operations::Action::Create {
+            return Ok(false);
+        }
+        match self.client.served(live) {
+            Err(Error::Cancelled) => Err(Error::Cancelled),
+            result => Ok(result.unwrap_or(false)),
+        }
+    }
+
+    /// Make the profile with the Rust service under this request's own ID.
+    /// It serves the profile at once, so there is nothing to start after.
+    fn create_served(
+        &mut self,
+        live: &dyn Fn() -> bool,
+        timeout: Duration,
+    ) -> Result<Receipt, Error> {
+        let name = self
+            .prepared
+            .display_name()
+            .ok_or(Error::Profile(profiles::Error::Invalid))?;
+        let args: Vec<OsString> = vec![
+            "profiles".into(),
+            "create".into(),
+            "--starter".into(),
+            "core-v1".into(),
+            "--request-id".into(),
+            self.request_id().into(),
+            "--json".into(),
+            // A name beginning with '-' is still the name.
+            "--".into(),
+            name.into(),
+        ];
+        let (status, bytes) = self.run(&args, live, timeout, None)?;
+        // 1 is a refusal, 2 a request it could not read and 3 a service it
+        // could not reach: nothing was made. Any other failure, 4 included,
+        // leaves the outcome unknown, and asking again under the same ID reads it.
+        let refused = match status.code() {
+            Some(0) => {
+                let profile = profiles::Profile::parse(&bytes).map_err(Error::Profile)?;
+                return self
+                    .prepared
+                    .observe_created(&profile)
+                    .map_err(Error::Profile);
+            }
+            Some(1 | 2) => "refused",
+            Some(3) => "unreachable",
+            _ => return Err(Error::CommandFailed),
+        };
+        self.prepared
+            .observe_refused(refused)
+            .map_err(Error::Profile)
     }
 
     fn observe(&mut self, status: ExitStatus, bytes: &[u8]) -> Result<Receipt, Error> {

@@ -242,13 +242,6 @@ impl Prepared {
             }
             _ => return Err(Error::Invalid),
         };
-        if self
-            .identity
-            .as_ref()
-            .is_some_and(|expected| Some(expected) != identity.as_ref())
-        {
-            return Err(Error::BindingMismatch);
-        }
         // Derived structs also accept positional arrays; only the canonical
         // object (or null) may establish terminal progress.
         if wire.error.get() != "null" && !wire.error.get().starts_with('{') {
@@ -268,13 +261,65 @@ impl Prepared {
             (Status::Pending | Status::Succeeded, None) => None,
             _ => return Err(Error::Invalid),
         };
-        let receipt = Receipt {
+        self.record(Receipt {
             request_id: wire.request_id,
             action: wire.action,
             identity,
             status: wire.status,
             error_code,
-        };
+        })
+    }
+
+    /// The new profile's name, for the Rust service, whose `profiles create`
+    /// takes it as an argument. None for a start or stop.
+    pub fn display_name(&self) -> Option<String> {
+        if self.action != Action::Create {
+            return None;
+        }
+        let body: serde_json::Value = serde_json::from_slice(&self.body).ok()?;
+        body.get("display_name")?.as_str().map(str::to_owned)
+    }
+
+    /// Record the Rust service's answer to this create request: the entry of
+    /// the profile it made, which it serves at once.
+    pub fn observe_created(&mut self, profile: &Profile) -> Result<Receipt, Error> {
+        if self.action != Action::Create || !profile.served() {
+            return Err(Error::Invalid);
+        }
+        self.record(Receipt {
+            request_id: self.request_id.clone(),
+            action: self.action,
+            identity: Some(profile.expected_identity()?),
+            status: Status::Succeeded,
+            error_code: None,
+        })
+    }
+
+    /// Record that the Rust service refused this create request, or could not
+    /// be reached, so it made nothing; `code` names which.
+    pub fn observe_refused(&mut self, code: &str) -> Result<Receipt, Error> {
+        if self.action != Action::Create || !valid_id(code) {
+            return Err(Error::Invalid);
+        }
+        self.record(Receipt {
+            request_id: self.request_id.clone(),
+            action: self.action,
+            identity: None,
+            status: Status::Failed,
+            error_code: Some(code.to_owned()),
+        })
+    }
+
+    /// Keep a validated observation: a reserved identity cannot change and a
+    /// terminal result cannot regress.
+    fn record(&mut self, receipt: Receipt) -> Result<Receipt, Error> {
+        if self
+            .identity
+            .as_ref()
+            .is_some_and(|expected| Some(expected) != receipt.identity.as_ref())
+        {
+            return Err(Error::BindingMismatch);
+        }
         if self
             .terminal
             .as_ref()

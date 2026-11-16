@@ -150,6 +150,12 @@ pub fn home(bytes: &[u8]) -> Option<Item> {
         .flatten()
 }
 
+/// Whether a list came from the Rust service, which makes a profile from
+/// `profiles create` and serves it at once, with nothing to start.
+pub fn served_list(bytes: &[u8]) -> bool {
+    served(bytes, "profiles")
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Endpoint {
@@ -242,6 +248,13 @@ impl Profile {
     /// Read metadata without probing or starting the provider.
     pub fn item(&self) -> &Item {
         &self.item
+    }
+
+    /// Whether the Rust service serves this profile, so it is running now.
+    pub fn served(&self) -> bool {
+        self.binding
+            .as_ref()
+            .is_some_and(|binding| binding.instance.is_some())
     }
 
     /// Capture registry identity metadata without reading credentials or probing

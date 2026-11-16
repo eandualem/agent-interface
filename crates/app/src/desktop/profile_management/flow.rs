@@ -478,8 +478,16 @@ impl Flow {
                 match result {
                     Ok(selected) => {
                         let connection = selected.connection().clone();
-                        if let Identity::Typed(name, email) = identity {
-                            set_identity(connection.clone(), name, email, cx);
+                        let served = connection.served();
+                        let chosen = match identity {
+                            Identity::Typed(name, email) => Some((name, email)),
+                            // The Rust service copies nothing, so a profile with
+                            // its own Git settings is given this computer's.
+                            Identity::Computer if served => flow.git.computer.clone(),
+                            _ => None,
+                        };
+                        if let Some((name, email)) = chosen {
+                            set_identity(connection.clone(), name, email, served, cx);
                         }
                         flow.connection = Some(connection);
                         cx.emit(Event::Bind(Box::new(selected)));
@@ -956,24 +964,37 @@ fn computer_identity() -> (String, String) {
 /// Set a Git name and email typed for a new profile inside it: a shell in
 /// the profile, with its own home, runs `git config --global` and exits.
 /// Agent Backbone can copy only this computer's own identity into a profile,
-/// so this is how a different one is set. Best effort: a failure is logged,
-/// and the profile still works.
-fn set_identity(connection: Connection, name: String, email: String, cx: &mut Context<Flow>) {
+/// so this is how a different one is set. Under the Rust service (`served`),
+/// a shell without its own `GIT_CONFIG_GLOBAL` shares this computer's
+/// settings, which are left alone. Best effort: a failure is logged, and the
+/// profile still works.
+fn set_identity(
+    connection: Connection,
+    name: String,
+    email: String,
+    served: bool,
+    cx: &mut Context<Flow>,
+) {
     cx.background_executor()
         .spawn(async move {
-            if let Err(error) = typed_identity(&connection, &name, &email) {
+            if let Err(error) = typed_identity(&connection, &name, &email, served) {
                 tracing::warn!(event = "profile_git_identity_failed", %error, "Git identity not set");
             }
         })
         .detach();
 }
 
-fn typed_identity(connection: &Connection, name: &str, email: &str) -> Result<(), String> {
+fn typed_identity(
+    connection: &Connection,
+    name: &str,
+    email: &str,
+    served: bool,
+) -> Result<(), String> {
     use std::io::Write;
     // The profile's shell may be fish, tcsh or nushell, which quote differently,
     // so it is typed only `exec /bin/sh <file>`, read alike by all of them. The
     // script removes its file, and the session ends when it finishes.
-    let script = identity_script(name, email);
+    let script = identity_script(name, email, served);
     let session = connection
         .ensure_shell("git-identity", None)
         .map_err(|error| format!("{error:?}"))?;
@@ -1021,8 +1042,12 @@ fn typed_identity(connection: &Connection, name: &str, email: &str) -> Result<()
 }
 
 /// A `/bin/sh` script, run with its own path as `$0`, that sets the identity.
-fn identity_script(name: &str, email: &str) -> String {
+/// With `own_config_only`, it does so only where `GIT_CONFIG_GLOBAL` is set.
+fn identity_script(name: &str, email: &str, own_config_only: bool) -> String {
     let mut script = String::from("rm -f -- \"$0\"\n");
+    if own_config_only {
+        script.push_str("[ -n \"$GIT_CONFIG_GLOBAL\" ] || exit 0\n");
+    }
     for (key, value) in [("user.name", name), ("user.email", email)] {
         if !value.is_empty() {
             script.push_str(&format!("git config --global {key} {}\n", quote(value)));
@@ -1125,6 +1150,10 @@ fn make(
             "The profile was made but didn't start. Try again.",
         )
     };
+    // The Rust service serves a profile from the moment it makes it.
+    if profile.served() {
+        return Ok(Made { library, profile });
+    }
     let request = uuid::Uuid::now_v7().simple().to_string();
     let start = Prepared::start(&request, &profile).map_err(|_| not_started(&profile))?;
     let key = Controller::key(start.request_id());
@@ -1230,7 +1259,7 @@ mod tests {
         };
         assert_eq!(receipt.status, Status::Succeeded);
         let calls = std::fs::read_to_string(root.join("calls")).unwrap();
-        assert_eq!(calls, "apply\noperation\napply\n");
+        assert_eq!(calls, "list\napply\nlist\noperation\nlist\napply\n");
     }
 
     #[test]
@@ -1274,10 +1303,10 @@ mod tests {
             panic!("the saved request was not sent");
         };
         assert_eq!(receipt.status, Status::Succeeded);
-        assert_eq!(calls(), "apply\n");
+        assert_eq!(calls(), "list\napply\n");
         // Already finished: its saved receipt, with no command at all.
         assert!(recover(&controller, &key, &|| true).is_ok_and(|saved| saved == receipt));
-        assert_eq!(calls(), "apply\n");
+        assert_eq!(calls(), "list\napply\n");
     }
 
     #[test]
@@ -1293,7 +1322,7 @@ mod tests {
         // Never the developer's own global configuration.
         let config = home.path().join("gitconfig");
         let (name, email) = (r"Sam O'Brien \ ops!", "ops!dev@example.com");
-        std::fs::write(&path, identity_script(name, email)).unwrap();
+        std::fs::write(&path, identity_script(name, email, false)).unwrap();
         let isolated = |command: &mut std::process::Command| {
             command
                 .env("HOME", home.path())
@@ -1316,5 +1345,24 @@ mod tests {
         };
         assert_eq!(read("user.name"), format!("{name}\n"));
         assert_eq!(read("user.email"), format!("{email}\n"));
+    }
+
+    #[test]
+    fn a_served_profile_without_its_own_git_settings_keeps_the_computers() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("identity");
+        std::fs::write(&path, identity_script("Sam", "sam@example.com", true)).unwrap();
+        let status = std::process::Command::new("/bin/sh")
+            .arg(&path)
+            .env("HOME", home.path())
+            .env("XDG_CONFIG_HOME", home.path())
+            .env_remove("GIT_CONFIG_GLOBAL")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(!path.exists());
+        assert!(!home.path().join(".gitconfig").exists());
+        assert!(!home.path().join("git").exists());
     }
 }

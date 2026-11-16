@@ -16,7 +16,9 @@ impl Fixture {
             &executable,
             format!(
                 r#"#!/bin/sh
-printf '%s\n' "$2" >> "$ROOT/calls"
+# A create first lists the profiles to tell which service this is; this
+# provider is the earlier one, and only its lifecycle commands are counted.
+[ "$2" = list ] || printf '%s\n' "$2" >> "$ROOT/calls"
 if [ "$2" = apply ]; then
     /bin/cat "$4" >> "$ROOT/bodies"
     printf '\n' >> "$ROOT/bodies"
