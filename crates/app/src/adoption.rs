@@ -2,9 +2,10 @@
 //! service: bind its workspaces that have no profile to the profile the Rust
 //! service keeps on this computer. It opens no window.
 
-use std::{collections::HashSet, path::Path};
+use std::{collections::HashMap, path::Path};
 
-use agent_interface_core::{Attachment, Leaf, Node};
+use agent_interface_core::{Attachment, Leaf, Node, View, ViewKind};
+use agent_interface_roster::views;
 use agent_interface_store::Store;
 
 use crate::library::{self, location::resolve_path};
@@ -27,12 +28,21 @@ pub fn bind_home_profile(directory: Option<&Path>) -> Result<Vec<String>, String
         .home(&live)
         .map_err(|_| "The profile list could not be read.")?
         .ok_or("The service does not list exactly one profile with its home on this computer.")?;
-    let roster = client
+    let connection = client
         .show(&home.profile_id, &live)
         .ok()
-        .and_then(|profile| profile.connect().ok()?.roster().ok())
-        .ok_or("The profile's agents could not be read.")?;
-    let agents: HashSet<String> = roster.states.into_keys().collect();
+        .and_then(|profile| profile.connect().ok())
+        .ok_or("The profile did not answer.")?;
+    // Its agents, each with the registration that a bound agent view keeps.
+    let team = views::bound::read(&connection, &views::bound::Request::Team, &live);
+    let Ok(views::Data::Team(team)) = team.result else {
+        return Err("The profile's agents could not be read.".into());
+    };
+    let agents: HashMap<String, Option<String>> = team
+        .members
+        .into_iter()
+        .map(|member| (member.name, member.registration_id))
+        .collect();
     // A session that is not an agent is pinned to the unbound tmux server by
     // its path, so that path must be known. The earlier service kept its
     // agents on the default server, wherever this command is run from.
@@ -60,8 +70,16 @@ pub fn bind_home_profile(directory: Option<&Path>) -> Result<Vec<String>, String
             let (workspace, name) = (&space.name, &tab.name);
             each_leaf(&mut tab.tree, &mut |leaf| {
                 if let Some(attachment) = &mut leaf.attachment {
-                    let agent = agents.contains(&attachment.session);
+                    let agent = agents.contains_key(&attachment.session);
                     migrate_attachment(attachment, agent, source_text, &names_source);
+                }
+                if let Some(view) = &mut leaf.view
+                    && !register_agent_view(view, &agents)
+                {
+                    report.push(format!(
+                        "The view of agent {}, in {workspace} > {name}, is not of this profile: reopen it from the Team view",
+                        view.agent.as_deref().unwrap_or_default(),
+                    ));
                 }
                 // A shell also waits behind an attachment, a chooser or a view.
                 match library::existing_shell_socket(&directory, &leaf.id) {
@@ -156,6 +174,18 @@ fn migrate_attachment(
     }
 }
 
+/// Gives a saved agent view the registration of its agent, which a bound
+/// agent view needs to show anything. False when the profile has no such
+/// agent, so the view stays as it was and must be opened again.
+fn register_agent_view(view: &mut View, agents: &HashMap<String, Option<String>>) -> bool {
+    if view.kind != ViewKind::Agent || view.registration_id.is_some() {
+        return true;
+    }
+    let registration = view.agent.as_ref().and_then(|agent| agents.get(agent));
+    view.registration_id = registration.cloned().flatten();
+    view.registration_id.is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,5 +214,26 @@ mod tests {
             migrated(Some("/tmp/other"), true).as_deref(),
             Some("/tmp/other")
         );
+    }
+
+    #[test]
+    fn a_saved_agent_view_takes_its_agents_registration() {
+        let registration = "0123456789abcdef0123456789abcdef";
+        let agents = HashMap::from([
+            ("worker".to_owned(), Some(registration.to_owned())),
+            ("unregistered".to_owned(), None),
+        ]);
+        let mut view = View::agent("worker".into(), None);
+        assert!(register_agent_view(&mut view, &agents));
+        assert_eq!(view.registration_id.as_deref(), Some(registration));
+        assert!(view.is_valid());
+        // An agent the profile does not have, or has not registered.
+        for name in ["stranger", "unregistered"] {
+            let mut view = View::agent(name.into(), None);
+            assert!(!register_agent_view(&mut view, &agents));
+            assert_eq!(view.registration_id, None);
+        }
+        // Any other view needs none.
+        assert!(register_agent_view(&mut View::of(ViewKind::Team), &agents));
     }
 }

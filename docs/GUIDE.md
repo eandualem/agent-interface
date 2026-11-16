@@ -438,7 +438,8 @@ and it prints the server it used. The command needs the service to
 list exactly one profile with its home on this computer, and it changes
 nothing when a workspace already has a profile. Panes attached to the
 profile's agents follow it. Panes attached to your own tmux sessions keep
-their server and say so. Ordinary shells become shells of the profile; the
+their server and say so. Saved agent views stay, and the command names any
+whose agent the profile does not have, to reopen from the Team view. Ordinary shells become shells of the profile; the
 shells they showed keep running, and the command prints the `tmux` command
 that attaches to each one.
 

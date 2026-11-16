@@ -426,7 +426,9 @@ of the profile's agents on the default tmux server, where the Python service
 kept them whatever tmux session the command runs in, loses its socket, so it
 follows the profile's server, where the agent now runs. Any other attachment
 keeps its socket, or is given the default server's when it was saved without
-one, and its pane says that the session is on another server. Ordinary shell
+one, and its pane says that the session is on another server. A saved view of one
+of the profile's agents is given that agent's registration, which a bound view
+needs. Ordinary shell
 panes become shells of the profile, as in any bound workspace, starting in the
 folder the earlier shell was in, or in the profile's home when the saved
 folder no longer exists. Those earlier shells keep running on the
