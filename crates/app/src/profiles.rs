@@ -122,6 +122,9 @@ impl Client {
     /// Whether the provider is the Rust service, told by the shape of its list.
     pub fn served(&self, live: &dyn Fn() -> bool) -> Result<bool, Error> {
         let bytes = self.read(&["profiles", "list", "--json"], live, TIMEOUT)?;
+        // A list neither provider would write must stop the request, not
+        // select `profiles apply`.
+        profiles::list(&bytes).map_err(Error::Profile)?;
         Ok(profiles::served_list(&bytes))
     }
 

@@ -1072,7 +1072,7 @@ fn identity_script(name: &str, email: &str, folder: Option<&str>) -> String {
     let mut script = String::from("rm -f -- \"$0\"\n");
     if let Some(folder) = folder {
         script.push_str(&format!(
-            "case \"$GIT_CONFIG_GLOBAL\" in {}/*) ;; *) exit 0 ;; esac\n",
+            "case \"$GIT_CONFIG_GLOBAL\" in */../*) exit 0 ;; {}/*) ;; *) exit 0 ;; esac\n",
             quote(folder)
         ));
     }
@@ -1312,7 +1312,7 @@ mod tests {
         let provider = root.join("provider");
         std::fs::write(
             &provider,
-            "#!/bin/sh\nprintf '%s\\n' \"$2\" >> \"$(dirname \"$0\")/calls\"\n/bin/cat \"$(dirname \"$0\")/reply\"\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$2\" >> \"$(dirname \"$0\")/calls\"\n[ \"$2\" = list ] && echo '{\"schema_version\":1,\"items\":[]}' && exit 0\n/bin/cat \"$(dirname \"$0\")/reply\"\n",
         )
         .unwrap();
         std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -1407,8 +1407,10 @@ mod tests {
         std::fs::create_dir(&folder).unwrap();
         let own = home.path().join("computer.gitconfig");
         let profile = folder.join("gitconfig");
-        // None, this computer's own file set by its shell, then the profile's.
-        for config in [None, Some(&own), Some(&profile)] {
+        // None, this computer's own file set by its shell, the same reached
+        // through the profile's folder, then the profile's own.
+        let through = folder.join("../computer.gitconfig");
+        for config in [None, Some(&own), Some(&through), Some(&profile)] {
             let path = home.path().join("identity");
             let script = identity_script("Sam", "sam@example.com", folder.to_str());
             std::fs::write(&path, script).unwrap();
