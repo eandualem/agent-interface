@@ -27,7 +27,8 @@ const GITHUB_TOKENS: &str = "https://github.com/settings/tokens";
 
 /// What a refusal because the profile's service changed says: the service
 /// answered, but no longer as the profile this page opened.
-const CHANGED: &str = "This profile's service changed. Go back and open the profile again.";
+pub(super) const CHANGED: &str =
+    "This profile's service changed. Go back and open the profile again.";
 
 /// How wide a new secret's name field is.
 const NAME_WIDTH: f32 = 200.;

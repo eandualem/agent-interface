@@ -217,7 +217,7 @@ fn a_served_start_opens_only_a_running_agent_and_asks_again_only_without_an_answ
 
 /// A Rust-service profile socket that answers each connection in turn and
 /// returns the requests it read, lower-cased.
-fn served_socket(
+pub(in crate::desktop::profile_management) fn served_socket(
     replies: Vec<(u16, serde_json::Value)>,
 ) -> (
     tempfile::TempDir,
@@ -294,7 +294,7 @@ fn served_socket(
 }
 
 /// The profile handshake's answer, for the socket above.
-fn served_identity() -> serde_json::Value {
+pub(in crate::desktop::profile_management) fn served_identity() -> serde_json::Value {
     serde_json::json!({
         "protocol_version": 1, "backbone_version": "0.1.0",
         "profile_id": "0a1b2c3d4e5f", "display_name": "Work",

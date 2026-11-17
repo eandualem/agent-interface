@@ -15,6 +15,7 @@ pub mod operations;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+pub mod accounts;
 pub mod runtime_catalog;
 pub mod runtime_context;
 pub mod secrets;
@@ -437,8 +438,16 @@ impl Connection {
 
     /// Ask the provider for a session that signs a CLI account in for `runtime`
     /// inside this profile, and return its name on this connection's tmux socket.
-    /// A repeat reuses the session while it is live. Runs on an I/O worker.
+    /// A repeat reuses the session while it is live. The Rust service answers
+    /// in its own shape, read by [`Connection::start_sign_in`], and a refusal
+    /// keeps its status. Runs on an I/O worker.
     pub fn sign_in_session(&self, runtime: &str) -> Result<String, Error> {
+        if self.served {
+            return self
+                .start_sign_in(runtime)
+                .map(|started| started.session)
+                .map_err(accounts::Failure::error);
+        }
         #[derive(Deserialize)]
         struct Reply {
             #[serde(flatten)]
@@ -468,8 +477,20 @@ impl Connection {
     }
 
     /// Read whether `runtime` holds a stored sign-in in this profile. A stored
-    /// sign-in doesn't prove the account works. Runs on an I/O worker.
+    /// sign-in doesn't prove the account works. The Rust service answers in its
+    /// own shape, read by [`Connection::stored_login`]. Runs on an I/O worker.
     pub fn account_status(&self, runtime: &str) -> Result<runtime_catalog::Authentication, Error> {
+        if self.served {
+            use runtime_catalog::Authentication;
+            return self
+                .stored_login(runtime)
+                .map(|stored| match stored.storage {
+                    accounts::Storage::Present => Authentication::Authenticated,
+                    accounts::Storage::Missing => Authentication::NotAuthenticated,
+                    accounts::Storage::Unavailable => Authentication::Unavailable,
+                })
+                .map_err(accounts::Failure::error);
+        }
         #[derive(Deserialize)]
         struct Reply {
             runtime: String,

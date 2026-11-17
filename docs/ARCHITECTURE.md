@@ -1346,14 +1346,31 @@ context cannot reach the shell. Signing a CLI account in works the same way:
 `POST /api/profile/accounts/sign-in` returns a session on that socket, and the pane
 attaches to it so the person completes the CLI's own sign-in there. A profile itself
 has no sign-in; a workspace selects it. A Default profile keeps its existing CLI
-sign-ins, so it does not offer this. Until the Rust service signs CLIs in itself, Sign
-in on one of its profiles opens a profile shell (`POST /api/profile/shells`) and shows
-sign-in commands only when the shell's launch settings put `CLAUDE_CONFIG_DIR`,
-`CODEX_HOME`, `GH_CONFIG_DIR` and `GIT_CONFIG_GLOBAL` inside the profile's folder (the
-tmux socket's parent); otherwise it says the profile shares this computer's logins. Each
-command sets its folder itself with `env`, spelled exactly as the launch setting gives
-it, because the shell's startup files can change its own variables; a folder that can't
-be quoted alike in every common shell shows no commands. An Agent card removes its agent
+sign-ins, so it does not offer this. On the Rust service, a profile's management screen
+has a Sign-in section (`profile_management/accounts.rs`) with a row for Claude Code,
+Codex and Antigravity. Every request goes through the profile's bound connection, and
+the app runs no CLI or tmux command for any of it. A row shows whether a login is
+stored (`GET /api/profile/accounts/status?runtime=`), which the service reads from
+metadata without running anything, or the service's message when it can't tell, as for
+Antigravity, whose login every profile on the machine shares. Sign in asks the service
+to start the CLI's own sign-in (`POST /api/profile/accounts/sign-in`) and opens the
+`sign-in-<runtime>` session it returns in a pane, whether it started now or was already
+running; when that pane closes, the row reads its stored login again. Check, for Claude
+Code and Codex, asks the CLI itself (`POST /api/profile/accounts/check`, with no request
+ID), which may make the system ask for keychain access, so its button says so. The
+service ends a check after 30 seconds and the app waits up to 35; while one runs, the
+service refuses another check of the same CLI with 409 `conflict`, shown as "A check is
+already running." A result and its time stay only while the section is open; nothing is
+stored. A refusal shows the service's message; a lost connection or an unreadable answer
+shows a fixed sentence. GitHub needs no sign-in there: its row points to the
+`GITHUB_TOKEN` secret. Below the rows, Open shell opens a profile shell
+(`POST /api/profile/shells`) for anything else, and shows the commands that set Git's
+name and email only when the shell's launch settings put `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
+`GH_CONFIG_DIR` and `GIT_CONFIG_GLOBAL` inside the profile's folder (the tmux socket's
+parent); otherwise it says the profile shares this computer's logins. Each command sets
+its folder itself with `env`, spelled exactly as the launch setting gives it, because
+the shell's startup files can change its own variables; a folder that can't be quoted
+alike in every common shell shows no commands. An Agent card removes its agent
 after a confirmation: the app stops the session, then deletes the registration, because the
 provider refuses to remove a running agent. Both requests carry the registration the
 card shows as `expected_registration_id`, so a provider that checks it refuses to stop

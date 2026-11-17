@@ -1,7 +1,7 @@
-//! Sign in until the Rust service signs CLIs in itself: a shell in the
-//! profile's own environment, and the commands to sign each CLI in there.
-//! They show only when the shell was started with every CLI's settings, and
-//! Git's, inside the profile's folder, and each command names its folder
+//! A shell in the profile's own environment, and the commands that set the
+//! name and email Git uses there. The Sign-in section signs the CLIs in. The
+//! commands show only when the shell was started with every CLI's settings,
+//! and Git's, inside the profile's folder, and each command names its folder
 //! itself, as that setting spells it, so the shell's startup files can't
 //! send it elsewhere.
 
@@ -23,40 +23,25 @@ const OWN: [&str; 4] = [
     "GIT_CONFIG_GLOBAL",
 ];
 
-/// What to run in the shell for each account: the folder's variable, the
-/// command, and what to do next.
-const STEPS: [(&str, &str, &str, &str); 4] = [
-    (
-        "Claude Code",
-        "CLAUDE_CONFIG_DIR",
-        "claude",
-        "then type /login",
-    ),
-    ("Codex", "CODEX_HOME", "codex login", ""),
+/// What to run in the shell for Git: the folder's variable and the command.
+const STEPS: [(&str, &str, &str); 2] = [
     (
         "Git name",
         "GIT_CONFIG_GLOBAL",
         "git config --global user.name \"Your Name\"",
-        "",
     ),
     (
         "Git email",
         "GIT_CONFIG_GLOBAL",
         "git config --global user.email you@example.com",
-        "",
     ),
 ];
 
-/// One account's command, shown and copied as the same text.
+/// One command, shown and copied as the same text.
 struct Step {
     account: &'static str,
     command: String,
-    then: &'static str,
 }
-
-/// How agents reach GitHub, which needs no sign-in in the shell.
-const GITHUB: &str =
-    "GitHub: paste a token in the GitHub row under Secrets below; agents use it as GITHUB_TOKEN.";
 
 enum State {
     Idle,
@@ -181,12 +166,11 @@ fn check(folder: &Path, read: impl Fn(&str) -> io::Result<Option<String>>) -> Ch
 fn steps(paths: &[String; 4]) -> Option<Vec<Step>> {
     STEPS
         .iter()
-        .map(|&(account, name, command, then)| {
+        .map(|&(account, name, command)| {
             let index = OWN.iter().position(|own| *own == name)?;
             Some(Step {
                 account,
                 command: prefixed(name, &paths[index], command)?,
-                then,
             })
         })
         .collect()
@@ -314,7 +298,7 @@ impl Render for Pane {
                 })))
                 .when(!opening, |row| {
                     row.child(
-                        ui::button("profile-sign-in", "Sign in", ui::Button::Secondary)
+                        ui::button("profile-sign-in", "Open shell", ui::Button::Secondary)
                             .on_click(cx.listener(|pane, _, _, cx| pane.open(cx))),
                     )
                 }),
@@ -347,20 +331,12 @@ impl Render for Pane {
                                     .child(step.account),
                             )
                             .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .child(
-                                        div()
-                                            .font_family(t.font.mono.clone())
-                                            .text_color(c.text)
-                                            .child(step.command.clone()),
-                                    )
-                                    .when(!step.then.is_empty(), |el| {
-                                        el.child(div().text_color(c.muted).child(step.then))
-                                    }),
+                                div().flex_1().min_w_0().flex().flex_col().child(
+                                    div()
+                                        .font_family(t.font.mono.clone())
+                                        .text_color(c.text)
+                                        .child(step.command.clone()),
+                                ),
                             )
                             .child(
                                 ui::button(
@@ -374,7 +350,7 @@ impl Render for Pane {
                             ),
                     );
                 }
-                body = body.child(card).child(ui::group_note(GITHUB));
+                body = body.child(card);
             }
             State::Unquotable => {
                 body = body.child(ui::group_note(
@@ -384,14 +360,15 @@ impl Render for Pane {
             }
             State::Shared => {
                 body = body.child(ui::group_note(
-                    "This profile shares this computer's logins. Signing in from its shell \
-                     would change them for this computer too, so it isn't suggested here.",
+                    "This profile shares this computer's logins. Setting Git's name and email \
+                     from its shell would change them for this computer too, so it isn't \
+                     suggested here.",
                 ))
             }
             State::Unchecked => {
                 body = body.child(ui::group_note(
-                    "Couldn't check whether this profile keeps its own logins, so signing \
-                     in from its shell isn't suggested.",
+                    "Couldn't check whether this profile keeps its own logins, so setting \
+                     Git's name and email from its shell isn't suggested.",
                 ))
             }
             State::Failed(error) => body = body.child(ui::group_note(*error)),
@@ -487,11 +464,6 @@ mod tests {
             commands,
             [
                 format!(
-                    "env CLAUDE_CONFIG_DIR={} claude",
-                    quoted("CLAUDE_CONFIG_DIR")
-                ),
-                format!("env CODEX_HOME={} codex login", quoted("CODEX_HOME")),
-                format!(
                     "env GIT_CONFIG_GLOBAL={} git config --global user.name \"Your Name\"",
                     quoted("GIT_CONFIG_GLOBAL")
                 ),
@@ -503,7 +475,7 @@ mod tests {
         );
         assert!(commands.iter().all(|command| !command.contains("gh ")));
         let mut odd = paths.clone();
-        odd[1] = format!("{root}/link/accounts/it's");
+        odd[3] = format!("{root}/link/accounts/it's");
         assert!(steps(&odd).is_none());
     }
 
