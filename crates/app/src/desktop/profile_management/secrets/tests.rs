@@ -162,3 +162,17 @@ fn a_refusal_because_the_service_changed_says_so_on_both_paths() {
         "This profile's service changed. Go back and open the profile again."
     );
 }
+
+#[test]
+fn a_profile_that_serves_another_now_isnt_told_to_start() {
+    for error in [
+        Error::BindingRequired,
+        Error::BindingMismatch,
+        Error::Unsupported,
+    ] {
+        assert_eq!(unconnected(error), CHANGED);
+    }
+    for error in [Error::Unavailable, Error::NotReady, Error::Invalid] {
+        assert_eq!(unconnected(error), "Start the profile to see its secrets.");
+    }
+}

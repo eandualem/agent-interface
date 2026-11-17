@@ -68,22 +68,19 @@ impl Section {
     /// Connect to the profile and read its secrets on an I/O worker.
     pub(super) fn new(profile: Profile, cx: &mut Context<Self>) -> Self {
         let work = cx.background_executor().spawn(async move {
-            let connection = profile.connect().ok()?;
+            let connection = profile.connect()?;
             let list = connection.secrets();
-            Some((connection, list))
+            Ok::<_, Error>((connection, list))
         });
         cx.spawn(async move |this, cx| {
             let read = work.await;
             let _ = this.update(cx, |section, cx| {
                 match read {
-                    Some((connection, list)) => {
+                    Ok((connection, list)) => {
                         section.list = listed(list);
                         section.connection = Some(connection);
                     }
-                    None => {
-                        section.list =
-                            List::Unavailable("Start the profile to see its secrets.".into())
-                    }
+                    Err(error) => section.list = List::Unavailable(unconnected(error)),
                 }
                 cx.notify();
             });
@@ -242,6 +239,15 @@ fn listed(list: Result<Vec<Secret>, AddError>) -> List {
     match list {
         Ok(secrets) => List::Shown(secrets),
         Err(error) => List::Unavailable(unread(error)),
+    }
+}
+
+/// Why the profile couldn't be connected to: its socket serves another
+/// profile now, which starting it won't change, or it isn't running.
+fn unconnected(error: Error) -> String {
+    match error {
+        Error::BindingRequired | Error::BindingMismatch | Error::Unsupported => CHANGED.into(),
+        _ => "Start the profile to see its secrets.".into(),
     }
 }
 

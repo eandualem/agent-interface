@@ -430,10 +430,24 @@ impl Form {
         if self.busy(cx) {
             return;
         }
-        if !self.changed
-            && let Some((pane, _)) = &self.start
-            && pane.update(cx, |pane, cx| pane.retry(cx))
-        {
+        // A served start is decided by what would be sent, not by whether
+        // anything was touched: the same request, still unresolved, is asked
+        // about again under its ID.
+        let again = if self.profile.served() {
+            match (&self.start, self.served_start(cx)) {
+                (Some((pane, _)), Some((start, create))) => {
+                    pane.update(cx, |pane, cx| pane.retry_same(&start, create.as_ref(), cx))
+                }
+                _ => false,
+            }
+        } else {
+            !self.changed
+                && self
+                    .start
+                    .as_ref()
+                    .is_some_and(|(pane, _)| pane.update(cx, |pane, cx| pane.retry(cx)))
+        };
+        if again {
             cx.notify();
             return;
         }

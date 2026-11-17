@@ -96,21 +96,24 @@ fn insert(value: &mut String, text: &str) {
 
 /// Remove the last character, overwriting its bytes first.
 fn remove_last(value: &mut String) {
-    let Some(last) = value.chars().next_back() else {
+    let Some((mut bytes, kept)) = overwritten_last(value) else {
         return;
     };
-    let kept = value.len() - last.len_utf8();
-    let mut bytes = zeroed_from(std::mem::take(value).into_bytes(), kept);
     bytes.truncate(kept);
     // The bytes kept end on a character boundary, so they are still text,
     // and the buffer is reused rather than copied.
     *value = String::from_utf8(bytes).unwrap_or_default();
 }
 
-/// `bytes` with every byte from `from` on set to zero, in the same buffer.
-fn zeroed_from(mut bytes: Vec<u8>, from: usize) -> Vec<u8> {
-    bytes[from..].fill(0);
-    bytes
+/// `value`'s buffer, taken from it, with its last character's bytes set to
+/// zero and still at its old length, and how many bytes come before them.
+/// None when `value` is empty, which is then left as it was.
+fn overwritten_last(value: &mut String) -> Option<(Vec<u8>, usize)> {
+    let last = value.chars().next_back()?;
+    let kept = value.len() - last.len_utf8();
+    let mut bytes = std::mem::take(value).into_bytes();
+    bytes[kept..].fill(0);
+    Some((bytes, kept))
 }
 
 /// The buffer of `bytes`, its spare capacity included, all zero.
@@ -179,14 +182,21 @@ mod tests {
         let mut value = String::with_capacity(64);
         insert(&mut value, "toké");
         let buffer = value.as_ptr();
+        // The edited buffer itself, before it is shortened: é's two bytes
+        // are zero in it.
+        let (bytes, kept) = overwritten_last(&mut value).unwrap();
+        assert_eq!((bytes.as_ptr(), kept), (buffer, 3));
+        assert_eq!(bytes, b"tok\0\0");
+        let mut value = String::with_capacity(64);
+        insert(&mut value, "toké");
+        let buffer = value.as_ptr();
         remove_last(&mut value);
         assert_eq!((value.as_str(), value.as_ptr()), ("tok", buffer));
-        // é is two bytes; both are zero before the text is shortened.
-        assert_eq!(zeroed_from(b"tok\xc3\xa9".to_vec(), 3), b"tok\0\0");
         for _ in 0..4 {
             remove_last(&mut value);
         }
         assert_eq!(value, "");
+        assert!(overwritten_last(&mut value).is_none());
     }
 
     #[test]

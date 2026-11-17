@@ -420,3 +420,37 @@ fn an_unreachable_profile_keeps_an_unresolved_start_and_its_request_id() {
         .collect();
     assert_eq!(posts, [first, first]);
 }
+
+#[test]
+fn an_unresolved_start_is_the_same_request_while_what_it_sends_is_the_same() {
+    use std::path::{Path, PathBuf};
+    let (_directory, profile, _server) = served_socket(Vec::new());
+    let start = |name: &str, dir: &str, model: Option<&str>, watch: Option<&str>| {
+        Start::new(name, Path::new(dir), "claude", model, watch).unwrap()
+    };
+    let held = Request {
+        connection: None,
+        profile,
+        start: start("guide", "/a", Some("opus"), Some("acme/app")),
+        create: Some(PathBuf::from("/a")),
+        request_id: "019a7c105c407a108b203c40d5e6f708".into(),
+    };
+    let made = PathBuf::from("/a");
+    // The tool and model chosen again, or an edit typed back: the same start.
+    assert!(same(
+        &held,
+        &start("guide", "/a", Some("opus"), Some("acme/app")),
+        Some(&made)
+    ));
+    // A real difference is a new request.
+    for other in [
+        start("guide", "/a", None, Some("acme/app")),
+        start("guide", "/a", Some("sonnet"), Some("acme/app")),
+        start("guide-2", "/a", Some("opus"), Some("acme/app")),
+        start("guide", "/b", Some("opus"), Some("acme/app")),
+        start("guide", "/a", Some("opus"), None),
+    ] {
+        assert!(!same(&held, &other, Some(&made)));
+    }
+    assert!(!same(&held, &held.start, None));
+}

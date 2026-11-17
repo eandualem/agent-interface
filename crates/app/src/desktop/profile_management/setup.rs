@@ -237,6 +237,10 @@ fn attempt(request: &Request, unresolved: bool) -> Answer {
     }
     answer(connection.start_first_agent(&request.start, &request.request_id))
 }
+/// Whether `request` is what `start` and `create` would send.
+fn same(request: &Request, start: &Start, create: Option<&PathBuf>) -> bool {
+    request.start == *start && request.create.as_ref() == create
+}
 /// The heading once a start is over without running: a result that isn't
 /// known is not called a failure.
 fn heading(name: &str, answer: Option<&Answer>) -> String {
@@ -817,6 +821,21 @@ impl Pane {
             .and_then(outcome)
             .or(self.error.map(|error| message(error).to_owned()))
             .or_else(|| Some("It stopped before it was ready. Try again.".to_owned()))
+    }
+
+    /// Ask about this unresolved served start again when `start` and `create`
+    /// are what it holds. Returns false when they differ or nothing is
+    /// unresolved, so only a new request can go on.
+    pub fn retry_same(
+        &mut self,
+        start: &Start,
+        create: Option<&PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.served
+            .as_ref()
+            .is_some_and(|served| same(&served.request, start, create))
+            && self.retry(cx)
     }
 
     /// Try the same request again, when the provider allows it. Returns false
