@@ -74,3 +74,32 @@ fn catalogs_reject_other_instances_malformed_rows_and_legacy_schema() {
     assert!(parse(&inconsistent).is_err());
     assert!(Catalog::parse(&vec![b' '; 1024 * 1024 + 1], &identity()).is_err());
 }
+
+#[test]
+fn a_served_catalog_is_this_machines_list_for_the_profile_asked() {
+    // As the Rust service's `backbone runtimes --json` prints it.
+    let row = |id: &str, available: bool, setup: bool| {
+        json!({"id": id, "display_name": id, "available": available,
+            "setup_supported": setup, "reports_state": "terminal", "models": ["opus"],
+            "efforts": ["opus:high"], "unattended": {"supported": false, "args": [], "sandboxed": null},
+            "authentication": "unknown"})
+    };
+    let wire = json!({"schema_version": 1, "items": [
+        row("claude", true, true), row("codex", false, true), row("antigravity", true, false)
+    ]});
+    let catalog = Catalog::served(&serde_json::to_vec(&wire).unwrap(), &identity()).unwrap();
+    assert_eq!(catalog.identity(), &identity());
+    let compatible: Vec<_> = catalog
+        .items()
+        .iter()
+        .map(|r| r.setup_compatibility.compatible)
+        .collect();
+    assert_eq!(compatible, [true, false, false]);
+    assert_eq!(catalog.items()[0].authentication, Authentication::Unknown);
+    let mut other = wire.clone();
+    other["schema_version"] = json!(2);
+    assert_eq!(
+        Catalog::served(&serde_json::to_vec(&other).unwrap(), &identity()).unwrap_err(),
+        Error::Unsupported
+    );
+}

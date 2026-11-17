@@ -293,7 +293,11 @@ or permission, its pane opens: a tool that needs signing in asks in that
 terminal. The layer then fades over `reveal_ms` while the panel eases in. Use a
 terminal instead leaves the workspace on a terminal. A start that fails keeps
 the choices, and Try again repeats the same request when nothing changed and
-the provider allows it.
+the provider allows it. Under the Rust service, the guide and Add agent start the
+agent with `POST /api/agents/start` on the profile socket, carrying
+`x-backbone-request-id` (a UUIDv7) so a repeat after a lost reply gets the first
+result, and the tool list comes from `backbone runtimes --json`. The earlier
+provider keeps its schema-2 setup requests and their saved recovery.
 
 The layer offers the same persistent interface-size setting as the workspace,
 including during the opening scene. Progress is saved as `[setup]` in
@@ -1342,14 +1346,27 @@ context cannot reach the shell. Signing a CLI account in works the same way:
 `POST /api/profile/accounts/sign-in` returns a session on that socket, and the pane
 attaches to it so the person completes the CLI's own sign-in there. A profile itself
 has no sign-in; a workspace selects it. A Default profile keeps its existing CLI
-sign-ins, so it does not offer this. An Agent card removes its agent after a
+sign-ins, so it does not offer this. Until the Rust service signs CLIs in itself, Sign
+in on one of its profiles opens a profile shell (`POST /api/profile/shells`) and shows
+the CLI sign-in steps only when the shell's `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
+`GH_CONFIG_DIR` and `GIT_CONFIG_GLOBAL` resolve inside the profile's folder (the tmux
+socket's parent); otherwise it says the profile shares this computer's logins. An Agent card removes its agent after a
 confirmation: the app stops the session, then deletes the registration, because the
 provider refuses to remove a running agent. Both requests carry the registration the
 card shows as `expected_registration_id`, so a provider that checks it refuses to stop
 or remove a replacement made under the same name; older providers ignore it. The Skills view and the Documents section
 add a person's own folder or HTML file to the profile through the provider: a skill is
 copied for every agent in the profile and the folder stays in place, and a document is
-published under the reserved `operator` author. Native lifecycle and setup controls use the captured
+published under the reserved `operator` author. On the Rust service, a profile's
+management screen lists its secrets by name (`GET /api/secrets`) and adds, replaces or
+removes one (`PUT` and `DELETE /api/secrets/{name}`, each with a new
+`x-backbone-request-id`). A value is typed into a field that shows only dots and has no
+copy, selection or accessible text; it leaves the field when it is sent, goes out once
+in the request body and is wiped afterwards, and is never shown, logged or saved. A
+refusal shows the service's own message, which never quotes a value. A change takes
+effect when the service next starts, so after one the section shows the commands that
+restart it, `backbone down` then `backbone up --detach`, each with Copy; the app runs
+neither. Native lifecycle and setup controls use the captured
 operator client and durable recovery controllers. Real-account acceptance remains
 separate; unavailable provider operations are shown explicitly. Existing standalone
 workspaces retain their ordinary shell behavior.

@@ -3,6 +3,7 @@
 
 mod outcome;
 mod recovery;
+pub mod start;
 
 use super::{Error, Identity, Profile, valid_id};
 use serde::{Deserialize, Serialize};

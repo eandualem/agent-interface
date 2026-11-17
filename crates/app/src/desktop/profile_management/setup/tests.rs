@@ -171,3 +171,43 @@ fn bounded_history_keeps_invalid_records_visible_and_never_invokes_provider() {
         Err(Error::Client(crate::profiles::Error::Cancelled))
     ));
 }
+
+#[test]
+fn a_served_start_opens_only_a_running_agent_and_asks_again_only_without_an_answer() {
+    use agent_interface_roster::profiles::{Error as Profile, setup::start::Readiness};
+    let started = |ok, evidence: &[&str]| {
+        Ok(Started {
+            ok,
+            name: "guide-2".into(),
+            ready: if ok {
+                Readiness::NotWaited
+            } else {
+                Readiness::Exited
+            },
+            evidence: evidence.iter().map(|line| line.to_string()).collect(),
+        })
+    };
+    // The pane opens by the name the service answered with.
+    assert_eq!(
+        answer(started(true, &[])),
+        Answer::Started("guide-2".into())
+    );
+    assert_eq!(
+        answer(started(false, &["claude: not signed in\u{1b}[0m"])),
+        Answer::Stopped("It stopped right after starting: claude: not signed in[0m".into())
+    );
+    assert!(matches!(answer(started(false, &[])), Answer::Stopped(_)));
+    assert_eq!(
+        answer(Err(AddError::Refused(
+            "Directory does not exist: /x".into()
+        ))),
+        Answer::Stopped("Directory does not exist: /x".into())
+    );
+    assert!(matches!(
+        answer(Err(AddError::Connection(Profile::Refused(500)))),
+        Answer::Stopped(_)
+    ));
+    for unknown in [Profile::Unavailable, Profile::Invalid] {
+        assert_eq!(answer(Err(AddError::Connection(unknown))), Answer::Unknown);
+    }
+}

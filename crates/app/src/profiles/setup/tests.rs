@@ -211,3 +211,19 @@ fn progress_callback_cannot_extend_terminal_observation_deadline() {
     assert!(observed);
     assert_eq!(result, Err(Error::TimedOut));
 }
+
+#[test]
+fn a_served_profile_reads_the_rust_services_runtimes_without_setup_flags() {
+    let (_dir, client) = stub(
+        r#"[ "$*" = "runtimes --json" ] || exit 2
+printf '%s' '{"schema_version":1,"items":[{"id":"claude","display_name":"Claude Code","available":true,"setup_supported":true,"reports_state":"hooks + terminal","models":["opus"],"efforts":[],"unattended":{"supported":false,"args":[],"sandboxed":null},"authentication":"unknown"}]}'"#,
+    );
+    let identity = agent_interface_roster::profiles::Identity {
+        profile_id: "0a1b2c3d4e5f".into(),
+        installation_id: "5f2c9e0d1b7a4e38".into(),
+        lifecycle_id: "5f2c9e0d1b7a4e38".into(),
+    };
+    let catalog = client.served_runtimes(&identity, &|| true).unwrap();
+    assert_eq!(catalog.identity(), &identity);
+    assert!(catalog.items()[0].setup_compatibility.compatible);
+}

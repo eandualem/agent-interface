@@ -164,6 +164,7 @@ fn an_open_request_leaves_new_choices_and_an_unreadable_one_precedes_the_catalog
             client.clone(),
             root.clone(),
             &profile().expected_identity().unwrap(),
+            false,
             &|| true,
         )
         .is_err()
@@ -176,7 +177,7 @@ fn an_open_request_leaves_new_choices_and_an_unreadable_one_precedes_the_catalog
         .unwrap();
     let mut other = profile().expected_identity().unwrap();
     other.lifecycle_id = "other-life".into();
-    let state = load_choices(client, root, &other, &|| true).unwrap();
+    let state = load_choices(client, root, &other, false, &|| true).unwrap();
     let State::Unchecked(retained) = state else {
         panic!("an unreadable record must not expose choices")
     };
@@ -224,4 +225,28 @@ fn a_guide_asks_setup_to_make_its_own_folder() {
     assert_eq!(first["agent"]["directory"], "/home/person/Agents/guide");
     assert_eq!(first["agent"]["create_directory"], true);
     assert_eq!(first["agent"]["brief"]["template"], "orchestrator-v1");
+}
+
+#[test]
+fn a_served_profile_lists_the_rust_services_runtimes() {
+    use std::{fs, os::unix::fs::PermissionsExt};
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let executable = root.join("provider");
+    fs::write(
+        &executable,
+        "#!/bin/sh\n[ \"$*\" = \"runtimes --json\" ] || exit 2\nprintf '%s' '{\"schema_version\":1,\"items\":[{\"id\":\"claude\",\"display_name\":\"Claude Code\",\"available\":true,\"setup_supported\":true,\"models\":[],\"efforts\":[],\"authentication\":\"unknown\"}]}'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+    let client = Client::new(executable, "/usr/bin:/bin".into()).unwrap();
+    let identity = profile().expected_identity().unwrap();
+    let State::Ready { catalog, .. } =
+        load_choices(client.clone(), root.clone(), &identity, true, &|| true).unwrap()
+    else {
+        panic!("a served catalog must give choices")
+    };
+    assert!(eligible(&catalog.items()[0]));
+    // The earlier provider's catalog read is unchanged and refuses this list.
+    assert!(load_choices(client, root, &identity, false, &|| true).is_err());
 }
