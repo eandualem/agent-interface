@@ -129,4 +129,4 @@ fn answer<T: serde::de::DeserializeOwned>(response: &local::Response) -> Result<
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

@@ -299,7 +299,8 @@ impl Form {
     }
 
     /// Read which installed tools are signed in, once each, so a guide's
-    /// cards can say so. Each read starts the tool's own check.
+    /// cards can say so. On the earlier provider each read starts the tool's
+    /// own check; the Rust service reads only whether a login is stored.
     fn read_accounts(&mut self, cx: &mut Context<Self>) {
         let (Some(connection), State::Ready { catalog, .. }) =
             (self.connection.clone(), &self.state)

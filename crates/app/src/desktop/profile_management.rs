@@ -24,6 +24,7 @@ use std::{
     },
 };
 
+mod accounts;
 mod choices;
 pub(super) mod flow;
 mod secrets;
@@ -110,10 +111,12 @@ pub(super) struct Management {
     directory: Option<PathBuf>,
     setup: Option<(gpui::Entity<setup::Pane>, gpui::Subscription)>,
     choices: Option<(gpui::Entity<choices::Form>, gpui::Subscription)>,
-    /// Sign in for a profile on the Rust service, until the service signs CLIs in.
+    /// A shell in a profile on the Rust service, with Git's commands to run there.
     sign_in: Option<(gpui::Entity<sign_in::Pane>, gpui::Subscription)>,
     /// The secrets of a profile on the Rust service.
     secrets: Option<gpui::Entity<secrets::Section>>,
+    /// The CLI sign-ins of a profile on the Rust service.
+    logins: Option<(gpui::Entity<accounts::Section>, gpui::Subscription)>,
     controller: Option<Arc<Controller>>,
     page: Page,
     ticket: Ticket,
@@ -153,6 +156,7 @@ impl Management {
             choices: None,
             sign_in: None,
             secrets: None,
+            logins: None,
             controller: None,
             page: Page::Loading,
             ticket: Ticket::default(),
@@ -251,10 +255,17 @@ impl Management {
         cx.notify();
     }
 
-    /// A sign-in pane for this profile closed: read that CLI once more and
-    /// stop waiting for it, rather than until the checks run out.
+    /// A sign-in pane for this profile closed: the Sign-in section reads that
+    /// CLI again, and a sign-in opened here reads it once more and stops
+    /// waiting for it, rather than until the checks run out.
     pub fn sign_in_ended(&mut self, profile_id: &str, runtime: &str, cx: &mut Context<Self>) {
-        if self.profile_id.as_deref() != Some(profile_id) || !self.signing.contains(runtime) {
+        if self.profile_id.as_deref() != Some(profile_id) {
+            return;
+        }
+        if let Some((logins, _)) = &self.logins {
+            logins.update(cx, |section, cx| section.sign_in_ended(runtime, cx));
+        }
+        if !self.signing.contains(runtime) {
             return;
         }
         let Some(connection) = self.connection.clone() else {
@@ -299,6 +310,9 @@ impl Management {
         if !profile.served() {
             return;
         }
+        let logins = cx.new(|cx| accounts::Section::new(profile.clone(), cx));
+        let subscription = cx.subscribe(&logins, |_, _, open: &Open, cx| cx.emit(open.clone()));
+        self.logins = Some((logins, subscription));
         let pane = cx.new(|_| sign_in::Pane::new(profile.clone()));
         let subscription = cx.subscribe(&pane, |_, _, open: &Open, cx| cx.emit(open.clone()));
         self.sign_in = Some((pane, subscription));
@@ -915,11 +929,19 @@ impl Render for Management {
                             ),
                     );
                 }
-                body = body.child(ui::group_title("Accounts", ""));
+                let title = if profile.served() {
+                    "Sign-in"
+                } else {
+                    "Accounts"
+                };
+                body = body.child(ui::group_title(title, ""));
+                if let Some((section, _)) = &self.logins {
+                    body = body.child(section.clone());
+                }
                 if let Some((pane, _)) = &self.sign_in {
                     body = body.child(pane.clone());
                 }
-                // On the Rust service the sign-in pane above stands in for the catalog.
+                // On the Rust service the Sign-in section above stands in for the catalog.
                 match &self.accounts {
                     _ if profile.served() => {}
                     None => {

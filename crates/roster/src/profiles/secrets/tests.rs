@@ -22,7 +22,9 @@ fn fixture(name: &str) -> Json {
 
 /// A served profile on a fake socket answering `replies` in turn, after the
 /// identity its connection asks for first; the requests it got come back.
-fn served(replies: Vec<(u16, Json)>) -> (Connection, thread::JoinHandle<Vec<String>>) {
+pub(in crate::profiles) fn served(
+    replies: Vec<(u16, Json)>,
+) -> (Connection, thread::JoinHandle<Vec<String>>) {
     let (directory, listener, url) = crate::transport::tests::local_listener();
     let entry = json!({
         "state": "serving", "protocol_version": 1, "backbone_version": "0.1.0",
