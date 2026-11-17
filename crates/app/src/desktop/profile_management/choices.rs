@@ -1126,7 +1126,10 @@ impl Render for Form {
         };
         body.track_focus(&self.focus)
             .capture_key_down(cx.listener(|form, event: &gpui::KeyDownEvent, window, cx| {
-                if form.name.read(cx).composing() || form.brief.read(cx).composing() {
+                if form.name.read(cx).composing()
+                    || form.brief.read(cx).composing()
+                    || form.repository.read(cx).composing()
+                {
                     return;
                 }
                 let keys = &event.keystroke;
@@ -1452,7 +1455,10 @@ impl Form {
             .track_focus(&self.focus)
             .capture_key_down(
                 cx.listener(move |form, event: &gpui::KeyDownEvent, window, cx| {
-                    if form.name.read(cx).composing() || form.brief.read(cx).composing() {
+                    if form.name.read(cx).composing()
+                        || form.brief.read(cx).composing()
+                        || form.repository.read(cx).composing()
+                    {
                         return;
                     }
                     let brief = form.brief.read(cx).focus.is_focused(window);
