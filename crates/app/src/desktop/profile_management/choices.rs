@@ -787,6 +787,28 @@ fn folder_name(path: &std::path::Path) -> Option<String> {
         .replace(' ', "-");
     (!name.is_empty()).then_some(name)
 }
+/// A text field of the Add agent form, in Tab order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Field {
+    Name,
+    Brief,
+    Repository,
+}
+/// Where Tab goes from `at`: through the name, then the instructions and
+/// the repository when each is shown, back to the name. From no field, or
+/// one no longer shown, the name.
+fn next_field(at: Option<Field>, brief: bool, repository: bool) -> Field {
+    let shown: Vec<Field> = [
+        Some(Field::Name),
+        brief.then_some(Field::Brief),
+        repository.then_some(Field::Repository),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    at.and_then(|at| shown.iter().position(|field| *field == at))
+        .map_or(Field::Name, |at| shown[(at + 1) % shown.len()])
+}
 /// Choose the tool `clicked`. The one already chosen changes nothing; another
 /// starts on its default model. Returns whether the choice changed.
 fn choose_tool(runtime: &mut Option<String>, model: &mut Option<String>, clicked: &str) -> bool {
@@ -1119,16 +1141,22 @@ impl Render for Form {
                         cx.stop_propagation();
                     }
                     "tab" if matches!(form.state, State::Ready { .. }) => {
-                        let name = form.name.read(cx).focus.clone();
-                        let brief = form.brief.read(cx).focus.clone();
-                        window.focus(
-                            if name.is_focused(window) && form.custom_brief {
-                                &brief
-                            } else {
-                                &name
-                            },
-                            cx,
-                        );
+                        let served = form.profile.served();
+                        let focus = |field: &Entity<NameField>| field.read(cx).focus.clone();
+                        let fields = [
+                            (Field::Name, focus(&form.name)),
+                            (Field::Brief, focus(&form.brief)),
+                            (Field::Repository, focus(&form.repository)),
+                        ];
+                        let at = fields
+                            .iter()
+                            .find(|(_, handle)| handle.is_focused(window))
+                            .map(|(field, _)| *field);
+                        let next =
+                            next_field(at, form.custom_brief && !served, served && form.more);
+                        if let Some((_, handle)) = fields.iter().find(|(field, _)| *field == next) {
+                            window.focus(handle, cx);
+                        }
                         cx.stop_propagation();
                     }
                     _ => (),
@@ -1428,11 +1456,14 @@ impl Form {
                         return;
                     }
                     let brief = form.brief.read(cx).focus.is_focused(window);
+                    // The repository field sits under the model choice: its
+                    // arrow keys never change the tool.
+                    let repository = form.repository.read(cx).focus.is_focused(window);
                     match event.keystroke.key.as_str() {
                         "escape" if !form.first && !form.busy(cx) => form.finish(Event::Back, cx),
                         "enter" if !brief => form.submit(&expected, cx),
                         // Up and down move between the tools that can run.
-                        key @ ("up" | "down") if !brief && !form.busy(cx) => {
+                        key @ ("up" | "down") if !brief && !repository && !form.busy(cx) => {
                             form.step_tool(if key == "up" { -1 } else { 1 }, cx)
                         }
                         _ => return,
