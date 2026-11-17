@@ -52,8 +52,30 @@ struct Row {
     checked: Option<String>,
 }
 
+/// The rows whose sign-in pane closed while the section was opening, whose
+/// first read may be older than the sign-in.
+#[derive(Default)]
+struct Owed([bool; 3]);
+
+impl Owed {
+    /// The sign-in pane of row `index` closed.
+    fn owe(&mut self, index: usize) {
+        self.0[index] = true;
+    }
+
+    /// The rows to read again once the first answers are in: those owed, or
+    /// none when opening failed and there is nothing to read them on.
+    fn rows(self, opened: bool) -> Vec<usize> {
+        (0..self.0.len())
+            .filter(|&index| opened && self.0[index])
+            .collect()
+    }
+}
+
 pub(super) struct Section {
     connection: Option<Connection>,
+    /// While the section opens, what it owes once it has.
+    opening: Option<Owed>,
     /// In the order of [`TOOLS`].
     rows: [Row; 3],
 }
@@ -71,12 +93,17 @@ impl Section {
         cx.spawn(async move |this, cx| {
             let opened = work.await;
             let _ = this.update(cx, |section, cx| {
+                let owed = section.opening.take().unwrap_or_default();
+                let again = owed.rows(opened.is_ok());
                 match opened {
                     Ok((connection, read)) => {
                         for (row, read) in section.rows.iter_mut().zip(read) {
                             row.stored = Some(read);
                         }
                         section.connection = Some(connection);
+                        for index in again {
+                            section.read(index, cx);
+                        }
                     }
                     Err(error) => {
                         let why = failed(error.into());
@@ -91,6 +118,7 @@ impl Section {
         .detach();
         Self {
             connection: None,
+            opening: Some(Owed::default()),
             rows: Default::default(),
         }
     }
@@ -156,11 +184,19 @@ impl Section {
     }
 
     /// A sign-in pane of this profile closed: read that CLI's stored login
-    /// again.
+    /// again, or, while the section opens, once it has.
     pub(super) fn sign_in_ended(&mut self, runtime: &str, cx: &mut Context<Self>) {
         let Some(index) = TOOLS.iter().position(|(id, ..)| *id == runtime) else {
             return;
         };
+        match &mut self.opening {
+            Some(owed) => owed.owe(index),
+            None => self.read(index, cx),
+        }
+    }
+
+    /// Read the stored login of the CLI in row `index` again.
+    fn read(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(connection) = self.connection.clone() else {
             return;
         };
@@ -262,8 +298,6 @@ impl Render for Section {
         for (index, (&(runtime, name, checkable), row)) in TOOLS.iter().zip(&self.rows).enumerate()
         {
             let mut lines = div()
-                .flex_1()
-                .min_w_0()
                 .flex()
                 .flex_col()
                 .child(div().text_color(c.text).child(name));
@@ -284,43 +318,43 @@ impl Render for Section {
             } else {
                 lines = lines.children(row.checked.clone().map(|said| line(said.into())));
             }
+            // The buttons sit under the lines and wrap, so a narrow window
+            // keeps the lines readable.
+            let mut buttons = div().flex().flex_wrap().gap(px(t.space.s8));
+            let can_sign_in = connected && !row.starting;
+            if can_sign_in {
+                buttons = buttons.child(
+                    ui::button(
+                        SharedString::from(format!("login-sign-in-{runtime}")),
+                        "Sign in",
+                        ui::Button::Secondary,
+                    )
+                    .on_click(cx.listener(move |section, _, _, cx| section.sign_in(index, cx))),
+                );
+            }
+            let can_check = connected && checkable && !row.checking;
+            if can_check {
+                buttons = buttons.child(
+                    ui::button(
+                        SharedString::from(format!("login-check-{runtime}")),
+                        CHECK,
+                        ui::Button::Secondary,
+                    )
+                    .on_click(cx.listener(move |section, _, _, cx| section.check(index, cx))),
+                );
+            }
             card = card.child(
                 div()
                     .flex()
-                    .items_center()
-                    .gap(px(t.space.s10))
+                    .flex_col()
+                    .gap(px(t.space.s8))
                     .py(px(t.space.s8))
                     .px(px(t.space.s14))
                     .when(index > 0, |el| {
                         el.border_t(px(t.size.hairline)).border_color(c.line)
                     })
                     .child(lines)
-                    .when(connected && !row.starting, |el| {
-                        el.child(
-                            ui::button(
-                                SharedString::from(format!("login-sign-in-{runtime}")),
-                                "Sign in",
-                                ui::Button::Secondary,
-                            )
-                            .flex_shrink_0()
-                            .on_click(
-                                cx.listener(move |section, _, _, cx| section.sign_in(index, cx)),
-                            ),
-                        )
-                    })
-                    .when(connected && checkable && !row.checking, |el| {
-                        el.child(
-                            ui::button(
-                                SharedString::from(format!("login-check-{runtime}")),
-                                CHECK,
-                                ui::Button::Secondary,
-                            )
-                            .flex_shrink_0()
-                            .on_click(
-                                cx.listener(move |section, _, _, cx| section.check(index, cx)),
-                            ),
-                        )
-                    }),
+                    .when(can_sign_in || can_check, |el| el.child(buttons)),
             );
         }
         card.child(

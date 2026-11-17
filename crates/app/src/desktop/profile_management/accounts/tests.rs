@@ -172,3 +172,21 @@ fn sign_in_opens_the_session_the_service_started_and_a_refusal_stays_in_the_row(
         "{requests:?}"
     );
 }
+
+#[test]
+fn a_sign_in_that_ends_while_the_section_opens_is_read_again_once_it_has() {
+    let owed = |rows: &[usize]| {
+        let mut owed = Owed::default();
+        for &index in rows {
+            owed.owe(index);
+        }
+        owed
+    };
+    // Nothing closed meanwhile: the first answers stand.
+    assert!(owed(&[]).rows(true).is_empty());
+    // Each closed pane's row is read again after the first answers, once.
+    assert_eq!(owed(&[1]).rows(true), [1]);
+    assert_eq!(owed(&[2, 0, 2]).rows(true), [0, 2]);
+    // An opening that failed has no connection to read them on.
+    assert!(owed(&[0, 1]).rows(false).is_empty());
+}
