@@ -379,9 +379,9 @@ impl Form {
             Some(at) => (at as isize + step).rem_euclid(ready.len() as isize) as usize,
             None => 0,
         };
-        self.runtime = Some(ready[next].clone());
-        self.model = None;
-        self.changed = true;
+        if choose_tool(&mut self.runtime, &mut self.model, &ready[next]) {
+            self.changed = true;
+        }
         self.picked = true;
         cx.notify();
     }
@@ -787,6 +787,16 @@ fn folder_name(path: &std::path::Path) -> Option<String> {
         .replace(' ', "-");
     (!name.is_empty()).then_some(name)
 }
+/// Choose the tool `clicked`. The one already chosen changes nothing; another
+/// starts on its default model. Returns whether the choice changed.
+fn choose_tool(runtime: &mut Option<String>, model: &mut Option<String>, clicked: &str) -> bool {
+    if runtime.as_deref() == Some(clicked) {
+        return false;
+    }
+    *runtime = Some(clicked.to_owned());
+    *model = None;
+    true
+}
 /// The tool a guide starts on when nothing else says: a signed-in one, else
 /// any that can run.
 fn first_choice(catalog: &Catalog) -> Option<String> {
@@ -998,7 +1008,7 @@ impl Render for Form {
                             .on_click(cx.listener(move |form, _, _, cx| {
                                 if form.finished || !form.ticket.accepts(&expected) { return; }
                                 let State::Ready { catalog, .. } = &form.state else { return; };
-                                if catalog.items().iter().any(|r| r.id == id && eligible(r)) { form.runtime = Some(id.clone()); form.model = None; cx.notify(); }
+                                if catalog.items().iter().any(|r| r.id == id && eligible(r)) { choose_tool(&mut form.runtime, &mut form.model, &id); cx.notify(); }
                             })),
                     );
                 }
@@ -1252,9 +1262,9 @@ impl Form {
                                 return;
                             }
                             if ready {
-                                form.runtime = Some(id.clone());
-                                form.model = None;
-                                form.changed = true;
+                                if choose_tool(&mut form.runtime, &mut form.model, &id) {
+                                    form.changed = true;
+                                }
                                 form.picked = true;
                                 cx.notify();
                             } else {

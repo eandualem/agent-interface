@@ -250,3 +250,19 @@ fn a_served_profile_lists_the_rust_services_runtimes() {
     // The earlier provider's catalog read is unchanged and refuses this list.
     assert!(load_choices(client, root, &identity, false, &|| true).is_err());
 }
+
+#[test]
+fn choosing_the_chosen_tool_again_changes_nothing() {
+    let (mut runtime, mut model) = (Some("claude".to_owned()), Some("opus".to_owned()));
+    assert!(!choose_tool(&mut runtime, &mut model, "claude"));
+    assert_eq!(
+        (runtime.as_deref(), model.as_deref()),
+        (Some("claude"), Some("opus"))
+    );
+    // Another tool starts on its default model.
+    assert!(choose_tool(&mut runtime, &mut model, "codex"));
+    assert_eq!((runtime.as_deref(), model), (Some("codex"), None));
+    let mut none = None;
+    assert!(choose_tool(&mut none, &mut None, "claude"));
+    assert_eq!(none.as_deref(), Some("claude"));
+}
