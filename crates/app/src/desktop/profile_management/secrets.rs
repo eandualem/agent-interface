@@ -250,31 +250,44 @@ fn outcome(changed: Result<Change, AddError>) -> String {
     }
 }
 
-/// The commands that start the Backbone service again, for the person to
-/// run: a stop, then a start.
-const RESTART: [(&str, &str); 2] = [
-    ("To restart it, run:", "backbone down"),
-    ("then:", "backbone up --detach"),
-];
+/// What a change needs to take effect on macOS: the paragraph, and the
+/// commands it names, each shown with Copy.
+const MACOS_RESTART: (&str, &[&str]) = (
+    "The change takes effect when the service next starts. If Backbone runs as an installed login service, run \"backbone service restart\": running agents keep running. If you started it with \"backbone up --detach\", run \"backbone down\", then \"backbone up --detach\": running agents keep running.",
+    &[
+        "backbone service restart",
+        "backbone down",
+        "backbone up --detach",
+    ],
+);
+/// The same on every other system, where only a stop and a start apply.
+const OTHER_RESTART: (&str, &[&str]) = (
+    "The change takes effect when the service next starts. If you started Backbone with \"backbone up --detach\", run \"backbone down\", then \"backbone up --detach\": running agents keep running. If Backbone runs as an installed login service, those commands do not apply, and restarting it may stop the running agents on this machine.",
+    &["backbone down", "backbone up --detach"],
+);
+/// The notice this build shows. Both are compiled in, so tests read both.
+const RESTART: (&str, &[&str]) = if cfg!(target_os = "macos") {
+    MACOS_RESTART
+} else {
+    OTHER_RESTART
+};
 
 /// A secret takes effect when the service next starts. The app runs nothing:
 /// it shows the commands, each with Copy.
 fn restart_notice() -> gpui::Div {
     let t = tokens();
+    let (paragraph, commands) = RESTART;
     let mut notice = div()
         .flex()
         .flex_col()
         .gap(px(t.space.s4))
-        .child(ui::group_note(
-            "The change takes effect when the service next starts.",
-        ));
-    for (index, (lead, command)) in RESTART.into_iter().enumerate() {
+        .child(ui::group_note(paragraph));
+    for (index, command) in commands.iter().copied().enumerate() {
         notice = notice.child(
             div()
                 .flex()
                 .items_center()
                 .gap(px(t.space.s8))
-                .child(ui::group_note(lead))
                 .child(ui::mono(command))
                 .child(
                     ui::text_action(

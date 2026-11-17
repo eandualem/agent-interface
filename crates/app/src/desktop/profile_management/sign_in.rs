@@ -1,12 +1,14 @@
 //! Sign in until the Rust service signs CLIs in itself: a shell in the
-//! profile's own environment, and the steps to sign each CLI in there. The
-//! steps show only when that shell points every CLI's settings, and Git's,
-//! inside the profile's folder.
+//! profile's own environment, and the commands to sign each CLI in there.
+//! They show only when the shell was started with every CLI's settings, and
+//! Git's, inside the profile's folder, and each command names its folder
+//! itself, as that setting spells it, so the shell's startup files can't
+//! send it elsewhere.
 
 use super::{Open, ui};
 use crate::desktop::design::{colors, tokens};
 use agent_interface_roster::profiles::Profile;
-use gpui::{Context, EventEmitter, Window, div, prelude::*, px};
+use gpui::{ClipboardItem, Context, EventEmitter, SharedString, Window, div, prelude::*, px};
 use std::{
     io,
     path::{Component, Path, PathBuf},
@@ -21,21 +23,36 @@ const OWN: [&str; 4] = [
     "GIT_CONFIG_GLOBAL",
 ];
 
-/// What to run in the shell for each account, and what to do next.
-const STEPS: [(&str, &str, &str); 4] = [
-    ("Claude Code", "claude", "then type /login"),
-    ("Codex", "codex login", ""),
+/// What to run in the shell for each account: the folder's variable, the
+/// command, and what to do next.
+const STEPS: [(&str, &str, &str, &str); 4] = [
+    (
+        "Claude Code",
+        "CLAUDE_CONFIG_DIR",
+        "claude",
+        "then type /login",
+    ),
+    ("Codex", "CODEX_HOME", "codex login", ""),
     (
         "Git name",
+        "GIT_CONFIG_GLOBAL",
         "git config --global user.name \"Your Name\"",
         "",
     ),
     (
         "Git email",
+        "GIT_CONFIG_GLOBAL",
         "git config --global user.email you@example.com",
         "",
     ),
 ];
+
+/// One account's command, shown and copied as the same text.
+struct Step {
+    account: &'static str,
+    command: String,
+    then: &'static str,
+}
 
 /// How agents reach GitHub, which needs no sign-in in the shell.
 const GITHUB: &str =
@@ -44,8 +61,11 @@ const GITHUB: &str =
 enum State {
     Idle,
     Opening,
-    /// The shell points every one of [`OWN`] inside the profile's folder.
-    Own,
+    /// The shell was started with every one of [`OWN`] inside the profile's
+    /// folder; the commands that name them.
+    Own(Vec<Step>),
+    /// A folder's spelling can't be written the same way in every shell.
+    Unquotable,
     /// The shell uses this computer's logins for at least one CLI.
     Shared,
     /// The shell's settings couldn't be read.
@@ -56,7 +76,8 @@ enum State {
 /// Whether a shell keeps the profile's logins apart from this computer's.
 #[derive(Debug, PartialEq)]
 enum Check {
-    Own,
+    /// The values of [`OWN`], in its order, exactly as the launch settings spell them.
+    Own([String; 4]),
     Shared,
     Unchecked,
 }
@@ -94,7 +115,10 @@ impl Pane {
                             session,
                         });
                         match check {
-                            Check::Own => State::Own,
+                            Check::Own(paths) => match steps(&paths) {
+                                Some(steps) => State::Own(steps),
+                                None => State::Unquotable,
+                            },
                             Check::Shared => State::Shared,
                             Check::Unchecked => State::Unchecked,
                         }
@@ -134,15 +158,61 @@ fn shell_id() -> String {
 /// Whether every variable in [`OWN`], as `read` gives it, is inside `folder`.
 /// One that is missing or outside it settles it, even if another can't be read.
 fn check(folder: &Path, read: impl Fn(&str) -> io::Result<Option<String>>) -> Check {
-    let mut check = Check::Own;
+    let mut values = Some(Vec::new());
     for name in OWN {
         match read(name) {
-            Err(_) => check = Check::Unchecked,
-            Ok(Some(value)) if inside(Path::new(&value), folder) => {}
+            Err(_) => values = None,
+            Ok(Some(value)) if inside(Path::new(&value), folder) => {
+                if let Some(values) = &mut values {
+                    values.push(value);
+                }
+            }
             Ok(_) => return Check::Shared,
         }
     }
-    check
+    match values.and_then(|values| values.try_into().ok()) {
+        Some(values) => Check::Own(values),
+        None => Check::Unchecked,
+    }
+}
+
+/// The commands for `paths`, the checked values of [`OWN`] in its order, or
+/// `None` when one can't be quoted alike in every shell.
+fn steps(paths: &[String; 4]) -> Option<Vec<Step>> {
+    STEPS
+        .iter()
+        .map(|&(account, name, command, then)| {
+            let index = OWN.iter().position(|own| *own == name)?;
+            Some(Step {
+                account,
+                command: prefixed(name, &paths[index], command)?,
+                then,
+            })
+        })
+        .collect()
+}
+
+/// `command` run with `name` set to `value`, spelled exactly as given. `env`
+/// reads the same in sh, bash, zsh, fish and tcsh, unlike a bare assignment.
+fn prefixed(name: &str, value: &str, command: &str) -> Option<String> {
+    Some(format!("env {name}={} {command}", quote(value)?))
+}
+
+/// `value` as one word that sh, bash, zsh, fish and tcsh all read back
+/// unchanged: bare when every character is plain, else in single quotes when
+/// none is special inside them to any of those shells, else `None`.
+fn quote(value: &str) -> Option<String> {
+    let plain = |byte: u8| byte.is_ascii_alphanumeric() || b"/._+,:@%-_".contains(&byte);
+    if !value.is_empty() && value.bytes().all(plain) {
+        return Some(value.to_owned());
+    }
+    // fish reads \\ and \' inside single quotes and tcsh expands !; $ and `
+    // are refused too, so nothing in a command looks like an expansion. Of
+    // other characters only letters and digits pass, so no invisible or
+    // reordering character can make the text read differently from itself.
+    let special =
+        |c: char| c.is_control() || "'\\!$`".contains(c) || (!c.is_ascii() && !c.is_alphanumeric());
+    (!value.chars().any(special)).then(|| format!("'{value}'"))
 }
 
 /// The value `session`'s shell started with for `name`: the session's own
@@ -251,28 +321,66 @@ impl Render for Pane {
         );
         match &self.state {
             State::Idle | State::Opening => {}
-            State::Own => {
-                body = body.child(ui::group_note("In the new shell, run each of these:"));
+            State::Own(steps) => {
+                body = body.child(ui::group_note(
+                    "In the new shell, run each of these as shown. Each one names the \
+                     profile folder that was checked.",
+                ));
                 let mut card = ui::group_card();
-                for (index, (account, command, then)) in STEPS.iter().enumerate() {
+                for (index, step) in steps.iter().enumerate() {
+                    let copied = step.command.clone();
                     card = card.child(
                         div()
                             .flex()
                             .items_center()
                             .gap(px(t.space.s10))
-                            .h(px(t.size.group_row))
+                            .py(px(t.space.s8))
                             .px(px(t.space.s14))
                             .when(index > 0, |el| {
                                 el.border_t(px(t.size.hairline)).border_color(c.line)
                             })
-                            .child(div().w(px(96.)).text_color(c.text).child(*account))
-                            .child(ui::mono(*command).min_w_0().text_color(c.text))
-                            .when(!then.is_empty(), |el| {
-                                el.child(div().text_color(c.muted).child(*then))
-                            }),
+                            .child(
+                                div()
+                                    .w(px(96.))
+                                    .flex_shrink_0()
+                                    .text_color(c.text)
+                                    .child(step.account),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .font_family(t.font.mono.clone())
+                                            .text_color(c.text)
+                                            .child(step.command.clone()),
+                                    )
+                                    .when(!step.then.is_empty(), |el| {
+                                        el.child(div().text_color(c.muted).child(step.then))
+                                    }),
+                            )
+                            .child(
+                                ui::button(
+                                    SharedString::from(format!("sign-in-copy-{index}")),
+                                    "Copy",
+                                    ui::Button::Secondary,
+                                )
+                                .on_click(move |_, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(copied.clone()))
+                                }),
+                            ),
                     );
                 }
                 body = body.child(card).child(ui::group_note(GITHUB));
+            }
+            State::Unquotable => {
+                body = body.child(ui::group_note(
+                    "This profile's folder has a character these commands can't show \
+                     safely in every shell, so none are shown.",
+                ))
             }
             State::Shared => {
                 body = body.child(ui::group_note(
@@ -321,7 +429,10 @@ mod tests {
         let folder = tempfile::tempdir().unwrap();
         let path = folder.path().join("accounts").to_str().unwrap().to_owned();
         let all = |name: &str| Ok(Some(format!("{path}/{name}")));
-        assert_eq!(check(folder.path(), all), Check::Own);
+        assert_eq!(
+            check(folder.path(), all),
+            Check::Own(OWN.map(|name| format!("{path}/{name}")))
+        );
         let missing = |name: &str| Ok((name != "GH_CONFIG_DIR").then(|| format!("{path}/{name}")));
         assert_eq!(check(folder.path(), missing), Check::Shared);
         let outside = |name: &str| Ok(Some(format!("/elsewhere/{name}")));
@@ -334,6 +445,103 @@ mod tests {
             _ => Ok(Some(format!("{path}/{name}"))),
         };
         assert_eq!(check(folder.path(), partly), Check::Shared);
+    }
+
+    #[test]
+    fn a_folder_is_quoted_only_where_every_shell_reads_it_back_unchanged() {
+        assert_eq!(
+            quote("/p/accounts_1/codex-2/").unwrap(),
+            "/p/accounts_1/codex-2/"
+        );
+        assert_eq!(
+            quote("/Users/a b/Library/Application Support/p").unwrap(),
+            "'/Users/a b/Library/Application Support/p'"
+        );
+        assert_eq!(quote("/Users/josé/p").unwrap(), "'/Users/josé/p'");
+        for refused in ["'", "\\", "!", "$", "`", "\n", "\t", "\u{202e}", "\u{200b}"] {
+            assert_eq!(quote(&format!("/p/a{refused}b")), None, "{refused:?}");
+        }
+        assert_eq!(
+            prefixed("CODEX_HOME", "/p/a b", "codex login").unwrap(),
+            "env CODEX_HOME='/p/a b' codex login"
+        );
+    }
+
+    #[test]
+    fn commands_name_each_checked_folder_exactly_as_the_shell_got_it() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("profile");
+        std::fs::create_dir_all(folder.join("accounts")).unwrap();
+        std::os::unix::fs::symlink(&folder, root.path().join("link")).unwrap();
+        let root = root.path().to_str().unwrap().to_owned();
+        // Through a link to the folder, with a trailing slash.
+        let given = |name: &str| format!("{root}/link/accounts/{}/", name.to_lowercase());
+        let Check::Own(paths) = check(&folder, |name| Ok(Some(given(name)))) else {
+            panic!("the linked folder is the profile's own");
+        };
+        assert_eq!(paths, OWN.map(given));
+        let shown = steps(&paths).unwrap();
+        let commands: Vec<_> = shown.iter().map(|step| step.command.as_str()).collect();
+        let quoted = |name: &str| quote(&given(name)).unwrap();
+        assert_eq!(
+            commands,
+            [
+                format!(
+                    "env CLAUDE_CONFIG_DIR={} claude",
+                    quoted("CLAUDE_CONFIG_DIR")
+                ),
+                format!("env CODEX_HOME={} codex login", quoted("CODEX_HOME")),
+                format!(
+                    "env GIT_CONFIG_GLOBAL={} git config --global user.name \"Your Name\"",
+                    quoted("GIT_CONFIG_GLOBAL")
+                ),
+                format!(
+                    "env GIT_CONFIG_GLOBAL={} git config --global user.email you@example.com",
+                    quoted("GIT_CONFIG_GLOBAL")
+                ),
+            ]
+        );
+        assert!(commands.iter().all(|command| !command.contains("gh ")));
+        let mut odd = paths.clone();
+        odd[1] = format!("{root}/link/accounts/it's");
+        assert!(steps(&odd).is_none());
+    }
+
+    /// An interactive `sh` whose startup file sends `CODEX_HOME` elsewhere
+    /// still runs a shown command with the profile's folder.
+    #[test]
+    fn a_shown_command_keeps_its_folder_over_the_shells_startup_file() {
+        let root = tempfile::tempdir().unwrap();
+        let own = root.path().join("pro file/accounts/codex/");
+        let own = format!("{}/", own.to_str().unwrap().trim_end_matches('/'));
+        let elsewhere = root.path().join("computer-codex");
+        let startup = root.path().join("startup");
+        std::fs::write(
+            &startup,
+            format!("export CODEX_HOME='{}'\n", elsewhere.display()),
+        )
+        .unwrap();
+        let run = |command: &str| {
+            let output = Command::new("/bin/sh")
+                .args(["-i", "-c", command])
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", root.path())
+                .env("ENV", &startup)
+                .env("CODEX_HOME", &own)
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            String::from_utf8(output.stdout).unwrap()
+        };
+        // The startup file does change the shell's own value.
+        assert_eq!(
+            run("printenv CODEX_HOME").trim_end(),
+            elsewhere.to_str().unwrap()
+        );
+        let shown = prefixed("CODEX_HOME", &own, "printenv CODEX_HOME").unwrap();
+        assert_eq!(run(&shown), format!("{own}\n"));
     }
 
     #[test]

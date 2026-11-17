@@ -1348,10 +1348,13 @@ attaches to it so the person completes the CLI's own sign-in there. A profile it
 has no sign-in; a workspace selects it. A Default profile keeps its existing CLI
 sign-ins, so it does not offer this. Until the Rust service signs CLIs in itself, Sign
 in on one of its profiles opens a profile shell (`POST /api/profile/shells`) and shows
-the CLI sign-in steps only when the shell's `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
-`GH_CONFIG_DIR` and `GIT_CONFIG_GLOBAL` resolve inside the profile's folder (the tmux
-socket's parent); otherwise it says the profile shares this computer's logins. An Agent card removes its agent after a
-confirmation: the app stops the session, then deletes the registration, because the
+sign-in commands only when the shell's launch settings put `CLAUDE_CONFIG_DIR`,
+`CODEX_HOME`, `GH_CONFIG_DIR` and `GIT_CONFIG_GLOBAL` inside the profile's folder (the
+tmux socket's parent); otherwise it says the profile shares this computer's logins. Each
+command sets its folder itself with `env`, spelled exactly as the launch setting gives
+it, because the shell's startup files can change its own variables; a folder that can't
+be quoted alike in every common shell shows no commands. An Agent card removes its agent
+after a confirmation: the app stops the session, then deletes the registration, because the
 provider refuses to remove a running agent. Both requests carry the registration the
 card shows as `expected_registration_id`, so a provider that checks it refuses to stop
 or remove a replacement made under the same name; older providers ignore it. The Skills view and the Documents section
@@ -1364,9 +1367,12 @@ removes one (`PUT` and `DELETE /api/secrets/{name}`, each with a new
 copy, selection or accessible text; it leaves the field when it is sent, goes out once
 in the request body and is wiped afterwards, and is never shown, logged or saved. A
 refusal shows the service's own message, which never quotes a value. A change takes
-effect when the service next starts, so after one the section shows the commands that
-restart it, `backbone down` then `backbone up --detach`, each with Copy; the app runs
-neither. Native lifecycle and setup controls use the captured
+effect when the service next starts, so after one the section shows a paragraph for the
+system the app was built for, with each command it names and Copy. On macOS it covers an
+installed login service (`backbone service restart`) and a service started with
+`backbone up --detach` (`backbone down`, then `backbone up --detach`); elsewhere it gives
+only the second pair and says those commands don't apply to an installed login service.
+The app runs none of them. Native lifecycle and setup controls use the captured
 operator client and durable recovery controllers. Real-account acceptance remains
 separate; unavailable provider operations are shown explicitly. Existing standalone
 workspaces retain their ordinary shell behavior.
