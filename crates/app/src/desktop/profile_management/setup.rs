@@ -7,7 +7,13 @@ use crate::{
         setup_controller::{Controller, Error, Phase, Progress, Snapshot},
     },
 };
-use agent_interface_roster::profiles::setup::{Event, Prepared};
+use agent_interface_roster::profiles::{
+    AddError, Connection, Profile,
+    setup::{
+        Event, Prepared,
+        start::{Start, Started},
+    },
+};
 use futures::{StreamExt, channel::mpsc};
 use gpui::{Context, EventEmitter, FocusHandle, SharedString, Window, div, prelude::*, px};
 use std::{
@@ -163,6 +169,114 @@ enum Page {
 }
 /// Go back to the choices: this request can't be tried again as it was.
 pub(super) struct Again;
+/// A first agent for the Rust service to start. Nothing is saved for it:
+/// its request ID makes a repeat after a lost reply get the first result.
+#[derive(Clone)]
+pub(super) struct Request {
+    pub profile: Profile,
+    /// The profile's verified connection, when the caller has one; else it is
+    /// made off the UI thread.
+    pub connection: Option<Connection>,
+    pub start: Start,
+    /// A folder made for the agent, made first: the service starts only in
+    /// one that exists.
+    pub create: Option<PathBuf>,
+    /// 32 lowercase hexadecimal digits, a UUIDv7.
+    pub request_id: String,
+}
+struct Served {
+    request: Request,
+    /// What the last attempt came to, once it answered.
+    answer: Option<Answer>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Answer {
+    /// Running, by the name its pane opens.
+    Started(String),
+    /// The service answered that it didn't start, and why: another try is
+    /// a new request.
+    Stopped(String),
+    /// No answer came, or the service doesn't know what came of it: the
+    /// same request is asked again. A later try that couldn't be sent keeps
+    /// it unknown, with why.
+    Unknown(Option<String>),
+}
+/// One attempt of `request`, off the UI thread: connect when needed, make
+/// its folder, then start it under its own request ID. `unresolved`: an
+/// earlier send of it has no known result yet.
+fn attempt(request: &Request, unresolved: bool) -> Answer {
+    // Nothing is sent this time. A first try ends; an earlier send stays
+    // unresolved, for the same request to ask about later.
+    let unsent = |stopped: &str, why: &str| {
+        if unresolved {
+            Answer::Unknown(Some(why.into()))
+        } else {
+            Answer::Stopped(stopped.into())
+        }
+    };
+    let connection = match request
+        .connection
+        .clone()
+        .map_or_else(|| request.profile.connect(), Ok)
+    {
+        Ok(connection) => connection,
+        Err(_) => {
+            return unsent(
+                "The profile could not be reached. Start its service, then try again.",
+                "The profile could not be reached; start its service.",
+            );
+        }
+    };
+    if let Some(folder) = &request.create
+        && std::fs::create_dir_all(folder).is_err()
+    {
+        return unsent(
+            "The agent's folder could not be made. Choose another folder.",
+            "The agent's folder could not be made.",
+        );
+    }
+    answer(connection.start_first_agent(&request.start, &request.request_id))
+}
+/// Whether `request` is what `start` and `create` would send.
+fn same(request: &Request, start: &Start, create: Option<&PathBuf>) -> bool {
+    request.start == *start && request.create.as_ref() == create
+}
+/// The heading once a start is over without running: a result that isn't
+/// known is not called a failure.
+fn heading(name: &str, answer: Option<&Answer>) -> String {
+    match answer {
+        Some(Answer::Unknown(_)) => format!("Not known whether {name} started"),
+        _ => format!("{name} didn't start"),
+    }
+}
+/// What a served start came to, for the person.
+fn answer(result: Result<Started, AddError>) -> Answer {
+    use agent_interface_roster::profiles::Error;
+    match result {
+        Ok(started) if started.ok => Answer::Started(started.name),
+        Ok(started) => Answer::Stopped(
+            started
+                .evidence
+                .first()
+                .map(|line| line.chars().filter(|c| !c.is_control()).take(200).collect::<String>())
+                .filter(|line| !line.trim().is_empty())
+                .map_or_else(
+                    || "The CLI exited right after starting, so the agent is not running. Run the CLI in a terminal in the agent's folder to see why, then start it again.".to_owned(),
+                    |line| format!("It stopped right after starting: {line}"),
+                ),
+        ),
+        Err(AddError::Refused(reason)) => Answer::Stopped(reason),
+        Err(AddError::Connection(Error::Refused(status))) => {
+            Answer::Stopped(format!("The profile refused the start ({status})."))
+        }
+        Err(AddError::Connection(
+            Error::BindingRequired | Error::BindingMismatch | Error::Unsupported,
+        )) => Answer::Stopped(
+            "This profile's service changed. Go back and open the profile again.".into(),
+        ),
+        Err(AddError::Connection(_)) => Answer::Unknown(None),
+    }
+}
 enum Update {
     Saved(Box<Snapshot>),
     Progress(Box<Progress>),
@@ -180,6 +294,7 @@ pub(super) struct Pane {
     error: Option<Error>,
     /// The one profile whose setups this lists, when shown for one profile.
     profile: Option<String>,
+    served: Option<Served>,
     pub focus: FocusHandle,
 }
 impl EventEmitter<Back> for Pane {}
@@ -201,6 +316,7 @@ impl Pane {
             finished: false,
             fresh: None,
             error: None,
+            served: None,
             focus: cx.focus_handle(),
         };
         let ticket = pane.ticket.begin();
@@ -247,6 +363,7 @@ impl Pane {
             finished: false,
             fresh: None,
             error: None,
+            served: None,
             focus: cx.focus_handle(),
         };
         let ticket = pane.ticket.begin();
@@ -275,10 +392,68 @@ impl Pane {
             finished: false,
             fresh: Some(leave),
             error: None,
+            served: None,
             focus: cx.focus_handle(),
         };
         pane.run(Command::Submit, Some(prepared), cx);
         pane
+    }
+    /// Start `request` with the Rust service. `leave` names the way out when
+    /// it doesn't start.
+    pub fn served(request: Request, leave: &'static str, cx: &mut Context<Self>) -> Self {
+        let mut pane = Self {
+            controller: None,
+            profile: None,
+            page: Page::Loading,
+            ticket: Ticket::default(),
+            busy: false,
+            finished: false,
+            fresh: Some(leave),
+            error: None,
+            served: Some(Served {
+                request,
+                answer: None,
+            }),
+            focus: cx.focus_handle(),
+        };
+        pane.run_served(cx);
+        pane
+    }
+    fn run_served(&mut self, cx: &mut Context<Self>) {
+        if self.busy || self.finished {
+            return;
+        }
+        let Some(served) = &mut self.served else {
+            return;
+        };
+        let unresolved = matches!(served.answer, Some(Answer::Unknown(_)));
+        served.answer = None;
+        // A retry sends this same request, under its same ID.
+        let request = served.request.clone();
+        self.busy = true;
+        let ticket = self.ticket.begin();
+        // Leaving doesn't stop the start; only its answer is no longer shown.
+        let work = cx
+            .background_executor()
+            .spawn(async move { attempt(&request, unresolved) });
+        cx.spawn(async move |this, cx| {
+            let answer = work.await;
+            let _ = this.update(cx, |pane, cx| {
+                if !pane.accepts(&ticket) {
+                    return;
+                }
+                pane.busy = false;
+                if let Some(served) = &mut pane.served {
+                    served.answer = Some(answer);
+                }
+                if pane.running() {
+                    pane.get_started(cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
     fn accepts(&self, ticket: &Arc<AtomicBool>) -> bool {
         !self.finished && self.ticket.accepts(ticket)
@@ -564,7 +739,17 @@ fn history(
 impl Pane {
     /// Leave for the running agent.
     fn get_started(&mut self, cx: &mut Context<Self>) {
-        if let Page::Operation {
+        if let Some(Served {
+            request,
+            answer: Some(Answer::Started(name)),
+        }) = &self.served
+        {
+            let profile_id = request.profile.item().profile_id.clone();
+            cx.emit(Open::Agent {
+                profile_id,
+                name: name.clone(),
+            });
+        } else if let Page::Operation {
             snapshot: Some(s), ..
         } = &self.page
         {
@@ -576,6 +761,9 @@ impl Pane {
 
     /// The agent is up, whatever it's showing.
     pub fn running(&self) -> bool {
+        if let Some(served) = &self.served {
+            return matches!(served.answer, Some(Answer::Started(_)));
+        }
         let Page::Operation { snapshot, .. } = &self.page else {
             return false;
         };
@@ -589,6 +777,9 @@ impl Pane {
 
     /// A fresh start is still under way.
     pub fn starting(&self) -> bool {
+        if let Some(served) = &self.served {
+            return !self.finished && !self.running() && (self.busy || served.answer.is_none());
+        }
         let Page::Operation { snapshot, .. } = &self.page else {
             return false;
         };
@@ -610,6 +801,18 @@ impl Pane {
         if self.starting() || self.running() || self.finished {
             return None;
         }
+        if let Some(served) = &self.served {
+            return Some(match &served.answer {
+                Some(Answer::Stopped(why)) => why.clone(),
+                Some(Answer::Unknown(why)) => format!(
+                    "{}What came of the start isn't known yet. Try again: it asks about the same start, so {} isn't added twice.",
+                    why.as_ref()
+                        .map_or_else(String::new, |why| format!("{why} ")),
+                    served.request.start.name()
+                ),
+                _ => "It stopped before it was ready. Try again.".to_owned(),
+            });
+        }
         let Page::Operation { snapshot, .. } = &self.page else {
             return None;
         };
@@ -620,9 +823,31 @@ impl Pane {
             .or_else(|| Some("It stopped before it was ready. Try again.".to_owned()))
     }
 
+    /// Ask about this unresolved served start again when `start` and `create`
+    /// are what it holds. Returns false when they differ or nothing is
+    /// unresolved, so only a new request can go on.
+    pub fn retry_same(
+        &mut self,
+        start: &Start,
+        create: Option<&PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.served
+            .as_ref()
+            .is_some_and(|served| same(&served.request, start, create))
+            && self.retry(cx)
+    }
+
     /// Try the same request again, when the provider allows it. Returns false
     /// when only a new request can go on.
     pub fn retry(&mut self, cx: &mut Context<Self>) -> bool {
+        if let Some(served) = &self.served {
+            if !matches!(served.answer, Some(Answer::Unknown(_))) {
+                return false;
+            }
+            self.run_served(cx);
+            return true;
+        }
         let Page::Operation { snapshot, .. } = &self.page else {
             return false;
         };
@@ -644,30 +869,42 @@ impl Pane {
     ) -> gpui::AnyElement {
         let (t, c) = (tokens(), colors());
         let meta = |text: String| ui::text(div().text_color(c.muted), &t.text.meta).child(text);
-        let name = snapshot.map_or("Your agent", |s| s.agent_name.as_str());
+        let name = match &self.served {
+            Some(served) => served.request.start.name(),
+            None => snapshot.map_or("Your agent", |s| s.agent_name.as_str()),
+        };
         let starting = self.starting() || self.running();
         let (step, title, note) = if starting {
             (
                 ui::Step::Now,
                 format!("Starting {name}…"),
-                Some(stage(self.step(), name)),
+                // The service reports no steps: it is opening the agent.
+                Some(stage(
+                    self.served.as_ref().map_or(self.step(), |_| Some("launch")),
+                    name,
+                )),
             )
         } else {
             (
                 ui::Step::Waits,
-                format!("{name} didn't start"),
+                heading(name, self.served.as_ref().and_then(|s| s.answer.as_ref())),
                 self.failure(),
             )
         };
         let ticket = self.ticket.0.clone();
         let mut actions = div().flex().items_center().gap(px(t.space.s8));
         if !starting {
-            let again = snapshot.is_some_and(|s| Command::Retry.allowed(Some(s)));
+            let again = match &self.served {
+                Some(served) => matches!(served.answer, Some(Answer::Unknown(_))),
+                None => snapshot.is_some_and(|s| Command::Retry.allowed(Some(s))),
+            };
             actions = actions
                 .child(
                     ui::button("setup-try-again", "Try again", ui::Button::Primary).on_click(
                         cx.listener(move |pane, _, _, cx| {
-                            if again {
+                            if again && pane.served.is_some() {
+                                pane.run_served(cx);
+                            } else if again {
                                 pane.invoke(Command::Retry, &ticket, cx);
                             } else {
                                 pane.finished = true;
@@ -718,6 +955,9 @@ pub(super) fn stage(step: Option<&str>, name: &str) -> String {
 }
 impl Render for Pane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let (Some(leave), Some(_)) = (self.fresh, &self.served) {
+            return self.progress(leave, None, cx);
+        }
         if let (Some(leave), Page::Operation { snapshot, .. }) = (self.fresh, &self.page) {
             let snapshot = snapshot.as_deref().cloned();
             return self.progress(leave, snapshot.as_ref(), cx);

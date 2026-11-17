@@ -95,8 +95,66 @@ impl Catalog {
         if wire.identity != *expected {
             return Err(Error::BindingMismatch);
         }
+        Self::checked(wire.identity, wire.items)
+    }
+
+    /// Decode the Rust service's `backbone runtimes --json` (schema 1) for the
+    /// profile `expected`. It names no profile and runs no setup check: what
+    /// it lists is this machine's, and a runtime is compatible when it is
+    /// installed and the service lists it as supporting setup.
+    pub fn served(bytes: &[u8], expected: &Identity) -> Result<Self, Error> {
+        #[derive(Deserialize)]
+        struct Served {
+            schema_version: u32,
+            items: Vec<Item>,
+        }
+        #[derive(Deserialize)]
+        struct Item {
+            id: String,
+            display_name: String,
+            available: bool,
+            setup_supported: bool,
+            models: Vec<String>,
+            efforts: Vec<String>,
+            authentication: Authentication,
+        }
+        if bytes.len() > 1024 * 1024 {
+            return Err(Error::Invalid);
+        }
+        let served: Served = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
+        if served.schema_version != 1 {
+            return Err(Error::Unsupported);
+        }
+        let items = served
+            .items
+            .into_iter()
+            .map(|item| Runtime {
+                setup_compatibility: Compatibility {
+                    compatible: item.available && item.setup_supported,
+                    reason: "served".into(),
+                    version: None,
+                },
+                id: item.id,
+                display_name: item.display_name,
+                available: item.available,
+                setup_supported: item.setup_supported,
+                models: item.models,
+                efforts: item.efforts,
+                authentication: item.authentication,
+            })
+            .collect();
+        Self::checked(expected.clone(), items)
+    }
+
+    fn checked(identity: Identity, items: Vec<Runtime>) -> Result<Self, Error> {
+        if !valid_id(&identity.profile_id)
+            || !valid_id(&identity.installation_id)
+            || !valid_id(&identity.lifecycle_id)
+        {
+            return Err(Error::Invalid);
+        }
         let mut ids = HashSet::new();
-        for item in &wire.items {
+        for item in &items {
             if !valid_id(&item.id)
                 || !ids.insert(&item.id)
                 || item.display_name.trim().is_empty()
@@ -117,10 +175,7 @@ impl Catalog {
                 return Err(Error::Invalid);
             }
         }
-        Ok(Self {
-            identity: wire.identity,
-            items: wire.items,
-        })
+        Ok(Self { identity, items })
     }
 
     /// Full origin retained across delayed rendering and selection.

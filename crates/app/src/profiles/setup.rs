@@ -158,6 +158,21 @@ impl Setup {
     }
 }
 
+impl Client {
+    /// The CLIs a profile of the Rust service can start its first agent in:
+    /// its `backbone runtimes --json`, which describes this machine and takes
+    /// no profile or setup check. Run off the UI thread.
+    pub fn served_runtimes(
+        &self,
+        identity: &agent_interface_roster::profiles::Identity,
+        live: &dyn Fn() -> bool,
+    ) -> Result<agent_interface_roster::profiles::runtime_catalog::Catalog, Error> {
+        let bytes = self.read(&["runtimes", "--json"], live, super::TIMEOUT)?;
+        agent_interface_roster::profiles::runtime_catalog::Catalog::served(&bytes, identity)
+            .map_err(Error::Profile)
+    }
+}
+
 fn drain(
     file: &File,
     offset: &mut u64,

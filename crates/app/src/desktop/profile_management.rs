@@ -26,7 +26,9 @@ use std::{
 
 mod choices;
 pub(super) mod flow;
+mod secrets;
 mod setup;
+mod sign_in;
 
 const PAGE_SIZE: usize = 16;
 /// How many checks a sign-in opened from Settings gets, about five minutes.
@@ -51,8 +53,19 @@ pub(super) struct Back;
 /// A session setup leaves waiting for the person, to open in a workspace.
 #[derive(Clone)]
 pub(super) enum Open {
-    Agent { profile_id: String, name: String },
-    SignIn { profile_id: String, runtime: String },
+    Agent {
+        profile_id: String,
+        name: String,
+    },
+    SignIn {
+        profile_id: String,
+        runtime: String,
+    },
+    /// A profile shell to show, by its session on the profile's tmux server.
+    Shell {
+        profile_id: String,
+        session: String,
+    },
 }
 
 #[derive(Default)]
@@ -97,6 +110,10 @@ pub(super) struct Management {
     directory: Option<PathBuf>,
     setup: Option<(gpui::Entity<setup::Pane>, gpui::Subscription)>,
     choices: Option<(gpui::Entity<choices::Form>, gpui::Subscription)>,
+    /// Sign in for a profile on the Rust service, until the service signs CLIs in.
+    sign_in: Option<(gpui::Entity<sign_in::Pane>, gpui::Subscription)>,
+    /// The secrets of a profile on the Rust service.
+    secrets: Option<gpui::Entity<secrets::Section>>,
     controller: Option<Arc<Controller>>,
     page: Page,
     ticket: Ticket,
@@ -134,6 +151,8 @@ impl Management {
             directory: None,
             setup: None,
             choices: None,
+            sign_in: None,
+            secrets: None,
             controller: None,
             page: Page::Loading,
             ticket: Ticket::default(),
@@ -170,6 +189,7 @@ impl Management {
                         pane.signed = opened.signed;
                         pane.unfinished = opened.unfinished;
                         pane.complete(opened.page);
+                        pane.served_panes(cx);
                     }
                     Err(error) => pane.error = Some(error),
                 }
@@ -269,6 +289,21 @@ impl Management {
             });
         })
         .detach();
+    }
+
+    /// The panes only a profile on the Rust service has.
+    fn served_panes(&mut self, cx: &mut Context<Self>) {
+        let Page::Detail(profile) = &self.page else {
+            return;
+        };
+        if !profile.served() {
+            return;
+        }
+        let pane = cx.new(|_| sign_in::Pane::new(profile.clone()));
+        let subscription = cx.subscribe(&pane, |_, _, open: &Open, cx| cx.emit(open.clone()));
+        self.sign_in = Some((pane, subscription));
+        let profile = profile.clone();
+        self.secrets = Some(cx.new(|cx| secrets::Section::new(profile, cx)));
     }
 
     fn complete(&mut self, result: Result<Page, controller::Error>) {
@@ -423,18 +458,20 @@ impl Management {
                 {
                     return;
                 }
-                let setup =
-                    match event {
-                        // Only a guide opens its own pane; this form adds agents.
-                        choices::Event::Back | choices::Event::Opened(_) => None,
-                        choices::Event::Recover => {
-                            let Some(controller) = form.read(cx).controller() else {
-                                return;
-                            };
-                            let profile = Some(form.read(cx).profile_id().to_owned());
-                            Some(cx.new(|cx| setup::Pane::from_controller(controller, profile, cx)))
-                        }
-                        choices::Event::Submit => {
+                let setup = match event {
+                    // Only a guide opens its own pane; this form adds agents.
+                    choices::Event::Back | choices::Event::Opened(_) => None,
+                    choices::Event::Recover => {
+                        let Some(controller) = form.read(cx).controller() else {
+                            return;
+                        };
+                        let profile = Some(form.read(cx).profile_id().to_owned());
+                        Some(cx.new(|cx| setup::Pane::from_controller(controller, profile, cx)))
+                    }
+                    choices::Event::Submit => {
+                        if let Some(request) = form.update(cx, |form, _| form.take_served()) {
+                            Some(cx.new(|cx| setup::Pane::served(request, "Back", cx)))
+                        } else {
                             let Some((prepared, controller)) =
                                 form.update(cx, |form, _| form.take_prepared())
                             else {
@@ -444,7 +481,8 @@ impl Management {
                                 setup::Pane::from_prepared(controller, prepared, "Back", cx)
                             }))
                         }
-                    };
+                    }
+                };
                 pane.choices = None;
                 if let Some(setup) = setup {
                     pane.attach_setup(setup, window, cx);
@@ -878,7 +916,12 @@ impl Render for Management {
                     );
                 }
                 body = body.child(ui::group_title("Accounts", ""));
+                if let Some((pane, _)) = &self.sign_in {
+                    body = body.child(pane.clone());
+                }
+                // On the Rust service the sign-in pane above stands in for the catalog.
                 match &self.accounts {
+                    _ if profile.served() => {}
                     None => {
                         body = body.child(ui::group_note("Start the profile to see its accounts."))
                     }
@@ -945,12 +988,16 @@ impl Render for Management {
                         body = body.child(card);
                     }
                 }
+                if let Some(section) = &self.secrets {
+                    body = body.child(section.clone());
+                }
                 if ready
                     && (item.kind == Kind::LegacyDefault
                         || (self.directory.is_some() && item.kind == Kind::Isolated))
                 {
                     let expected = ticket.clone();
-                    let default = item.kind == Kind::LegacyDefault;
+                    // A profile on the Rust service starts its agents itself, whatever its kind.
+                    let default = item.kind == Kind::LegacyDefault && !profile.served();
                     body = body.child(
                         div()
                             .flex()

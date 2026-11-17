@@ -386,13 +386,15 @@ impl Browser {
             let unavailable =
                 "The profile could not be reached. Start its service, then try again.";
             let profile_id = match &open {
-                Open::Agent { profile_id, .. } | Open::SignIn { profile_id, .. } => {
-                    profile_id.clone()
-                }
+                Open::Agent { profile_id, .. }
+                | Open::SignIn { profile_id, .. }
+                | Open::Shell { profile_id, .. } => profile_id.clone(),
             };
             let profile = client.show(&profile_id, &live).map_err(|_| unavailable)?;
             let session = match open {
                 Open::Agent { name, .. } => name,
+                // Started and checked by the sign-in pane on the same profile.
+                Open::Shell { session, .. } => session,
                 Open::SignIn { runtime, .. } => profile
                     .connect()
                     .map_err(|_| unavailable)?

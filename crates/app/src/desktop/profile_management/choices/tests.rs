@@ -164,6 +164,7 @@ fn an_open_request_leaves_new_choices_and_an_unreadable_one_precedes_the_catalog
             client.clone(),
             root.clone(),
             &profile().expected_identity().unwrap(),
+            false,
             &|| true,
         )
         .is_err()
@@ -176,7 +177,7 @@ fn an_open_request_leaves_new_choices_and_an_unreadable_one_precedes_the_catalog
         .unwrap();
     let mut other = profile().expected_identity().unwrap();
     other.lifecycle_id = "other-life".into();
-    let state = load_choices(client, root, &other, &|| true).unwrap();
+    let state = load_choices(client, root, &other, false, &|| true).unwrap();
     let State::Unchecked(retained) = state else {
         panic!("an unreadable record must not expose choices")
     };
@@ -224,4 +225,72 @@ fn a_guide_asks_setup_to_make_its_own_folder() {
     assert_eq!(first["agent"]["directory"], "/home/person/Agents/guide");
     assert_eq!(first["agent"]["create_directory"], true);
     assert_eq!(first["agent"]["brief"]["template"], "orchestrator-v1");
+}
+
+#[test]
+fn a_served_profile_lists_the_rust_services_runtimes() {
+    use std::{fs, os::unix::fs::PermissionsExt};
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let executable = root.join("provider");
+    fs::write(
+        &executable,
+        "#!/bin/sh\n[ \"$*\" = \"runtimes --json\" ] || exit 2\nprintf '%s' '{\"schema_version\":1,\"items\":[{\"id\":\"claude\",\"display_name\":\"Claude Code\",\"available\":true,\"setup_supported\":true,\"models\":[],\"efforts\":[],\"authentication\":\"unknown\"}]}'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+    let client = Client::new(executable, "/usr/bin:/bin".into()).unwrap();
+    let identity = profile().expected_identity().unwrap();
+    let State::Ready { catalog, .. } =
+        load_choices(client.clone(), root.clone(), &identity, true, &|| true).unwrap()
+    else {
+        panic!("a served catalog must give choices")
+    };
+    assert!(eligible(&catalog.items()[0]));
+    // The earlier provider's catalog read is unchanged and refuses this list.
+    assert!(load_choices(client, root, &identity, false, &|| true).is_err());
+}
+
+#[test]
+fn choosing_the_chosen_tool_again_changes_nothing() {
+    let (mut runtime, mut model) = (Some("claude".to_owned()), Some("opus".to_owned()));
+    assert!(!choose_tool(&mut runtime, &mut model, "claude"));
+    assert_eq!(
+        (runtime.as_deref(), model.as_deref()),
+        (Some("claude"), Some("opus"))
+    );
+    // Another tool starts on its default model.
+    assert!(choose_tool(&mut runtime, &mut model, "codex"));
+    assert_eq!((runtime.as_deref(), model), (Some("codex"), None));
+    let mut none = None;
+    assert!(choose_tool(&mut none, &mut None, "claude"));
+    assert_eq!(none.as_deref(), Some("claude"));
+}
+
+#[test]
+fn tab_reaches_every_field_shown_in_order() {
+    // Without the repository field, as before: name, the instructions when
+    // shown, back to name.
+    assert_eq!(next_field(Some(Field::Name), false, false), Field::Name);
+    assert_eq!(next_field(Some(Field::Name), true, false), Field::Brief);
+    assert_eq!(next_field(Some(Field::Brief), true, false), Field::Name);
+    assert_eq!(next_field(None, true, false), Field::Name);
+    // With it: name, then the repository, back to name.
+    assert_eq!(
+        next_field(Some(Field::Name), false, true),
+        Field::Repository
+    );
+    assert_eq!(
+        next_field(Some(Field::Repository), false, true),
+        Field::Name
+    );
+    assert_eq!(
+        next_field(Some(Field::Brief), true, true),
+        Field::Repository
+    );
+    // A focused field that is no longer shown goes back to the name.
+    assert_eq!(
+        next_field(Some(Field::Repository), false, false),
+        Field::Name
+    );
 }

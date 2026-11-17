@@ -1044,3 +1044,82 @@ fn a_skill_folder_is_read_within_the_services_bounds() {
         assert!(refusal.contains(reason), "{refusal}");
     }
 }
+
+#[test]
+fn a_served_first_agent_starts_under_its_request_id_and_keeps_a_refusal() {
+    use super::setup::start::{Readiness, Start};
+    let (_directory, listener, url) = crate::transport::tests::local_listener();
+    let entry = served_entry(url.strip_prefix("unix:").unwrap());
+    let mut identity = entry.clone();
+    for field in ["state", "socket", "tmux_socket", "credential_reference"] {
+        identity.as_object_mut().unwrap().remove(field);
+    }
+    // As the service's agent-started.json, and the same with nothing running.
+    let started = json!({"ok": true, "session": "guide", "name": "guide",
+        "working_directory": "/home/sam/Agents/guide", "runtime": "claude", "model": "opus",
+        "repo": "", "already_existed": false, "ready": "not_waited", "evidence": []});
+    let mut exited = started.clone();
+    exited["ok"] = json!(false);
+    exited["ready"] = json!("exited");
+    exited["evidence"] = json!(["claude exited"]);
+    let refusal =
+        json!({"detail": {"code": "invalid_request", "message": "Directory does not exist: /x"}});
+    let server = serve(
+        listener,
+        vec![
+            (200, identity),
+            (200, started),
+            (200, exited),
+            (400, refusal),
+        ],
+    );
+    let connection = Profile::parse(&serde_json::to_vec(&entry).unwrap())
+        .unwrap()
+        .connect()
+        .unwrap();
+    let start = Start::new(
+        "guide",
+        Path::new("/home/sam/Agents/guide"),
+        "claude",
+        Some("opus"),
+        Some("acme/app"),
+    )
+    .unwrap();
+    let id = "019a7c105c407a108b203c40d5e6f708";
+    let first = connection.start_first_agent(&start, id).unwrap();
+    assert!(first.ok && first.name == "guide" && first.ready == Readiness::NotWaited);
+    let second = connection.start_first_agent(&start, id).unwrap();
+    assert!(!second.ok && second.ready == Readiness::Exited);
+    assert_eq!(
+        connection.start_first_agent(&start, id).err(),
+        Some(AddError::Refused("Directory does not exist: /x".into()))
+    );
+    // A badly spelled request ID is refused before anything is sent.
+    assert_eq!(
+        connection
+            .start_first_agent(&start, "019A7C10-5C40-7A10-8B20-3C40D5E6F708")
+            .err(),
+        Some(AddError::Connection(Error::Invalid))
+    );
+    let requests = server.join().unwrap();
+    for request in &requests[1..] {
+        assert!(request.starts_with("post /api/agents/start "), "{request}");
+        assert!(request.contains(&format!("x-backbone-request-id: {id}\r\n")));
+        let body: Value = serde_json::from_str(request.rsplit("\r\n\r\n").next().unwrap()).unwrap();
+        assert_eq!(
+            body,
+            json!({"name": "guide", "dir": "/home/sam/agents/guide", "runtime": "claude",
+                "model": "opus", "watch": ["acme/app"], "wait": false})
+        );
+    }
+    // Reads still carry no request ID.
+    assert!(!requests[0].contains("x-backbone-request-id"));
+    for invalid in [
+        Start::new("guide", Path::new("Agents/guide"), "claude", None, None),
+        Start::new("guide", Path::new("/a"), "shell", None, None),
+        Start::new("guide", Path::new("/a"), "claude", None, Some("acme")),
+        Start::new("guide", Path::new("/a"), "claude", None, Some("acme/app/x")),
+    ] {
+        assert_eq!(invalid.err(), Some(Error::Invalid));
+    }
+}

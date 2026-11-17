@@ -15,6 +15,9 @@ use tokio::net::UnixStream;
 struct Authentication<'a> {
     key: &'a str,
     identity: Option<&'a crate::profiles::Identity>,
+    /// Sent as `x-backbone-request-id`, so a repeat after a lost reply gets
+    /// the first result. Left out, the Rust service makes one.
+    request_id: Option<&'a str>,
 }
 
 pub(super) fn request(
@@ -28,6 +31,7 @@ pub(super) fn request(
     let auth = Authentication {
         key,
         identity: None,
+        request_id: None,
     };
     let response = exchange(
         socket,
@@ -64,6 +68,7 @@ pub(crate) fn response(
     let auth = Authentication {
         key,
         identity: None,
+        request_id: None,
     };
     exchange(
         socket,
@@ -88,6 +93,7 @@ pub(crate) fn profile_response(
     let auth = Authentication {
         key: credentials.0,
         identity: Some(credentials.1),
+        request_id: None,
     };
     exchange(
         socket,
@@ -112,8 +118,30 @@ pub(crate) fn profile_delete(
     let auth = Authentication {
         key: credentials.0,
         identity: Some(credentials.1),
+        request_id: None,
     };
     exchange(socket, "DELETE", path, auth, None, limit, timeout, true)
+}
+
+/// Change a resource on a verified profile connection with `method`, under
+/// `request_id` when one is given.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn profile_write(
+    socket: &str,
+    method: &'static str,
+    path: &str,
+    credentials: (&str, &crate::profiles::Identity),
+    body: Option<Vec<u8>>,
+    request_id: Option<&str>,
+    limit: usize,
+    timeout: Duration,
+) -> Result<Response, Option<u16>> {
+    let auth = Authentication {
+        key: credentials.0,
+        identity: Some(credentials.1),
+        request_id,
+    };
+    exchange(socket, method, path, auth, body, limit, timeout, true)
 }
 
 fn method(body: &Option<Vec<u8>>) -> &'static str {
@@ -199,6 +227,9 @@ fn exchange(
                         .header("X-Backbone-Installation-ID", &identity.installation_id)
                         .header("X-Backbone-Lifecycle-ID", &identity.lifecycle_id);
                 }
+            }
+            if let Some(id) = auth.request_id {
+                request = request.header("X-Backbone-Request-ID", id);
             }
             let request = request
                 .body(Full::new(Bytes::from(body.unwrap_or_default())))

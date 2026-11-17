@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 
 pub mod runtime_catalog;
 pub mod runtime_context;
+pub mod secrets;
 mod served;
 pub mod setup;
 mod stream;
@@ -673,6 +674,47 @@ impl Connection {
             std::thread::sleep(Duration::from_millis(250));
         };
         if response.body.len() > limit {
+            return Err(Error::Invalid);
+        }
+        if let Some(error) = binding_refusal(&response) {
+            return Err(error);
+        }
+        Ok(response)
+    }
+
+    /// Change a record on this binding with `method`, under `request_id` when
+    /// one is given so a repeat after a lost reply gets the first result.
+    /// Refusals of the binding are typed as for reads. Runs on an I/O worker.
+    pub(crate) fn write(
+        &self,
+        method: &'static str,
+        path: &str,
+        body: Option<Vec<u8>>,
+        request_id: Option<&str>,
+    ) -> Result<local::Response, Error> {
+        self.write_within(method, path, body, request_id, Duration::from_secs(15))
+    }
+
+    fn write_within(
+        &self,
+        method: &'static str,
+        path: &str,
+        body: Option<Vec<u8>>,
+        request_id: Option<&str>,
+        timeout: Duration,
+    ) -> Result<local::Response, Error> {
+        let response = local::profile_write(
+            self.socket.to_str().ok_or(Error::Invalid)?,
+            method,
+            path,
+            (&self.key, &self.identity),
+            body,
+            request_id,
+            RESPONSE_LIMIT,
+            timeout,
+        )
+        .map_err(|_| Error::Unavailable)?;
+        if response.body.len() > RESPONSE_LIMIT {
             return Err(Error::Invalid);
         }
         if let Some(error) = binding_refusal(&response) {
