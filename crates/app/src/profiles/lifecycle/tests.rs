@@ -208,7 +208,7 @@ fn cancelled_and_oversized_invocations_preserve_original_request() {
 
 #[test]
 fn the_rust_service_makes_a_profile_under_the_requests_own_id() {
-    // The service's answer, as agent-backbone-rs's `machine-profile-created` fixture.
+    // The service's answer, as its `machine-profile-created` fixture has it.
     let entry = serde_json::json!({
         "state": "serving", "protocol_version": 1, "backbone_version": "0.1.0",
         "profile_id": "0a1b2c3d4e5f", "display_name": "-Work",
@@ -224,6 +224,7 @@ printf '%s\n' "$*" >> "$CAPTURE"
 case "$2" in
   list) printf '{{"profiles":[]}}\n';;
   create) test -f "$CAPTURE.refuse" && exit 1; test -f "$CAPTURE.unknown" && exit 4
+test -f "$CAPTURE.unreachable" && exit 3
 /bin/cat <<'FIXTURE'
 {entry}
 FIXTURE
@@ -246,13 +247,13 @@ esac
         Err(Error::CommandFailed)
     ));
     fs::remove_file(dir.path().join("calls.unknown")).unwrap();
-    // A refused repeat cannot tell what the first send did: still unknown.
-    fs::write(dir.path().join("calls.refuse"), "").unwrap();
+    // A repeat that cannot reach the service says nothing of the first send.
+    fs::write(dir.path().join("calls.unreachable"), "").unwrap();
     assert!(matches!(
         operation.retry(&|| true),
         Err(Error::CommandFailed)
     ));
-    fs::remove_file(dir.path().join("calls.refuse")).unwrap();
+    fs::remove_file(dir.path().join("calls.unreachable")).unwrap();
     let receipt = operation.refresh(&|| true).unwrap();
     assert_eq!(receipt.status, Status::Succeeded);
     assert_eq!(

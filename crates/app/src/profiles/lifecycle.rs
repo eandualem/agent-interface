@@ -90,7 +90,7 @@ impl Operation {
 
     /// Send the exact original request again after an unknown outcome. Only
     /// the earlier provider's receipt, or the Rust service's profile, settles
-    /// it: a refusal of the repeat says nothing about the first send.
+    /// it, or a refusal, which the service gives only when nothing was made.
     pub fn retry(&mut self, live: &dyn Fn() -> bool) -> Result<Receipt, Error> {
         self.submit(live, APPLY_TIMEOUT, true)
     }
@@ -166,7 +166,8 @@ impl Operation {
 
     /// Make the profile with the Rust service under this request's own ID.
     /// It serves the profile at once, so there is nothing to start after.
-    /// A `repeat` follows an unknown outcome: only the profile settles it.
+    /// A `repeat` follows an unknown outcome, so not reaching the service
+    /// then says nothing about the first send.
     fn create_served(
         &mut self,
         live: &dyn Fn() -> bool,
@@ -190,10 +191,11 @@ impl Operation {
             name.into(),
         ];
         let (status, bytes) = self.run(&args, live, timeout, None)?;
-        // On a first send, 1 is a refusal, 2 a request it could not read and
-        // 3 a service it could not reach: nothing was made. Any other failure,
-        // 4 included, leaves the outcome unknown, and asking again under the
-        // same ID reads it. A repeat cannot tell what the first send did.
+        // 1 is a refusal, which the service gives only when nothing was made,
+        // and 2 a request it could not read, refused before sending. 3 is a
+        // service it could not reach: nothing was sent this time, so only a
+        // first send is settled by it. Any other failure, 4 included, leaves
+        // the outcome unknown, and asking again under the same ID reads it.
         let refused = match status.code() {
             Some(0) => {
                 let profile = profiles::Profile::parse(&bytes).map_err(Error::Profile)?;
@@ -202,7 +204,7 @@ impl Operation {
                     .observe_created(&profile)
                     .map_err(Error::Profile);
             }
-            Some(1 | 2) if !repeat => "refused",
+            Some(1 | 2) => "refused",
             Some(3) if !repeat => "unreachable",
             _ => return Err(Error::CommandFailed),
         };

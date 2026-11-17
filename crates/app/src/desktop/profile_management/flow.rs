@@ -972,8 +972,8 @@ fn computer_identity() -> (String, String) {
 /// the profile, with its own home, runs `git config --global` and exits.
 /// Agent Backbone can copy only this computer's own identity into a profile,
 /// so this is how a different one is set. Under the Rust service (`served`),
-/// a shell without its own `GIT_CONFIG_GLOBAL` shares this computer's
-/// settings, which are left alone. Best effort: a failure is logged, and the
+/// a shell whose `GIT_CONFIG_GLOBAL` is not in the profile's own folder
+/// shares this computer's settings, which are left alone. Best effort: a failure is logged, and the
 /// profile still works.
 fn set_identity(
     connection: Connection,
@@ -1001,7 +1001,18 @@ fn typed_identity(
     // The profile's shell may be fish, tcsh or nushell, which quote differently,
     // so it is typed only `exec /bin/sh <file>`, read alike by all of them. The
     // script removes its file, and the session ends when it finishes.
-    let script = identity_script(name, email, served);
+    // The profile's own folder holds its tmux socket.
+    let folder = match served {
+        false => None,
+        true => Some(
+            connection
+                .tmux_socket()
+                .parent()
+                .and_then(std::path::Path::to_str)
+                .ok_or("the profile's folder is not known")?,
+        ),
+    };
+    let script = identity_script(name, email, folder);
     let session = connection
         .ensure_shell("git-identity", None)
         .map_err(|error| format!("{error:?}"))?;
@@ -1049,11 +1060,15 @@ fn typed_identity(
 }
 
 /// A `/bin/sh` script, run with its own path as `$0`, that sets the identity.
-/// With `own_config_only`, it does so only where `GIT_CONFIG_GLOBAL` is set.
-fn identity_script(name: &str, email: &str, own_config_only: bool) -> String {
+/// Given the profile's `folder`, it does so only where `GIT_CONFIG_GLOBAL`
+/// is a file inside it.
+fn identity_script(name: &str, email: &str, folder: Option<&str>) -> String {
     let mut script = String::from("rm -f -- \"$0\"\n");
-    if own_config_only {
-        script.push_str("[ -n \"$GIT_CONFIG_GLOBAL\" ] || exit 0\n");
+    if let Some(folder) = folder {
+        script.push_str(&format!(
+            "case \"$GIT_CONFIG_GLOBAL\" in {}/*) ;; *) exit 0 ;; esac\n",
+            quote(folder)
+        ));
     }
     for (key, value) in [("user.name", name), ("user.email", email)] {
         if !value.is_empty() {
@@ -1343,7 +1358,7 @@ mod tests {
         // Never the developer's own global configuration.
         let config = home.path().join("gitconfig");
         let (name, email) = (r"Sam O'Brien \ ops!", "ops!dev@example.com");
-        std::fs::write(&path, identity_script(name, email, false)).unwrap();
+        std::fs::write(&path, identity_script(name, email, None)).unwrap();
         let isolated = |command: &mut std::process::Command| {
             command
                 .env("HOME", home.path())
@@ -1369,21 +1384,33 @@ mod tests {
     }
 
     #[test]
-    fn a_served_profile_without_its_own_git_settings_keeps_the_computers() {
+    fn a_served_profile_writes_only_its_own_git_settings() {
         let home = tempfile::tempdir().unwrap();
-        let path = home.path().join("identity");
-        std::fs::write(&path, identity_script("Sam", "sam@example.com", true)).unwrap();
-        let status = std::process::Command::new("/bin/sh")
-            .arg(&path)
-            .env("HOME", home.path())
-            .env("XDG_CONFIG_HOME", home.path())
-            .env_remove("GIT_CONFIG_GLOBAL")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .status()
-            .unwrap();
-        assert!(status.success());
-        assert!(!path.exists());
+        let folder = home.path().join("profile o'k");
+        std::fs::create_dir(&folder).unwrap();
+        let own = home.path().join("computer.gitconfig");
+        let profile = folder.join("gitconfig");
+        // None, this computer's own file set by its shell, then the profile's.
+        for config in [None, Some(&own), Some(&profile)] {
+            let path = home.path().join("identity");
+            let script = identity_script("Sam", "sam@example.com", folder.to_str());
+            std::fs::write(&path, script).unwrap();
+            let mut command = std::process::Command::new("/bin/sh");
+            command
+                .arg(&path)
+                .env("HOME", home.path())
+                .env("XDG_CONFIG_HOME", home.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env_remove("GIT_CONFIG_GLOBAL");
+            if let Some(config) = config {
+                command.env("GIT_CONFIG_GLOBAL", config);
+            }
+            assert!(command.status().unwrap().success());
+            assert!(!path.exists());
+        }
         assert!(!home.path().join(".gitconfig").exists());
-        assert!(!home.path().join("git").exists());
+        assert!(!own.exists());
+        let written = std::fs::read_to_string(&profile).unwrap();
+        assert!(written.contains("sam@example.com"));
     }
 }

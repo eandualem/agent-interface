@@ -305,7 +305,7 @@ impl Prepared {
     /// Record that the Rust service refused this create request, or could not
     /// be reached, so it made nothing; `code` names which.
     pub fn observe_refused(&mut self, code: &str) -> Result<Receipt, Error> {
-        if self.action != Action::Create || !valid_id(code) {
+        if self.action != Action::Create || !valid_id(code) || code.len() > 128 {
             return Err(Error::Invalid);
         }
         self.record(Receipt {
