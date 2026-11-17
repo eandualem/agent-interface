@@ -2,8 +2,9 @@
 //! `GET /api/secrets`, and `PUT` and `DELETE /api/secrets/{name}`.
 //!
 //! Only names are read back. A value goes out once, in the body of a `PUT`,
-//! and nothing here keeps, copies or prints it. The service never quotes a
-//! value in a refusal either, so its message can be shown as it is.
+//! and nothing here keeps or prints it; that body is freed after the
+//! request, not overwritten. The service never quotes a value in a refusal
+//! either, so its message can be shown as it is.
 
 use serde::{Deserialize, Serialize};
 

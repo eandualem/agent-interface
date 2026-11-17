@@ -208,7 +208,10 @@ fn a_served_start_opens_only_a_running_agent_and_asks_again_only_without_an_answ
         Answer::Stopped(_)
     ));
     for unknown in [Profile::Unavailable, Profile::Invalid] {
-        assert_eq!(answer(Err(AddError::Connection(unknown))), Answer::Unknown);
+        assert_eq!(
+            answer(Err(AddError::Connection(unknown))),
+            Answer::Unknown(None)
+        );
     }
 }
 
@@ -290,14 +293,19 @@ fn served_socket(
     (directory, profile, server)
 }
 
-#[test]
-fn an_unknown_served_outcome_is_asked_again_under_its_own_request_id() {
-    let identity = serde_json::json!({
+/// The profile handshake's answer, for the socket above.
+fn served_identity() -> serde_json::Value {
+    serde_json::json!({
         "protocol_version": 1, "backbone_version": "0.1.0",
         "profile_id": "0a1b2c3d4e5f", "display_name": "Work",
         "instance_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d",
         "machine": {"id": "5f2c9e0d1b7a4e38", "name": "laptop"}, "home": true
-    });
+    })
+}
+
+#[test]
+fn an_unknown_served_outcome_is_asked_again_under_its_own_request_id() {
+    let identity = served_identity();
     // As the service's socket answers a start it sent on but heard nothing of.
     let unknown = serde_json::json!({"detail": {"code": "outcome_unknown",
         "message": "request 019a7c105c407a108b203c40d5e6f708 was sent to the profile's home, but what came of it is not known; it is not sent again"}});
@@ -320,11 +328,14 @@ fn an_unknown_served_outcome_is_asked_again_under_its_own_request_id() {
         request_id: first.into(),
     };
     // No result yet: Try again asks about the same request, which then answers.
-    assert_eq!(attempt(&request), Answer::Unknown);
-    assert_eq!(attempt(&request), Answer::Started("guide".into()));
+    assert_eq!(attempt(&request, false), Answer::Unknown(None));
+    assert_eq!(attempt(&request, true), Answer::Started("guide".into()));
     // A refusal is final: what follows it is a new request with a new ID.
     request.request_id = "019a7c105c407a108b203c40d5e6f709".into();
-    assert_eq!(attempt(&request), Answer::Stopped("guide is taken".into()));
+    assert_eq!(
+        attempt(&request, false),
+        Answer::Stopped("guide is taken".into())
+    );
     let requests = server.join().unwrap();
     let id = |at: usize| {
         requests[at]
@@ -340,7 +351,7 @@ fn an_unknown_served_outcome_is_asked_again_under_its_own_request_id() {
 #[test]
 fn an_unknown_start_is_not_headed_as_a_failure() {
     assert_eq!(
-        heading("guide", Some(&Answer::Unknown)),
+        heading("guide", Some(&Answer::Unknown(None))),
         "Not known whether guide started"
     );
     assert_eq!(
@@ -349,4 +360,63 @@ fn an_unknown_start_is_not_headed_as_a_failure() {
     );
     // The earlier provider's starts keep their heading.
     assert_eq!(heading("guide", None), "guide didn't start");
+}
+
+#[test]
+fn an_unreachable_profile_keeps_an_unresolved_start_and_its_request_id() {
+    let unknown =
+        serde_json::json!({"detail": {"code": "outcome_unknown", "message": "not known"}});
+    let started = serde_json::json!({"ok": true, "session": "guide", "name": "guide",
+        "working_directory": "/a", "runtime": "claude", "model": null, "repo": "",
+        "already_existed": false, "ready": "not_waited", "evidence": []});
+    let down = serde_json::json!({"detail": {"code": "unavailable", "message": "starting"}});
+    // Add agent connects on every attempt: no connection is kept.
+    let (_directory, profile, server) = served_socket(vec![
+        (200, served_identity()),
+        (504, unknown),
+        (503, down.clone()),
+        (200, served_identity()),
+        (200, started),
+        (503, down),
+    ]);
+    let first = "019a7c105c407a108b203c40d5e6f708";
+    let request = Request {
+        connection: None,
+        profile,
+        start: Start::new("guide", std::path::Path::new("/a"), "claude", None, None).unwrap(),
+        create: None,
+        request_id: first.into(),
+    };
+    assert_eq!(attempt(&request, false), Answer::Unknown(None));
+    // Unreachable on Try again: nothing was sent, and the first send is
+    // still the one to ask about.
+    let unreached = attempt(&request, true);
+    assert_eq!(
+        unreached,
+        Answer::Unknown(Some(
+            "The profile could not be reached; start its service.".into()
+        ))
+    );
+    assert_eq!(
+        heading("guide", Some(&unreached)),
+        "Not known whether guide started"
+    );
+    assert_eq!(attempt(&request, true), Answer::Started("guide".into()));
+    // A first attempt that can't reach the profile sent nothing: it ends.
+    let mut fresh = request.clone();
+    fresh.request_id = "019a7c105c407a108b203c40d5e6f709".into();
+    assert!(matches!(attempt(&fresh, false), Answer::Stopped(_)));
+    let requests = server.join().unwrap();
+    let posts: Vec<_> = requests
+        .iter()
+        .filter(|request| request.starts_with("post /api/agents/start "))
+        .map(|request| {
+            request
+                .lines()
+                .find_map(|line| line.strip_prefix("x-backbone-request-id: "))
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(posts, [first, first]);
 }

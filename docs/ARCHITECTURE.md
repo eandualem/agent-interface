@@ -1364,9 +1364,12 @@ published under the reserved `operator` author. On the Rust service, a profile's
 management screen lists its secrets by name (`GET /api/secrets`) and adds, replaces or
 removes one (`PUT` and `DELETE /api/secrets/{name}`, each with a new
 `x-backbone-request-id`). A value is typed into a field that shows only dots and has no
-copy, selection or accessible text; it leaves the field when it is sent, goes out once
-in the request body and is wiped afterwards, and is never shown, logged or saved. A
-refusal shows the service's own message, which never quotes a value. A change takes
+copy, selection or accessible text, and it is never shown, logged or saved. What was
+typed is overwritten when the field closes, backspace overwrites what it removes, and
+the worker's copy is overwritten after its request; the request body that carries the
+value to the service is freed, not overwritten. A refusal shows the service's own
+message, which never quotes a value, except a refusal because the profile's service
+changed, which shows the app's own sentence for that. A change takes
 effect when the service next starts, so after one the section shows a paragraph for the
 system the app was built for, with each command it names and Copy. On macOS it covers an
 installed login service (`backbone service restart`) and a service started with

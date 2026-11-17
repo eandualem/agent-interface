@@ -197,30 +197,42 @@ enum Answer {
     /// a new request.
     Stopped(String),
     /// No answer came, or the service doesn't know what came of it: the
-    /// same request is asked again.
-    Unknown,
+    /// same request is asked again. A later try that couldn't be sent keeps
+    /// it unknown, with why.
+    Unknown(Option<String>),
 }
 /// One attempt of `request`, off the UI thread: connect when needed, make
-/// its folder, then start it under its own request ID.
-fn attempt(request: &Request) -> Answer {
+/// its folder, then start it under its own request ID. `unresolved`: an
+/// earlier send of it has no known result yet.
+fn attempt(request: &Request, unresolved: bool) -> Answer {
+    // Nothing is sent this time. A first try ends; an earlier send stays
+    // unresolved, for the same request to ask about later.
+    let unsent = |stopped: &str, why: &str| {
+        if unresolved {
+            Answer::Unknown(Some(why.into()))
+        } else {
+            Answer::Stopped(stopped.into())
+        }
+    };
     let connection = match request
         .connection
         .clone()
         .map_or_else(|| request.profile.connect(), Ok)
     {
         Ok(connection) => connection,
-        // Nothing was sent.
         Err(_) => {
-            return Answer::Stopped(
-                "The profile could not be reached. Start its service, then try again.".into(),
+            return unsent(
+                "The profile could not be reached. Start its service, then try again.",
+                "The profile could not be reached; start its service.",
             );
         }
     };
     if let Some(folder) = &request.create
         && std::fs::create_dir_all(folder).is_err()
     {
-        return Answer::Stopped(
-            "The agent's folder could not be made. Choose another folder.".into(),
+        return unsent(
+            "The agent's folder could not be made. Choose another folder.",
+            "The agent's folder could not be made.",
         );
     }
     answer(connection.start_first_agent(&request.start, &request.request_id))
@@ -229,7 +241,7 @@ fn attempt(request: &Request) -> Answer {
 /// known is not called a failure.
 fn heading(name: &str, answer: Option<&Answer>) -> String {
     match answer {
-        Some(Answer::Unknown) => format!("Not known whether {name} started"),
+        Some(Answer::Unknown(_)) => format!("Not known whether {name} started"),
         _ => format!("{name} didn't start"),
     }
 }
@@ -258,7 +270,7 @@ fn answer(result: Result<Started, AddError>) -> Answer {
         )) => Answer::Stopped(
             "This profile's service changed. Go back and open the profile again.".into(),
         ),
-        Err(AddError::Connection(_)) => Answer::Unknown,
+        Err(AddError::Connection(_)) => Answer::Unknown(None),
     }
 }
 enum Update {
@@ -410,6 +422,7 @@ impl Pane {
         let Some(served) = &mut self.served else {
             return;
         };
+        let unresolved = matches!(served.answer, Some(Answer::Unknown(_)));
         served.answer = None;
         // A retry sends this same request, under its same ID.
         let request = served.request.clone();
@@ -418,7 +431,7 @@ impl Pane {
         // Leaving doesn't stop the start; only its answer is no longer shown.
         let work = cx
             .background_executor()
-            .spawn(async move { attempt(&request) });
+            .spawn(async move { attempt(&request, unresolved) });
         cx.spawn(async move |this, cx| {
             let answer = work.await;
             let _ = this.update(cx, |pane, cx| {
@@ -787,8 +800,10 @@ impl Pane {
         if let Some(served) = &self.served {
             return Some(match &served.answer {
                 Some(Answer::Stopped(why)) => why.clone(),
-                Some(Answer::Unknown) => format!(
-                    "What came of the start isn't known yet. Try again: it asks about the same start, so {} isn't added twice.",
+                Some(Answer::Unknown(why)) => format!(
+                    "{}What came of the start isn't known yet. Try again: it asks about the same start, so {} isn't added twice.",
+                    why.as_ref()
+                        .map_or_else(String::new, |why| format!("{why} ")),
                     served.request.start.name()
                 ),
                 _ => "It stopped before it was ready. Try again.".to_owned(),
@@ -808,7 +823,7 @@ impl Pane {
     /// when only a new request can go on.
     pub fn retry(&mut self, cx: &mut Context<Self>) -> bool {
         if let Some(served) = &self.served {
-            if served.answer != Some(Answer::Unknown) {
+            if !matches!(served.answer, Some(Answer::Unknown(_))) {
                 return false;
             }
             self.run_served(cx);
@@ -861,7 +876,7 @@ impl Pane {
         let mut actions = div().flex().items_center().gap(px(t.space.s8));
         if !starting {
             let again = match &self.served {
-                Some(served) => served.answer == Some(Answer::Unknown),
+                Some(served) => matches!(served.answer, Some(Answer::Unknown(_))),
                 None => snapshot.is_some_and(|s| Command::Retry.allowed(Some(s))),
             };
             actions = actions

@@ -143,3 +143,22 @@ fn a_change_keeps_its_own_result_when_the_list_cant_be_read_again() {
         (List::Shown(vec![secret("C", true)]), None)
     );
 }
+
+#[test]
+fn a_refusal_because_the_service_changed_says_so_on_both_paths() {
+    for error in [
+        Error::BindingRequired,
+        Error::BindingMismatch,
+        Error::Unsupported,
+    ] {
+        assert_eq!(outcome(Err(AddError::Connection(error))), CHANGED);
+        assert_eq!(
+            listed(Err(AddError::Connection(error))),
+            List::Unavailable(CHANGED.into())
+        );
+    }
+    assert_eq!(
+        CHANGED,
+        "This profile's service changed. Go back and open the profile again."
+    );
+}

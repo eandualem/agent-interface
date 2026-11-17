@@ -1,6 +1,9 @@
 //! The secrets of a profile on the Rust service, such as `GITHUB_TOKEN`: their
 //! names, whether each is set, and a masked field to add, replace or remove
-//! one. A value is typed, sent once and wiped; it is never shown or kept.
+//! one. A value is never shown, logged or saved. What was typed is
+//! overwritten when the field closes, and the worker's copy right after its
+//! request; the request body that carries it to the service is freed, not
+//! overwritten.
 
 use super::ui;
 use crate::desktop::{
@@ -21,6 +24,10 @@ mod field;
 const GITHUB: &str = "GITHUB_TOKEN";
 /// Where a person makes a GitHub token.
 const GITHUB_TOKENS: &str = "https://github.com/settings/tokens";
+
+/// What a refusal because the profile's service changed says: the service
+/// answered, but no longer as the profile this page opened.
+const CHANGED: &str = "This profile's service changed. Go back and open the profile again.";
 
 /// How wide a new secret's name field is.
 const NAME_WIDTH: f32 = 200.;
@@ -243,6 +250,9 @@ fn listed(list: Result<Vec<Secret>, AddError>) -> List {
 fn unread(error: AddError) -> String {
     match error {
         AddError::Refused(message) => message,
+        AddError::Connection(
+            Error::BindingRequired | Error::BindingMismatch | Error::Unsupported,
+        ) => CHANGED.into(),
         AddError::Connection(_) => "Couldn't read the profile's secrets.".into(),
     }
 }
@@ -290,6 +300,9 @@ fn outcome(changed: Result<Change, AddError>) -> String {
         Err(AddError::Connection(Error::Invalid)) => {
             "That value is too long, or the service's answer couldn't be read.".into()
         }
+        Err(AddError::Connection(
+            Error::BindingRequired | Error::BindingMismatch | Error::Unsupported,
+        )) => CHANGED.into(),
         Err(AddError::Connection(_)) => "Couldn't reach the profile's service.".into(),
     }
 }
