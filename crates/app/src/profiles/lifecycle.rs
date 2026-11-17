@@ -152,15 +152,16 @@ impl Operation {
 
     /// Whether this is a create request for the Rust service, which makes a
     /// profile with `profiles create` instead of `profiles apply`.
-    /// A list that fails says nothing: the earlier provider has none until
-    /// its first profile is made, so `profiles apply` is tried as before.
+    /// The earlier provider has no registry until its first profile is made,
+    /// so then `profiles apply` is tried as before. Any other failed list
+    /// stops here, before anything is sent.
     fn served_create(&self, live: &dyn Fn() -> bool) -> Result<bool, Error> {
         if self.prepared.action() != profiles::operations::Action::Create {
             return Ok(false);
         }
         match self.client.served(live) {
-            Err(Error::Cancelled) => Err(Error::Cancelled),
-            result => Ok(result.unwrap_or(false)),
+            Err(Error::RegistryAbsent) => Ok(false),
+            result => result,
         }
     }
 
@@ -217,13 +218,29 @@ impl Operation {
     }
 
     /// Whether the machine lists no profile named `name`, so a refused repeat
-    /// made none. A list that fails leaves it unknown.
+    /// made none. The service's own entries are read: one without a name, or
+    /// in a state this app does not know, may be the one made, and so may a
+    /// list that fails or cannot be read.
     fn unnamed(&self, name: &str, live: &dyn Fn() -> bool) -> Result<bool, Error> {
-        match self.client.list(live) {
-            Ok(items) => Ok(items.iter().all(|item| item.display_name != name)),
-            Err(Error::Cancelled) => Err(Error::Cancelled),
-            Err(_) => Ok(false),
-        }
+        use serde_json::Value;
+        let bytes = match self
+            .client
+            .read(&["profiles", "list", "--json"], live, TIMEOUT)
+        {
+            Ok(bytes) => bytes,
+            Err(Error::Cancelled) => return Err(Error::Cancelled),
+            Err(_) => return Ok(false),
+        };
+        let listed: Option<Value> = serde_json::from_slice(&bytes).ok();
+        let Some(entries) = listed.as_ref().and_then(|list| list["profiles"].as_array()) else {
+            return Ok(false);
+        };
+        Ok(entries.iter().all(|entry| {
+            matches!(entry["state"].as_str(), Some("serving" | "failed"))
+                && entry["display_name"]
+                    .as_str()
+                    .is_some_and(|listed| listed != name)
+        }))
     }
 
     fn observe(&mut self, status: ExitStatus, bytes: &[u8]) -> Result<Receipt, Error> {

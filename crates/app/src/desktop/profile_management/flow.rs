@@ -1273,7 +1273,7 @@ mod tests {
         // The provider has no record of the request: every lookup fails.
         std::fs::write(
             &provider,
-            "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s\\n' \"$2\" >> \"$d/calls\"\n[ \"$2\" = operation ] && exit 1\n/bin/cat \"$d/reply\"\n",
+            "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s\\n' \"$2\" >> \"$d/calls\"\n[ \"$2\" = list ] && echo '{\"schema_version\":1,\"items\":[]}' && exit 0\n[ \"$2\" = operation ] && exit 1\n/bin/cat \"$d/reply\"\n",
         )
         .unwrap();
         std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o700)).unwrap();

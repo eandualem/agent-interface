@@ -274,6 +274,14 @@ esac
         repeated.retry(&|| true),
         Err(Error::CommandFailed)
     ));
+    // A failed entry with no name may be the one made.
+    let unnamed = serde_json::json!({"state": "failed", "profile_id": "0a1b2c3d4e5f",
+        "code": "database_unreachable", "reason": "down"});
+    fs::write(dir.path().join("calls.listed"), unnamed.to_string()).unwrap();
+    assert!(matches!(
+        repeated.retry(&|| true),
+        Err(Error::CommandFailed)
+    ));
     fs::remove_file(dir.path().join("calls.listed")).unwrap();
     let receipt = repeated.retry(&|| true).unwrap();
     assert_eq!(receipt.status, Status::Failed);
