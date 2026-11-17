@@ -166,8 +166,8 @@ impl Operation {
 
     /// Make the profile with the Rust service under this request's own ID.
     /// It serves the profile at once, so there is nothing to start after.
-    /// A `repeat` follows an unknown outcome, so not reaching the service
-    /// then says nothing about the first send.
+    /// A `repeat` follows an unknown outcome, so only what it shows of the
+    /// first send settles it.
     fn create_served(
         &mut self,
         live: &dyn Fn() -> bool,
@@ -188,14 +188,16 @@ impl Operation {
             "--json".into(),
             // A name beginning with '-' is still the name.
             "--".into(),
-            name.into(),
+            name.as_str().into(),
         ];
         let (status, bytes) = self.run(&args, live, timeout, None)?;
-        // 1 is a refusal, which the service gives only when nothing was made,
-        // and 2 a request it could not read, refused before sending. 3 is a
-        // service it could not reach: nothing was sent this time, so only a
-        // first send is settled by it. Any other failure, 4 included, leaves
-        // the outcome unknown, and asking again under the same ID reads it.
+        // On a first send, 1 is a refusal and 3 a service it could not reach:
+        // nothing was made. 2 is a request it could not read, refused before
+        // sending, then and on any repeat. A repeat can be refused although
+        // the first send made the profile, such as when its ID is too old to
+        // accept, so it is settled only when no profile has the name. Any
+        // other failure, 4 included, leaves the outcome unknown, and asking
+        // again under the same ID reads it.
         let refused = match status.code() {
             Some(0) => {
                 let profile = profiles::Profile::parse(&bytes).map_err(Error::Profile)?;
@@ -204,13 +206,24 @@ impl Operation {
                     .observe_created(&profile)
                     .map_err(Error::Profile);
             }
-            Some(1 | 2) => "refused",
+            Some(1) if !repeat || self.unnamed(&name, live)? => "refused",
+            Some(2) => "refused",
             Some(3) if !repeat => "unreachable",
             _ => return Err(Error::CommandFailed),
         };
         self.prepared
             .observe_refused(refused)
             .map_err(Error::Profile)
+    }
+
+    /// Whether the machine lists no profile named `name`, so a refused repeat
+    /// made none. A list that fails leaves it unknown.
+    fn unnamed(&self, name: &str, live: &dyn Fn() -> bool) -> Result<bool, Error> {
+        match self.client.list(live) {
+            Ok(items) => Ok(items.iter().all(|item| item.display_name != name)),
+            Err(Error::Cancelled) => Err(Error::Cancelled),
+            Err(_) => Ok(false),
+        }
     }
 
     fn observe(&mut self, status: ExitStatus, bytes: &[u8]) -> Result<Receipt, Error> {

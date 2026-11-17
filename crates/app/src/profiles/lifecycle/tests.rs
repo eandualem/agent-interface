@@ -222,7 +222,7 @@ fn the_rust_service_makes_a_profile_under_the_requests_own_id() {
         r#"
 printf '%s\n' "$*" >> "$CAPTURE"
 case "$2" in
-  list) printf '{{"profiles":[]}}\n';;
+  list) if test -f "$CAPTURE.listed"; then printf '{{"profiles":[%s]}}\n' "$(/bin/cat "$CAPTURE.listed")"; else printf '{{"profiles":[]}}\n'; fi;;
   create) test -f "$CAPTURE.refuse" && exit 1; test -f "$CAPTURE.unknown" && exit 4
 test -f "$CAPTURE.unreachable" && exit 3
 /bin/cat <<'FIXTURE'
@@ -265,6 +265,19 @@ esac
         fs::read_to_string(&calls).unwrap(),
         format!("profiles list --json\n{create}\n").repeat(3)
     );
+
+    // A refused repeat settles only when no profile has the name.
+    let mut repeated = Operation::new(&client, prepared());
+    fs::write(dir.path().join("calls.refuse"), "").unwrap();
+    fs::write(dir.path().join("calls.listed"), entry.to_string()).unwrap();
+    assert!(matches!(
+        repeated.retry(&|| true),
+        Err(Error::CommandFailed)
+    ));
+    fs::remove_file(dir.path().join("calls.listed")).unwrap();
+    let receipt = repeated.retry(&|| true).unwrap();
+    assert_eq!(receipt.status, Status::Failed);
+    fs::remove_file(dir.path().join("calls.refuse")).unwrap();
 
     // A refusal made nothing, so a new request is safe.
     fs::write(dir.path().join("calls.refuse"), "").unwrap();

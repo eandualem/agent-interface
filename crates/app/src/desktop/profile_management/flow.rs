@@ -1014,7 +1014,7 @@ fn typed_identity(
     };
     let script = identity_script(name, email, folder);
     let session = connection
-        .ensure_shell("git-identity", None)
+        .ensure_shell(&identity_shell_id(), None)
         .map_err(|error| format!("{error:?}"))?;
     let mut file = tempfile::Builder::new()
         .prefix("agent-interface-identity-")
@@ -1057,6 +1057,12 @@ fn typed_identity(
     // The shell reads the file after this returns; the script removes it.
     file.keep().map_err(|error| error.to_string())?;
     Ok(())
+}
+
+/// A new shell's ID for the identity step: 12 lowercase hexadecimal
+/// digits, as the Rust service requires and pane shells already use.
+fn identity_shell_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()[..12].to_owned()
 }
 
 /// A `/bin/sh` script, run with its own path as `$0`, that sets the identity.
@@ -1381,6 +1387,17 @@ mod tests {
         };
         assert_eq!(read("user.name"), format!("{name}\n"));
         assert_eq!(read("user.email"), format!("{email}\n"));
+    }
+
+    #[test]
+    fn the_identity_shell_has_an_id_the_rust_service_takes() {
+        let id = identity_shell_id();
+        assert_eq!(id.len(), 12);
+        assert!(
+            id.bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        );
+        assert_ne!(id, identity_shell_id());
     }
 
     #[test]
