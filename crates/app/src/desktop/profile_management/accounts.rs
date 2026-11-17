@@ -50,6 +50,25 @@ struct Row {
     checking: bool,
     /// What the last check came to.
     checked: Option<String>,
+    /// How many reads of the stored login have started, so that only the
+    /// latest one's answer is shown.
+    reads: u64,
+}
+
+impl Row {
+    /// Start reading the stored login again, and return this read's number.
+    fn start_read(&mut self) -> u64 {
+        self.reads += 1;
+        self.stored = None;
+        self.reads
+    }
+
+    /// Show what read `read` found, unless a later read has started since.
+    fn finish_read(&mut self, read: u64, stored: (String, Option<String>)) {
+        if read == self.reads {
+            self.stored = Some(stored);
+        }
+    }
 }
 
 /// The rows whose sign-in pane closed while the section was opening, whose
@@ -200,15 +219,15 @@ impl Section {
         let Some(connection) = self.connection.clone() else {
             return;
         };
-        self.rows[index].stored = None;
+        let read = self.rows[index].start_read();
         let runtime = TOOLS[index].0;
         let work = cx
             .background_executor()
             .spawn(async move { stored(connection.stored_login(runtime)) });
         cx.spawn(async move |this, cx| {
-            let read = work.await;
+            let found = work.await;
             let _ = this.update(cx, |section, cx| {
-                section.rows[index].stored = Some(read);
+                section.rows[index].finish_read(read, found);
                 cx.notify();
             });
         })

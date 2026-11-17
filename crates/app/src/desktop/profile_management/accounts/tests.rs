@@ -190,3 +190,20 @@ fn a_sign_in_that_ends_while_the_section_opens_is_read_again_once_it_has() {
     // An opening that failed has no connection to read them on.
     assert!(owed(&[0, 1]).rows(false).is_empty());
 }
+
+#[test]
+fn only_the_latest_read_of_a_stored_login_is_shown() {
+    let said = |said: &str| (said.to_owned(), None);
+    let mut row = Row::default();
+    let first = row.start_read();
+    let second = row.start_read();
+    assert_eq!(row.stored, None, "the row says it is reading");
+    // The later read answers first; the earlier one, arriving after, is old.
+    row.finish_read(second, said("Signed in (login stored)"));
+    row.finish_read(first, said("Not signed in"));
+    assert_eq!(row.stored, Some(said("Signed in (login stored)")));
+    // A read that is the latest when it answers is shown.
+    let third = row.start_read();
+    row.finish_read(third, said("Not signed in"));
+    assert_eq!(row.stored, Some(said("Not signed in")));
+}
