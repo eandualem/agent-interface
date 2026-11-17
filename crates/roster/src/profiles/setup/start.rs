@@ -73,6 +73,12 @@ pub fn repository(text: &str) -> bool {
         .is_some_and(|(owner, name)| part(owner) && part(name))
 }
 
+/// The service's answer to a change it sent but whose result it doesn't know.
+fn outcome_unknown(response: &crate::transport::local::Response) -> bool {
+    serde_json::from_slice::<serde_json::Value>(&response.body)
+        .is_ok_and(|refusal| refusal["detail"]["code"] == "outcome_unknown")
+}
+
 /// Whether the agent reached its prompt; a start that doesn't wait says
 /// `NotWaited`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -131,6 +137,11 @@ impl Connection {
             Some(request_id),
             STARTING,
         )?;
+        // The service sent the start on but doesn't know what came of it. As
+        // after a lost reply, only the same request ID may ask again.
+        if outcome_unknown(&response) {
+            return Err(Error::Unavailable.into());
+        }
         added(&response)?;
         let started: Started =
             serde_json::from_slice(&response.body).map_err(|_| Error::Invalid)?;

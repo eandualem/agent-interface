@@ -211,3 +211,142 @@ fn a_served_start_opens_only_a_running_agent_and_asks_again_only_without_an_answ
         assert_eq!(answer(Err(AddError::Connection(unknown))), Answer::Unknown);
     }
 }
+
+/// A Rust-service profile socket that answers each connection in turn and
+/// returns the requests it read, lower-cased.
+fn served_socket(
+    replies: Vec<(u16, serde_json::Value)>,
+) -> (
+    tempfile::TempDir,
+    Profile,
+    std::thread::JoinHandle<Vec<String>>,
+) {
+    use std::{
+        io::{Read, Write},
+        os::unix::{fs::PermissionsExt, net::UnixListener},
+    };
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let path = directory.path().join("api.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let entry = serde_json::json!({
+        "state": "serving", "protocol_version": 1, "backbone_version": "0.1.0",
+        "profile_id": "0a1b2c3d4e5f", "display_name": "Work",
+        "instance_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d",
+        "machine": {"id": "5f2c9e0d1b7a4e38", "name": "laptop"}, "home": true,
+        "socket": path, "tmux_socket": "/run/profile/tmux.sock",
+        "credential_reference": {"type": "socket"}
+    });
+    let profile = Profile::parse(&serde_json::to_vec(&entry).unwrap()).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let server = std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        for (status, body) in replies {
+            // A client that stopped early fails the test instead of hanging it.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && std::time::Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(5))
+                    }
+                    Err(error) => panic!("fixture accept: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut header = Vec::new();
+            while !header.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                header.push(byte[0]);
+            }
+            let mut request = String::from_utf8(header).unwrap().to_ascii_lowercase();
+            if let Some(length) = request
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length: "))
+            {
+                let mut body = vec![0; length.trim().parse().unwrap()];
+                stream.read_exact(&mut body).unwrap();
+                request.push_str(&String::from_utf8(body).unwrap());
+            }
+            requests.push(request);
+            let body = body.to_string();
+            write!(
+                stream,
+                "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+        requests
+    });
+    (directory, profile, server)
+}
+
+#[test]
+fn an_unknown_served_outcome_is_asked_again_under_its_own_request_id() {
+    let identity = serde_json::json!({
+        "protocol_version": 1, "backbone_version": "0.1.0",
+        "profile_id": "0a1b2c3d4e5f", "display_name": "Work",
+        "instance_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d",
+        "machine": {"id": "5f2c9e0d1b7a4e38", "name": "laptop"}, "home": true
+    });
+    // As the service's socket answers a start it sent on but heard nothing of.
+    let unknown = serde_json::json!({"detail": {"code": "outcome_unknown",
+        "message": "request 019a7c105c407a108b203c40d5e6f708 was sent to the profile's home, but what came of it is not known; it is not sent again"}});
+    let started = serde_json::json!({"ok": true, "session": "guide", "name": "guide",
+        "working_directory": "/a", "runtime": "claude", "model": null, "repo": "",
+        "already_existed": false, "ready": "not_waited", "evidence": []});
+    let taken = serde_json::json!({"detail": {"code": "conflict", "message": "guide is taken"}});
+    let (_directory, profile, server) = served_socket(vec![
+        (200, identity),
+        (504, unknown),
+        (200, started),
+        (409, taken),
+    ]);
+    let first = "019a7c105c407a108b203c40d5e6f708";
+    let mut request = Request {
+        connection: Some(profile.connect().unwrap()),
+        profile,
+        start: Start::new("guide", std::path::Path::new("/a"), "claude", None, None).unwrap(),
+        create: None,
+        request_id: first.into(),
+    };
+    // No result yet: Try again asks about the same request, which then answers.
+    assert_eq!(attempt(&request), Answer::Unknown);
+    assert_eq!(attempt(&request), Answer::Started("guide".into()));
+    // A refusal is final: what follows it is a new request with a new ID.
+    request.request_id = "019a7c105c407a108b203c40d5e6f709".into();
+    assert_eq!(attempt(&request), Answer::Stopped("guide is taken".into()));
+    let requests = server.join().unwrap();
+    let id = |at: usize| {
+        requests[at]
+            .lines()
+            .find_map(|line| line.strip_prefix("x-backbone-request-id: "))
+            .map(str::to_owned)
+    };
+    assert_eq!(id(1).as_deref(), Some(first));
+    assert_eq!(id(2).as_deref(), Some(first));
+    assert_eq!(id(3).as_deref(), Some("019a7c105c407a108b203c40d5e6f709"));
+}
+
+#[test]
+fn an_unknown_start_is_not_headed_as_a_failure() {
+    assert_eq!(
+        heading("guide", Some(&Answer::Unknown)),
+        "Not known whether guide started"
+    );
+    assert_eq!(
+        heading("guide", Some(&Answer::Stopped("guide is taken".into()))),
+        "guide didn't start"
+    );
+    // The earlier provider's starts keep their heading.
+    assert_eq!(heading("guide", None), "guide didn't start");
+}

@@ -171,6 +171,7 @@ enum Page {
 pub(super) struct Again;
 /// A first agent for the Rust service to start. Nothing is saved for it:
 /// its request ID makes a repeat after a lost reply get the first result.
+#[derive(Clone)]
 pub(super) struct Request {
     pub profile: Profile,
     /// The profile's verified connection, when the caller has one; else it is
@@ -195,8 +196,42 @@ enum Answer {
     /// The service answered that it didn't start, and why: another try is
     /// a new request.
     Stopped(String),
-    /// No answer came, so the same request is asked again.
+    /// No answer came, or the service doesn't know what came of it: the
+    /// same request is asked again.
     Unknown,
+}
+/// One attempt of `request`, off the UI thread: connect when needed, make
+/// its folder, then start it under its own request ID.
+fn attempt(request: &Request) -> Answer {
+    let connection = match request
+        .connection
+        .clone()
+        .map_or_else(|| request.profile.connect(), Ok)
+    {
+        Ok(connection) => connection,
+        // Nothing was sent.
+        Err(_) => {
+            return Answer::Stopped(
+                "The profile could not be reached. Start its service, then try again.".into(),
+            );
+        }
+    };
+    if let Some(folder) = &request.create
+        && std::fs::create_dir_all(folder).is_err()
+    {
+        return Answer::Stopped(
+            "The agent's folder could not be made. Choose another folder.".into(),
+        );
+    }
+    answer(connection.start_first_agent(&request.start, &request.request_id))
+}
+/// The heading once a start is over without running: a result that isn't
+/// known is not called a failure.
+fn heading(name: &str, answer: Option<&Answer>) -> String {
+    match answer {
+        Some(Answer::Unknown) => format!("Not known whether {name} started"),
+        _ => format!("{name} didn't start"),
+    }
 }
 /// What a served start came to, for the person.
 fn answer(result: Result<Started, AddError>) -> Answer {
@@ -376,37 +411,14 @@ impl Pane {
             return;
         };
         served.answer = None;
-        let request = &served.request;
-        let (profile, connection, start, create, id) = (
-            request.profile.clone(),
-            request.connection.clone(),
-            request.start.clone(),
-            request.create.clone(),
-            request.request_id.clone(),
-        );
+        // A retry sends this same request, under its same ID.
+        let request = served.request.clone();
         self.busy = true;
         let ticket = self.ticket.begin();
         // Leaving doesn't stop the start; only its answer is no longer shown.
-        let work = cx.background_executor().spawn(async move {
-            let connection = match connection.map_or_else(|| profile.connect(), Ok) {
-                Ok(connection) => connection,
-                // Nothing was sent.
-                Err(_) => {
-                    return Answer::Stopped(
-                        "The profile could not be reached. Start its service, then try again."
-                            .into(),
-                    );
-                }
-            };
-            if let Some(folder) = &create
-                && std::fs::create_dir_all(folder).is_err()
-            {
-                return Answer::Stopped(
-                    "The agent's folder could not be made. Choose another folder.".into(),
-                );
-            }
-            answer(connection.start_first_agent(&start, &id))
-        });
+        let work = cx
+            .background_executor()
+            .spawn(async move { attempt(&request) });
         cx.spawn(async move |this, cx| {
             let answer = work.await;
             let _ = this.update(cx, |pane, cx| {
@@ -776,7 +788,7 @@ impl Pane {
             return Some(match &served.answer {
                 Some(Answer::Stopped(why)) => why.clone(),
                 Some(Answer::Unknown) => format!(
-                    "No answer came. Try again: it asks about the same start, so {} isn't added twice.",
+                    "What came of the start isn't known yet. Try again: it asks about the same start, so {} isn't added twice.",
                     served.request.start.name()
                 ),
                 _ => "It stopped before it was ready. Try again.".to_owned(),
@@ -841,7 +853,7 @@ impl Pane {
         } else {
             (
                 ui::Step::Waits,
-                format!("{name} didn't start"),
+                heading(name, self.served.as_ref().and_then(|s| s.answer.as_ref())),
                 self.failure(),
             )
         };

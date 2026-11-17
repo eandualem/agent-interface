@@ -71,3 +71,75 @@ fn each_system_names_only_the_restart_commands_that_apply_there() {
     };
     assert_eq!(RESTART, chosen);
 }
+
+fn secret(name: &str, set: bool) -> Secret {
+    Secret {
+        name: name.into(),
+        set,
+    }
+}
+
+#[test]
+fn a_list_refusal_shows_the_services_words_and_a_lost_connection_a_sentence_of_ours() {
+    let message = "only the operator may manage secrets";
+    assert_eq!(
+        listed(Err(AddError::Refused(message.into()))),
+        List::Unavailable(message.into())
+    );
+    assert_eq!(
+        listed(Err(AddError::Connection(Error::Unavailable))),
+        List::Unavailable("Couldn't read the profile's secrets.".into())
+    );
+}
+
+#[test]
+fn a_change_keeps_its_own_result_when_the_list_cant_be_read_again() {
+    let shown = || List::Shown(vec![secret("GITHUB_TOKEN", false), secret("A", true)]);
+    let lost = || Err(AddError::Connection(Error::Unavailable));
+    let set = Ok(Change {
+        name: "GITHUB_TOKEN".into(),
+        set: true,
+        was_set: false,
+    });
+    assert_eq!(
+        completed(shown(), &set, lost()),
+        (
+            List::Shown(vec![secret("GITHUB_TOKEN", true), secret("A", true)]),
+            Some("Couldn't read the profile's secrets.".into())
+        )
+    );
+    // The change's own note stands too, and the rows stay shown, so the
+    // restart notice is drawn under them.
+    assert_eq!(outcome(set.clone()), "GITHUB_TOKEN was added.");
+    let removed = Ok(Change {
+        name: "A".into(),
+        set: false,
+        was_set: true,
+    });
+    let refused = Err(AddError::Refused(
+        "only the operator may manage secrets".into(),
+    ));
+    assert_eq!(
+        completed(shown(), &removed, refused).0,
+        List::Shown(vec![secret("GITHUB_TOKEN", false), secret("A", false)])
+    );
+    let added = Ok(Change {
+        name: "B".into(),
+        set: true,
+        was_set: false,
+    });
+    let (List::Shown(rows), _) = completed(shown(), &added, lost()) else {
+        panic!("the rows stay shown");
+    };
+    assert_eq!(rows.last(), Some(&secret("B", true)));
+    // A refused change leaves every row as it was, and its message stands.
+    let message = "the value of A has a control character";
+    let refusal = Err(AddError::Refused(message.into()));
+    assert_eq!(completed(shown(), &refusal, lost()).0, shown());
+    assert_eq!(outcome(refusal), message);
+    // A list that reads again replaces the rows.
+    assert_eq!(
+        completed(shown(), &set, Ok(vec![secret("C", true)])),
+        (List::Shown(vec![secret("C", true)]), None)
+    );
+}

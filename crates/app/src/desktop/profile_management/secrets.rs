@@ -25,10 +25,11 @@ const GITHUB_TOKENS: &str = "https://github.com/settings/tokens";
 /// How wide a new secret's name field is.
 const NAME_WIDTH: f32 = 200.;
 
+#[derive(Debug, PartialEq)]
 enum List {
     Loading,
     /// Why there is no list, to show.
-    Unavailable(&'static str),
+    Unavailable(String),
     Shown(Vec<Secret>),
 }
 
@@ -52,6 +53,8 @@ pub(super) struct Section {
     note: Option<String>,
     /// The last change was made, and waits for the service to start again.
     applied: bool,
+    /// Why the list couldn't be read again after the last change.
+    refresh: Option<String>,
 }
 
 impl Section {
@@ -71,7 +74,8 @@ impl Section {
                         section.connection = Some(connection);
                     }
                     None => {
-                        section.list = List::Unavailable("Start the profile to see its secrets.")
+                        section.list =
+                            List::Unavailable("Start the profile to see its secrets.".into())
                     }
                 }
                 cx.notify();
@@ -86,6 +90,7 @@ impl Section {
             busy: false,
             note: None,
             applied: false,
+            refresh: None,
         }
     }
 
@@ -128,6 +133,7 @@ impl Section {
         self.removing = None;
         self.note = None;
         self.applied = false;
+        self.refresh = None;
         cx.notify();
     }
 
@@ -179,6 +185,7 @@ impl Section {
         self.removing = None;
         self.note = None;
         self.applied = false;
+        self.refresh = None;
         let request = uuid::Uuid::now_v7().simple().to_string();
         let work = cx.background_executor().spawn(async move {
             let changed = match value {
@@ -195,9 +202,10 @@ impl Section {
             let (changed, list) = work.await;
             let _ = this.update(cx, |section, cx| {
                 section.busy = false;
+                let shown = std::mem::replace(&mut section.list, List::Loading);
+                (section.list, section.refresh) = completed(shown, &changed, list);
                 section.applied = changed.is_ok();
                 section.note = Some(outcome(changed));
-                section.list = listed(list);
                 cx.notify();
             });
         })
@@ -226,8 +234,44 @@ fn ordered(secrets: &[Secret]) -> Vec<Secret> {
 fn listed(list: Result<Vec<Secret>, AddError>) -> List {
     match list {
         Ok(secrets) => List::Shown(secrets),
-        Err(_) => List::Unavailable("Couldn't read the profile's secrets."),
+        Err(error) => List::Unavailable(unread(error)),
     }
+}
+
+/// Why the list wasn't read: the service's own reason for refusing it, or
+/// a sentence of the app's when it couldn't be reached or understood.
+fn unread(error: AddError) -> String {
+    match error {
+        AddError::Refused(message) => message,
+        AddError::Connection(_) => "Couldn't read the profile's secrets.".into(),
+    }
+}
+
+/// The list after a change, and why it couldn't be read again, if it
+/// couldn't. The change's own reply says what became of its secret, so a
+/// failed read keeps the rows shown, with that one updated from the reply.
+fn completed(
+    shown: List,
+    changed: &Result<Change, AddError>,
+    refreshed: Result<Vec<Secret>, AddError>,
+) -> (List, Option<String>) {
+    let error = match refreshed {
+        Ok(secrets) => return (List::Shown(secrets), None),
+        Err(error) => unread(error),
+    };
+    let List::Shown(mut rows) = shown else {
+        return (shown, Some(error));
+    };
+    if let Ok(change) = changed {
+        match rows.iter_mut().find(|row| row.name == change.name) {
+            Some(row) => row.set = change.set,
+            None => rows.push(Secret {
+                name: change.name.clone(),
+                set: change.set,
+            }),
+        }
+    }
+    (List::Shown(rows), Some(error))
 }
 
 /// What a change came to, or the service's own reason for refusing it.
@@ -315,7 +359,7 @@ impl Render for Section {
             .child(ui::group_title("Secrets", "Values are never shown."));
         let rows = match &self.list {
             List::Loading => return body.child(ui::group_note("Reading secrets…")),
-            List::Unavailable(why) => return body.child(ui::group_note(*why)),
+            List::Unavailable(why) => return body.child(ui::group_note(why.clone())),
             List::Shown(rows) => rows,
         };
         let editing = self.edit.as_ref().map(|edit| edit.name.clone());
@@ -451,6 +495,9 @@ impl Render for Section {
         }
         if self.applied {
             body = body.child(restart_notice());
+        }
+        if let Some(refresh) = &self.refresh {
+            body = body.child(ui::group_note(refresh.clone()));
         }
         if self.busy {
             body = body.child(ui::group_note("Sending…"));
