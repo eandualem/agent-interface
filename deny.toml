@@ -21,6 +21,7 @@ ignore = [
     { id = "RUSTSEC-2026-0370", reason = "zvariant is unmaintained; used by GPUI's Linux backend through accesskit_unix and zbus 5" },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained; used by GPUI's Linux backend through accesskit_unix and zbus 5" },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is unmaintained; used by GPUI's Linux backend through accesskit_unix and zbus 5" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained with no safe upgrade; used by GPUI and by the app to read and show times; no known vulnerability in this advisory" },
 ]
 
 [licenses]
