@@ -16,6 +16,12 @@ impl Fixture {
             &executable,
             format!(
                 r#"#!/bin/sh
+# A create first lists the profiles to tell which service this is; this
+# provider is the earlier one, and only its lifecycle commands are counted.
+if [ "$2" = list ]; then
+    printf '{{"schema_version":1,"items":[]}}\n'
+    exit 0
+fi
 printf '%s\n' "$2" >> "$ROOT/calls"
 if [ "$2" = apply ]; then
     /bin/cat "$4" >> "$ROOT/bodies"

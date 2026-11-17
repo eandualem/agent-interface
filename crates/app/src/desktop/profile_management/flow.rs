@@ -72,6 +72,8 @@ enum Stalled {
 struct Made {
     library: PathBuf,
     profile: Profile,
+    /// The create request asked for this computer's Git identity.
+    copies_git_identity: bool,
 }
 
 /// The Git name and email a new profile's agents commit as. A profile starts
@@ -427,6 +429,11 @@ impl Flow {
                 }
                 match result {
                     Ok(made) => {
+                        // A request resumed after the app closed keeps its own
+                        // choice; under the Rust service the app sets it.
+                        if made.copies_git_identity && flow.chosen == Some(Identity::None) {
+                            flow.chosen = Some(Identity::Computer);
+                        }
                         flow.library = Some(made.library);
                         flow.profile = Some(made.profile);
                         flow.connect(cx);
@@ -478,8 +485,16 @@ impl Flow {
                 match result {
                     Ok(selected) => {
                         let connection = selected.connection().clone();
-                        if let Identity::Typed(name, email) = identity {
-                            set_identity(connection.clone(), name, email, cx);
+                        let served = connection.served();
+                        let chosen = match identity {
+                            Identity::Typed(name, email) => Some((name, email)),
+                            // The Rust service copies nothing, so a profile with
+                            // its own Git settings is given this computer's.
+                            Identity::Computer if served => flow.git.computer.clone(),
+                            _ => None,
+                        };
+                        if let Some((name, email)) = chosen {
+                            set_identity(connection.clone(), name, email, served, cx);
                         }
                         flow.connection = Some(connection);
                         cx.emit(Event::Bind(Box::new(selected)));
@@ -956,26 +971,50 @@ fn computer_identity() -> (String, String) {
 /// Set a Git name and email typed for a new profile inside it: a shell in
 /// the profile, with its own home, runs `git config --global` and exits.
 /// Agent Backbone can copy only this computer's own identity into a profile,
-/// so this is how a different one is set. Best effort: a failure is logged,
-/// and the profile still works.
-fn set_identity(connection: Connection, name: String, email: String, cx: &mut Context<Flow>) {
+/// so this is how a different one is set. Under the Rust service (`served`),
+/// a shell whose `GIT_CONFIG_GLOBAL` is not in the profile's own folder
+/// shares this computer's settings, which are left alone. Best effort: a failure is logged, and the
+/// profile still works.
+fn set_identity(
+    connection: Connection,
+    name: String,
+    email: String,
+    served: bool,
+    cx: &mut Context<Flow>,
+) {
     cx.background_executor()
         .spawn(async move {
-            if let Err(error) = typed_identity(&connection, &name, &email) {
+            if let Err(error) = typed_identity(&connection, &name, &email, served) {
                 tracing::warn!(event = "profile_git_identity_failed", %error, "Git identity not set");
             }
         })
         .detach();
 }
 
-fn typed_identity(connection: &Connection, name: &str, email: &str) -> Result<(), String> {
+fn typed_identity(
+    connection: &Connection,
+    name: &str,
+    email: &str,
+    served: bool,
+) -> Result<(), String> {
     use std::io::Write;
     // The profile's shell may be fish, tcsh or nushell, which quote differently,
     // so it is typed only `exec /bin/sh <file>`, read alike by all of them. The
     // script removes its file, and the session ends when it finishes.
-    let script = identity_script(name, email);
+    // The profile's own folder holds its tmux socket.
+    let folder = match served {
+        false => None,
+        true => Some(
+            connection
+                .tmux_socket()
+                .parent()
+                .and_then(std::path::Path::to_str)
+                .ok_or("the profile's folder is not known")?,
+        ),
+    };
+    let script = identity_script(name, email, folder);
     let session = connection
-        .ensure_shell("git-identity", None)
+        .ensure_shell(&identity_shell_id(), None)
         .map_err(|error| format!("{error:?}"))?;
     let mut file = tempfile::Builder::new()
         .prefix("agent-interface-identity-")
@@ -1020,9 +1059,23 @@ fn typed_identity(connection: &Connection, name: &str, email: &str) -> Result<()
     Ok(())
 }
 
+/// A new shell's ID for the identity step: 12 lowercase hexadecimal
+/// digits, as the Rust service requires and pane shells already use.
+fn identity_shell_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()[..12].to_owned()
+}
+
 /// A `/bin/sh` script, run with its own path as `$0`, that sets the identity.
-fn identity_script(name: &str, email: &str) -> String {
+/// Given the profile's `folder`, it does so only where `GIT_CONFIG_GLOBAL`
+/// is a file inside it.
+fn identity_script(name: &str, email: &str, folder: Option<&str>) -> String {
     let mut script = String::from("rm -f -- \"$0\"\n");
+    if let Some(folder) = folder {
+        script.push_str(&format!(
+            "case \"$GIT_CONFIG_GLOBAL\" in */../*) exit 0 ;; {}/*) ;; *) exit 0 ;; esac\n",
+            quote(folder)
+        ));
+    }
     for (key, value) in [("user.name", name), ("user.email", email)] {
         if !value.is_empty() {
             script.push_str(&format!("git config --global {key} {}\n", quote(value)));
@@ -1063,6 +1116,7 @@ fn make(
     let controller = journal::Journal::open(&library.join("profile-operations"))
         .map(|journal| Controller::new(journal, &client))
         .map_err(|_| unavailable(&made))?;
+    let mut copies_git_identity = prepared.as_ref().is_some_and(Prepared::copies_git_identity);
     let profile =
         match (made, resume) {
             // Read it again: the start names its current lifecycle, which an
@@ -1079,7 +1133,12 @@ fn make(
                             .and_then(|_| controller.submit(&key, &alive));
                         result.map_err(|_| unconfirmed(key))?
                     }
-                    (None, Some(Stalled::Unconfirmed(key))) => recover(&controller, &key, &alive)?,
+                    (None, Some(Stalled::Unconfirmed(key))) => {
+                        copies_git_identity = controller
+                            .read(&key)
+                            .is_ok_and(|saved| saved.copies_git_identity);
+                        recover(&controller, &key, &alive)?
+                    }
                     _ => return Err((Stalled::Failed, None, "Give the profile a name.")),
                 };
                 match (receipt.status, receipt.identity) {
@@ -1125,6 +1184,14 @@ fn make(
             "The profile was made but didn't start. Try again.",
         )
     };
+    // The Rust service serves a profile from the moment it makes it.
+    if profile.served() {
+        return Ok(Made {
+            library,
+            profile,
+            copies_git_identity,
+        });
+    }
     let request = uuid::Uuid::now_v7().simple().to_string();
     let start = Prepared::start(&request, &profile).map_err(|_| not_started(&profile))?;
     let key = Controller::key(start.request_id());
@@ -1135,7 +1202,11 @@ fn make(
     if receipt.status != Status::Succeeded {
         return Err(not_started(&profile));
     }
-    Ok(Made { library, profile })
+    Ok(Made {
+        library,
+        profile,
+        copies_git_identity,
+    })
 }
 
 /// The receipt of a create request sent before, reading what is saved first:
@@ -1202,7 +1273,7 @@ mod tests {
         // The provider has no record of the request: every lookup fails.
         std::fs::write(
             &provider,
-            "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s\\n' \"$2\" >> \"$d/calls\"\n[ \"$2\" = operation ] && exit 1\n/bin/cat \"$d/reply\"\n",
+            "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s\\n' \"$2\" >> \"$d/calls\"\n[ \"$2\" = list ] && echo '{\"schema_version\":1,\"items\":[]}' && exit 0\n[ \"$2\" = operation ] && exit 1\n/bin/cat \"$d/reply\"\n",
         )
         .unwrap();
         std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -1230,7 +1301,7 @@ mod tests {
         };
         assert_eq!(receipt.status, Status::Succeeded);
         let calls = std::fs::read_to_string(root.join("calls")).unwrap();
-        assert_eq!(calls, "apply\noperation\napply\n");
+        assert_eq!(calls, "list\napply\nlist\noperation\nlist\napply\n");
     }
 
     #[test]
@@ -1241,7 +1312,7 @@ mod tests {
         let provider = root.join("provider");
         std::fs::write(
             &provider,
-            "#!/bin/sh\nprintf '%s\\n' \"$2\" >> \"$(dirname \"$0\")/calls\"\n/bin/cat \"$(dirname \"$0\")/reply\"\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$2\" >> \"$(dirname \"$0\")/calls\"\n[ \"$2\" = list ] && echo '{\"schema_version\":1,\"items\":[]}' && exit 0\n/bin/cat \"$(dirname \"$0\")/reply\"\n",
         )
         .unwrap();
         std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -1274,10 +1345,10 @@ mod tests {
             panic!("the saved request was not sent");
         };
         assert_eq!(receipt.status, Status::Succeeded);
-        assert_eq!(calls(), "apply\n");
+        assert_eq!(calls(), "list\napply\n");
         // Already finished: its saved receipt, with no command at all.
         assert!(recover(&controller, &key, &|| true).is_ok_and(|saved| saved == receipt));
-        assert_eq!(calls(), "apply\n");
+        assert_eq!(calls(), "list\napply\n");
     }
 
     #[test]
@@ -1293,7 +1364,7 @@ mod tests {
         // Never the developer's own global configuration.
         let config = home.path().join("gitconfig");
         let (name, email) = (r"Sam O'Brien \ ops!", "ops!dev@example.com");
-        std::fs::write(&path, identity_script(name, email)).unwrap();
+        std::fs::write(&path, identity_script(name, email, None)).unwrap();
         let isolated = |command: &mut std::process::Command| {
             command
                 .env("HOME", home.path())
@@ -1316,5 +1387,49 @@ mod tests {
         };
         assert_eq!(read("user.name"), format!("{name}\n"));
         assert_eq!(read("user.email"), format!("{email}\n"));
+    }
+
+    #[test]
+    fn the_identity_shell_has_an_id_the_rust_service_takes() {
+        let id = identity_shell_id();
+        assert_eq!(id.len(), 12);
+        assert!(
+            id.bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        );
+        assert_ne!(id, identity_shell_id());
+    }
+
+    #[test]
+    fn a_served_profile_writes_only_its_own_git_settings() {
+        let home = tempfile::tempdir().unwrap();
+        let folder = home.path().join("profile o'k");
+        std::fs::create_dir(&folder).unwrap();
+        let own = home.path().join("computer.gitconfig");
+        let profile = folder.join("gitconfig");
+        // None, this computer's own file set by its shell, the same reached
+        // through the profile's folder, then the profile's own.
+        let through = folder.join("../computer.gitconfig");
+        for config in [None, Some(&own), Some(&through), Some(&profile)] {
+            let path = home.path().join("identity");
+            let script = identity_script("Sam", "sam@example.com", folder.to_str());
+            std::fs::write(&path, script).unwrap();
+            let mut command = std::process::Command::new("/bin/sh");
+            command
+                .arg(&path)
+                .env("HOME", home.path())
+                .env("XDG_CONFIG_HOME", home.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env_remove("GIT_CONFIG_GLOBAL");
+            if let Some(config) = config {
+                command.env("GIT_CONFIG_GLOBAL", config);
+            }
+            assert!(command.status().unwrap().success());
+            assert!(!path.exists());
+        }
+        assert!(!home.path().join(".gitconfig").exists());
+        assert!(!own.exists());
+        let written = std::fs::read_to_string(&profile).unwrap();
+        assert!(written.contains("sam@example.com"));
     }
 }

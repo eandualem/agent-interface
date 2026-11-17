@@ -64,6 +64,8 @@ pub struct Snapshot {
     pub identity: Option<Identity>,
     /// Validated terminal receipt, returned only after durable storage.
     pub terminal: Option<Receipt>,
+    /// Whether the original create request asks for this computer's Git identity.
+    pub copies_git_identity: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -89,6 +91,7 @@ impl Stored {
             request_id: self.operation.request_id().into(),
             identity: self.operation.identity().cloned(),
             terminal: self.operation.terminal().cloned(),
+            copies_git_identity: self.operation.copies_git_identity(),
         }
     }
 }
@@ -216,7 +219,8 @@ impl Controller {
             .journal
             .save(key, Some(stored.record.revision()), &bytes)?;
         let receipt = match invocation {
-            Invocation::Submit | Invocation::Retry => stored.operation.apply(live),
+            Invocation::Submit => stored.operation.apply(live),
+            Invocation::Retry => stored.operation.retry(live),
             Invocation::Refresh => stored.operation.refresh(live),
         }?;
         let bytes = encode(Phase::Submitted, &stored.operation)?;

@@ -66,6 +66,11 @@ impl Operation {
         self.prepared.bytes()
     }
 
+    /// Whether the original create request asks for this computer's Git identity.
+    pub fn copies_git_identity(&self) -> bool {
+        self.prepared.copies_git_identity()
+    }
+
     /// A previously validated terminal result, retained through private recovery.
     pub fn terminal(&self) -> Option<&Receipt> {
         self.prepared.terminal()
@@ -83,13 +88,32 @@ impl Operation {
         self.apply_with_timeout(live, APPLY_TIMEOUT)
     }
 
+    /// Send the exact original request again after an unknown outcome. Only
+    /// the earlier provider's receipt, or the Rust service's profile, settles
+    /// it, or a refusal, which the service gives only when nothing was made.
+    pub fn retry(&mut self, live: &dyn Fn() -> bool) -> Result<Receipt, Error> {
+        self.submit(live, APPLY_TIMEOUT, true)
+    }
+
     fn apply_with_timeout(
         &mut self,
         live: &dyn Fn() -> bool,
         timeout: Duration,
     ) -> Result<Receipt, Error> {
+        self.submit(live, timeout, false)
+    }
+
+    fn submit(
+        &mut self,
+        live: &dyn Fn() -> bool,
+        timeout: Duration,
+        repeat: bool,
+    ) -> Result<Receipt, Error> {
         if !live() {
             return Err(Error::Cancelled);
+        }
+        if self.served_create(live)? {
+            return self.create_served(live, timeout, repeat);
         }
         let input = super::invocation_file::InvocationFile::new(self.prepared.bytes())?;
         let args: Vec<OsString> = vec![
@@ -110,6 +134,11 @@ impl Operation {
     /// Read the original durable receipt without reissuing the action. Unknown
     /// request replies remain errors and preserve all retained request state.
     pub fn refresh(&mut self, live: &dyn Fn() -> bool) -> Result<Receipt, Error> {
+        // The Rust service keeps no operation to read. It answers the same
+        // request ID with its first result, so asking again reads that.
+        if self.served_create(live)? {
+            return self.create_served(live, TIMEOUT, true);
+        }
         let args: Vec<OsString> = vec![
             "profiles".into(),
             "operation".into(),
@@ -119,6 +148,99 @@ impl Operation {
         ];
         let (status, bytes) = self.run(&args, live, TIMEOUT, None)?;
         self.observe(status, &bytes)
+    }
+
+    /// Whether this is a create request for the Rust service, which makes a
+    /// profile with `profiles create` instead of `profiles apply`.
+    /// The earlier provider has no registry until its first profile is made,
+    /// so then `profiles apply` is tried as before. Any other failed list
+    /// stops here, before anything is sent.
+    fn served_create(&self, live: &dyn Fn() -> bool) -> Result<bool, Error> {
+        if self.prepared.action() != profiles::operations::Action::Create {
+            return Ok(false);
+        }
+        match self.client.served(live) {
+            Err(Error::RegistryAbsent) => Ok(false),
+            result => result,
+        }
+    }
+
+    /// Make the profile with the Rust service under this request's own ID.
+    /// It serves the profile at once, so there is nothing to start after.
+    /// A `repeat` follows an unknown outcome, so only what it shows of the
+    /// first send settles it.
+    fn create_served(
+        &mut self,
+        live: &dyn Fn() -> bool,
+        timeout: Duration,
+        repeat: bool,
+    ) -> Result<Receipt, Error> {
+        let name = self
+            .prepared
+            .display_name()
+            .ok_or(Error::Profile(profiles::Error::Invalid))?;
+        let args: Vec<OsString> = vec![
+            "profiles".into(),
+            "create".into(),
+            "--starter".into(),
+            "core-v1".into(),
+            "--request-id".into(),
+            self.request_id().into(),
+            "--json".into(),
+            // A name beginning with '-' is still the name.
+            "--".into(),
+            name.as_str().into(),
+        ];
+        let (status, bytes) = self.run(&args, live, timeout, None)?;
+        // On a first send, 1 is a refusal and 3 a service it could not reach:
+        // nothing was made. 2 is a request it could not read, refused before
+        // sending, then and on any repeat. A repeat can be refused although
+        // the first send made the profile, such as when its ID is too old to
+        // accept, so it is settled only when no profile has the name. Any
+        // other failure, 4 included, leaves the outcome unknown, and asking
+        // again under the same ID reads it.
+        let refused = match status.code() {
+            Some(0) => {
+                let profile = profiles::Profile::parse(&bytes).map_err(Error::Profile)?;
+                return self
+                    .prepared
+                    .observe_created(&profile)
+                    .map_err(Error::Profile);
+            }
+            Some(1) if !repeat || self.unnamed(&name, live)? => "refused",
+            Some(2) => "refused",
+            Some(3) if !repeat => "unreachable",
+            _ => return Err(Error::CommandFailed),
+        };
+        self.prepared
+            .observe_refused(refused)
+            .map_err(Error::Profile)
+    }
+
+    /// Whether the machine lists no profile named `name`, so a refused repeat
+    /// made none. The service's own entries are read: one without a name, or
+    /// in a state this app does not know, may be the one made, and so may a
+    /// list that fails or cannot be read.
+    fn unnamed(&self, name: &str, live: &dyn Fn() -> bool) -> Result<bool, Error> {
+        use serde_json::Value;
+        let bytes = match self
+            .client
+            .read(&["profiles", "list", "--json"], live, TIMEOUT)
+        {
+            Ok(bytes) => bytes,
+            Err(Error::Cancelled) => return Err(Error::Cancelled),
+            Err(_) => return Ok(false),
+        };
+        let listed: Option<Value> = serde_json::from_slice(&bytes).ok();
+        let Some(entries) = listed.as_ref().and_then(|list| list["profiles"].as_array()) else {
+            return Ok(false);
+        };
+        Ok(entries.iter().all(|entry| {
+            matches!(entry["state"].as_str(), Some("serving" | "failed"))
+                && entry["display_name"]
+                    .as_str()
+                    .is_some_and(|listed| listed != name)
+        }))
     }
 
     fn observe(&mut self, status: ExitStatus, bytes: &[u8]) -> Result<Receipt, Error> {
