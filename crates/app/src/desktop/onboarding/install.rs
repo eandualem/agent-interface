@@ -410,6 +410,19 @@ struct Answer {
 }
 
 impl Answer {
+    /// Whether `exit` is the code setup ends with for this answer: 0
+    /// completed, 1 failed, 2 an invalid request, 3 action required. A
+    /// status this app doesn't know has none to match.
+    fn exits(&self, exit: Option<i32>) -> bool {
+        match self.status.as_str() {
+            _ if self.code == "invalid_request" => exit == Some(2),
+            "completed" => exit == Some(0),
+            "failed" => exit == Some(1),
+            "action_required" => exit == Some(3),
+            _ => true,
+        }
+    }
+
     /// The answer's own words for a person, else its code.
     fn said(&self) -> String {
         let message: String = self
@@ -459,9 +472,9 @@ fn send(
         .stderr(Stdio::null())
         .spawn()
         .map_err(|error| format!("Agent Backbone's setup could not start: {error}."))?;
-    loop {
+    let exit = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => break status.code(),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(200)),
             _ => {
                 let _ = child.kill();
@@ -469,7 +482,7 @@ fn send(
                 return Err("Agent Backbone's setup took too long and was stopped.".into());
             }
         }
-    }
+    };
     let mut printed = String::new();
     let read = std::io::Seek::rewind(&mut &output).and_then(|_| {
         (&output)
@@ -479,7 +492,8 @@ fn send(
     if read.is_err() || printed.len() as u64 > SETUP_OUTPUT {
         return Ok(None);
     }
-    Ok(answer(&printed, request_id))
+    // An answer its exit contradicts is no readable answer.
+    Ok(answer(&printed, request_id).filter(|answer| answer.exits(exit)))
 }
 
 /// What setup answered `request_id`, from the lines it printed: each an
@@ -589,52 +603,217 @@ fn this_installation(text: &str, program: &Path, dir: &Path) -> Result<(), Strin
 }
 
 /// What a login service's definition runs, read as the service writes it:
-/// its program and its `BACKBONE_DIR`. A launchd plist names them in
-/// `ProgramArguments` and `EnvironmentVariables`, each key and its string on
-/// one line; a systemd unit in `ExecStart=` and `Environment=`, quoted or
-/// not, with `%%` for `%`, and `$$` for `$` in the program.
+/// its program and its `BACKBONE_DIR`. A definition in another form says
+/// nothing, so one the service did not write is never taken for its own.
 fn runs(text: &str) -> Option<(String, String)> {
+    if text.trim_start().starts_with("<?xml") {
+        runs_plist(text)
+    } else {
+        runs_unit(text)
+    }
+}
+
+/// A launchd plist as the service writes it: `ProgramArguments` of exactly
+/// the program, `daemon` and `--raw-output`, and `BACKBONE_DIR` once in
+/// `EnvironmentVariables`, each key and its string on one line. `Program`,
+/// which launchd runs in place of the arguments' first, or a comment, which
+/// may show or hide anything, says nothing.
+fn runs_plist(text: &str) -> Option<(String, String)> {
+    if text.contains("<!--") {
+        return None;
+    }
     let lines: Vec<&str> = text.lines().map(str::trim).collect();
-    let (mut program, mut dir) = (None, None);
+    let (mut program, mut dir, mut variables) = (None, None, false);
     for (index, line) in lines.iter().enumerate() {
-        if let Some(value) = line.strip_prefix("ExecStart=") {
-            program = Some(word(value.trim())?.replace("%%", "%").replace("$$", "$"));
-        } else if let Some(value) = line.strip_prefix("Environment=") {
-            let assignment = word(value.trim())?;
-            if let Some(found) = assignment.strip_prefix("BACKBONE_DIR=") {
-                dir = Some(found.replace("%%", "%"));
-            } else if value.contains("BACKBONE_DIR=") {
+        // launchd runs Program in place of the arguments' first.
+        if line.starts_with("<key>Program</key>") {
+            return None;
+        }
+        match *line {
+            "<key>ProgramArguments</key>" => {
+                let [open, first, daemon, raw, close] = lines.get(index + 1..index + 6)? else {
+                    return None;
+                };
+                if program.is_some()
+                    || *open != "<array>"
+                    || *daemon != "<string>daemon</string>"
+                    || *raw != "<string>--raw-output</string>"
+                    || *close != "</array>"
+                {
+                    return None;
+                }
+                program = Some(xml_string(first)?);
+            }
+            "<key>EnvironmentVariables</key>" => {
+                if lines.get(index + 1) != Some(&"<dict>") {
+                    return None;
+                }
+                variables = true;
+            }
+            "</dict>" => variables = false,
+            _ => {}
+        }
+        if let Some(rest) = line.strip_prefix("<key>BACKBONE_DIR</key>") {
+            if !variables || dir.is_some() {
                 return None;
             }
-        } else if *line == "<key>ProgramArguments</key>" {
-            if lines.get(index + 1) != Some(&"<array>") {
-                return None;
-            }
-            program = Some(xml_string(lines.get(index + 2)?)?);
-        } else if let Some(rest) = line.strip_prefix("<key>BACKBONE_DIR</key>") {
-            let value = match rest.trim() {
-                "" => lines.get(index + 1).copied().unwrap_or_default(),
-                rest => rest,
-            };
-            dir = Some(xml_string(value)?);
+            dir = Some(xml_string(rest)?);
         }
     }
     Some((program?, dir?))
 }
 
-/// The first word of a systemd value: quoted in JSON's way or in single
-/// quotes, as the service quotes, or bare.
-fn word(value: &str) -> Option<String> {
-    if value.starts_with('"') {
-        serde_json::Deserializer::from_str(value)
-            .into_iter::<String>()
-            .next()?
-            .ok()
-    } else if let Some(rest) = value.strip_prefix('\'') {
-        Some(rest.split_once('\'')?.0.to_owned())
-    } else {
-        value.split_whitespace().next().map(str::to_owned)
+/// The keys each section of the unit the service writes has. Any other,
+/// such as `EnvironmentFile=`, `UnsetEnvironment=` or `ExecStartPre=`, could
+/// run something else or with other variables.
+const UNIT_KEYS: &[(&str, &[&str])] = &[
+    ("Unit", &["Description", "After"]),
+    (
+        "Service",
+        &[
+            "ExecStart",
+            "Environment",
+            "StandardOutput",
+            "StandardError",
+            "Restart",
+            "RestartSec",
+            "KillMode",
+        ],
+    ),
+    ("Install", &["WantedBy"]),
+];
+
+/// A systemd unit as the service writes it, read as systemd reads that
+/// form: one `ExecStart=` of the program, `daemon` and `--raw-output`, and
+/// `BACKBONE_DIR` set once by `Environment=` in `[Service]`. A key it
+/// doesn't write, an empty `Environment=`, a continued line, a specifier or
+/// an escape it doesn't write says nothing.
+fn runs_unit(text: &str) -> Option<(String, String)> {
+    let mut section = "";
+    let (mut started, mut dir): (Option<Vec<String>>, Option<String>) = (None, None);
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with(['#', ';']) {
+            continue;
+        }
+        if line.ends_with('\\') {
+            return None;
+        }
+        if let Some(name) = line.strip_prefix('[') {
+            section = name.strip_suffix(']')?;
+            continue;
+        }
+        let (key, value) = line.split_once('=')?;
+        let key = key.trim_end();
+        let (_, keys) = UNIT_KEYS.iter().find(|(name, _)| *name == section)?;
+        if !keys.contains(&key) {
+            return None;
+        }
+        match key {
+            "ExecStart" if started.is_none() => started = Some(words(value)?),
+            "ExecStart" => return None,
+            "Environment" => {
+                let assigned = words(value)?;
+                if assigned.is_empty() {
+                    return None;
+                }
+                for word in assigned {
+                    let word = undoubled(&word, '%')?;
+                    if let Some(found) = word.strip_prefix("BACKBONE_DIR=")
+                        && dir.replace(found.to_owned()).is_some()
+                    {
+                        return None;
+                    }
+                }
+            }
+            _ => {}
+        }
     }
+    let started = started?;
+    let [program, daemon, raw] = &started[..] else {
+        return None;
+    };
+    if daemon != "daemon" || raw != "--raw-output" {
+        return None;
+    }
+    Some((undoubled(&undoubled(program, '%')?, '$')?, dir?))
+}
+
+/// `word` with each doubled `mark` read as one, as systemd reads `%%` and
+/// `$$`. Any other use of `mark`, which systemd replaces with what it
+/// stands for, is not one the service writes.
+fn undoubled(word: &str, mark: char) -> Option<String> {
+    let mut text = String::with_capacity(word.len());
+    let mut chars = word.chars();
+    while let Some(c) = chars.next() {
+        if c == mark && chars.next() != Some(mark) {
+            return None;
+        }
+        text.push(c);
+    }
+    Some(text)
+}
+
+/// The words of a unit's value, unquoted as the service quotes them: bare,
+/// in single quotes, or in double quotes with the escapes it writes.
+fn words(value: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut rest = value.trim_start();
+    while !rest.is_empty() {
+        let (word, after) = if let Some(quoted) = rest.strip_prefix('\'') {
+            let (word, after) = quoted.split_once('\'')?;
+            (!word.contains('\\')).then(|| (word.to_owned(), after))?
+        } else if let Some(quoted) = rest.strip_prefix('"') {
+            double_quoted(quoted)?
+        } else {
+            let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+            let (word, after) = rest.split_at(end);
+            (!word.contains(['\\', '\'', '"'])).then(|| (word.to_owned(), after))?
+        };
+        if !after.is_empty() && !after.starts_with(char::is_whitespace) {
+            return None;
+        }
+        words.push(word);
+        rest = after.trim_start();
+    }
+    Some(words)
+}
+
+/// The text of a word in double quotes, from just after its opening quote,
+/// and what follows its closing one. Its escapes are those the service
+/// writes, which systemd reads as C escapes: no others are taken.
+fn double_quoted(quoted: &str) -> Option<(String, &str)> {
+    let mut text = String::new();
+    let mut chars = quoted.char_indices();
+    while let Some((at, c)) = chars.next() {
+        let escaped = match c {
+            '"' => return Some((text, &quoted[at + 1..])),
+            '\\' => chars.next()?.1,
+            c => {
+                text.push(c);
+                continue;
+            }
+        };
+        let decoded = match escaped {
+            '"' | '\\' => escaped,
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            'b' => '\u{8}',
+            'f' => '\u{c}',
+            'u' => {
+                let hex: String = (0..4)
+                    .map(|_| chars.next().map(|(_, c)| c))
+                    .collect::<Option<_>>()?;
+                if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return None;
+                }
+                char::from_u32(u32::from_str_radix(&hex, 16).ok()?).filter(|c| *c != '\0')?
+            }
+            _ => return None,
+        };
+        text.push(decoded);
+    }
+    None
 }
 
 /// The text of a plist `<string>`, unescaped.
@@ -750,74 +929,178 @@ mod tests {
         (directory, format!("{path}:/usr/bin:/bin"))
     }
 
-    #[test]
-    fn a_service_definition_says_what_it_runs_as_the_service_writes_it() {
-        // As the service's launchd definition renders it.
-        let plist = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-            <plist version=\"1.0\">\n<dict>\n  <key>Label</key><string>dev.agent-backbone-rs</string>\n\
-            \x20 <key>ProgramArguments</key>\n  <array>\n    <string>/opt/homebrew/bin/backbone</string>\n\
-            \x20   <string>daemon</string>\n    <string>--raw-output</string>\n  </array>\n\
-            \x20 <key>EnvironmentVariables</key>\n  <dict>\n    <key>PATH</key><string>/usr/bin:/bin</string>\n\
-            \x20   <key>BACKBONE_DIR</key><string>/Users/a/Tom &amp; Co/backbone</string>\n  </dict>\n\
-            </dict>\n</plist>\n";
-        let (program, dir) = (
-            Path::new("/opt/homebrew/bin/backbone"),
-            Path::new("/Users/a/Tom & Co/backbone"),
-        );
-        assert_eq!(this_installation(plist, program, dir), Ok(()));
-        // Another program or Backbone directory is another installation's.
-        let other = this_installation(plist, Path::new("/usr/local/bin/backbone"), dir);
-        assert!(
-            other
-                .unwrap_err()
-                .contains("runs /opt/homebrew/bin/backbone")
-        );
-        let other = this_installation(plist, program, Path::new("/Users/a/backbone"));
-        assert!(
-            other
-                .unwrap_err()
-                .contains("serves /Users/a/Tom & Co/backbone")
-        );
-        // As its systemd unit renders it: plain, quoted, % and $ doubled.
-        let unit = |program: &str, assignment: &str| {
-            format!(
-                "[Unit]\nDescription=Agent Backbone\n\n[Service]\n\
-                 ExecStart={program} daemon --raw-output\n\
-                 Environment=PATH=/usr/bin:/bin\nEnvironment={assignment}\nStandardOutput=null\n"
-            )
+    /// A word of a unit as the service quotes it.
+    fn quote(word: &str) -> String {
+        let plain = |c: char| c.is_ascii_alphanumeric() || "@%+=:,./-_".contains(c);
+        if !word.is_empty() && word.chars().all(plain) {
+            return word.to_owned();
+        }
+        if word
+            .chars()
+            .any(|c| c == '\'' || c == '\\' || c.is_control())
+        {
+            return serde_json::to_string(word).unwrap();
+        }
+        format!("'{word}'")
+    }
+    /// The unit the service writes for `program` on `dir`.
+    fn unit_of(program: &str, dir: &str) -> String {
+        let program = program.replace('%', "%%").replace('$', "$$");
+        let assignment = format!("BACKBONE_DIR={}", dir.replace('%', "%%"));
+        format!(
+            "[Unit]\nDescription=Agent Backbone: this machine's service for its agents\n\
+             After=default.target\n\n[Service]\nExecStart={} daemon --raw-output\n\
+             Environment={}\nEnvironment=PATH=/usr/bin\nStandardOutput=null\nStandardError=null\n\
+             Restart=on-failure\nRestartSec=3\n# Only its own process is stopped.\n\
+             KillMode=process\n\n[Install]\nWantedBy=default.target\n",
+            quote(&program),
+            quote(&assignment)
+        )
+    }
+    /// The LaunchAgent the service writes for `program` on `dir`.
+    fn plist_of(program: &str, dir: &str) -> String {
+        let escape = |text: &str| -> String {
+            text.chars()
+                .map(|c| match c {
+                    '&' => "&amp;".to_owned(),
+                    '<' => "&lt;".to_owned(),
+                    '>' => "&gt;".to_owned(),
+                    '"' => "&quot;".to_owned(),
+                    '\'' => "&apos;".to_owned(),
+                    c if c.is_control() => format!("&#{};", u32::from(c)),
+                    c => c.to_string(),
+                })
+                .collect()
         };
-        for (written, assignment, program, dir) in [
-            (
-                "/home/a/.local/bin/backbone",
-                "BACKBONE_DIR=/home/a/.local/share/backbone",
-                "/home/a/.local/bin/backbone",
-                "/home/a/.local/share/backbone",
-            ),
-            (
-                "'/home/a/my bin/backbone'",
-                "'BACKBONE_DIR=/home/a/50%% done'",
-                "/home/a/my bin/backbone",
-                "/home/a/50% done",
-            ),
-            (
-                "\"/home/o'brien/$$HOME/backbone\"",
-                "\"BACKBONE_DIR=/home/o'brien\"",
-                "/home/o'brien/$HOME/backbone",
-                "/home/o'brien",
-            ),
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \
+             \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+             <plist version=\"1.0\">\n<dict>\n  <key>Label</key><string>dev.agent-backbone-rs</string>\n\
+             \x20 <key>ProgramArguments</key>\n  <array>\n    <string>{}</string>\n\
+             \x20   <string>daemon</string>\n    <string>--raw-output</string>\n  </array>\n\
+             \x20 <key>EnvironmentVariables</key>\n  <dict>\n    <key>BACKBONE_DIR</key><string>{}</string>\n\
+             \x20   <key>PATH</key><string>/usr/bin</string>\n  </dict>\n\
+             \x20 <key>RunAtLoad</key><true/>\n  <key>KeepAlive</key>\n  <dict>\n\
+             \x20   <key>SuccessfulExit</key><false/>\n  </dict>\n\
+             \x20 <key>ExitTimeOut</key><integer>10</integer>\n\
+             \x20 <key>ProcessType</key><string>Interactive</string>\n</dict>\n</plist>\n",
+            escape(program),
+            escape(dir)
+        )
+    }
+    fn ours(text: &str, program: &str, dir: &str) -> bool {
+        this_installation(text, Path::new(program), Path::new(dir)).is_ok()
+    }
+
+    #[test]
+    fn a_unit_is_this_installations_only_when_systemd_would_run_it_so() {
+        for (program, dir) in [
+            ("/opt/bin/backbone", "/home/a/backbone"),
+            ("/opt/my tools/backbone", "/home/a/my backbone"),
+            ("/opt/100% $HOME/backbone", "/home/a/100% $HOME"),
+            ("/opt/it's/back\\bone", "/home/a/\"quoted\"\ttab"),
         ] {
-            assert_eq!(
-                runs(&unit(written, assignment)),
-                Some((program.to_owned(), dir.to_owned())),
-                "{written}"
+            assert!(
+                ours(&unit_of(program, dir), program, dir),
+                "{program} {dir}"
             );
         }
-        // One the service did not write says nothing this reads.
-        assert_eq!(runs("[Service]\nExecStart=backbone serve\n"), None);
-        assert_eq!(
-            runs("ExecStart=/b daemon\nEnvironment=\"PATH=/bin\" \"BACKBONE_DIR=/x\"\n"),
-            None
+        // Another program or directory whose name only starts as this one's.
+        let (program, dir) = ("/opt/bin/backbone", "/home/a/backbone");
+        assert!(!ours(&unit_of("/opt/bin/backbone-old", dir), program, dir));
+        assert!(!ours(&unit_of(program, "/home/a/backbone/2"), program, dir));
+        // This one's program and directory in comments, or another section.
+        let other = unit_of("/elsewhere/backbone", "/home/b/backbone");
+        let commented = other.replace(
+            "[Service]\n",
+            "[Service]\n# ExecStart=/opt/bin/backbone daemon\n; Environment=BACKBONE_DIR=/home/a/backbone\n",
         );
+        assert!(!ours(&commented, program, dir), "{commented}");
+        let misplaced = format!(
+            "[Unit]\nExecStart=/opt/bin/backbone daemon\nEnvironment=BACKBONE_DIR=/home/a/backbone\n{other}"
+        );
+        assert!(!ours(&misplaced, program, dir));
+        // A second start, a specifier or an escape it doesn't write, or a key
+        // that may set, clear or pass on BACKBONE_DIR or run something else.
+        let unit = unit_of(program, dir);
+        assert!(ours(&unit, program, dir));
+        for changed in [
+            unit.replace("Restart=", "ExecStart=/bin/sh daemon\nRestart="),
+            unit.replace("/opt/bin/backbone", "/opt/%h/backbone"),
+            unit.replace(
+                "ExecStart=/opt/bin/backbone",
+                "ExecStart=\"/opt/bin/backbon\\x65\"",
+            ),
+            unit.replace(" daemon", " daemon --other"),
+            unit.replace(" daemon --raw-output", " daemon"),
+            unit.replace("Restart=", "EnvironmentFile=/home/b/env\nRestart="),
+            unit.replace("Restart=", "UnsetEnvironment=BACKBONE_DIR\nRestart="),
+            unit.replace("Restart=", "PassEnvironment=BACKBONE_DIR\nRestart="),
+            unit.replace("Restart=", "Environment=\nRestart="),
+            unit.replace("Restart=", "Environment=BACKBONE_DIR=/home/b\nRestart="),
+            unit.replace("Restart=", "ExecStartPre=/bin/true\nRestart="),
+            unit.replace("After=", "ExecStart=/opt/bin/backbone daemon\nAfter="),
+            format!("Environment=BACKBONE_DIR=/home/b\n{unit}"),
+            format!("{unit}[X-Other]\nKey=value\n"),
+            unit.replace("KillMode=process", "KillMode=process \\"),
+        ] {
+            assert!(!ours(&changed, program, dir), "{changed}");
+        }
+    }
+
+    #[test]
+    fn a_launch_agent_is_this_installations_only_when_launchd_would_run_it_so() {
+        let (program, dir) = ("/opt/my <tools> & 'co'/backbone", "/Users/a/back\"bone\"");
+        assert!(ours(&plist_of(program, dir), program, dir));
+        let plain = ("/opt/bin/backbone", "/Users/a/backbone");
+        // Another program or directory whose name only starts as this one's.
+        assert!(!ours(
+            &plist_of("/opt/bin/backbone-old", plain.1),
+            plain.0,
+            plain.1
+        ));
+        assert!(!ours(
+            &plist_of(plain.0, "/Users/a/backbone/2"),
+            plain.0,
+            plain.1
+        ));
+        // This one's program and directory in a comment only, a Program
+        // launchd would run in place of the one it names, another argument,
+        // or the directory outside its variables or named twice.
+        let other = plist_of("/elsewhere/backbone", "/Users/b/backbone");
+        let commented = other.replacen(
+            "<dict>",
+            "<!-- <string>/opt/bin/backbone</string> <string>/Users/a/backbone</string> -->\n<dict>",
+            1,
+        );
+        let text = plist_of(plain.0, plain.1);
+        assert!(ours(&text, plain.0, plain.1));
+        for changed in [
+            commented,
+            text.replace(
+                "<key>Label</key>",
+                "<key>Program</key><string>/bin/sh</string>\n  <key>Label</key>",
+            ),
+            text.replace(
+                "<string>--raw-output</string>",
+                "<string>--raw-output</string>\n    <string>--other</string>",
+            ),
+            text.replace(
+                "<key>RunAtLoad</key>",
+                "<key>BACKBONE_DIR</key><string>/Users/a/backbone</string>\n  <key>RunAtLoad</key>",
+            ),
+            text.replace(
+                "<key>PATH</key>",
+                "<key>BACKBONE_DIR</key><string>/Users/b/backbone</string>\n    <key>PATH</key>",
+            ),
+        ] {
+            assert!(!ours(&changed, plain.0, plain.1), "{changed}");
+        }
+        // Why another installation's is left alone.
+        let refused = this_installation(&other, Path::new(plain.0), Path::new(plain.1));
+        assert!(refused.unwrap_err().contains("runs /elsewhere/backbone"));
+        let refused = this_installation(&text, Path::new(plain.0), Path::new("/Users/c"));
+        assert!(refused.unwrap_err().contains("serves /Users/a/backbone"));
     }
 
     #[test]
@@ -975,7 +1258,7 @@ mod tests {
 
     /// A fake `backbone`: it keeps each request it is given and prints the
     /// next of `answers`, a result of `initialize` for [`ID`] each, or
-    /// nothing for a lost answer.
+    /// nothing for a lost answer, and exits as setup does for it.
     fn fake(answers: &[Option<(&str, &str, &str)>]) -> (tempfile::TempDir, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
@@ -989,6 +1272,17 @@ mod tests {
                 format!("{}\n{result}\n", fixture("step"))
             });
             std::fs::write(directory.path().join(format!("answer-{}", at + 1)), printed).unwrap();
+            let exit = match answer {
+                Some((_, "invalid_request", _)) => 2,
+                Some(("completed", ..)) => 0,
+                Some(("action_required", ..)) => 3,
+                _ => 1,
+            };
+            std::fs::write(
+                directory.path().join(format!("exit-{}", at + 1)),
+                exit.to_string(),
+            )
+            .unwrap();
         }
         let script = directory.path().join("backbone");
         let root = directory.path().display();
@@ -998,7 +1292,8 @@ mod tests {
                 "#!/bin/sh\n[ \"$1 $2 $4\" = 'setup --file --jsonl' ] || exit 9\n\
                  /bin/cat \"$3\" >> '{root}/sent'; printf '\\n' >> '{root}/sent'\n\
                  n=$(($(/bin/cat '{root}/count' 2>/dev/null || echo 0) + 1)); echo $n > '{root}/count'\n\
-                 /bin/cat '{root}/answer-'$n\n"
+                 /bin/cat '{root}/answer-'$n\n\
+                 exit $(/bin/cat '{root}/exit-'$n)\n"
             ),
         )
         .unwrap();
@@ -1012,6 +1307,37 @@ mod tests {
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn an_answer_its_exit_contradicts_is_asked_for_again() {
+        let initialized = Some(("completed", "initialized", "none"));
+        let (directory, backbone) = fake(&[initialized, initialized]);
+        std::fs::write(directory.path().join("exit-1"), "1").unwrap();
+        assert_eq!(
+            initialize(&backbone, "/usr/bin:/bin", ID, &|_| None),
+            Ok(())
+        );
+        assert_eq!(sent(&directory).len(), 2);
+        let answer = |status: &str, code: &str| Answer {
+            status: status.into(),
+            code: code.into(),
+            message: String::new(),
+            retry: "none".into(),
+        };
+        for (status, code, exit) in [
+            ("completed", "initialized", 0),
+            ("failed", "installation_conflict", 1),
+            ("failed", "invalid_request", 2),
+            ("action_required", "runtime_missing", 3),
+        ] {
+            let answer = answer(status, code);
+            assert!(answer.exits(Some(exit)), "{code}");
+            assert!(!answer.exits(Some((exit + 1) % 4)), "{code}");
+            assert!(!answer.exits(None), "{code}");
+        }
+        // A status this app doesn't know has no exit to match.
+        assert!(answer("paused", "new_code").exits(Some(7)));
     }
 
     #[test]
