@@ -88,11 +88,25 @@ fn status(s: &Snapshot) -> &'static str {
         .is_some_and(|e| e.code.as_deref() == Some("launch_failed"))
     {
         "Agent added, not running"
+    } else if s.closed() && unknown_whether_added(s) {
+        "Not known whether it was added"
     } else if s.closed() {
         "Agent not added"
     } else {
         "Needs attention"
     }
+}
+/// The latest first-agent result says nothing of whether the agent was
+/// registered: it is kept no longer, not known, or another took its name,
+/// before or after registration.
+fn unknown_whether_added(s: &Snapshot) -> bool {
+    s.first_result.as_ref().is_some_and(|e| {
+        e.retry.as_deref() == Some("none")
+            && matches!(
+                e.code.as_deref(),
+                Some("outcome_unknown" | "request_expired" | "agent_conflict")
+            )
+    })
 }
 /// The agent's CLI runs. Its terminal may still ask for a sign-in, trust or
 /// terms first, so that terminal is the next step.
@@ -116,7 +130,7 @@ fn outcome(s: &Snapshot) -> Option<String> {
         ("request_cancelled", _) if event.cancelled => return None,
         ("request_cancelled", _) if event.status == "failed" => "This request was cancelled, so it never runs. Start again to make a new one.".into(),
         ("agent_conflict", Some("none")) => format!(
-            "{name} was added, but another terminal or session uses its name now. Look at it in the workspace before adding it again."
+            "Another agent, terminal or session uses the name {name} or its folder now. Look at the workspace before adding it again."
         ),
         ("agent_conflict", _) => format!(
             "An agent or terminal in this profile already uses the name {name} or its folder. Go back and choose another."
@@ -131,14 +145,14 @@ fn outcome(s: &Snapshot) -> Option<String> {
         ("installation_conflict", _) => "This request is for another profile, or this computer is no longer the profile's. Open the profile again before adding agents.".into(),
         ("request_conflict", _) => "Its request ID was used for another request. Start again: that makes a new request.".into(),
         ("request_expired", _) => format!(
-            "This request is older than the profile keeps requests for, and never runs now. Check whether {name} is in the workspace before adding it again."
+            "This request is older than the profile keeps requests for, and never runs now. It isn't known whether {name} was added: look at the workspace before adding it again."
         ),
         ("outcome_unknown", Some("same_request")) if cancel => "The request may be running now, or the profile's records couldn't be read. Send the cancellation again.".into(),
         ("outcome_unknown", Some("same_request")) => format!(
             "What came of it isn't known yet. Try again: it asks about the same request, so {name} isn't added twice."
         ),
         ("outcome_unknown", _) => format!(
-            "The profile doesn't know what came of this request, and it never runs again. Check whether {name} is in the workspace before adding it again."
+            "The profile doesn't know whether {name} was added, and this request never runs again. Look at the workspace before adding it again."
         ),
         ("cancellation_unsafe", _) => format!(
             "Setup had already begun to change things, so it wasn't cancelled. Look at {name} in the workspace: a cancellation is not a rollback."
@@ -167,7 +181,7 @@ fn message(error: Error) -> &'static str {
             "The saved request changed. Reload its original state."
         }
         Error::Pending => {
-            "A saved request for this agent name is still open. Open Saved setup requests to finish or forget it, or use another name."
+            "An earlier first-agent request in this profile is still open. Open Saved setup requests to finish, cancel or forget it first."
         }
         Error::RetryRefused => "The retained provider result does not allow this retry.",
         Error::Storage(journal::Error::Unsafe) => "Setup storage is not private or safe to use.",

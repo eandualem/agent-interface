@@ -137,7 +137,7 @@ fn each_code_says_what_happened_by_what_may_follow_it() {
     };
     for row in [
         "failed agent_conflict new_request: already uses the name worker",
-        "failed agent_conflict none: uses its name now",
+        "failed agent_conflict none: uses the name worker or its folder now",
         "action_required runtime_missing new_request: isn't installed",
         "failed runtime_missing new_request: isn't installed",
         "failed starter_conflict new_request: starter",
@@ -176,6 +176,19 @@ fn each_code_says_what_happened_by_what_may_follow_it() {
     s.cancellation_result.as_mut().unwrap().cancelled = true;
     assert!(outcome(&s).is_none() && s.closed());
     assert_eq!(status(&s), "Safely cancelled");
+    // Whether the agent was added isn't known from these.
+    for row in [
+        ("action_required", "outcome_unknown"),
+        ("failed", "request_expired"),
+        ("failed", "agent_conflict"),
+    ] {
+        let s = answered(false, row.0, row.1, "none");
+        assert_eq!(status(&s), "Not known whether it was added", "{row:?}");
+    }
+    assert_eq!(
+        status(&answered(false, "failed", "agent_conflict", "new_request")),
+        "Agent not added"
+    );
     // Its launch failed: the agent was added, and its CLI isn't running.
     let s = answered(false, "failed", "launch_failed", "none");
     assert_eq!(status(&s), "Agent added, not running");

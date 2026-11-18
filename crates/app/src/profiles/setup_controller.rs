@@ -33,7 +33,7 @@ pub enum Error {
     Completed,
     /// The validated provider result does not permit a same-request retry.
     RetryRefused,
-    /// An original request for this profile instance still needs recovery.
+    /// An open first-agent request of this profile still needs recovery.
     Pending,
     /// Storage failed or another revision won; reread the original key.
     Storage(journal::Error),
@@ -176,8 +176,9 @@ impl Controller {
     }
 
     /// Persist exact setup and cancellation intent before any invocation. A
-    /// journal-wide admission check refuses a different open request for the same
-    /// agent name in the same profile; other names stay free.
+    /// journal-wide admission check refuses a new request while one for the
+    /// same profile is open, whatever agent it adds: a profile has one first
+    /// agent, and an open request may still make it.
     /// Invalid records fail closed.
     /// The scan has a bounded record count and an eight-second read budget.
     pub fn enqueue(&self, prepared: Prepared) -> Result<Snapshot, Error> {
@@ -197,10 +198,7 @@ impl Controller {
             if std::time::Instant::now() >= deadline {
                 return Err(Error::Client(super::Error::TimedOut));
             }
-            if existing.profile_id == setup.profile_id()
-                && existing.agent_name.eq_ignore_ascii_case(setup.agent_name())
-                && !existing.closed()
-            {
+            if existing.profile_id == setup.profile_id() && !existing.closed() {
                 return Err(Error::Pending);
             }
             Ok(())

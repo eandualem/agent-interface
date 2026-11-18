@@ -392,3 +392,38 @@ fn tab_reaches_every_field_shown_in_order() {
         Field::Name
     );
 }
+
+#[test]
+fn add_agent_needs_no_setup_journal_and_a_guide_does() {
+    use std::{fs, os::unix::fs::PermissionsExt};
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let executable = root.join("provider");
+    fs::write(
+        &executable,
+        "#!/bin/sh\n[ \"$*\" = \"runtimes --json\" ] || exit 2\nprintf '%s' '{\"schema_version\":1,\"items\":[{\"id\":\"codex\",\"display_name\":\"Codex\",\"available\":true,\"setup_supported\":true,\"models\":[],\"efforts\":[],\"authentication\":\"unknown\"}]}'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+    let client = Client::new(executable, "/usr/bin:/bin".into()).unwrap();
+    // Where the journal would be, a file: it can't be opened.
+    fs::write(root.join("profile-setup"), "").unwrap();
+    let identity = profile().expected_identity().unwrap();
+    let added = load_choices(
+        client.clone(),
+        root.clone(),
+        &identity,
+        true,
+        false,
+        &|| true,
+    );
+    assert!(matches!(
+        added,
+        Ok(State::Ready {
+            controller: None,
+            pending: 0,
+            ..
+        })
+    ));
+    assert!(load_choices(client, root, &identity, true, true, &|| true).is_err());
+}

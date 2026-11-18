@@ -397,7 +397,7 @@ fn concurrent_fresh_choices_admit_only_one_request_for_the_instance() {
 }
 
 #[test]
-fn admission_blocks_the_same_agent_name_only_and_never_ignores_invalid_records() {
+fn admission_blocks_the_profile_s_other_requests_and_never_ignores_invalid_records() {
     let fixture = Fixture::new("");
     let controller = fixture.controller();
     let original = controller.enqueue(intent()).unwrap();
@@ -406,15 +406,16 @@ fn admission_blocks_the_same_agent_name_only_and_never_ignores_invalid_records()
         controller.enqueue(intent_for(3, PROFILE)),
         Err(Error::Pending)
     );
-    assert_eq!(controller.enqueue(named(3, "GUIDE")), Err(Error::Pending));
-    controller.enqueue(named(4, "second")).unwrap();
+    // Under another name too: an open request may still make the profile's
+    // first agent. Another profile is free.
+    assert_eq!(controller.enqueue(named(4, "second")), Err(Error::Pending));
     controller.enqueue(intent_for(5, OTHER)).unwrap();
     assert_eq!(
         controller
             .pending(&original.profile_id, &|| true)
             .unwrap()
             .len(),
-        2
+        1
     );
     let journal = journal::Journal::open(&fixture.journal).unwrap();
     journal
@@ -437,7 +438,7 @@ fn admission_blocks_the_same_agent_name_only_and_never_ignores_invalid_records()
 }
 
 #[test]
-fn a_result_this_request_cannot_retry_closes_it_and_a_retryable_one_blocks_only_its_name() {
+fn a_result_this_request_cannot_retry_closes_it_and_a_retryable_one_blocks_its_profile() {
     let fixture = Fixture::new("");
     let controller = fixture.controller();
     let result = |n: u8, code: &str, retry: &str| {
@@ -460,7 +461,7 @@ fn a_result_this_request_cannot_retry_closes_it_and_a_retryable_one_blocks_only_
             .unwrap()
             .is_empty()
     );
-    // Not known yet: the request stays open for this name, others are free.
+    // Not known yet: the request stays open, and holds the profile.
     fixture.reply(
         Action::FirstAgent,
         &result(2, "outcome_unknown", "same_request"),
@@ -474,8 +475,8 @@ fn a_result_this_request_cannot_retry_closes_it_and_a_retryable_one_blocks_only_
         controller.enqueue(intent_for(7, PROFILE)),
         Err(Error::Pending)
     );
-    controller.enqueue(named(8, "second")).unwrap();
-    // Forgetting needs the revision shown, and frees the name.
+    assert_eq!(controller.enqueue(named(8, "second")), Err(Error::Pending));
+    // Forgetting needs the revision shown, and frees the profile.
     assert_eq!(
         controller.forget(&slow.key, Some(slow.revision + 1)),
         Err(Error::Storage(journal::Error::Conflict))

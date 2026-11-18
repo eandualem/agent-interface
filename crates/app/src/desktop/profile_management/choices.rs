@@ -43,9 +43,12 @@ enum State {
     /// Saved requests could not be checked, so new choices wait for recovery.
     Unchecked(Arc<Controller>),
     Ready {
-        controller: Arc<Controller>,
+        /// The setup journal, which a guide's start is saved in; Add agent
+        /// starts with the service's own start and opens none.
+        controller: Option<Arc<Controller>>,
         catalog: Catalog,
-        /// Open requests, offered for recovery without blocking other agents.
+        /// Open first-agent requests of this profile: while there is one, a
+        /// guide makes no new request.
         pending: usize,
     },
     Failed,
@@ -263,9 +266,8 @@ impl Form {
     }
     pub fn controller(&self) -> Option<Arc<Controller>> {
         match &self.state {
-            State::Unchecked(controller) | State::Ready { controller, .. } => {
-                Some(controller.clone())
-            }
+            State::Unchecked(controller) => Some(controller.clone()),
+            State::Ready { controller, .. } => controller.clone(),
             _ => None,
         }
     }
@@ -584,6 +586,11 @@ impl Form {
         {
             return sendable;
         }
+        // Another open request of this profile is finished, cancelled or
+        // forgotten under Earlier setups first; admission refuses it anyway.
+        if self.guide && matches!(self.state, State::Ready { pending, .. } if pending > 0) {
+            return false;
+        }
         if self.profile.served() && !self.guide {
             self.served_start(cx).is_some()
         } else {
@@ -696,15 +703,19 @@ fn load_choices(
     setup: bool,
     live: &dyn Fn() -> bool,
 ) -> Result<State, &'static str> {
-    let journal = journal::Journal::open(&directory.join("profile-setup"))
-        .map_err(|_| "Private setup storage is unavailable.")?;
-    let controller = Arc::new(Controller::new(journal, &client));
-    let pending = match controller.pending(&identity.profile_id, live) {
-        Ok(pending) => pending.len(),
-        // A guide's start is saved here first, so it waits for recovery;
-        // Add agent starts with the service's own start, saved nowhere.
-        Err(_) if setup => return Ok(State::Unchecked(controller)),
-        Err(_) => 0,
+    // A guide's start is saved in the setup journal first, so it waits for
+    // a read of it; Add agent starts with the service's own start and needs
+    // no journal at all.
+    let (controller, pending) = if setup {
+        let journal = journal::Journal::open(&directory.join("profile-setup"))
+            .map_err(|_| "Private setup storage is unavailable.")?;
+        let controller = Arc::new(Controller::new(journal, &client));
+        let Ok(pending) = controller.pending(&identity.profile_id, live) else {
+            return Ok(State::Unchecked(controller));
+        };
+        (Some(controller), pending.len())
+    } else {
+        (None, 0)
     };
     let catalog = if served {
         client.served_runtimes(identity, live)
