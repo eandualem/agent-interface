@@ -1,39 +1,7 @@
 use super::*;
-use crate::profiles::{
-    Profile,
-    setup::{Agent, Brief},
-};
+use crate::profiles::setup::tests::{answer, cancelled, guide, prepared, ready};
 use serde_json::Value;
 
-fn fixtures() -> Value {
-    serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/profiles-v1.json"
-    )))
-    .unwrap()
-}
-fn prepared() -> Prepared {
-    let profile =
-        Profile::parse(&serde_json::to_vec(&fixtures()["discovery"]["show_ready"]).unwrap())
-            .unwrap();
-    Prepared::first_agent(
-        "setup-a1",
-        &profile,
-        vec!["codex".into()],
-        Agent {
-            name: "worker".into(),
-            directory: "/example/project".into(),
-            create_directory: false,
-            runtime: "codex".into(),
-            model: None,
-            brief: Brief::Text {
-                text: "Project work".into(),
-            },
-        },
-        false,
-    )
-    .unwrap()
-}
 fn event(prepared: &Prepared, action: Action, value: &Value) -> Event {
     let mut stream = prepared.stream(action);
     stream.push(&serde_json::to_vec(value).unwrap()).unwrap();
@@ -42,13 +10,12 @@ fn event(prepared: &Prepared, action: Action, value: &Value) -> Event {
 
 #[test]
 fn readiness_and_cancellation_round_trip_without_inventing_launches_or_progress() {
-    let prepared = prepared();
-    let fixtures = fixtures();
-    for (action, field) in [
-        (Action::FirstAgent, "result"),
-        (Action::CancelFirstAgent, "cancellation_result"),
+    let prepared = prepared(guide());
+    for (action, value) in [
+        (Action::FirstAgent, ready()),
+        (Action::CancelFirstAgent, cancelled()),
     ] {
-        let original = event(&prepared, action, &fixtures["setup"][field]);
+        let original = event(&prepared, action, &value);
         let checkpoint = prepared.outcome_checkpoint(&original).unwrap();
         let fresh = Prepared::restore(&prepared.checkpoint().unwrap()).unwrap();
         assert_eq!(
@@ -63,7 +30,7 @@ fn readiness_and_cancellation_round_trip_without_inventing_launches_or_progress(
         if action == Action::FirstAgent {
             assert_eq!(
                 original.launch_id.as_deref(),
-                fixtures["setup"][field]["data"]["launch_id"].as_str()
+                value["data"]["launch_id"].as_str()
             );
             assert!(original.launch_id.is_some());
         } else {
@@ -71,28 +38,34 @@ fn readiness_and_cancellation_round_trip_without_inventing_launches_or_progress(
             assert!(original.cancelled);
         }
     }
+    // A ready agent whose launch was not named stays so.
+    let mut unnamed = ready();
+    unnamed["data"]["launch_id"] = Value::Null;
+    let original = event(&prepared, Action::FirstAgent, &unnamed);
+    let saved = prepared.outcome_checkpoint(&original).unwrap();
+    assert_eq!(
+        prepared
+            .restore_outcome(Action::FirstAgent, &saved)
+            .unwrap(),
+        original
+    );
 }
 
 #[test]
-fn nonready_outcomes_keep_retry_policy_without_readiness_or_cancellation() {
-    let prepared = prepared();
+fn nonready_outcomes_keep_status_code_and_retry_as_they_came() {
+    let prepared = prepared(guide());
     for action in [Action::FirstAgent, Action::CancelFirstAgent] {
         for (status, retry) in [
             ("action_required", "same_request"),
             ("failed", "new_request"),
             ("failed", "none"),
+            ("paused", "later"),
         ] {
-            let mut value = fixtures()["setup"]["result"].clone();
-            value["action"] = match action {
-                Action::FirstAgent => "first_agent",
-                Action::CancelFirstAgent => "cancel_first_agent",
-            }
-            .into();
-            value["status"] = status.into();
-            value["code"] = "action_needed".into();
-            value["retry"] = retry.into();
-            value["data"] = json!({});
-            let original = event(&prepared, action, &value);
+            let original = event(
+                &prepared,
+                action,
+                &answer(action, status, "action_needed", retry),
+            );
             assert!(!original.cancelled);
             assert!(original.ready_agent.is_none());
             assert!(original.launch_id.is_none());
@@ -104,10 +77,10 @@ fn nonready_outcomes_keep_retry_policy_without_readiness_or_cancellation() {
 
 #[test]
 fn provider_prose_and_unneeded_data_are_not_retained() {
-    let prepared = prepared();
-    let mut value = fixtures()["setup"]["result"].clone();
+    let prepared = prepared(guide());
+    let mut value = ready();
     value["message"] = "provider-private-detail".into();
-    value["data"]["internal_detail"] = "provider-private-detail".into();
+    value["data"]["evidence"] = "provider-private-detail".into();
     value["completed_steps"] = json!(["provider-private-detail"]);
     let original = event(&prepared, Action::FirstAgent, &value);
     let bytes = prepared.outcome_checkpoint(&original).unwrap();
@@ -126,33 +99,26 @@ fn provider_prose_and_unneeded_data_are_not_retained() {
 
 #[test]
 fn progress_and_inconsistent_typed_events_cannot_become_terminal_checkpoints() {
-    let prepared = prepared();
-    let original = event(
-        &prepared,
-        Action::FirstAgent,
-        &fixtures()["setup"]["result"],
-    );
+    let prepared = prepared(guide());
+    let original = event(&prepared, Action::FirstAgent, &ready());
     let mut invalid = Vec::new();
     let mut changed = original.clone();
-    changed.step = Some("hooks".into());
+    changed.step = Some("launch".into());
     invalid.push(changed);
     let mut changed = original.clone();
     changed.cancelled = true;
     invalid.push(changed);
     let mut changed = original.clone();
-    changed.launch_id = None;
-    invalid.push(changed);
-    let mut changed = original.clone();
     changed.ready_agent = Some("other".into());
     invalid.push(changed);
     let mut changed = original.clone();
-    changed.identity.lifecycle_id = "replacement".into();
+    changed.profile_id = "0a1b2c3d4e60".into();
     invalid.push(changed);
     let mut changed = original.clone();
     changed.request_id = "other".into();
     invalid.push(changed);
     let mut changed = original.clone();
-    changed.retry = Some("same_request".into());
+    changed.code = Some("agent_waiting".into());
     invalid.push(changed);
     let mut changed = original.clone();
     changed.sequence = 0;
@@ -166,13 +132,9 @@ fn progress_and_inconsistent_typed_events_cannot_become_terminal_checkpoints() {
 }
 
 #[test]
-fn malformed_noncanonical_and_foreign_records_fail_closed() {
-    let prepared = prepared();
-    let original = event(
-        &prepared,
-        Action::FirstAgent,
-        &fixtures()["setup"]["result"],
-    );
+fn malformed_noncanonical_foreign_and_earlier_records_fail_closed() {
+    let prepared = prepared(guide());
+    let original = event(&prepared, Action::FirstAgent, &ready());
     let bytes = prepared.outcome_checkpoint(&original).unwrap();
     let mut envelope: Value = serde_json::from_slice(&bytes).unwrap();
     envelope["extra"] = true.into();
@@ -181,13 +143,7 @@ fn malformed_noncanonical_and_foreign_records_fail_closed() {
             .restore_outcome(Action::FirstAgent, &serde_json::to_vec(&envelope).unwrap())
             .is_err()
     );
-    for field in [
-        "profile_id",
-        "installation_id",
-        "lifecycle_id",
-        "request_id",
-        "action",
-    ] {
+    for field in ["request_id", "action"] {
         let mut envelope: Checkpoint = serde_json::from_slice(&bytes).unwrap();
         let mut result: Value = serde_json::from_str(&envelope.result).unwrap();
         result[field] = "replacement".into();
@@ -217,6 +173,15 @@ fn malformed_noncanonical_and_foreign_records_fail_closed() {
     );
     let mut envelope: Checkpoint = serde_json::from_slice(&bytes).unwrap();
     envelope.format = 2;
+    assert_eq!(
+        prepared.restore_outcome(Action::FirstAgent, &serde_json::to_vec(&envelope).unwrap()),
+        Err(Error::Unsupported)
+    );
+    // A result saved under schema 2 is the service's no longer.
+    let mut envelope: Checkpoint = serde_json::from_slice(&bytes).unwrap();
+    let mut result: Value = serde_json::from_str(&envelope.result).unwrap();
+    result["schema_version"] = 2.into();
+    envelope.result = serde_json::to_string(&result).unwrap();
     assert_eq!(
         prepared.restore_outcome(Action::FirstAgent, &serde_json::to_vec(&envelope).unwrap()),
         Err(Error::Unsupported)

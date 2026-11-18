@@ -1,39 +1,13 @@
 use super::*;
-use agent_interface_roster::profiles::{
-    Profile,
-    setup::{Agent, Brief},
-};
+use crate::profiles::tests::{answer, cancelled, first_agent, ready, request, step};
 use serde_json::Value;
 use std::{fs, os::unix::fs::PermissionsExt};
 
-fn fixture() -> Value {
-    serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../roster/tests/fixtures/profiles-v1.json"
-    )))
-    .unwrap()
+fn id() -> String {
+    request(1)
 }
 fn prepared() -> Prepared {
-    let profile =
-        Profile::parse(&serde_json::to_vec(&fixture()["discovery"]["show_ready"]).unwrap())
-            .unwrap();
-    Prepared::first_agent(
-        "setup-a1",
-        &profile,
-        vec!["codex".into()],
-        Agent {
-            name: "worker".into(),
-            directory: "/example/project".into(),
-            create_directory: false,
-            runtime: "codex".into(),
-            model: None,
-            brief: Brief::Text {
-                text: "Project work".into(),
-            },
-        },
-        false,
-    )
-    .unwrap()
+    first_agent(&id(), "0a1b2c3d4e5f", "guide")
 }
 fn stub(script: &str) -> (tempfile::TempDir, Client) {
     let dir = tempfile::tempdir().unwrap();
@@ -52,10 +26,9 @@ fn stub(script: &str) -> (tempfile::TempDir, Client) {
 
 #[test]
 fn setup_and_cancellation_preserve_choices_caller_and_terminal_authority() {
-    let fixture = fixture();
-    let progress = &fixture["setup"]["progress"];
-    let result = &fixture["setup"]["result"];
-    let cancelled = &fixture["setup"]["cancellation_result"];
+    let progress = step(&id(), 1, "preflight");
+    let result = ready(&id());
+    let cancelled = cancelled(&id());
     let (dir, mut client) = stub(&format!(
         r#"
 test "$BACKBONE_AGENT" = original || exit 9
@@ -85,7 +58,7 @@ esac
     let completed = setup
         .run(Action::FirstAgent, &|| true, |event| events.push(event))
         .unwrap();
-    assert_eq!(completed.ready_agent.as_deref(), Some("worker"));
+    assert_eq!(completed.ready_agent.as_deref(), Some("guide"));
     assert_eq!(events.len(), 1);
     assert!(events[0].step.is_some() && events[0].ready_agent.is_none());
     let cancelled = setup
@@ -111,39 +84,55 @@ esac
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
+    let prepared = prepared();
+    let sent = |action| serde_json::from_slice::<Value>(prepared.bytes(action)).unwrap();
     assert_eq!(
         bodies,
-        [
-            fixture["setup"]["first_agent"].clone(),
-            fixture["setup"]["cancel_first_agent"].clone()
-        ]
+        [sent(Action::FirstAgent), sent(Action::CancelFirstAgent)]
     );
 }
 
 #[test]
 fn contradictory_exit_and_foreign_output_never_emit_terminal_success() {
-    let fixture = fixture();
-    for (key, exit, accepted) in [
-        ("result", 0, true),
-        ("result", 1, false),
-        ("cancellation_unsafe", 3, true),
-        ("failed_before_resolution", 1, true),
+    let unsafe_cancel = answer(
+        &id(),
+        "cancel_first_agent",
+        "action_required",
+        "cancellation_unsafe",
+        "none",
+    );
+    let refused = answer(
+        &id(),
+        "first_agent",
+        "failed",
+        "invalid_request",
+        "new_request",
+    );
+    let paused = answer(&id(), "first_agent", "paused", "new_code", "later");
+    for (body, exit, accepted) in [
+        (ready(&id()), 0, true),
+        (ready(&id()), 1, false),
+        (unsafe_cancel, 3, true),
+        (refused.clone(), 1, true),
+        // An invalid request exits 2.
+        (refused, 2, true),
+        // A status this app doesn't know is received whatever the exit.
+        (paused, 1, true),
     ] {
-        let action = if key == "cancellation_unsafe" {
+        let action = if body["action"] == "cancel_first_agent" {
             Action::CancelFirstAgent
         } else {
             Action::FirstAgent
         };
-        let body = &fixture["setup"][key];
         let (_dir, client) = stub(&format!(
             "/bin/cat <<'FIXTURE'\n{body}\nFIXTURE\nexit {exit}"
         ));
         let result =
             Setup::new(&client, prepared()).run(action, &|| true, |_| panic!("terminal callback"));
-        assert_eq!(result.is_ok(), accepted, "{key}/{exit}");
+        assert_eq!(result.is_ok(), accepted, "{body}/{exit}");
     }
-    let mut foreign = fixture["setup"]["result"].clone();
-    foreign["lifecycle_id"] = "another".into();
+    let mut foreign = ready(&id());
+    foreign["request_id"] = request(2).into();
     let (_dir, client) = stub(&format!("/bin/cat <<'FIXTURE'\n{foreign}\nFIXTURE"));
     assert!(
         Setup::new(&client, prepared())
@@ -154,7 +143,7 @@ fn contradictory_exit_and_foreign_output_never_emit_terminal_success() {
 
 #[test]
 fn uncertain_setup_retries_exact_bytes_and_observation_stop_is_not_cancellation() {
-    let result = &fixture()["setup"]["result"];
+    let result = ready(&id());
     let (dir, client) = stub(&format!(
         r#"
 /bin/cat "$3" >> "$CAPTURE.body"; printf '\n' >> "$CAPTURE.body"
@@ -192,9 +181,8 @@ FIXTURE
 
 #[test]
 fn progress_callback_cannot_extend_terminal_observation_deadline() {
-    let fixture = fixture();
-    let progress = &fixture["setup"]["progress"];
-    let result = &fixture["setup"]["result"];
+    let progress = step(&id(), 1, "preflight");
+    let result = ready(&id());
     let (_dir, client) = stub(&format!(
         "/bin/cat <<'FIXTURE'\n{progress}\n{result}\nFIXTURE"
     ));

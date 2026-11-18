@@ -1,25 +1,43 @@
-//! Immutable schema-2 first-agent setup and cancellation, without execution.
-//! Every event is checked against the original tuple, action and request ID.
+//! Immutable schema-3 first-agent setup and cancellation, without execution.
+//! Every event is checked against the request ID, and the result also
+//! against the action: events carry no other identity.
 
 mod outcome;
 mod recovery;
 pub mod start;
 
-use super::{Error, Identity, Profile, valid_id};
+use super::{Error, Profile, valid_id};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-const REQUEST_LIMIT: usize = 32 * 1024;
+/// The setup schema the Rust service takes; it refuses 1 and 2.
+const SCHEMA_VERSION: u32 = 3;
+const REQUEST_LIMIT: usize = 32_768;
+/// A request of the most bytes, with its action changed to the longer one.
+const CANCEL_LIMIT: usize = 32_775;
 const LINE_LIMIT: usize = 64 * 1024;
 const OUTPUT_LIMIT: usize = 1024 * 1024;
 const EVENT_LIMIT: u64 = 1024;
+/// The most characters a written brief may have.
+const BRIEF_LIMIT: usize = 16_000;
+/// The most characters an agent's folder may have.
+const DIRECTORY_LIMIT: usize = 4096;
+/// The only template the core starter has.
+const TEMPLATE: &str = "orchestrator-v1";
+/// What setup counts as white space when it asks whether a brief is blank:
+/// Unicode's White_Space and ECMAScript's together.
+const WHITE_SPACE: &[char] = &[
+    '\t', '\n', '\u{b}', '\u{c}', '\r', ' ', '\u{85}', '\u{a0}', '\u{1680}', '\u{2000}',
+    '\u{2001}', '\u{2002}', '\u{2003}', '\u{2004}', '\u{2005}', '\u{2006}', '\u{2007}', '\u{2008}',
+    '\u{2009}', '\u{200a}', '\u{2028}', '\u{2029}', '\u{202f}', '\u{205f}', '\u{3000}', '\u{feff}',
+];
 
 /// Brief input selected before an immutable setup request is prepared.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Brief {
-    /// Provider-known template ID; never a consumer filesystem path.
+    /// The starter's brief, `orchestrator-v1`; never a consumer filesystem path.
     Template {
         /// Stable template identifier supplied by the provider.
         template: String,
@@ -58,80 +76,65 @@ pub enum Action {
     CancelFirstAgent,
 }
 
-/// Prepared request bytes and expected origin. Neither submission, cancellation,
-/// nor an uncertain outcome can allocate a replacement request or retarget it.
+impl Action {
+    /// The action as requests and results name it.
+    fn name(self) -> &'static str {
+        match self {
+            Action::FirstAgent => "first_agent",
+            Action::CancelFirstAgent => "cancel_first_agent",
+        }
+    }
+}
+
+/// Prepared request bytes and the profile they are for. Neither submission,
+/// cancellation, nor an uncertain outcome can allocate a replacement request
+/// or retarget it.
 pub struct Prepared {
     request_id: String,
-    identity: Identity,
+    profile_id: String,
     name: String,
     first: Vec<u8>,
     cancel: Vec<u8>,
 }
 
 impl Prepared {
-    /// Capture one atomic ready registry record and explicit setup choices.
-    /// Registry metadata supplies expectations; it does not authorize content.
+    /// Capture a profile the Rust service serves and explicit setup choices.
+    /// Only that service takes setup schema 3, so any other profile is
+    /// `Unsupported`.
     pub fn first_agent(
         request_id: &str,
         profile: &Profile,
-        hooks: Vec<String>,
         agent: Agent,
         start_greeting: bool,
     ) -> Result<Self, Error> {
-        let binding = profile.binding.as_ref().ok_or(Error::NotReady)?;
-        let identity = Identity {
-            profile_id: profile.item.profile_id.clone(),
-            installation_id: binding.installation_id.clone(),
-            lifecycle_id: binding.lifecycle_id.clone(),
-        };
-        Self::prepare(request_id, identity, hooks, agent, start_greeting)
+        if !profile.served() {
+            return Err(Error::Unsupported);
+        }
+        Self::prepare(request_id, &profile.item.profile_id, agent, start_greeting)
     }
 
+    /// Check every field as the contract words it, so the service never has
+    /// to refuse a request the app could have refused.
     fn prepare(
         request_id: &str,
-        identity: Identity,
-        hooks: Vec<String>,
+        profile_id: &str,
         agent: Agent,
         start_greeting: bool,
     ) -> Result<Self, Error> {
-        let brief_ok = match &agent.brief {
-            Brief::Template { template } => valid_id(template),
-            Brief::Text { text } => !text.trim().is_empty() && !text.contains('\0'),
-        };
-        if !valid_id(request_id)
-            || [
-                &identity.profile_id,
-                &identity.installation_id,
-                &identity.lifecycle_id,
-            ]
-            .iter()
-            .any(|id| !valid_id(id))
-            || !crate::valid_agent(&agent.name)
-            || !agent.directory.is_absolute()
-            || !agent
-                .directory
-                .to_str()
-                .is_some_and(|s| !s.chars().any(char::is_control))
-            || !valid_id(&agent.runtime)
-            || agent.runtime == "shell"
-            || agent.model.as_ref().is_some_and(|model| !valid_id(model))
-            || !brief_ok
-            || hooks.iter().any(|hook| !valid_id(hook))
-            || hooks.iter().collect::<std::collections::HashSet<_>>().len() != hooks.len()
-        {
+        if !request_id_form(request_id) || !hex(profile_id, 12) || !choices(&agent) {
             return Err(Error::Invalid);
         }
         let name = agent.name.clone();
-        let mut body = json!({"schema_version":2,"request_id":request_id,"action":"first_agent","profile_id":identity.profile_id,"expected_installation_id":identity.installation_id,"expected_lifecycle_id":identity.lifecycle_id,"hooks":hooks,"agent":agent,"start_greeting":start_greeting});
+        let mut body = json!({"schema_version":SCHEMA_VERSION,"request_id":request_id,"action":"first_agent","profile_id":profile_id,"agent":agent,"start_greeting":start_greeting});
         let first = serde_json::to_vec(&body).map_err(|_| Error::Invalid)?;
         body["action"] = json!("cancel_first_agent");
         let cancel = serde_json::to_vec(&body).map_err(|_| Error::Invalid)?;
-        if first.len() > REQUEST_LIMIT || cancel.len() > REQUEST_LIMIT {
+        if first.len() > REQUEST_LIMIT || cancel.len() > CANCEL_LIMIT {
             return Err(Error::Invalid);
         }
         Ok(Self {
             request_id: request_id.into(),
-            identity,
+            profile_id: profile_id.into(),
             name,
             first,
             cancel,
@@ -144,9 +147,9 @@ impl Prepared {
             Action::CancelFirstAgent => &self.cancel,
         }
     }
-    /// Retained full expected origin; no connection authority is implied.
-    pub fn identity(&self) -> &Identity {
-        &self.identity
+    /// The profile the request is for; no connection authority is implied.
+    pub fn profile_id(&self) -> &str {
+        &self.profile_id
     }
     /// The agent this request adds.
     pub fn agent_name(&self) -> &str {
@@ -165,7 +168,7 @@ impl Prepared {
     pub fn stream(&self, action: Action) -> Stream {
         Stream {
             request_id: self.request_id.clone(),
-            identity: self.identity.clone(),
+            profile_id: self.profile_id.clone(),
             name: self.name.clone(),
             action,
             sequence: 0,
@@ -177,11 +180,67 @@ impl Prepared {
     }
 }
 
+/// A UUIDv7 in its simple form, as the contract's pattern says.
+fn request_id_form(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    hex(id, 32) && bytes[12] == b'7' && matches!(bytes[16], b'8' | b'9' | b'a' | b'b')
+}
+
+/// `length` lowercase hexadecimal digits.
+fn hex(text: &str, length: usize) -> bool {
+    text.len() == length
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Whether every choice is one the contract takes.
+fn choices(agent: &Agent) -> bool {
+    let directory = agent.directory.to_str().is_some_and(|directory| {
+        directory.starts_with('/')
+            && directory.chars().count() <= DIRECTORY_LIMIT
+            && !directory.split('/').any(|part| part == "..")
+            && !directory.chars().any(char::is_control)
+    });
+    let mut runtime = agent.runtime.chars();
+    let runtime = agent.runtime.len() <= 40
+        && runtime.next().is_some_and(|c| c.is_ascii_lowercase())
+        && runtime.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && agent.runtime != "shell";
+    let model = agent.model.as_ref().is_none_or(|model| {
+        model.len() <= 500
+            && model.starts_with(|c: char| c.is_ascii_alphanumeric())
+            && model
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '/' | '-'))
+    });
+    let brief = match &agent.brief {
+        Brief::Template { template } => template == TEMPLATE,
+        Brief::Text { text } => {
+            !text.chars().all(|c| WHITE_SPACE.contains(&c))
+                && text.chars().count() <= BRIEF_LIMIT
+                && !text.contains('\0')
+        }
+    };
+    crate::valid_agent(&agent.name)
+        && agent.name.len() <= 128
+        && directory
+        && runtime
+        && model
+        && brief
+}
+
+/// A value the app keeps as it came: a step's status, a result's status,
+/// code and retry, and a launch.
+fn token(text: &str) -> bool {
+    valid_id(text) && text.len() <= 128
+}
+
 /// Validated progress or terminal outcome; provider prose is never retained.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Event {
-    /// Full captured origin, retained for deferred consumers.
-    pub identity: Identity,
+    /// The profile the request is for, retained for deferred consumers.
+    pub profile_id: String,
     /// Original operation ID, retained for deferred consumers.
     pub request_id: String,
     /// Original setup or cancellation action.
@@ -190,31 +249,32 @@ pub struct Event {
     pub sequence: u64,
     /// Step name, absent on final results.
     pub step: Option<String>,
-    /// Bounded protocol status.
+    /// Status as it came, including one this app doesn't know.
     pub status: String,
     /// Bounded result code, absent on progress.
     pub code: Option<String>,
-    /// Retry policy supplied by a validated terminal result.
+    /// Retry policy as the result gave it, including one this app doesn't know.
     pub retry: Option<String>,
     /// Provider-confirmed safe cancellation of precisely the original request.
     pub cancelled: bool,
     /// Agent name only when readiness was explicitly confirmed for the requested agent.
     pub ready_agent: Option<String>,
-    /// Original provider launch identifier, retained only with confirmed readiness.
+    /// Provider launch identifier, when readiness was confirmed with one.
     pub launch_id: Option<String>,
 }
 
+/// One line of the setup command's output. Steps carry no action; fields
+/// this app doesn't know are ignored.
 #[derive(Deserialize)]
 struct Wire {
     schema_version: u32,
     request_id: String,
-    #[serde(flatten)]
-    identity: Identity,
-    action: Action,
     seq: u64,
     #[serde(rename = "type")]
     kind: String,
     status: String,
+    #[serde(default)]
+    action: Option<String>,
     #[serde(default)]
     step: Option<String>,
     #[serde(default)]
@@ -231,7 +291,7 @@ struct Wire {
 /// Any malformed, foreign or contradictory event poisons this invocation.
 pub struct Stream {
     request_id: String,
-    identity: Identity,
+    profile_id: String,
     name: String,
     action: Action,
     sequence: u64,
@@ -274,25 +334,22 @@ impl Stream {
     }
     fn line(&mut self, bytes: &[u8]) -> Result<Event, Error> {
         let wire: Wire = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
-        if wire.schema_version != 2 {
+        if wire.schema_version != SCHEMA_VERSION {
             return Err(Error::Unsupported);
         }
-        if wire.identity != self.identity {
-            return Err(Error::BindingMismatch);
-        }
         if wire.request_id != self.request_id
-            || wire.action != self.action
             || wire.seq <= self.sequence
             || wire.seq > EVENT_LIMIT
             || self.result.is_some()
+            || !token(&wire.status)
         {
             return Err(Error::Invalid);
         }
         let result = wire.kind == "result";
         let mut event = Event {
-            identity: self.identity.clone(),
+            profile_id: self.profile_id.clone(),
             request_id: self.request_id.clone(),
-            action: wire.action,
+            action: self.action,
             sequence: wire.seq,
             step: None,
             status: wire.status.clone(),
@@ -302,67 +359,51 @@ impl Stream {
             ready_agent: None,
             launch_id: None,
         };
-        if wire.kind == "step"
-            && matches!(
-                wire.status.as_str(),
-                "running" | "completed" | "skipped" | "failed"
-            )
-        {
+        if wire.kind == "step" {
+            // A status this app doesn't know is kept as it came.
             let step = wire
                 .step
                 .filter(|step| valid_id(step))
                 .ok_or(Error::Invalid)?;
             event.step = Some(step);
-        } else if result
-            && matches!(
-                wire.status.as_str(),
-                "completed" | "action_required" | "failed"
-            )
-        {
-            let code = wire
-                .code
-                .filter(|code| valid_id(code) && code.len() <= 128)
-                .ok_or(Error::Invalid)?;
+        } else if result && wire.action.as_deref() == Some(self.action.name()) {
+            let code = wire.code.filter(|code| token(code)).ok_or(Error::Invalid)?;
             let retry = wire
                 .retry
-                .filter(|retry| matches!(retry.as_str(), "same_request" | "new_request" | "none"))
+                .filter(|retry| token(retry))
                 .ok_or(Error::Invalid)?;
-            let completed = wire.completed_steps.ok_or(Error::Invalid)?;
-            if completed.iter().any(|step| !valid_id(step)) {
+            let steps = wire.completed_steps.ok_or(Error::Invalid)?;
+            if steps.iter().any(|step| !valid_id(step)) {
                 return Err(Error::Invalid);
             }
             let data = wire.data.filter(Value::is_object).ok_or(Error::Invalid)?;
-            event.cancelled = self.action == Action::CancelFirstAgent
-                && wire.status == "completed"
-                && code == "request_cancelled"
-                && retry == "new_request"
-                && completed.is_empty()
-                && data.get("cancelled_request_id").and_then(Value::as_str)
-                    == Some(&self.request_id)
-                && data.get("can_start_new_request").and_then(Value::as_bool) == Some(true);
-            if self.action == Action::CancelFirstAgent
-                && wire.status == "completed"
-                && !event.cancelled
-            {
-                return Err(Error::Invalid);
+            let completed = wire.status == "completed";
+            if self.action == Action::CancelFirstAgent && completed && code == "request_cancelled" {
+                // Only this answer confirms the cancellation; naming another
+                // request contradicts it.
+                if data.get("cancelled_request_id").and_then(Value::as_str)
+                    != Some(&self.request_id)
+                    || data.get("can_start_new_request").and_then(Value::as_bool) != Some(true)
+                {
+                    return Err(Error::Invalid);
+                }
+                event.cancelled = true;
             }
-            if self.action == Action::FirstAgent && wire.status == "completed" {
-                if code != "agent_ready"
-                    || retry != "none"
-                    || data.get("agent_name").and_then(Value::as_str) != Some(&self.name)
+            if self.action == Action::FirstAgent && completed && code == "agent_ready" {
+                // Ready only for this agent, whose CLI still ran after its
+                // launch; a launch is not always named.
+                let launch_id = match data.get("launch_id") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(launch)) if token(launch) => Some(launch.clone()),
+                    Some(_) => return Err(Error::Invalid),
+                };
+                if data.get("agent_name").and_then(Value::as_str) != Some(&self.name)
                     || data.get("ready").and_then(Value::as_str) != Some("ready")
-                    || !data
-                        .get("launch_id")
-                        .and_then(Value::as_str)
-                        .is_some_and(valid_id)
                 {
                     return Err(Error::Invalid);
                 }
                 event.ready_agent = Some(self.name.clone());
-                event.launch_id = data
-                    .get("launch_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
+                event.launch_id = launch_id;
             }
             event.code = Some(code);
             event.retry = Some(retry);

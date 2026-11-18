@@ -529,7 +529,6 @@ impl Form {
                 brief: self
                     .custom_brief
                     .then(|| self.brief.read(cx).value().trim()),
-                hooks: self.hooks,
                 greeting: self.greeting,
             },
         )
@@ -693,7 +692,7 @@ fn load_choices(
     let journal = journal::Journal::open(&directory.join("profile-setup"))
         .map_err(|_| "Private setup storage is unavailable.")?;
     let controller = Arc::new(Controller::new(journal, &client));
-    let Ok(pending) = controller.pending(identity, live) else {
+    let Ok(pending) = controller.pending(&identity.profile_id, live) else {
         return Ok(State::Unchecked(controller));
     };
     let catalog = if served {
@@ -719,7 +718,6 @@ struct Selection<'a> {
     model: Option<&'a str>,
     /// Own instructions; `None` is the coordinating brief a fresh install starts with.
     brief: Option<&'a str>,
-    hooks: bool,
     greeting: bool,
 }
 fn freeze(
@@ -744,11 +742,6 @@ fn freeze(
     Prepared::first_agent(
         request_id,
         profile,
-        if choice.hooks {
-            vec![runtime.id.clone()]
-        } else {
-            Vec::new()
-        },
         Agent {
             name: choice.name.into(),
             directory: choice.project.into(),

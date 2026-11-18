@@ -694,7 +694,7 @@ fn progress_matches(
         return false;
     };
     next.key == key
-        && next.event.identity == snapshot.identity
+        && next.event.profile_id == snapshot.profile_id
         && next.event.request_id == snapshot.request_id
         && next.revision > snapshot.revision
         && previous.is_none_or(|old| {
@@ -718,7 +718,7 @@ fn history(
                 // A record that can't be read may be any profile's, and only
                 // forgetting it unblocks setup, so every profile lists it.
                 profile.is_none_or(|id| match controller.read(key) {
-                    Ok(s) => s.identity.profile_id == id,
+                    Ok(s) => s.profile_id == id,
                     Err(_) => true,
                 })
             })
@@ -753,7 +753,7 @@ impl Pane {
             snapshot: Some(s), ..
         } = &self.page
         {
-            let (profile_id, name) = (s.identity.profile_id.clone(), s.agent_name.clone());
+            let (profile_id, name) = (s.profile_id.clone(), s.agent_name.clone());
             cx.emit(Open::Agent { profile_id, name });
         }
         self.back(cx);
@@ -1063,11 +1063,11 @@ impl Render for Pane {
                     if !self.busy && agent_waiting(s) {
                         let (agent, sign_in) = (
                             Open::Agent {
-                                profile_id: s.identity.profile_id.clone(),
+                                profile_id: s.profile_id.clone(),
                                 name: s.agent_name.clone(),
                             },
                             s.runtime.clone().map(|runtime| Open::SignIn {
-                                profile_id: s.identity.profile_id.clone(),
+                                profile_id: s.profile_id.clone(),
                                 runtime,
                             }),
                         );

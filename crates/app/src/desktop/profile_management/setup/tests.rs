@@ -1,16 +1,12 @@
 use super::*;
-use agent_interface_roster::profiles::{Identity, setup::Action};
+use agent_interface_roster::profiles::setup::Action;
 
 fn snapshot() -> Snapshot {
     Snapshot {
         key: "key-a".into(),
         revision: 7,
         phase: Phase::Submitted,
-        identity: Identity {
-            profile_id: "profile-a".into(),
-            installation_id: "install-a".into(),
-            lifecycle_id: "life-a".into(),
-        },
+        profile_id: "0a1b2c3d4e5f".into(),
         agent_name: "worker".into(),
         runtime: Some("codex".into()),
         request_id: "request-a".into(),
@@ -20,7 +16,7 @@ fn snapshot() -> Snapshot {
 }
 fn event(s: &Snapshot) -> Event {
     Event {
-        identity: s.identity.clone(),
+        profile_id: s.profile_id.clone(),
         request_id: s.request_id.clone(),
         action: Action::FirstAgent,
         sequence: 1,
@@ -69,7 +65,7 @@ fn progress_requires_original_key_tuple_request_and_newer_revision() {
     };
     assert!(progress_matches(Some(&s), None, &s.key, &p));
     assert!(!progress_matches(Some(&s), Some(&p), &s.key, &p));
-    p.event.identity.lifecycle_id = "life-b".into();
+    p.event.profile_id = "0a1b2c3d4e60".into();
     assert!(!progress_matches(Some(&s), None, &s.key, &p));
     p.event = event(&s);
     p.revision = s.revision;

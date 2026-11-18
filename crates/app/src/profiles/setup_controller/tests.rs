@@ -1,48 +1,23 @@
 use super::*;
-use agent_interface_roster::profiles::{
-    Profile,
-    setup::{Agent, Brief},
-};
+use crate::profiles::tests::{answer, cancelled, first_agent, ready, request, step};
 use serde_json::{Value, json};
 use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf};
 
-fn fixtures() -> Value {
-    serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../roster/tests/fixtures/profiles-v1.json"
-    )))
-    .unwrap()
+/// The profile requests are for, and two others.
+const PROFILE: &str = "0a1b2c3d4e5f";
+const OTHER: &str = "0a1b2c3d4e60";
+const THIRD: &str = "0a1b2c3d4e61";
+fn id() -> String {
+    request(1)
 }
 fn intent() -> Prepared {
-    intent_for("setup-a1", "lifecycle-a1")
+    intent_for(1, PROFILE)
 }
-fn intent_for(request_id: &str, lifecycle: &str) -> Prepared {
-    prepared(request_id, lifecycle, "worker")
+fn intent_for(n: u8, profile: &str) -> Prepared {
+    first_agent(&request(n), profile, "guide")
 }
-fn named(request_id: &str, name: &str) -> Prepared {
-    prepared(request_id, "lifecycle-a1", name)
-}
-fn prepared(request_id: &str, lifecycle: &str, name: &str) -> Prepared {
-    let mut wire = fixtures()["discovery"]["show_ready"].clone();
-    wire["binding"]["lifecycle_id"] = lifecycle.into();
-    let profile = Profile::parse(&serde_json::to_vec(&wire).unwrap()).unwrap();
-    Prepared::first_agent(
-        request_id,
-        &profile,
-        vec!["codex".into()],
-        Agent {
-            name: name.into(),
-            directory: "/example/project".into(),
-            create_directory: false,
-            runtime: "codex".into(),
-            model: None,
-            brief: Brief::Text {
-                text: "Project work".into(),
-            },
-        },
-        false,
-    )
-    .unwrap()
+fn named(n: u8, name: &str) -> Prepared {
+    first_agent(&request(n), PROFILE, name)
 }
 struct Fixture {
     root: tempfile::TempDir,
@@ -107,11 +82,13 @@ exit "$code"
         .unwrap();
     }
     fn needs_action(&self, retry: &str) {
-        let mut result = fixtures()["setup"]["result"].clone();
-        result["status"] = "action_required".into();
-        result["code"] = "action_needed".into();
-        result["retry"] = retry.into();
-        result["data"] = json!({});
+        let result = answer(
+            &id(),
+            "first_agent",
+            "action_required",
+            "action_needed",
+            retry,
+        );
         self.reply(Action::FirstAgent, &result, 3);
     }
     fn calls(&self) -> String {
@@ -126,7 +103,7 @@ fn saved_intent_executes_nothing_and_first_submission_is_claimed_once() {
     let snapshot = controller.enqueue(intent()).unwrap();
     assert_eq!(controller.ids().unwrap(), vec![snapshot.key.clone()]);
     assert_eq!(snapshot.phase, Phase::Prepared);
-    assert_eq!(snapshot.key, Controller::key("setup-a1"));
+    assert_eq!(snapshot.key, Controller::key(&id()));
     assert_eq!(controller.read(&snapshot.key).unwrap(), snapshot);
     assert_eq!(
         controller.enqueue(intent()),
@@ -184,11 +161,7 @@ fn lost_cancellation_reply_can_only_retry_the_original_cancel_after_restart() {
         recovered.cancel(&key, &|| true, |_| {}),
         Err(Error::WrongPhase)
     );
-    fixture.reply(
-        Action::CancelFirstAgent,
-        &fixtures()["setup"]["cancellation_result"],
-        0,
-    );
+    fixture.reply(Action::CancelFirstAgent, &cancelled(&id()), 0);
     assert!(
         recovered
             .retry_cancel(&key, &|| true, |_| {})
@@ -226,7 +199,13 @@ fn unsafe_cancellation_preserves_original_setup_and_respects_both_retry_policies
     controller.submit(&key, &|| true, |_| {}).unwrap();
     fixture.reply(
         Action::CancelFirstAgent,
-        &fixtures()["setup"]["cancellation_unsafe"],
+        &answer(
+            &id(),
+            "cancel_first_agent",
+            "action_required",
+            "cancellation_unsafe",
+            "none",
+        ),
         3,
     );
     let refused = controller.cancel(&key, &|| true, |_| {}).unwrap();
@@ -235,9 +214,9 @@ fn unsafe_cancellation_preserves_original_setup_and_respects_both_retry_policies
         controller.retry_cancel(&key, &|| true, |_| {}),
         Err(Error::RetryRefused)
     );
-    fixture.reply(Action::FirstAgent, &fixtures()["setup"]["result"], 0);
+    fixture.reply(Action::FirstAgent, &ready(&id()), 0);
     let ready = fixture.controller().retry(&key, &|| true, |_| {}).unwrap();
-    assert_eq!(ready.ready_agent.as_deref(), Some("worker"));
+    assert_eq!(ready.ready_agent.as_deref(), Some("guide"));
     let saved = fixture.controller().read(&key).unwrap();
     assert_eq!(saved.first_result, Some(ready));
     assert_eq!(saved.cancellation_result, Some(refused));
@@ -261,7 +240,7 @@ fn new_request_and_none_policies_never_implicitly_retry_or_allocate() {
             Err(Error::Completed)
         );
         assert_eq!(fixture.calls(), "first\n");
-        assert_eq!(controller.read(&key).unwrap().request_id, "setup-a1");
+        assert_eq!(controller.read(&key).unwrap().request_id, id());
     }
 }
 
@@ -288,7 +267,7 @@ fn foreign_checkpoint_kinds_execute_no_command() {
 #[test]
 fn a_storage_failure_withholds_readiness_even_after_matching_process_exit() {
     let fixture = Fixture::new("/bin/chmod 755 \"$ROOT/journal\"");
-    fixture.reply(Action::FirstAgent, &fixtures()["setup"]["result"], 0);
+    fixture.reply(Action::FirstAgent, &ready(&id()), 0);
     let controller = fixture.controller();
     let key = controller.enqueue(intent()).unwrap().key;
     assert_eq!(
@@ -306,14 +285,9 @@ fn a_storage_failure_withholds_readiness_even_after_matching_process_exit() {
 fn progress_is_stamped_and_a_cancel_winner_discards_stale_first_agent_success() {
     use std::{sync::mpsc, time::Duration};
     let fixture = Fixture::new("");
-    let f = fixtures();
-    let body = format!("{}\n{}\n", f["setup"]["progress"], f["setup"]["result"]);
+    let body = format!("{}\n{}\n", step(&id(), 1, "preflight"), ready(&id()));
     fixture.raw(Action::FirstAgent, body.as_bytes(), 0);
-    fixture.reply(
-        Action::CancelFirstAgent,
-        &f["setup"]["cancellation_result"],
-        0,
-    );
+    fixture.reply(Action::CancelFirstAgent, &cancelled(&id()), 0);
     let controller = fixture.controller();
     let key = controller.enqueue(intent()).unwrap().key;
     let other = fixture.controller();
@@ -350,7 +324,7 @@ fn new_choices_wait_for_durable_safe_cancellation_of_the_original() {
     let controller = fixture.controller();
     let original = controller.enqueue(intent()).unwrap();
     assert_eq!(
-        controller.enqueue(intent_for("setup-a2", "lifecycle-a1")),
+        controller.enqueue(intent_for(2, PROFILE)),
         Err(Error::Pending)
     );
     fixture.raw(Action::FirstAgent, b"lost", 0);
@@ -358,26 +332,20 @@ fn new_choices_wait_for_durable_safe_cancellation_of_the_original() {
     fixture.raw(Action::CancelFirstAgent, b"lost", 0);
     assert!(controller.cancel(&original.key, &|| true, |_| {}).is_err());
     assert_eq!(
-        fixture
-            .controller()
-            .enqueue(intent_for("setup-a2", "lifecycle-a1")),
+        fixture.controller().enqueue(intent_for(2, PROFILE)),
         Err(Error::Pending)
     );
     assert_eq!(controller.ids().unwrap(), vec![original.key.clone()]);
-    fixture.reply(
-        Action::CancelFirstAgent,
-        &fixtures()["setup"]["cancellation_result"],
-        0,
-    );
+    fixture.reply(Action::CancelFirstAgent, &cancelled(&id()), 0);
     controller
         .retry_cancel(&original.key, &|| true, |_| {})
         .unwrap();
     let next = fixture
         .controller()
-        .enqueue(intent_for("setup-a2", "lifecycle-a1"))
+        .enqueue(intent_for(2, PROFILE))
         .unwrap();
     assert_eq!(next.phase, Phase::Prepared);
-    assert_eq!(next.request_id, "setup-a2");
+    assert_eq!(next.request_id, request(2));
     assert_eq!(controller.ids().unwrap().len(), 2);
     assert!(
         controller
@@ -402,9 +370,8 @@ fn concurrent_fresh_choices_admit_only_one_request_for_the_instance() {
         .map(|(index, controller)| {
             let barrier = barrier.clone();
             std::thread::spawn(move || {
-                let request = format!("setup-{index}");
                 barrier.wait();
-                controller.enqueue(intent_for(&request, "lifecycle-a1"))
+                controller.enqueue(intent_for(10 + index as u8, PROFILE))
             })
         })
         .collect();
@@ -423,7 +390,7 @@ fn concurrent_fresh_choices_admit_only_one_request_for_the_instance() {
     let recovered = fixture.controller();
     assert_eq!(recovered.ids().unwrap().len(), 1);
     assert_eq!(
-        recovered.enqueue(intent_for("another", "lifecycle-a1")),
+        recovered.enqueue(intent_for(6, PROFILE)),
         Err(Error::Pending)
     );
     assert_eq!(fixture.calls(), "");
@@ -434,22 +401,17 @@ fn admission_blocks_the_same_agent_name_only_and_never_ignores_invalid_records()
     let fixture = Fixture::new("");
     let controller = fixture.controller();
     let original = controller.enqueue(intent()).unwrap();
-    assert_eq!(original.agent_name, "worker");
+    assert_eq!(original.agent_name, "guide");
     assert_eq!(
-        controller.enqueue(intent_for("same-name", "lifecycle-a1")),
+        controller.enqueue(intent_for(3, PROFILE)),
         Err(Error::Pending)
     );
-    assert_eq!(
-        controller.enqueue(named("same-name", "WORKER")),
-        Err(Error::Pending)
-    );
-    controller.enqueue(named("other-name", "second")).unwrap();
-    controller
-        .enqueue(intent_for("other-life", "lifecycle-a2"))
-        .unwrap();
+    assert_eq!(controller.enqueue(named(3, "GUIDE")), Err(Error::Pending));
+    controller.enqueue(named(4, "second")).unwrap();
+    controller.enqueue(intent_for(5, OTHER)).unwrap();
     assert_eq!(
         controller
-            .pending(&original.identity, &|| true)
+            .pending(&original.profile_id, &|| true)
             .unwrap()
             .len(),
         2
@@ -459,7 +421,7 @@ fn admission_blocks_the_same_agent_name_only_and_never_ignores_invalid_records()
         .save("00000000000000000000000000000000", None, b"malformed")
         .unwrap();
     assert_eq!(
-        controller.enqueue(intent_for("another", "lifecycle-a4")),
+        controller.enqueue(intent_for(6, THIRD)),
         Err(Error::Invalid)
     );
     // Only the damaged record can be forgotten without a revision.
@@ -470,9 +432,7 @@ fn admission_blocks_the_same_agent_name_only_and_never_ignores_invalid_records()
     controller
         .forget("00000000000000000000000000000000", None)
         .unwrap();
-    controller
-        .enqueue(intent_for("another", "lifecycle-a4"))
-        .unwrap();
+    controller.enqueue(intent_for(6, THIRD)).unwrap();
     assert_eq!(fixture.calls(), "");
 }
 
@@ -480,19 +440,13 @@ fn admission_blocks_the_same_agent_name_only_and_never_ignores_invalid_records()
 fn a_result_this_request_cannot_retry_closes_it_and_a_retryable_one_blocks_only_its_name() {
     let fixture = Fixture::new("");
     let controller = fixture.controller();
-    let result = |request: &str, code: &str, retry: &str| {
-        let mut wire = fixtures()["setup"]["result"].clone();
-        wire["request_id"] = request.into();
-        wire["status"] = "action_required".into();
-        wire["code"] = code.into();
-        wire["retry"] = retry.into();
-        wire["data"] = json!({});
-        wire
+    let result = |n: u8, code: &str, retry: &str| {
+        answer(&request(n), "first_agent", "action_required", code, retry)
     };
     // Name taken: the same request can go no further, so it no longer blocks.
     fixture.reply(
         Action::FirstAgent,
-        &result("setup-a1", "agent_conflict", "new_request"),
+        &result(1, "agent_conflict", "new_request"),
         3,
     );
     let taken = controller.enqueue(intent()).unwrap();
@@ -502,27 +456,25 @@ fn a_result_this_request_cannot_retry_closes_it_and_a_retryable_one_blocks_only_
     assert_eq!(taken.first_result.unwrap().code.unwrap(), "agent_conflict");
     assert!(
         controller
-            .pending(&taken.identity, &|| true)
+            .pending(&taken.profile_id, &|| true)
             .unwrap()
             .is_empty()
     );
-    // Not ready yet: the request stays open for this name, others are free.
+    // Not known yet: the request stays open for this name, others are free.
     fixture.reply(
         Action::FirstAgent,
-        &result("setup-a2", "launch_timeout", "same_request"),
+        &result(2, "outcome_unknown", "same_request"),
         3,
     );
-    let slow = controller
-        .enqueue(intent_for("setup-a2", "lifecycle-a1"))
-        .unwrap();
+    let slow = controller.enqueue(intent_for(2, PROFILE)).unwrap();
     controller.submit(&slow.key, &|| true, |_| {}).unwrap();
     let slow = controller.read(&slow.key).unwrap();
     assert!(!slow.closed());
     assert_eq!(
-        controller.enqueue(intent_for("setup-a3", "lifecycle-a1")),
+        controller.enqueue(intent_for(7, PROFILE)),
         Err(Error::Pending)
     );
-    controller.enqueue(named("setup-a4", "second")).unwrap();
+    controller.enqueue(named(8, "second")).unwrap();
     // Forgetting needs the revision shown, and frees the name.
     assert_eq!(
         controller.forget(&slow.key, Some(slow.revision + 1)),
@@ -530,15 +482,13 @@ fn a_result_this_request_cannot_retry_closes_it_and_a_retryable_one_blocks_only_
     );
     controller.forget(&slow.key, Some(slow.revision)).unwrap();
     assert_eq!(controller.read(&slow.key), Err(Error::Missing));
-    controller
-        .enqueue(intent_for("setup-a5", "lifecycle-a1"))
-        .unwrap();
+    controller.enqueue(intent_for(9, PROFILE)).unwrap();
 }
 
 #[test]
 fn an_open_request_can_be_read_and_retried_after_the_environment_changes() {
     let fixture = Fixture::new("");
-    fixture.reply(Action::FirstAgent, &fixtures()["setup"]["result"], 0);
+    fixture.reply(Action::FirstAgent, &ready(&id()), 0);
     let controller = fixture.controller();
     let original = controller.enqueue(intent()).unwrap();
     let mut changed = fixture.client.clone();
@@ -546,31 +496,99 @@ fn an_open_request_can_be_read_and_retried_after_the_environment_changes() {
         .environment
         .push(("TERM_SESSION_ID".into(), "new".into()));
     let other = Controller::new(journal::Journal::open(&fixture.journal).unwrap(), &changed);
-    assert_eq!(other.read(&original.key).unwrap().request_id, "setup-a1");
+    assert_eq!(other.read(&original.key).unwrap().request_id, id());
     other.submit(&original.key, &|| true, |_| {}).unwrap();
     assert!(other.read(&original.key).unwrap().closed());
     assert_eq!(fixture.calls(), "first\n");
 }
 
 #[test]
-fn pending_observation_retains_full_origin_and_cancellation_fails_closed() {
+fn pending_observation_is_per_profile_and_cancellation_fails_closed() {
     let fixture = Fixture::new("");
     let controller = fixture.controller();
     let original = controller.enqueue(intent()).unwrap();
-    let foreign = controller
-        .enqueue(intent_for("other-life", "lifecycle-a2"))
-        .unwrap();
+    let foreign = controller.enqueue(intent_for(5, OTHER)).unwrap();
     assert_eq!(
-        controller.pending(&original.identity, &|| true).unwrap(),
+        controller.pending(&original.profile_id, &|| true).unwrap(),
         vec![original.clone()]
     );
     assert_eq!(
-        controller.pending(&foreign.identity, &|| true).unwrap(),
+        controller.pending(&foreign.profile_id, &|| true).unwrap(),
         vec![foreign]
     );
     assert_eq!(
-        controller.pending(&original.identity, &|| false),
+        controller.pending(&original.profile_id, &|| false),
         Err(Error::Client(super::super::Error::Cancelled))
     );
+    assert_eq!(fixture.calls(), "");
+}
+
+#[test]
+fn a_retry_this_app_does_not_know_keeps_the_request_open_without_a_retry() {
+    let fixture = Fixture::new("");
+    let unknown = answer(&id(), "first_agent", "paused", "new_code", "later");
+    fixture.reply(Action::FirstAgent, &unknown, 1);
+    let controller = fixture.controller();
+    let key = controller.enqueue(intent()).unwrap().key;
+    let kept = controller.submit(&key, &|| true, |_| {}).unwrap();
+    assert_eq!(
+        (kept.status.as_str(), kept.retry.as_deref()),
+        ("paused", Some("later"))
+    );
+    let saved = controller.read(&key).unwrap();
+    assert!(!saved.closed());
+    assert_eq!(
+        controller.retry(&key, &|| true, |_| {}),
+        Err(Error::RetryRefused)
+    );
+    // It still holds its name until it is forgotten.
+    assert_eq!(
+        controller.enqueue(intent_for(2, PROFILE)),
+        Err(Error::Pending)
+    );
+    controller.forget(&key, Some(saved.revision)).unwrap();
+    controller.enqueue(intent_for(2, PROFILE)).unwrap();
+    assert_eq!(fixture.calls(), "first\n");
+}
+
+#[test]
+fn a_request_saved_under_schema_2_cannot_be_validated_and_can_be_forgotten() {
+    let fixtures: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../roster/tests/fixtures/profiles-v1.json"
+    )))
+    .unwrap();
+    let setup = &fixtures["setup"];
+    let saved = json!({
+        "checkpoint_version": 1,
+        "first": setup["first_agent"].to_string(),
+        "cancel": setup["cancel_first_agent"].to_string(),
+    });
+    let capsule = crate::profiles::recovery::checkpoint(
+        crate::profiles::recovery::Kind::Setup,
+        &serde_json::to_vec(&saved).unwrap(),
+    )
+    .unwrap();
+    let envelope = Envelope {
+        format: 1,
+        kind: "setup".into(),
+        phase: Phase::Prepared,
+        capsule: String::from_utf8(capsule).unwrap(),
+        first: None,
+        cancel: None,
+    };
+    let fixture = Fixture::new("");
+    let controller = fixture.controller();
+    let key = Controller::key(setup["first_agent"]["request_id"].as_str().unwrap());
+    journal::Journal::open(&fixture.journal)
+        .unwrap()
+        .save(&key, None, &serde_json::to_vec(&envelope).unwrap())
+        .unwrap();
+    assert_eq!(controller.read(&key), Err(Error::Invalid));
+    // Until it is forgotten, saved requests can't be checked, so none is added.
+    assert_eq!(controller.pending(PROFILE, &|| true), Err(Error::Invalid));
+    assert_eq!(controller.enqueue(intent()), Err(Error::Invalid));
+    controller.forget(&key, None).unwrap();
+    controller.enqueue(intent()).unwrap();
     assert_eq!(fixture.calls(), "");
 }

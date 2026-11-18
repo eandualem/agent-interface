@@ -1,6 +1,6 @@
 //! Private setup request storage; this is not a provider result or authority.
 
-use super::{Action, Agent, Error, Identity, Prepared, REQUEST_LIMIT};
+use super::{Action, Agent, CANCEL_LIMIT, Error, Prepared, REQUEST_LIMIT, SCHEMA_VERSION};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -13,16 +13,20 @@ struct Checkpoint {
     first: String,
     cancel: String,
 }
+/// Read first, so a request saved under another schema is told apart from a
+/// damaged one.
+#[derive(Deserialize)]
+struct Version {
+    schema_version: u32,
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
-    schema_version: u32,
+    #[serde(rename = "schema_version")]
+    _version: u32,
     request_id: String,
     action: Action,
     profile_id: String,
-    expected_installation_id: String,
-    expected_lifecycle_id: String,
-    hooks: Vec<String>,
     agent: Agent,
     start_greeting: bool,
 }
@@ -43,9 +47,11 @@ impl Prepared {
     }
 
     /// Restore exact original setup/cancellation choices without discovery,
-    /// new IDs or I/O. The caller must separately validate the original operator
-    /// context before execution. This does not restore an interrupted stream,
-    /// establish readiness or claim that cancellation succeeded.
+    /// new IDs or I/O. A request saved under an earlier schema is
+    /// `Unsupported`: the service no longer takes it. The caller must
+    /// separately validate the original operator context before execution.
+    /// This does not restore an interrupted stream, establish readiness or
+    /// claim that cancellation succeeded.
     pub fn restore(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() > CHECKPOINT_LIMIT || bytes.first() != Some(&b'{') {
             return Err(Error::Invalid);
@@ -54,25 +60,22 @@ impl Prepared {
         if checkpoint.checkpoint_version != 1 {
             return Err(Error::Unsupported);
         }
-        if checkpoint.first.len() > REQUEST_LIMIT || checkpoint.cancel.len() > REQUEST_LIMIT {
+        if checkpoint.first.len() > REQUEST_LIMIT || checkpoint.cancel.len() > CANCEL_LIMIT {
             return Err(Error::Invalid);
+        }
+        let version: Version =
+            serde_json::from_str(&checkpoint.first).map_err(|_| Error::Invalid)?;
+        if version.schema_version != SCHEMA_VERSION {
+            return Err(Error::Unsupported);
         }
         let request: Request =
             serde_json::from_str(&checkpoint.first).map_err(|_| Error::Invalid)?;
-        if request.schema_version != 2 {
-            return Err(Error::Unsupported);
-        }
         if request.action != Action::FirstAgent {
             return Err(Error::Invalid);
         }
         let prepared = Self::prepare(
             &request.request_id,
-            Identity {
-                profile_id: request.profile_id,
-                installation_id: request.expected_installation_id,
-                lifecycle_id: request.expected_lifecycle_id,
-            },
-            request.hooks,
+            &request.profile_id,
             request.agent,
             request.start_greeting,
         )?;

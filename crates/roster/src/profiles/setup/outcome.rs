@@ -1,6 +1,6 @@
 //! Private normalized terminal observations, never an interrupted stream.
 
-use super::{Action, Error, Event, LINE_LIMIT, Prepared};
+use super::{Action, Error, Event, LINE_LIMIT, Prepared, SCHEMA_VERSION};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -28,13 +28,8 @@ impl Prepared {
             json!({})
         };
         let result = serde_json::to_string(&json!({
-            "schema_version":2,"type":"result",
-            "profile_id":event.identity.profile_id,
-            "installation_id":event.identity.installation_id,
-            "lifecycle_id":event.identity.lifecycle_id,
-            "request_id":event.request_id,"action":match event.action {
-                Action::FirstAgent=>"first_agent",Action::CancelFirstAgent=>"cancel_first_agent"
-            },
+            "schema_version":SCHEMA_VERSION,"type":"result",
+            "request_id":event.request_id,"action":event.action.name(),
             "seq":event.sequence,"status":event.status,"code":event.code,
             "retry":event.retry,"completed_steps":[],"data":data,
         }))
@@ -53,6 +48,7 @@ impl Prepared {
 
     /// Restore only a canonical terminal observation for this exact request and
     /// expected action. It does not restore a stream or infer process-exit proof.
+    /// An observation saved under an earlier schema is `Unsupported`.
     /// Caller-context and journal validation remain separate requirements.
     pub fn restore_outcome(&self, action: Action, bytes: &[u8]) -> Result<Event, Error> {
         if bytes.len() > LIMIT || bytes.first() != Some(&b'{') {
