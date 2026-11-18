@@ -244,7 +244,7 @@ fn a_refusal_stands_until_a_read_succeeds() {
 }
 
 #[test]
-fn a_pushed_state_change_reads_the_roster_at_once() {
+fn pushed_state_and_run_changes_read_the_roster_and_runs_at_once() {
     let directory = tempfile::tempdir().unwrap();
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let path = directory.path().join("api.sock");
@@ -261,23 +261,35 @@ fn a_pushed_state_change_reads_the_roster_at_once() {
     entry["tmux_socket"] = json!(directory.path().join("tmux.sock"));
     entry["credential_reference"] = json!({"type": "socket"});
     let profile = Profile::parse(&serde_json::to_vec(&entry).unwrap()).unwrap();
+    let runs = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../roster/src/profiles/runs/fixtures/runs.json"
+    ));
     let (done, finished) = mpsc::channel::<()>();
     let server = thread::spawn(move || {
         listener.set_nonblocking(true).unwrap();
-        // The open stream, then when its state change was written.
-        let (mut stream, mut pushed) = (None::<std::os::unix::net::UnixStream>, None);
+        // A state change, then a run change, each pushed once the read the
+        // one before it asked for was answered.
+        let pushes = ["agent.state", "run.changed"];
+        let mut stream = None::<std::os::unix::net::UnixStream>;
+        let mut pushed: Vec<Instant> = Vec::new();
         let mut quiet = Instant::now();
+        // How long after each push the roster was read.
         let mut reads_after_push = Vec::new();
+        let mut runs_before_their_push = false;
         while finished.try_recv() == Err(mpsc::TryRecvError::Empty) {
             let mut socket = match listener.accept() {
                 Ok((socket, _)) => socket,
                 Err(_) => {
                     // Push once the poller is waiting out its two seconds.
-                    if let (Some(open), None) = (&mut stream, pushed)
+                    if let Some(open) = &mut stream
+                        && pushed.len() < pushes.len()
+                        && reads_after_push.len() == pushed.len()
                         && quiet.elapsed() > Duration::from_millis(300)
                     {
-                        write!(open, "id: a:2\nevent: agent.state\ndata: {{}}\n\n").unwrap();
-                        pushed = Some(Instant::now());
+                        let kind = pushes[pushed.len()];
+                        write!(open, "id: a:2\nevent: {kind}\ndata: {{}}\n\n").unwrap();
+                        pushed.push(Instant::now());
                     }
                     thread::sleep(Duration::from_millis(5));
                     continue;
@@ -291,7 +303,9 @@ fn a_pushed_state_change_reads_the_roster_at_once() {
                 request.push(byte[0]);
             }
             let request = String::from_utf8(request).unwrap();
-            if request.starts_with("GET /api/stream?kinds=agent.state,resync ") {
+            if request
+                .starts_with("GET /api/stream?kinds=agent.state,agent.changed,run.changed,resync ")
+            {
                 write!(
                     socket,
                     "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\nevent: hello\ndata: {{}}\n\n"
@@ -302,14 +316,20 @@ fn a_pushed_state_change_reads_the_roster_at_once() {
             }
             let body = if request.starts_with("GET /api/profile ") {
                 identity.to_string()
+            } else if request.starts_with("GET /api/runs ") {
+                runs_before_their_push |= pushed.len() < 2;
+                runs.to_owned()
             } else {
-                if request.starts_with("GET /api/agents ")
-                    && let Some(pushed) = pushed
+                if request.starts_with("GET /api/agents ") && reads_after_push.len() < pushed.len()
                 {
-                    reads_after_push.push(pushed.elapsed());
+                    reads_after_push.push(pushed[reads_after_push.len()].elapsed());
                 }
-                let state = if pushed.is_some() { "working" } else { "idle" };
-                json!({"items": [{"name": "worker", "state": state}]}).to_string()
+                // Background counts appear with the run change, so runs are
+                // asked for only then.
+                let state = if pushed.is_empty() { "idle" } else { "working" };
+                let counts = (pushed.len() == 2).then(|| json!({"running": 1, "queued": 1}));
+                json!({"items": [{"name": "worker", "state": state, "background": counts}]})
+                    .to_string()
             };
             write!(
                 socket,
@@ -319,7 +339,7 @@ fn a_pushed_state_change_reads_the_roster_at_once() {
             .unwrap();
             quiet = Instant::now();
         }
-        reads_after_push
+        (reads_after_push, runs_before_their_push)
     });
     let (wake, woken) = mpsc::channel();
     let source = BoundRosterSource::start(profile.connect().unwrap(), move || {
@@ -332,10 +352,9 @@ fn a_pushed_state_change_reads_the_roster_at_once() {
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
             .unwrap();
         // Two wakes can announce one update: the second then finds none.
-        if source
-            .take_update()
-            .is_some_and(|update| update.snapshot.states["worker"] == "working")
-        {
+        if source.take_update().is_some_and(|update| {
+            update.snapshot.states["worker"] == "working" && update.runs.active.len() == 2
+        }) {
             break;
         }
     }
@@ -343,7 +362,13 @@ fn a_pushed_state_change_reads_the_roster_at_once() {
     drop(source);
     assert!(dropped.elapsed() < Duration::from_secs(1));
     done.send(()).unwrap();
-    // Without the stream the next read would come two seconds after the last.
-    let reads = server.join().unwrap();
-    assert!(reads[0] < Duration::from_secs(1), "{reads:?}");
+    // Without the stream each read would come two seconds after the last.
+    let (reads, runs_early) = server.join().unwrap();
+    assert_eq!(reads.len(), 2, "{reads:?}");
+    assert!(
+        reads.iter().all(|read| *read < Duration::from_secs(1)),
+        "{reads:?}"
+    );
+    // Without background counts or active runs, runs are never asked for.
+    assert!(!runs_early);
 }

@@ -8,7 +8,7 @@ use agent_interface_core::View;
 use agent_interface_roster::views::{Member, Team};
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
 
-use super::{Grouping, ViewEvent, ViewPane, home, mono, since};
+use super::{Grouping, ViewEvent, ViewPane, home, line, mono, since};
 use crate::desktop::{
     components::{self as ui, AgentState, Tone},
     design::{colors, tokens},
@@ -403,6 +403,19 @@ pub(super) fn agent_row(
             )
             .child(member.tags.join(" · ")),
         )
+        // What it waits on and its run counts give way before its state.
+        .children(status.line.as_deref().map(|text| {
+            ui::text(
+                div()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_color(c.muted),
+                &t.text.meta,
+            )
+            .child(line(text))
+        }))
         .child(ui::text(
             ui::agent_status_text(&status).flex_shrink_0(),
             &t.text.meta,

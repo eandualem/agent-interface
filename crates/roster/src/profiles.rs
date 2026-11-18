@@ -16,6 +16,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 pub mod accounts;
+pub mod runs;
 pub mod runtime_catalog;
 pub mod runtime_context;
 pub mod secrets;
@@ -674,6 +675,17 @@ impl Connection {
         body: Option<Vec<u8>>,
         limit: usize,
     ) -> Result<local::Response, Error> {
+        self.response_within(path, body, limit, Duration::from_secs(15))
+    }
+
+    /// As [`Self::response`], waiting at most `wait` for each attempt.
+    fn response_within(
+        &self,
+        path: &str,
+        body: Option<Vec<u8>>,
+        limit: usize,
+        wait: Duration,
+    ) -> Result<local::Response, Error> {
         // The agent list refuses a read until its next refresh after an agent is
         // removed. That is a moment to read again, not a failure to show anyone.
         // Callers are I/O workers, so waiting here holds no interface thread.
@@ -685,7 +697,7 @@ impl Connection {
                 (&self.key, &self.identity),
                 body.clone(),
                 limit,
-                Duration::from_secs(15),
+                wait,
             )
             .map_err(|_| Error::Unavailable)?;
             if retries == 0 || !registrations_settling(&response) {

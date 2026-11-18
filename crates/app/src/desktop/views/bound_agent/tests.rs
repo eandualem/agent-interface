@@ -228,3 +228,29 @@ fn skill_rows_take_their_catalog_identity_by_name() {
     );
     server.join().unwrap();
 }
+
+#[test]
+fn the_overview_read_carries_the_wait_counts_and_processes_from_the_services_fixture() {
+    let registration = "0193a1b2c3d47e5f8a9b0c1d2e3f4a5b";
+    let inspected: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../roster/src/profiles/runs/fixtures/agent-inspect.json"
+    )))
+    .unwrap();
+    let inspect_path =
+        format!("/api/agents/builder/inspect?expected_registration_id={registration}");
+    let (_a, a, server) = provider("a", vec![Reply::ok(&inspect_path, inspected)]);
+    let snapshot = Reader {
+        connection: a,
+        name: "builder".into(),
+        registration: registration.into(),
+        target: None,
+    }
+    .read(AgentSection::Overview)
+    .unwrap();
+    let agent = snapshot.agent;
+    assert_eq!(agent.waiting, None);
+    assert_eq!(agent.background.map(|counts| counts.running), Some(1));
+    assert_eq!(agent.processes[0].command, "cargo test --workspace");
+    server.join().unwrap();
+}

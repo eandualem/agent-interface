@@ -407,14 +407,37 @@ is compared there.
 
 The service also pushes agent state changes on `GET /api/stream`, as
 Server-Sent Events. `Connection::watch` follows that stream on a worker of its
-own and reads only each frame's kind: the opening `hello`, `agent.state` and
-`resync` each ask the roster worker for a read at once. The frames' values are
+own and reads only each frame's kind: the opening `hello`, `agent.state`,
+`agent.changed` (what an agent waits on, or its background counts), `run.changed`
+and `resync` each ask the roster worker for a read at once. A service that
+does not know a kind ignores it. The frames' values are
 not applied and no cursor is kept, so a stream opened again simply reads the
 states again. A stream that breaks, or stays silent for 45 seconds against the
 service's 15-second heartbeat, is opened again two seconds later. When the
 stream worker cannot start, the roster is polled as before. The
 two-second poll continues, because agents joining or leaving the roster are
 not pushed.
+
+Each agent in the service's list may say what it waits on outside itself and
+how many runs (reviews, builds, tests) and processes it has in the
+background; an older service has neither field, and the app then shows what
+it showed before. After publishing each roster, the worker reads the active
+runs with `GET /api/runs`, but only while an agent reports queued or running
+runs or some were active at the last read, so an older service is never asked;
+a 404 stops the asking for the worker's life. The new list is published at
+once; then each run that has left it is read once by its ID, and kept when
+it has ended, newest first by end time and at most 32. The service lists
+only active runs, so the finished history starts empty when the app starts
+and holds only runs the app saw queued or running and then read after they
+ended: at most 8 lookups per list read, all within 5 seconds of the list
+read starting, each runs read waiting at most 3 seconds. A run that starts
+and ends between two reads is not recorded. Once the list has not been
+read for 30 seconds, whichever read failed, its active runs are no longer
+shown; the 30 seconds run from the roster read that the last good list
+read followed, so the runs stop showing when the roster does. The next good read
+shows the list again and still finds the runs that ended meanwhile. The
+runs ride the roster update to `LiveAgents`, which the Team rows, the sidebar,
+the status bar and the agent card read.
 
 A workspace saved without a profile was served by the earlier Python service
 without a binding, and shows no agents once the Rust service has taken its

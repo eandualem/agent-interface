@@ -52,6 +52,91 @@ pub struct AgentDetails {
     pub current_issue: Option<u64>,
     /// Provider timestamp of the state observation.
     pub state_since: Option<f64>,
+    /// What the agent waits on outside itself; absent from an older service.
+    pub waiting: Option<Waiting>,
+    /// How much it runs in the background; absent from an older service.
+    pub background: Option<Background>,
+}
+
+/// What an agent waits on outside itself, as the Rust service reports it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct Waiting {
+    /// What it waits on, such as a build slot, as the service wrote it.
+    pub on: String,
+    /// The agent it waits on, when it waits on an agent.
+    #[serde(default, deserialize_with = "lenient")]
+    pub on_agent: Option<String>,
+    /// Why, as the service wrote it.
+    #[serde(default, deserialize_with = "lenient")]
+    pub reason: Option<String>,
+    /// Since when, in RFC 3339 as the service wrote it.
+    #[serde(default, deserialize_with = "lenient")]
+    pub since: Option<String>,
+}
+
+/// How many runs and processes an agent has in the background.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(default)]
+pub struct Background {
+    /// Its runs that are running.
+    pub running: u64,
+    /// Its runs that wait to start.
+    pub queued: u64,
+    /// Processes it started that still run.
+    pub processes: u64,
+}
+
+impl Background {
+    /// The counts in `raw`, a JSON object, each read on its own. A count
+    /// that isn't a non-negative whole number isn't given and reads as 0;
+    /// an object that gives none of them holds no counts at all.
+    pub(crate) fn read(raw: &str) -> Option<Self> {
+        let counts: BTreeMap<String, Box<RawValue>> = object(raw)?;
+        let count = |name: &str| {
+            counts
+                .get(name)
+                .and_then(|raw| serde_json::from_str::<u64>(raw.get()).ok())
+        };
+        let (running, queued, processes) = (count("running"), count("queued"), count("processes"));
+        if running.is_none() && queued.is_none() && processes.is_none() {
+            return None;
+        }
+        Some(Self {
+            running: running.unwrap_or(0),
+            queued: queued.unwrap_or(0),
+            processes: processes.unwrap_or(0),
+        })
+    }
+}
+
+/// `raw` as `T` only when it is a JSON object that decodes. A derived struct
+/// also decodes from an array, which would read `[0, 0, 0]` as real counts.
+pub(crate) fn object<T: serde::de::DeserializeOwned>(raw: &str) -> Option<T> {
+    if !raw.trim_start().starts_with('{') {
+        return None;
+    }
+    serde_json::from_str(raw).ok()
+}
+
+/// For `deserialize_with`: a value that doesn't decode as `T`, `null`
+/// included, reads as absent instead of failing the value that holds it.
+pub(crate) fn lenient<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let raw = <Box<RawValue> as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(serde_json::from_str(raw.get()).ok())
+}
+
+/// As [`lenient`], for a value that must be a JSON object.
+pub(crate) fn lenient_object<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let raw = <Box<RawValue> as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(object(raw.get()))
 }
 
 /// A running swarm: the agent that started it and the agents working in it.
@@ -158,6 +243,8 @@ fn decode(response: &[u8]) -> Option<Decoded> {
                     .and_then(|value| serde_json::from_str(value).ok()),
                 state_since: field("state_since")
                     .and_then(|value| serde_json::from_str(value).ok()),
+                waiting: field("waiting").and_then(object),
+                background: field("background").and_then(Background::read),
             },
         );
         states.insert(name, state);
@@ -357,13 +444,75 @@ mod tests {
     fn malformed_details_do_not_discard_valid_fields() {
         let mut snapshot = Snapshot::default();
         snapshot.update(
-            br#"{"items":[{"name":"worker","state":"future","online":true,"reason":7,"current_issue":42,"state_since":"invalid"}]}"#,
+            br#"{"items":[{"name":"worker","state":"future","online":true,"reason":7,"current_issue":42,"state_since":"invalid","waiting":{"on":7},"background":{"running":"one"}},
+            {"name":"array","waiting":["build slot"],"background":[0,0,0]},
+            {"name":"lenient","waiting":{"on":"build slot","on_agent":[],"reason":7,"since":1}}]}"#,
         );
         let details = &snapshot.details["worker"];
         assert_eq!(details.online, Some(true));
         assert_eq!(details.reason, None);
         assert_eq!(details.current_issue, Some(42));
         assert_eq!(details.state_since, None);
+        assert_eq!((&details.waiting, details.background), (&None, None));
+        // Arrays are not objects, even though they would decode as one.
+        let array = &snapshot.details["array"];
+        assert_eq!((&array.waiting, array.background), (&None, None));
+        // Each count is read on its own; an object that gives none is no counts.
+        let counts = |body: &str| {
+            let mut snapshot = Snapshot::default();
+            snapshot.update(
+                format!(r#"{{"items":[{{"name":"worker","background":{body}}}]}}"#).as_bytes(),
+            );
+            snapshot.details["worker"].background
+        };
+        let given = counts(r#"{"running":1,"queued":0,"processes":null}"#);
+        assert_eq!(
+            given.map(|counts| (counts.running, counts.queued, counts.processes)),
+            Some((1, 0, 0))
+        );
+        let mixed = counts(r#"{"running":"one","queued":2,"processes":-1}"#);
+        assert_eq!(
+            mixed.map(|counts| (counts.running, counts.queued, counts.processes)),
+            Some((0, 2, 0))
+        );
+        assert_eq!(counts("{}"), None);
+        // A mistyped optional part leaves the rest of the wait.
+        let waiting = snapshot.details["lenient"].waiting.clone().unwrap();
+        assert_eq!(waiting.on, "build slot");
+        assert_eq!(
+            (waiting.on_agent, waiting.reason, waiting.since),
+            (None, None, None)
+        );
+    }
+
+    #[test]
+    fn waiting_and_background_decode_from_the_services_fixture() {
+        let mut snapshot = Snapshot::default();
+        snapshot.update(include_bytes!("profiles/runs/fixtures/agents.json"));
+        let worker = &snapshot.details["worker"];
+        assert_eq!(
+            worker.waiting,
+            Some(Waiting {
+                on: "build slot".into(),
+                on_agent: None,
+                reason: Some("Two builds already run on this machine.".into()),
+                since: Some("2026-11-10T09:58:20Z".into()),
+            })
+        );
+        let counts = |running, queued, processes| {
+            Some(Background {
+                running,
+                queued,
+                processes,
+            })
+        };
+        assert_eq!(worker.background, counts(1, 1, 2));
+        let reviewer = &snapshot.details["reviewer"];
+        assert_eq!(reviewer.waiting, None);
+        assert_eq!(reviewer.background, counts(0, 0, 0));
+        // An older service has neither field.
+        snapshot.update(br#"{"items":[{"name":"worker","state":"idle"}]}"#);
+        assert_eq!(snapshot.details["worker"], AgentDetails::default());
     }
 
     #[test]

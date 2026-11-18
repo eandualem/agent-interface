@@ -655,6 +655,12 @@ impl Browser {
                     agents.get(name).state
                 });
                 entries.extend(leads.into_iter().map(|name| (name, AgentState::Offline)));
+                // An offline agent whose runs go on keeps a row to carry them.
+                for name in agents.offline_with_runs() {
+                    if entries.iter().all(|(listed, _)| *listed != name) {
+                        entries.push((name, AgentState::Offline));
+                    }
+                }
             }
             entries.sort_by_key(|(name, state)| {
                 (
@@ -688,7 +694,13 @@ impl Browser {
             {
                 ("status unknown".to_owned(), c.muted)
             }
-            Some(_) => ("all quiet".to_owned(), c.muted),
+            // Quiet agents can still have work running in the background.
+            Some(_) => (
+                self.active_agents()
+                    .and_then(|agents| agents.background())
+                    .map_or_else(|| "all quiet".to_owned(), |runs| runs.to_string()),
+                c.muted,
+            ),
         };
         let quiet = |label: &'static str, icon: Option<&'static str>| {
             ui::text(
@@ -742,25 +754,100 @@ impl Browser {
                         Some(swarm) => format!("agent-{swarm}/{name}"),
                         None => format!("agent-{name}"),
                     };
+                    let runs = browser
+                        .active_agents()
+                        .and_then(|agents| agents.activity(name))
+                        .and_then(|activity| activity.runs.clone());
                     ui::row(SharedString::from(id), false)
                         .when(swarm.is_some(), |row| row.pl(px(t.space.s10 * 3.0)))
                         .child(ui::agent_symbol(state))
                         .child(
                             div()
-                                .flex_1()
+                                // With runs beside it the name keeps its width
+                                // and the runs give way first.
+                                .when(runs.is_none(), |name| name.flex_1())
                                 .min_w_0()
                                 .overflow_hidden()
                                 .text_ellipsis()
                                 .text_color(if calm { c.muted } else { c.text })
                                 .child(name.to_owned()),
                         )
+                        .children(runs.map(|runs| {
+                            ui::text(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(t.space.s4))
+                                    .overflow_hidden()
+                                    .text_color(c.muted),
+                                &t.text.meta,
+                            )
+                            .child(ui::icon("activity", t.size.icon - t.space.s2, c.muted))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(runs),
+                            )
+                        }))
                         .on_click(cx.listener(move |browser, _, window, cx| {
                             if let Some(target) = &target {
                                 browser.go_to_agent_target(target, window, cx);
                             }
                         }))
                 };
+                // An agent's active reviews, each a row one level under it.
+                let reviews = |browser: &Self, name: &str, indent: f32| {
+                    let activity = browser
+                        .active_agents()
+                        .and_then(|agents| agents.activity(name));
+                    activity
+                        .into_iter()
+                        .flat_map(|activity| activity.reviews.clone())
+                        .map(|(reviewer, state)| {
+                            ui::text(
+                                div()
+                                    .flex()
+                                    .flex_shrink_0()
+                                    .items_center()
+                                    .gap(px(t.space.s10))
+                                    .h(px(t.size.row))
+                                    .pl(px(indent))
+                                    .pr(px(t.space.s10))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap(),
+                                &t.text.row,
+                            )
+                            .child(ui::icon("search", t.size.icon, c.muted))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .text_color(c.text_2)
+                                    .child(reviewer),
+                            )
+                            .child(
+                                ui::text(div().flex_shrink_0().text_color(c.muted), &t.text.meta)
+                                    .child(state),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                };
                 for row in agent_groups::rows(entries, &swarms, &self.expanded_agents) {
+                    let reviewed = match &row {
+                        agent_groups::Row::Agent { name, .. } => {
+                            Some(reviews(self, name, t.space.s10 * 2.0))
+                        }
+                        agent_groups::Row::Member { name, .. } => {
+                            Some(reviews(self, name, t.space.s10 * 4.0))
+                        }
+                        agent_groups::Row::Swarm { .. } => None,
+                    };
                     rows = rows.child(match row {
                         agent_groups::Row::Agent {
                             name,
@@ -845,6 +932,7 @@ impl Browser {
                             agent(self, cx, &name, state, Some(&swarm))
                         }
                     });
+                    rows = rows.children(reviewed.into_iter().flatten());
                 }
             }
         }

@@ -1,7 +1,10 @@
 //! Roster polling owned by one verified profile connection.
 
 use super::*;
-use agent_interface_roster::profiles::{Connection, Error, Identity};
+use agent_interface_roster::profiles::{
+    Connection, Error, Identity,
+    runs::{Book, Runs},
+};
 
 /// One complete observation, including the origin of retained stale metadata.
 #[derive(Clone, Debug)]
@@ -12,6 +15,8 @@ pub struct BoundRosterUpdate {
     pub snapshot: Snapshot,
     /// The latest failure category, without provider prose or credentials.
     pub error: Option<Error>,
+    /// Background runs as last read; kept as they were when a read fails.
+    pub runs: Runs,
 }
 
 /// An independent cache and polling worker for one immutable connection.
@@ -20,6 +25,8 @@ pub struct BoundRosterSource {
     updates: Arc<Mutex<Option<BoundRosterUpdate>>>,
     /// True stops the polling worker; false asks it to read now.
     stop: mpsc::Sender<bool>,
+    /// Cleared before a stop, so the worker starts no further runs read.
+    polling: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
     /// Follows the Rust service's push stream, when the connection has one.
     stream: Option<(Arc<AtomicBool>, JoinHandle<()>)>,
@@ -27,7 +34,8 @@ pub struct BoundRosterSource {
 
 impl BoundRosterSource {
     /// Read immediately, then two seconds after each completed attempt, and
-    /// at once when the Rust service's push stream reports a changed state.
+    /// at once when the Rust service's push stream reports a change. Runs
+    /// are read after each roster is published, so states never wait on them.
     /// The connection retains its verified tuple, endpoint and credential for
     /// this worker's lifetime. `wake` runs after publishing a complete update.
     pub fn start(connection: Connection, wake: impl Fn() + Send + 'static) -> io::Result<Self> {
@@ -35,6 +43,8 @@ impl BoundRosterSource {
         let pending = Arc::clone(&updates);
         let (stop, stopped) = mpsc::channel();
         let (watched, refresh) = (connection.clone(), stop.clone());
+        let polling = Arc::new(AtomicBool::new(true));
+        let wanted = Arc::clone(&polling);
         let worker = thread::Builder::new()
             .name("bound roster polling".into())
             .spawn(move || {
@@ -42,6 +52,21 @@ impl BoundRosterSource {
                     identity: connection.identity().clone(),
                     snapshot: Snapshot::default(),
                     error: None,
+                    runs: Runs::default(),
+                };
+                let mut book = Book::default();
+                let publish = |update: &BoundRosterUpdate| {
+                    *pending.lock().unwrap_or_else(|error| error.into_inner()) =
+                        Some(update.clone());
+                    wake();
+                };
+                let live = || wanted.load(Ordering::Relaxed);
+                // Publish the runs only when the book changed.
+                let show_runs = |update: &mut BoundRosterUpdate, runs: &Runs| {
+                    if *runs != update.runs {
+                        update.runs = runs.clone();
+                        publish(update);
+                    }
                 };
                 loop {
                     match connection.roster() {
@@ -54,9 +79,20 @@ impl BoundRosterSource {
                             update.error = Some(standing(update.error, error));
                         }
                     }
-                    *pending.lock().unwrap_or_else(|error| error.into_inner()) =
-                        Some(update.clone());
-                    wake();
+                    // The pass's first publication already says whether the
+                    // runs are too old to show, whatever the roster read did.
+                    book.expire();
+                    if *book.runs() != update.runs {
+                        update.runs = book.runs().clone();
+                    }
+                    publish(&update);
+                    if update.error.is_none() && live() {
+                        // The new list shows before its ended runs are read.
+                        let gone = book.list(&connection, &update.snapshot);
+                        show_runs(&mut update, book.runs());
+                        book.settle(&connection, gone, &live);
+                        show_runs(&mut update, book.runs());
+                    }
                     match stopped.recv_timeout(Duration::from_secs(2)) {
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
                         // Several changes at once need one read; a stop among
@@ -73,6 +109,7 @@ impl BoundRosterSource {
         let mut source = Self {
             updates,
             stop,
+            polling,
             worker: Some(worker),
             stream: None,
         };
@@ -137,6 +174,7 @@ fn watch(
 
 impl Drop for BoundRosterSource {
     fn drop(&mut self) {
+        self.polling.store(false, Ordering::Relaxed);
         let _ = self.stop.send(true);
         if let Some((live, worker)) = self.stream.take() {
             live.store(false, Ordering::Relaxed);

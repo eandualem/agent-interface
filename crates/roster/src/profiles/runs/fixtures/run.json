@@ -1,0 +1,22 @@
+{
+  "run_id": "0193a1b2c3d47e5f8a9b0c1d2e3f4a60",
+  "agent_id": "0193a1b2c3d47e5f8a9b0c1d2e3f4a5b",
+  "agent": "builder",
+  "kind": "review",
+  "label": "Review round 2, gpt-example",
+  "state": "running",
+  "waiting_on": null,
+  "queued_at": "2026-11-10T10:10:00Z",
+  "started_at": "2026-11-10T10:12:30Z",
+  "finished_at": null,
+  "exit_code": null,
+  "session": null,
+  "progress": "Reviewing crates/protocol/src/runs.rs",
+  "review": {
+    "runtime": "codex",
+    "model": "gpt-example",
+    "effort": "high",
+    "base": "develop",
+    "head": "4f1c2b9"
+  }
+}

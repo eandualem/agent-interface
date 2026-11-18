@@ -991,6 +991,15 @@ pub struct Agent {
     /// Its most recent deliveries.
     #[serde(skip)]
     pub received: Vec<Received>,
+    /// What it waits on outside itself; absent from an older service.
+    #[serde(skip)]
+    pub waiting: Option<crate::Waiting>,
+    /// How much it runs in the background; absent from an older service.
+    #[serde(skip)]
+    pub background: Option<crate::Background>,
+    /// Processes it started that still run.
+    #[serde(skip)]
+    pub processes: Vec<Process>,
     /// How Backbone launches it, when Backbone configures it.
     #[serde(skip)]
     pub launch: Option<Launch>,
@@ -1006,6 +1015,18 @@ pub struct Agent {
     /// Its usage, when its Usage section is shown.
     #[serde(skip)]
     pub usage: Option<Result<Usage, &'static str>>,
+}
+
+/// A process an agent started that still runs, as the Rust service reports it.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct Process {
+    /// Its process ID.
+    pub pid: u64,
+    /// Its command line, as the service wrote it.
+    pub command: String,
+    /// When it started, in RFC 3339 as the service wrote it.
+    #[serde(default, deserialize_with = "crate::lenient")]
+    pub started_at: Option<String>,
 }
 
 /// How Backbone launches an agent, from its configuration.
@@ -1340,6 +1361,16 @@ impl Agent {
                 outcome: delivery.outcome,
                 preview: delivery.preview,
             })
+            .collect();
+        // Null or mistyped reads as absent, never as an unreadable card.
+        let field = |name: &str| document.get(name).map(|raw| raw.get());
+        agent.waiting = field("waiting").and_then(crate::object);
+        agent.background = field("background").and_then(crate::Background::read);
+        agent.processes = field("processes")
+            .and_then(|raw| serde_json::from_str::<Vec<&RawValue>>(raw).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|process| crate::object(process.get()))
             .collect();
         Ok(agent)
     }
@@ -1818,5 +1849,52 @@ mod tests {
         assert_eq!(agent.watches, ["example/app"]);
         assert_eq!(agent.received[0].outcome, "queued");
         assert_eq!(Agent::decode(b"{\"name\":7}"), Err(UNREADABLE));
+        // An older service has none of the background fields.
+        assert_eq!((agent.waiting, agent.background), (None, None));
+        assert!(agent.processes.is_empty());
+    }
+
+    #[test]
+    fn an_inspected_agent_carries_its_wait_and_background_from_the_services_fixture() {
+        let agent =
+            Agent::decode(include_bytes!("profiles/runs/fixtures/agent-inspect.json")).unwrap();
+        assert_eq!(agent.waiting, None);
+        assert_eq!(
+            agent.background,
+            Some(crate::Background {
+                running: 1,
+                queued: 0,
+                processes: 1
+            })
+        );
+        assert_eq!(
+            agent.processes,
+            [Process {
+                pid: 48213,
+                command: "cargo test --workspace".into(),
+                started_at: Some("2026-11-10T10:14:02Z".into()),
+            }]
+        );
+        // The stream's agent.changed carries the same shape, with the agent waited on.
+        let changed = include_bytes!("profiles/runs/fixtures/agent-changed.json");
+        let waiting = Agent::decode(changed).unwrap().waiting.unwrap();
+        assert_eq!(
+            (waiting.on.as_str(), waiting.on_agent.as_deref()),
+            ("agent", Some("reviewer"))
+        );
+        // Mistyped fields read as absent and leave the card.
+        let agent = Agent::decode(
+            br#"{"name":"worker","waiting":"soon","background":{"running":-1},
+            "processes":[{"pid":"x","command":"a"},{"pid":7,"command":"b","started_at":null},
+            [8,"c","2026-11-10T10:14:02Z"],{"pid":9,"command":"d","started_at":7}]}"#,
+        )
+        .unwrap();
+        assert_eq!((agent.waiting, agent.background), (None, None));
+        // An array is not a process; a mistyped start time leaves the process.
+        let pids: Vec<_> = agent.processes.iter().map(|process| process.pid).collect();
+        assert_eq!(pids, [7, 9]);
+        assert_eq!(agent.processes[1].started_at, None);
+        let agent = Agent::decode(br#"{"name":"worker","background":[1,0,0]}"#).unwrap();
+        assert_eq!(agent.background, None);
     }
 }

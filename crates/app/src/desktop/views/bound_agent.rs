@@ -2,7 +2,7 @@
 
 use super::{Target as Row, agent, list, ui};
 use crate::desktop::{
-    agent_status::{AgentState, Status},
+    agent_status::{AgentState, LiveAgents, Status},
     design::{colors, tokens},
 };
 use agent_interface_core::{AgentSection, View};
@@ -158,6 +158,8 @@ fn remove_checked(
 
 pub(super) struct Card {
     connection: Connection,
+    /// The profile's roster, whose book of runs the Overview lists.
+    agents: LiveAgents,
     /// The registration this card shows; removal checks it first.
     registration: String,
     removal: Removal,
@@ -176,6 +178,7 @@ pub(super) struct Card {
 impl Card {
     pub fn new(
         connection: Connection,
+        agents: LiveAgents,
         view: &View,
         visible: Rc<Cell<bool>>,
         cx: &mut Context<Self>,
@@ -208,6 +211,7 @@ impl Card {
         });
         Self {
             connection: connection.clone(),
+            agents,
             registration: registration.clone(),
             removal: Removal::None,
             removal_error: None,
@@ -384,7 +388,13 @@ impl Render for Card {
             && self.section == AgentSection::Overview
         {
             // The card reads the agent itself, so its details are its state's.
-            body = body.child(agent::overview(&snapshot.agent, state(&snapshot.agent)));
+            // Its runs come from the profile's roster, which the stream wakes.
+            let runs = self.agents.runs_of(&self.registration);
+            body = body.child(agent::overview(
+                &snapshot.agent,
+                state(&snapshot.agent),
+                &runs,
+            ));
         } else if let Some(permissions) = self
             .snapshot
             .as_ref()
