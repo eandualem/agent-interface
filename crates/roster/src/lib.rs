@@ -86,6 +86,29 @@ pub struct Background {
     pub processes: u64,
 }
 
+impl Background {
+    /// The counts in `raw`, a JSON object, each read on its own. A count
+    /// that isn't a non-negative whole number isn't given and reads as 0;
+    /// an object that gives none of them holds no counts at all.
+    pub(crate) fn read(raw: &str) -> Option<Self> {
+        let counts: BTreeMap<String, Box<RawValue>> = object(raw)?;
+        let count = |name: &str| {
+            counts
+                .get(name)
+                .and_then(|raw| serde_json::from_str::<u64>(raw.get()).ok())
+        };
+        let (running, queued, processes) = (count("running"), count("queued"), count("processes"));
+        if running.is_none() && queued.is_none() && processes.is_none() {
+            return None;
+        }
+        Some(Self {
+            running: running.unwrap_or(0),
+            queued: queued.unwrap_or(0),
+            processes: processes.unwrap_or(0),
+        })
+    }
+}
+
 /// `raw` as `T` only when it is a JSON object that decodes. A derived struct
 /// also decodes from an array, which would read `[0, 0, 0]` as real counts.
 pub(crate) fn object<T: serde::de::DeserializeOwned>(raw: &str) -> Option<T> {
@@ -221,7 +244,7 @@ fn decode(response: &[u8]) -> Option<Decoded> {
                 state_since: field("state_since")
                     .and_then(|value| serde_json::from_str(value).ok()),
                 waiting: field("waiting").and_then(object),
-                background: field("background").and_then(object),
+                background: field("background").and_then(Background::read),
             },
         );
         states.insert(name, state);
@@ -434,6 +457,25 @@ mod tests {
         // Arrays are not objects, even though they would decode as one.
         let array = &snapshot.details["array"];
         assert_eq!((&array.waiting, array.background), (&None, None));
+        // Each count is read on its own; an object that gives none is no counts.
+        let counts = |body: &str| {
+            let mut snapshot = Snapshot::default();
+            snapshot.update(
+                format!(r#"{{"items":[{{"name":"worker","background":{body}}}]}}"#).as_bytes(),
+            );
+            snapshot.details["worker"].background
+        };
+        let given = counts(r#"{"running":1,"queued":0,"processes":null}"#);
+        assert_eq!(
+            given.map(|counts| (counts.running, counts.queued, counts.processes)),
+            Some((1, 0, 0))
+        );
+        let mixed = counts(r#"{"running":"one","queued":2,"processes":-1}"#);
+        assert_eq!(
+            mixed.map(|counts| (counts.running, counts.queued, counts.processes)),
+            Some((0, 2, 0))
+        );
+        assert_eq!(counts("{}"), None);
         // A mistyped optional part leaves the rest of the wait.
         let waiting = snapshot.details["lenient"].waiting.clone().unwrap();
         assert_eq!(waiting.on, "build slot");

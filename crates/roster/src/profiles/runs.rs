@@ -183,6 +183,10 @@ impl Book {
                 ended.push(run);
             }
         }
+        self.runs
+            .finished
+            .retain(|kept| ended.iter().all(|run| run.run_id != kept.run_id));
+        ended.append(&mut self.runs.finished);
         // Newest first; an end time that doesn't parse counts as oldest.
         let at = |run: &Run| {
             run.finished_at
@@ -195,10 +199,6 @@ impl Book {
                 .total_cmp(&at(a))
                 .then_with(|| b.run_id.cmp(&a.run_id))
         });
-        self.runs
-            .finished
-            .retain(|kept| ended.iter().all(|run| run.run_id != kept.run_id));
-        ended.append(&mut self.runs.finished);
         ended.truncate(FINISHED);
         self.runs.finished = ended;
     }
@@ -224,7 +224,10 @@ impl Connection {
         if !within_depth(&response.body) {
             return Err(Error::Invalid);
         }
-        let listed: Listed = serde_json::from_slice(&response.body).map_err(|_| Error::Invalid)?;
+        let listed: Listed = std::str::from_utf8(&response.body)
+            .ok()
+            .and_then(object)
+            .ok_or(Error::Invalid)?;
         Ok(listed
             .items
             .into_iter()

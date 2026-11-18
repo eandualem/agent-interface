@@ -825,17 +825,16 @@ struct Work {
     text: String,
 }
 
-/// A run's label and last progress line.
+/// A run's label, what a queued run waits on, and its last progress line.
 fn described(run: &Run) -> String {
     let mut parts = vec![run.label.clone()];
+    parts.extend(run.waiting_on.as_ref().map(|on| format!("waits on {on}")));
     parts.extend(run.progress.clone());
     line(&parts.join(" · "))
 }
 
 /// A queued or running run, with how long it has queued or run.
 fn active(run: &Run, now: f64) -> Work {
-    let mut result = vec![run.state.clone()];
-    result.extend(run.waiting_on.as_ref().map(|on| format!("waits on {on}")));
     let since = if run.state == "queued" {
         &run.queued_at
     } else {
@@ -844,7 +843,7 @@ fn active(run: &Run, now: f64) -> Work {
     Work {
         what: run.kind.clone(),
         when: age(since.as_deref(), now),
-        result: line(&result.join(" · ")),
+        result: line(&run.state),
         text: described(run),
     }
 }
@@ -1399,8 +1398,8 @@ mod tests {
             Work {
                 what: "build".into(),
                 when: "1m".into(),
-                result: "queued · waits on build slot".into(),
-                text: "cargo build --workspace".into(),
+                result: "queued".into(),
+                text: "cargo build --workspace · waits on build slot".into(),
             }
         );
         assert_eq!(

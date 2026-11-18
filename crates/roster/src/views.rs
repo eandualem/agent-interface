@@ -1365,7 +1365,7 @@ impl Agent {
         // Null or mistyped reads as absent, never as an unreadable card.
         let field = |name: &str| document.get(name).map(|raw| raw.get());
         agent.waiting = field("waiting").and_then(crate::object);
-        agent.background = field("background").and_then(crate::object);
+        agent.background = field("background").and_then(crate::Background::read);
         agent.processes = field("processes")
             .and_then(|raw| serde_json::from_str::<Vec<&RawValue>>(raw).ok())
             .unwrap_or_default()

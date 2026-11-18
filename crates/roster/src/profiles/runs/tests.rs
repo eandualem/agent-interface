@@ -138,6 +138,7 @@ fn decoded(listed: Json) -> Vec<Run> {
 fn an_older_service_is_never_asked_and_one_without_runs_is_asked_once() {
     let (connection, server) = served(vec![
         (200, fixture("runs")),
+        (200, json!([[]])),
         (503, json!({})),
         (404, json!({"detail": "Not Found"})),
     ]);
@@ -154,14 +155,17 @@ fn an_older_service_is_never_asked_and_one_without_runs_is_asked_once() {
     follow(&mut book, &connection, &older);
     follow(&mut book, &connection, &busy);
     assert_eq!(book.runs().active.len(), 2);
-    // A failed read keeps the book.
+    // A list that isn't an object, or a failed read, keeps the book and
+    // starts no lookup.
+    follow(&mut book, &connection, &busy);
+    assert_eq!(book.runs().active.len(), 2);
     follow(&mut book, &connection, &busy);
     assert_eq!(book.runs().active.len(), 2);
     // A service without the route has nothing running and isn't asked again.
     follow(&mut book, &connection, &busy);
     follow(&mut book, &connection, &busy);
     assert_eq!(book.runs(), &Runs::default());
-    assert_eq!(server.join().unwrap().len(), 4);
+    assert_eq!(server.join().unwrap().len(), 5);
 }
 
 #[test]
@@ -282,5 +286,29 @@ fn runs_that_end_in_one_read_are_kept_newest_first() {
     follow(&mut book, &connection, &busy);
     follow(&mut book, &connection, &busy);
     assert_eq!(ids(&book.runs().finished), [BUILD, REVIEW, THIRD]);
+    server.join().unwrap();
+}
+
+#[test]
+fn a_later_run_without_an_end_time_stays_behind_dated_ones() {
+    let mut dated = fixture("run");
+    dated["state"] = json!("finished");
+    dated["finished_at"] = json!("2026-11-10T10:21:47Z");
+    let mut undated = fixture("runs")["items"][1].clone();
+    undated["state"] = json!("cancelled");
+    let build = fixture("runs")["items"][1].clone();
+    let (connection, server) = served(vec![
+        (200, fixture("runs")),
+        (200, json!({"items": [build]})),
+        (200, dated),
+        (200, json!({"items": []})),
+        (200, undated),
+    ]);
+    let busy = roster(include_bytes!("fixtures/agents.json"));
+    let mut book = Book::default();
+    for _ in 0..3 {
+        follow(&mut book, &connection, &busy);
+    }
+    assert_eq!(ids(&book.runs().finished), [REVIEW, BUILD]);
     server.join().unwrap();
 }
