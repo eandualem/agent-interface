@@ -865,6 +865,16 @@ impl Pane {
         saved_open(snapshot.as_deref())
     }
 
+    /// Once a fresh start has stopped without its agent running, the revision
+    /// of its saved request, 0 when none was saved: each result changes it.
+    pub fn settled(&self) -> Option<u64> {
+        self.failure()?;
+        let Page::Operation { snapshot, .. } = &self.page else {
+            return None;
+        };
+        Some(snapshot.as_ref().map_or(0, |s| s.revision))
+    }
+
     /// Try the same request again, when the provider allows it. Returns false
     /// when only a new request can go on.
     pub fn retry(&mut self, cx: &mut Context<Self>) -> bool {

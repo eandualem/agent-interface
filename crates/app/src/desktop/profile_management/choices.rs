@@ -98,8 +98,9 @@ pub(super) struct Form {
     accounts: BTreeMap<String, Authentication>,
     /// The guide's start, while it runs or after it stopped.
     start: Option<(Entity<setup::Pane>, Vec<Subscription>)>,
-    /// The tools and open setups were read again after the start stopped.
-    refreshed: bool,
+    /// The revision of the start's saved request after which the tools and
+    /// open setups were last read again.
+    refreshed: Option<u64>,
     /// Something was changed since the start stopped, so Try again sends the
     /// new choices rather than the same request.
     changed: bool,
@@ -164,7 +165,7 @@ impl Form {
             connection: None,
             accounts: BTreeMap::new(),
             start: None,
-            refreshed: false,
+            refreshed: None,
             changed: false,
             picked: false,
             focus: cx.focus_handle(),
@@ -473,16 +474,18 @@ impl Form {
                 cx.emit(Event::Opened(open.clone()));
             }),
             cx.observe(&pane, |form: &mut Self, pane, cx| {
-                // A start that stopped may leave its request open: show it
-                // under Earlier setups.
-                if pane.read(cx).failure().is_some() && !form.refreshed {
-                    form.refreshed = true;
+                // After each result a start stops on, read the open setups
+                // again: one left open shows under Earlier setups, and one
+                // closed frees Start.
+                let settled = pane.read(cx).settled();
+                if read_again(form.refreshed, settled) {
+                    form.refreshed = settled;
                     form.load(true, cx);
                 }
                 cx.notify()
             }),
         ];
-        self.refreshed = false;
+        self.refreshed = None;
         self.start = Some((pane, subscriptions));
         self.changed = false;
         self.error = None;
@@ -674,7 +677,7 @@ impl Form {
             return;
         }
         self.start = None;
-        self.refreshed = false;
+        self.refreshed = None;
         self.load(true, cx);
     }
 
@@ -783,6 +786,11 @@ fn freeze(
             && !(choice.brief.is_none() && BRIEF_AS_FIRST_TURN.contains(&runtime.id.as_str())),
     )
     .ok()
+}
+/// Whether the open setups are read again: after each result a start stops
+/// on, which its saved revision tells apart from the last one read after.
+fn read_again(last: Option<u64>, settled: Option<u64>) -> bool {
+    settled.is_some() && settled != last
 }
 /// Tools that can't take a brief silently: Agent Backbone sends it as the
 /// agent's first turn, and the default brief asks it to greet.

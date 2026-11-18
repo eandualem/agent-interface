@@ -427,3 +427,17 @@ fn add_agent_needs_no_setup_journal_and_a_guide_does() {
     ));
     assert!(load_choices(client, root, &identity, true, true, &|| true).is_err());
 }
+
+#[test]
+fn each_result_a_start_stops_on_reads_the_open_setups_again() {
+    // Still starting: nothing to read yet.
+    assert!(!read_again(None, None));
+    // The first stop, then the same result again.
+    assert!(read_again(None, Some(3)));
+    assert!(!read_again(Some(3), Some(3)));
+    // Try again sent it, and it ended on another result: a closed request
+    // now frees Start.
+    assert!(read_again(Some(3), Some(5)));
+    // Stopped before anything was saved.
+    assert!(read_again(None, Some(0)));
+}

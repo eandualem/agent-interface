@@ -109,13 +109,22 @@ fn contradictory_exit_and_foreign_output_never_emit_terminal_success() {
         "new_request",
     );
     let paused = answer(&id(), "first_agent", "paused", "new_code", "later");
+    let conflict = answer(
+        &id(),
+        "first_agent",
+        "failed",
+        "agent_conflict",
+        "new_request",
+    );
     for (body, exit, accepted) in [
         (ready(&id()), 0, true),
         (ready(&id()), 1, false),
         (unsafe_cancel, 3, true),
-        (refused.clone(), 1, true),
-        // An invalid request exits 2.
-        (refused, 2, true),
+        // An invalid request exits 2, and only it.
+        (refused.clone(), 2, true),
+        (refused, 1, false),
+        (conflict.clone(), 1, true),
+        (conflict, 2, false),
         // A status this app doesn't know is received whatever the exit.
         (paused, 1, true),
     ] {

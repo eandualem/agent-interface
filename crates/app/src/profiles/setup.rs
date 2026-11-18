@@ -141,10 +141,15 @@ impl Setup {
                     return Err(Error::TimedOut);
                 }
                 let event = stream.finish().map_err(Error::Profile)?;
+                // As setup exits: 2 for an invalid request, else by status.
+                let invalid = event.code.as_deref() == Some("invalid_request");
                 let consistent = match event.status.as_str() {
+                    "completed" | "failed" | "action_required" if invalid => {
+                        status.code() == Some(2)
+                    }
                     "completed" => status.code() == Some(0),
+                    "failed" => status.code() == Some(1),
                     "action_required" => status.code() == Some(3),
-                    "failed" => matches!(status.code(), Some(1 | 2)),
                     // A status this app doesn't know has no exit code to match.
                     _ => true,
                 };
