@@ -20,8 +20,12 @@ const FINISHED: usize = 32;
 /// How long one runs read may take; they are optional, so they are not
 /// waited for as long as the roster.
 const WAIT: Duration = Duration::from_secs(3);
-/// How long after a list read its lookups may still start.
+/// How long one runs round may take, counted from when its list read
+/// starts: no lookup starts after it, and each waits at most what is left.
 const LOOKING: Duration = Duration::from_secs(5);
+/// How long failing list reads keep showing the last list, as failing
+/// roster reads keep showing the last roster.
+const STALE: Duration = Duration::from_secs(30);
 
 /// One run, with the fields this app shows, as the service wrote them. An
 /// optional field that is mistyped reads as absent.
@@ -88,10 +92,14 @@ pub struct Runs {
     /// Runs that ended while the worker watched them, newest first. Empty
     /// after the app starts, since the service lists only active runs.
     pub finished: Vec<Run>,
+    /// The list has failed to read for a while, so `active` may no longer be
+    /// what runs and isn't shown.
+    pub stale: bool,
 }
 
 impl Runs {
-    /// The runs of the agent with this registration.
+    /// The runs of the agent with this registration; no active ones while
+    /// the list is stale.
     pub fn of(&self, registration: &str) -> Self {
         let mine = |runs: &[Run]| -> Vec<Run> {
             runs.iter()
@@ -100,8 +108,13 @@ impl Runs {
                 .collect()
         };
         Self {
-            active: mine(&self.active),
+            active: if self.stale {
+                Vec::new()
+            } else {
+                mine(&self.active)
+            },
             finished: mine(&self.finished),
+            stale: self.stale,
         }
     }
 }
@@ -112,6 +125,8 @@ pub struct Book {
     runs: Runs,
     /// The service answered that it has no runs, so it isn't asked again.
     unserved: bool,
+    /// When the list reads began to fail, since the last good one.
+    failing: Option<Instant>,
 }
 
 /// Runs that left the list at one read, to read by their IDs until `deadline`.
@@ -131,8 +146,13 @@ impl Book {
     /// when one of its agents reports runs or some were active at the last
     /// read, so a service without runs is never asked. The runs that left
     /// the list come back for [`Self::settle`], so the new list can be shown
-    /// first. A failed read keeps the book as it was. Runs on an I/O worker.
+    /// first. A failed read keeps the book as it was, and after failing for
+    /// 30 seconds marks the list stale. Runs on an I/O worker.
     pub fn list(&mut self, connection: &Connection, roster: &Snapshot) -> Gone {
+        self.list_at(connection, roster, Instant::now())
+    }
+
+    fn list_at(&mut self, connection: &Connection, roster: &Snapshot, now: Instant) -> Gone {
         let reported = roster
             .details
             .values()
@@ -141,7 +161,7 @@ impl Book {
         if self.unserved || !connection.served() || (!reported && self.runs.active.is_empty()) {
             return Gone::default();
         }
-        let deadline = Instant::now() + LOOKING;
+        let deadline = now + LOOKING;
         let listed = match connection.runs() {
             Ok(listed) => listed,
             Err(Error::Unsupported) => {
@@ -149,8 +169,16 @@ impl Book {
                 self.runs.active.clear();
                 return Gone::default();
             }
-            Err(_) => return Gone::default(),
+            Err(_) => {
+                // The list stays inside, so a later read still finds the
+                // runs that ended meanwhile.
+                let since = *self.failing.get_or_insert(now);
+                self.runs.stale = now.saturating_duration_since(since) >= STALE;
+                return Gone::default();
+            }
         };
+        self.failing = None;
+        self.runs.stale = false;
         let runs = std::mem::replace(&mut self.runs.active, listed)
             .into_iter()
             .filter(|run| self.runs.active.iter().all(|now| now.run_id != run.run_id))

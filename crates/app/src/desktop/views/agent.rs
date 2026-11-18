@@ -908,6 +908,19 @@ fn quiet(counts: Background) -> String {
         .join(", ")
 }
 
+/// The line above the Background rows: with no rows, what the counts say;
+/// with fewer active runs listed than the counts report, the running and
+/// queued counts, since the list has not caught up or isn't shown.
+fn reported(counts: Background, rows: usize, active: usize) -> Option<String> {
+    if rows == 0 {
+        return Some(quiet(counts));
+    }
+    if counts.running.saturating_add(counts.queued) > active as u64 {
+        return counted(counts.running, counts.queued, ", ");
+    }
+    None
+}
+
 /// What the agent runs in the background; nothing for a service that doesn't
 /// report it.
 fn background(agent: &Agent, runs: &Runs) -> Option<gpui::Div> {
@@ -920,9 +933,8 @@ fn background(agent: &Agent, runs: &Runs) -> Option<gpui::Div> {
         .gap(px(t.space.s4))
         .child(ui::view_heading("BACKGROUND", "finished ones since this app opened").px(px(0.0)));
     let rows = background_rows(agent, runs, now() as f64);
-    if rows.is_empty() {
-        section =
-            section.child(ui::text(div().text_color(c.muted), &t.text.status).child(quiet(counts)));
+    if let Some(said) = reported(counts, rows.len(), runs.active.len()) {
+        section = section.child(ui::text(div().text_color(c.muted), &t.text.status).child(said));
     }
     for row in rows {
         section = section.child(
@@ -1437,6 +1449,7 @@ mod tests {
         let book = Runs {
             active: vec![runs[0].clone()],
             finished: vec![failed; 7],
+            ..Runs::default()
         };
         let rows = background_rows(&agent, &book, at("2026-11-10T10:24:02Z"));
         let what: Vec<_> = rows.iter().map(|row| row.what.as_str()).collect();
@@ -1472,5 +1485,20 @@ mod tests {
             ..Background::default()
         };
         assert_eq!(quiet(processes), "2 processes");
+        // Rows that don't list every reported run say so above them.
+        let counts = Background {
+            running: 1,
+            queued: 1,
+            processes: 1,
+        };
+        assert_eq!(
+            reported(counts, 1, 0).as_deref(),
+            Some("1 running, 1 queued")
+        );
+        assert_eq!(reported(counts, 3, 2), None);
+        assert_eq!(
+            reported(counts, 0, 0).as_deref(),
+            Some("1 running, 1 queued, 1 process")
+        );
     }
 }

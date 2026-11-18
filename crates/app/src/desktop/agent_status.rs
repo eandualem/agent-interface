@@ -131,6 +131,16 @@ struct Current {
     background: Option<gpui::SharedString>,
 }
 
+impl Current {
+    /// Whether the roster is reported unavailable, as the status bar totals
+    /// and every state then show it.
+    fn reported_unavailable(&self) -> bool {
+        self.snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.error.is_some())
+    }
+}
+
 impl Default for Current {
     fn default() -> Self {
         Self {
@@ -187,7 +197,8 @@ fn reviewer(run: &Run) -> String {
 /// Each agent's active runs: its reviews one by one, the rest in a few words.
 fn activity(runs: &Runs) -> HashMap<String, Rc<Activity>> {
     let mut started: HashMap<&str, Vec<&Run>> = HashMap::new();
-    for run in &runs.active {
+    // A stale list is no longer what runs.
+    for run in runs.active.iter().filter(|_| !runs.stale) {
         if let Some(agent) = run.agent.as_deref() {
             started.entry(agent).or_default().push(run);
         }
@@ -266,19 +277,35 @@ impl LiveAgents {
         self.0.current.borrow().snapshot.is_some()
     }
 
-    /// The background runs of the agent with this registration.
+    /// The background runs of the agent with this registration. While the
+    /// roster is reported unavailable, its active runs are not shown as
+    /// current; those that ended stay.
     pub fn runs_of(&self, registration: &str) -> Runs {
-        self.0.current.borrow().runs.of(registration)
+        let current = self.0.current.borrow();
+        let mut runs = current.runs.of(registration);
+        if current.reported_unavailable() {
+            runs.active.clear();
+        }
+        runs
     }
 
-    /// The active runs of the agent with this name, when it has any.
+    /// The active runs of the agent with this name, when it has any and the
+    /// roster is not reported unavailable.
     pub fn activity(&self, name: &str) -> Option<Rc<Activity>> {
-        self.0.current.borrow().activity.get(name).cloned()
+        let current = self.0.current.borrow();
+        if current.reported_unavailable() {
+            return None;
+        }
+        current.activity.get(name).cloned()
     }
 
-    /// Agents of the roster that are offline but still have active runs.
+    /// Agents of the roster that are offline but still have active runs;
+    /// none while the roster is reported unavailable.
     pub fn offline_with_runs(&self) -> Vec<String> {
         let current = self.0.current.borrow();
+        if current.reported_unavailable() {
+            return Vec::new();
+        }
         current
             .activity
             .keys()
@@ -726,6 +753,44 @@ mod tests {
         snapshot.observed_at = std::time::Instant::now().checked_sub(TOLERANCE);
         agents.update(snapshot);
         assert_eq!(agents.background(), None);
+    }
+
+    #[test]
+    fn runs_are_not_shown_as_current_while_the_roster_or_the_list_is_stale() {
+        let listed: serde_json::Value = serde_json::from_slice(fixture("runs")).unwrap();
+        let runs: Vec<Run> = serde_json::from_str(&listed["items"].to_string()).unwrap();
+        let profile = origin("a", "1");
+        let agents = LiveAgents(Rc::new(Source {
+            origin: Some(profile.clone()),
+            ..Source::default()
+        }));
+        let mut update = observation(&profile, "offline");
+        update.runs.active = runs.clone();
+        update.runs.finished = vec![runs[1].clone()];
+        agents.update_bound(update.clone());
+        let worker = "1234567890abcdef1234567890abcdef";
+        assert!(agents.activity("worker").is_some());
+        assert_eq!(agents.offline_with_runs(), ["worker"]);
+        assert_eq!(agents.runs_of(worker).active.len(), 1);
+        // A refused read reports the roster unavailable: its runs aren't
+        // current any more, while those that ended stay.
+        let mut refused = update.clone();
+        refused.error = Some(agent_interface_roster::profiles::Error::Refused(401));
+        agents.update_bound(refused);
+        assert!(agents.activity("worker").is_none());
+        assert!(agents.offline_with_runs().is_empty());
+        let card = agents.runs_of(worker);
+        assert!(card.active.is_empty());
+        assert_eq!(card.finished.len(), 1);
+        agents.update_bound(update.clone());
+        assert!(agents.activity("worker").is_some());
+        // A list that has failed for a while shows no active run either.
+        update.runs.stale = true;
+        agents.update_bound(update);
+        assert!(agents.activity("worker").is_none());
+        assert!(agents.offline_with_runs().is_empty());
+        assert!(agents.runs_of(worker).active.is_empty());
+        assert_eq!(agents.runs_of(worker).finished.len(), 1);
     }
 
     #[test]

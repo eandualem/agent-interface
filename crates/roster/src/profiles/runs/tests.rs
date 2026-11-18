@@ -312,3 +312,45 @@ fn a_later_run_without_an_end_time_stays_behind_dated_ones() {
     assert_eq!(ids(&book.runs().finished), [REVIEW, BUILD]);
     server.join().unwrap();
 }
+
+#[test]
+fn a_list_failing_for_30_seconds_is_stale_until_a_good_read_settles_it() {
+    let mut ended = fixture("run");
+    ended["state"] = json!("finished");
+    ended["finished_at"] = json!("2026-11-10T10:21:47Z");
+    let build = fixture("runs")["items"][1].clone();
+    let (connection, server) = served(vec![
+        (200, fixture("runs")),
+        (503, json!({})),
+        (503, json!({})),
+        (503, json!({})),
+        // The review ended while the list could not be read.
+        (200, json!({"items": [build]})),
+        (200, ended),
+    ]);
+    let busy = roster(include_bytes!("fixtures/agents.json"));
+    let builder = "0193a1b2c3d47e5f8a9b0c1d2e3f4a5b";
+    let mut book = Book::default();
+    let start = Instant::now();
+    let read = |book: &mut Book, after: u64| {
+        let gone = book.list_at(&connection, &busy, start + Duration::from_secs(after));
+        book.settle(&connection, gone, &|| true);
+    };
+    read(&mut book, 0);
+    // Failures counted from the first one: shown until 30 seconds have passed.
+    read(&mut book, 10);
+    read(&mut book, 39);
+    assert!(!book.runs().stale);
+    assert_eq!(book.runs().of(builder).active.len(), 1);
+    read(&mut book, 40);
+    assert!(book.runs().stale);
+    assert!(book.runs().of(builder).active.is_empty());
+    // The list is kept inside, so the next good read still finds the run
+    // that ended and shows the list again.
+    assert_eq!(book.runs().active.len(), 2);
+    read(&mut book, 41);
+    assert!(!book.runs().stale);
+    assert_eq!(ids(&book.runs().active), [BUILD]);
+    assert_eq!(ids(&book.runs().finished), [REVIEW]);
+    assert_eq!(server.join().unwrap().len(), 7);
+}

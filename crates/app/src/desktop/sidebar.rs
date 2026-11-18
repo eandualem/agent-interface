@@ -694,7 +694,13 @@ impl Browser {
             {
                 ("status unknown".to_owned(), c.muted)
             }
-            Some(_) => ("all quiet".to_owned(), c.muted),
+            // Quiet agents can still have work running in the background.
+            Some(_) => (
+                self.active_agents()
+                    .and_then(|agents| agents.background())
+                    .map_or_else(|| "all quiet".to_owned(), |runs| runs.to_string()),
+                c.muted,
+            ),
         };
         let quiet = |label: &'static str, icon: Option<&'static str>| {
             ui::text(

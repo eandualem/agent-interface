@@ -424,10 +424,16 @@ background; an older service has neither field, and the app then shows what
 it showed before. After publishing each roster, the worker reads the active
 runs with `GET /api/runs`, but only while an agent reports queued or running
 runs or some were active at the last read, so an older service is never asked;
-a 404 stops the asking for the worker's life. A run that has left the list is
-read once by its ID and kept, newest first and bounded, when it has ended.
-The service lists only active runs, so the finished runs the app shows are
-those that ended while it watched the profile, and none after it starts. The
+a 404 stops the asking for the worker's life. The new list is published at
+once; then each run that has left it is read once by its ID, and kept when
+it has ended, newest first by end time and at most 32. The service lists
+only active runs, so the finished history starts empty when the app starts
+and holds only runs the app saw queued or running and then read after they
+ended: at most 8 lookups per list read, all within 5 seconds of the list
+read starting, each runs read waiting at most 3 seconds. A run that starts
+and ends between two reads is not recorded. When the list has failed to
+read for 30 seconds, its active runs are no longer shown; the next good read
+shows the list again and still finds the runs that ended meanwhile. The
 runs ride the roster update to `LiveAgents`, which the Team rows, the sidebar,
 the status bar and the agent card read.
 
