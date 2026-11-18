@@ -1,5 +1,4 @@
 use super::*;
-use agent_interface_roster::profiles::setup::Action;
 
 fn snapshot() -> Snapshot {
     Snapshot {
@@ -96,32 +95,92 @@ fn readonly_reload_remains_available_when_record_cannot_be_restored() {
     // Nothing further can happen on this request, so it offers no provider action.
     assert!(!Command::Cancel.allowed(Some(&s)));
     assert_eq!(status(&s), "Agent not added");
-    let retryable = |code: &str| {
-        let mut s = snapshot();
-        let mut result = event(&s);
-        result.code = Some(code.into());
-        result.retry = Some("same_request".into());
+}
+
+/// A saved request whose latest result, of the first agent or of its
+/// cancellation, is `code` with `retry`.
+fn answered(cancel: bool, status: &str, code: &str, retry: &str) -> Snapshot {
+    let mut s = snapshot();
+    let mut result = event(&s);
+    result.step = None;
+    result.status = status.into();
+    result.code = Some(code.into());
+    result.retry = Some(retry.into());
+    if cancel {
+        result.action = Action::CancelFirstAgent;
+        s.phase = Phase::CancelPending;
+        s.cancellation_result = Some(result);
+    } else {
         s.first_result = Some(result);
-        s
+    }
+    s
+}
+
+#[test]
+fn each_code_says_what_happened_by_what_may_follow_it() {
+    // "status code retry: words it says". Only same_request sends the
+    // request again, and only new_request and none close it: a retry this
+    // app doesn't know keeps it open, unsent.
+    let read = |row: &'static str, cancel: bool| {
+        let (result, says) = row.split_once(": ").unwrap();
+        let [status, code, retry] = result.split(' ').collect::<Vec<_>>()[..] else {
+            panic!("{row}")
+        };
+        let s = answered(cancel, status, code, retry);
+        let text = outcome(&s).unwrap();
+        assert!(text.contains(says), "{row}: {text}");
+        (
+            s,
+            retry == "same_request",
+            !matches!(retry, "new_request" | "none"),
+        )
     };
-    let timeout = retryable("launch_timeout");
-    assert_eq!(status(&timeout), "Needs attention");
-    assert!(Command::Retry.allowed(Some(&timeout)));
-    assert!(
-        outcome(&timeout)
-            .unwrap()
-            .contains("has not reported ready")
-    );
-    assert!(agent_waiting(&timeout));
-    assert!(agent_waiting(&retryable("runtime_permission")));
-    assert!(!agent_waiting(&retryable("runtime_missing")));
-    assert!(!agent_waiting(&s));
-    assert!(outcome(&retryable("agent_ready")).is_none());
-    assert!(
-        outcome(&retryable("something_new"))
-            .unwrap()
-            .contains("something_new")
-    );
+    for row in [
+        "failed agent_conflict new_request: already uses the name worker",
+        "failed agent_conflict none: uses its name now",
+        "action_required runtime_missing new_request: isn't installed",
+        "failed runtime_missing new_request: isn't installed",
+        "failed starter_conflict new_request: starter",
+        "failed launch_failed none: exited right after starting",
+        "action_required service_unavailable same_request: nothing was sent",
+        "action_required service_unavailable new_request: couldn't reach",
+        "failed installation_conflict none: another profile",
+        "failed request_conflict new_request: used for another request",
+        "failed request_expired none: never runs now",
+        "failed request_cancelled new_request: was cancelled",
+        "action_required outcome_unknown same_request: isn't known yet",
+        "action_required outcome_unknown none: never runs again",
+        "failed setup_failed same_request: before it changed anything",
+        "failed operator_required none: not one of your agents",
+        "failed invalid_request new_request: were refused",
+        "paused new_code later: new_code",
+    ] {
+        let (s, again, open) = read(row, false);
+        assert_eq!(Command::Retry.allowed(Some(&s)), again, "{row}");
+        assert_eq!(!s.closed(), open, "{row}");
+        assert_eq!(Command::Cancel.allowed(Some(&s)), open, "{row}");
+    }
+    for row in [
+        "action_required outcome_unknown same_request: Send the cancellation again",
+        "action_required service_unavailable same_request: nothing was sent",
+        "action_required cancellation_unsafe none: not a rollback",
+        "failed request_conflict new_request: used for another request",
+        "failed request_expired none: never runs now",
+        "failed installation_conflict none: another profile",
+    ] {
+        let (s, again, _) = read(row, true);
+        assert_eq!(Command::RetryCancel.allowed(Some(&s)), again, "{row}");
+    }
+    // The one answer that confirms a cancellation.
+    let mut s = answered(true, "completed", "request_cancelled", "new_request");
+    s.cancellation_result.as_mut().unwrap().cancelled = true;
+    assert!(outcome(&s).is_none() && s.closed());
+    assert_eq!(status(&s), "Safely cancelled");
+    // Started: its terminal is the next step.
+    let mut s = answered(false, "completed", "agent_ready", "none");
+    s.first_result.as_mut().unwrap().ready_agent = Some("worker".into());
+    assert!(started(&s) && outcome(&s).is_none() && s.closed());
+    assert_eq!(status(&s), "Agent started");
 }
 
 #[test]
@@ -415,38 +474,4 @@ fn an_unreachable_profile_keeps_an_unresolved_start_and_its_request_id() {
         })
         .collect();
     assert_eq!(posts, [first, first]);
-}
-
-#[test]
-fn an_unresolved_start_is_the_same_request_while_what_it_sends_is_the_same() {
-    use std::path::{Path, PathBuf};
-    let (_directory, profile, _server) = served_socket(Vec::new());
-    let start = |name: &str, dir: &str, model: Option<&str>, watch: Option<&str>| {
-        Start::new(name, Path::new(dir), "claude", model, watch).unwrap()
-    };
-    let held = Request {
-        connection: None,
-        profile,
-        start: start("guide", "/a", Some("opus"), Some("acme/app")),
-        create: Some(PathBuf::from("/a")),
-        request_id: "019a7c105c407a108b203c40d5e6f708".into(),
-    };
-    let made = PathBuf::from("/a");
-    // The tool and model chosen again, or an edit typed back: the same start.
-    assert!(same(
-        &held,
-        &start("guide", "/a", Some("opus"), Some("acme/app")),
-        Some(&made)
-    ));
-    // A real difference is a new request.
-    for other in [
-        start("guide", "/a", None, Some("acme/app")),
-        start("guide", "/a", Some("sonnet"), Some("acme/app")),
-        start("guide-2", "/a", Some("opus"), Some("acme/app")),
-        start("guide", "/b", Some("opus"), Some("acme/app")),
-        start("guide", "/a", Some("opus"), None),
-    ] {
-        assert!(!same(&held, &other, Some(&made)));
-    }
-    assert!(!same(&held, &held.start, None));
 }

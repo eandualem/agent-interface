@@ -10,7 +10,7 @@ use crate::{
 use agent_interface_roster::profiles::{
     AddError, Connection, Profile,
     setup::{
-        Event, Prepared,
+        Action, Event, Prepared,
         start::{Start, Started},
     },
 };
@@ -75,7 +75,7 @@ fn status(s: &Snapshot) -> &'static str {
         .as_ref()
         .is_some_and(|e| e.ready_agent.is_some())
     {
-        "Agent readiness confirmed"
+        "Agent started"
     } else if s.phase == Phase::Prepared {
         "Saved, not submitted"
     } else if s.phase == Phase::CancelPending && s.cancellation_result.is_none() {
@@ -88,48 +88,57 @@ fn status(s: &Snapshot) -> &'static str {
         "Needs attention"
     }
 }
-/// The agent exists but needs the person, so its terminal is the next step.
-fn agent_waiting(s: &Snapshot) -> bool {
-    !s.closed()
-        && s.phase == Phase::Submitted
-        && s.first_result.as_ref().is_some_and(|event| {
-            matches!(
-                event.code.as_deref(),
-                Some("launch_timeout" | "runtime_permission")
-            )
-        })
+/// The agent's CLI runs. Its terminal may still ask for a sign-in, trust or
+/// terms first, so that terminal is the next step.
+fn started(s: &Snapshot) -> bool {
+    s.first_result
+        .as_ref()
+        .is_some_and(|event| event.ready_agent.is_some())
 }
-/// What the latest result means for the person, for each code the provider sends.
+/// What the latest result means for the person: by its code and what may
+/// follow it, for each code setup gives a first agent or its cancellation.
 fn outcome(s: &Snapshot) -> Option<String> {
     let event = if s.phase == Phase::CancelPending {
         s.cancellation_result.as_ref()
     } else {
         s.first_result.as_ref()
     }?;
-    Some(match event.code.as_deref()? {
-        "agent_ready" | "request_cancelled" => return None,
-        "agent_conflict" => format!(
-            "An agent or terminal in this profile already uses the name {} or its folder. Go back and choose another.",
-            s.agent_name
+    let name = &s.agent_name;
+    let cancel = event.action == Action::CancelFirstAgent;
+    Some(match (event.code.as_deref()?, event.retry.as_deref()) {
+        ("agent_ready", _) => return None,
+        ("request_cancelled", _) if event.cancelled => return None,
+        ("request_cancelled", _) => "This request was cancelled, so it never runs. Start again to make a new one.".into(),
+        ("agent_conflict", Some("none")) => format!(
+            "{name} was added, but another terminal or session uses its name now. Look at it in the workspace before adding it again."
         ),
-        "invalid_request" => "The agent name, folder or model was refused. Go back and change it.".into(),
-        "launch_timeout" => format!(
-            "{} was added but has not reported ready. Open it, or sign in if it asks, then retry.",
-            s.agent_name
+        ("agent_conflict", _) => format!(
+            "An agent or terminal in this profile already uses the name {name} or its folder. Go back and choose another."
         ),
-        "runtime_permission" => format!(
-            "{} is waiting for you, often for a sign-in or a permission. Open it to continue, then retry.",
-            s.agent_name
+        ("runtime_missing", _) => "This tool isn't installed where the profile can use it, or setup doesn't start it. Install it or choose another, then start again.".into(),
+        ("starter_conflict", _) => "The profile's starter isn't as a first agent needs it: a starter policy, skill or the guide's brief is missing or changed. Fix it, then start again.".into(),
+        ("launch_failed", _) => "The CLI exited right after starting, so the agent is not running. Run the CLI in a terminal in the agent's folder to see why, then start the agent again.".into(),
+        ("service_unavailable", Some("same_request")) => "The profile's service isn't answering, so nothing was sent. Start it with backbone up --detach, then try again.".into(),
+        ("service_unavailable", _) => "The profile couldn't reach the computer the agent runs on. Start again once it answers.".into(),
+        ("installation_conflict", _) => "This request is for another profile, or this computer is no longer the profile's. Open the profile again before adding agents.".into(),
+        ("request_conflict", _) => "Its request ID was used for another request. Start again: that makes a new request.".into(),
+        ("request_expired", _) => format!(
+            "This request is older than the profile keeps requests for, and never runs now. Check whether {name} is in the workspace before adding it again."
         ),
-        "runtime_missing" => "This CLI is not installed where the profile can use it. Install it, then retry.".into(),
-        "starter_conflict" => "The profile's starter files or this brief need attention. Fix them, then retry.".into(),
-        "launch_failed" => "The CLI exited right after starting, so the agent is not running. Run the CLI in a terminal in the agent's folder to see why, then start the agent again.".into(),
-        "outcome_unknown" => format!(
-            "The result is not known. Check whether {} is in the workspace before adding it again.",
-            s.agent_name
+        ("outcome_unknown", Some("same_request")) if cancel => "The request may be running now, or the profile's records couldn't be read. Send the cancellation again.".into(),
+        ("outcome_unknown", Some("same_request")) => format!(
+            "What came of it isn't known yet. Try again: it asks about the same request, so {name} isn't added twice."
         ),
-        "cancellation_unsafe" => "Setup may already have made changes, so it could not be cancelled. The request and any agent were kept.".into(),
-        code => format!("The profile answered: {code}."),
+        ("outcome_unknown", _) => format!(
+            "The profile doesn't know what came of this request, and it never runs again. Check whether {name} is in the workspace before adding it again."
+        ),
+        ("cancellation_unsafe", _) => format!(
+            "Setup had already begun to change things, so it wasn't cancelled. Look at {name} in the workspace: a cancellation is not a rollback."
+        ),
+        ("setup_failed", _) => "Setup stopped on an error of its own before it changed anything. Try again.".into(),
+        ("operator_required", _) => "Only you can add a first agent, not one of your agents. Open Agent Interface yourself, then start again.".into(),
+        ("invalid_request", _) => "The agent's name, folder, model or instructions were refused. Go back and change them.".into(),
+        (code, _) => format!("The profile answered: {code}."),
     })
 }
 fn message(error: Error) -> &'static str {
@@ -236,10 +245,6 @@ fn attempt(request: &Request, unresolved: bool) -> Answer {
         );
     }
     answer(connection.start_first_agent(&request.start, &request.request_id))
-}
-/// Whether `request` is what `start` and `create` would send.
-fn same(request: &Request, start: &Start, create: Option<&PathBuf>) -> bool {
-    request.start == *start && request.create.as_ref() == create
 }
 /// The heading once a start is over without running: a result that isn't
 /// known is not called a failure.
@@ -767,12 +772,7 @@ impl Pane {
         let Page::Operation { snapshot, .. } = &self.page else {
             return false;
         };
-        snapshot.as_deref().is_some_and(|s| {
-            agent_waiting(s)
-                || s.first_result
-                    .as_ref()
-                    .is_some_and(|e| e.ready_agent.is_some())
-        })
+        snapshot.as_deref().is_some_and(started)
     }
 
     /// A fresh start is still under way.
@@ -821,21 +821,6 @@ impl Pane {
             .and_then(outcome)
             .or(self.error.map(|error| message(error).to_owned()))
             .or_else(|| Some("It stopped before it was ready. Try again.".to_owned()))
-    }
-
-    /// Ask about this unresolved served start again when `start` and `create`
-    /// are what it holds. Returns false when they differ or nothing is
-    /// unresolved, so only a new request can go on.
-    pub fn retry_same(
-        &mut self,
-        start: &Start,
-        create: Option<&PathBuf>,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        self.served
-            .as_ref()
-            .is_some_and(|served| same(&served.request, start, create))
-            && self.retry(cx)
     }
 
     /// Try the same request again, when the provider allows it. Returns false
@@ -947,7 +932,6 @@ impl Pane {
 /// What a start is doing, from the step the provider last reported.
 pub(super) fn stage(step: Option<&str>, name: &str) -> String {
     match step {
-        Some("hooks") => "Adding its hooks…".to_owned(),
         Some("agent") => format!("Creating {name}…"),
         Some("launch" | "ready") => "Opening its terminal…".to_owned(),
         _ => "Checking the tool…".to_owned(),
@@ -1043,14 +1027,10 @@ impl Render for Pane {
                             .flex()
                             .items_center()
                             .gap(px(t.space.s8))
-                            .child(if s.closed() || agent_waiting(s) || outcome(s).is_some() {
-                                ui::step_dot(ui::Step::Waits)
-                            } else if s
-                                .first_result
-                                .as_ref()
-                                .is_some_and(|e| e.ready_agent.is_some())
-                            {
+                            .child(if started(s) {
                                 ui::step_dot(ui::Step::Done)
+                            } else if s.closed() || outcome(s).is_some() {
+                                ui::step_dot(ui::Step::Waits)
                             } else {
                                 ui::step_dot(ui::Step::Now)
                             })
@@ -1060,7 +1040,10 @@ impl Render for Pane {
                     if let Some(text) = outcome(s) {
                         body = body.child(ui::group_note(text));
                     }
-                    if !self.busy && agent_waiting(s) {
+                    if !self.busy && started(s) {
+                        body = body.child(ui::group_note(
+                            "Its terminal may ask you to sign in, trust the folder or accept terms first.",
+                        ));
                         let (agent, sign_in) = (
                             Open::Agent {
                                 profile_id: s.profile_id.clone(),

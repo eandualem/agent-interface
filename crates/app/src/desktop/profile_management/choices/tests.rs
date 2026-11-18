@@ -74,10 +74,10 @@ fn explicit_choices_freeze_the_profile_and_identical_cancel_body() {
 fn a_tool_that_takes_the_brief_as_its_first_turn_gets_no_second_greeting() {
     // The default brief asks the agent to greet; custom instructions may not.
     for (id, brief, greeting) in [
-        ("gemini", None, false),
         ("antigravity", None, false),
-        ("gemini", Some("Do the project work"), true),
+        ("antigravity", Some("Do the project work"), true),
         ("codex", None, true),
+        ("claude", None, true),
     ] {
         let mut wire = runtimes();
         wire["items"][0]["id"] = json!(id);
@@ -132,15 +132,47 @@ fn changed_origin_or_stale_runtime_model_cannot_prepare() {
     assert!(freeze(REQUEST, &earlier, &theirs, choice()).is_none());
 }
 #[test]
+fn a_guide_starts_only_in_the_tools_setup_starts() {
+    // As `backbone runtimes --json` lists them: setup_supported says whether
+    // hooks are installed, not whether setup starts the tool.
+    let tool = |id: &str, setup_supported: bool| {
+        json!({"id": id, "display_name": id, "available": true,
+            "setup_supported": setup_supported, "models": [], "efforts": [],
+            "authentication": "unknown"})
+    };
+    let catalog = catalog(&json!({"schema_version": 1, "items": [
+        tool("claude", true), tool("codex", true), tool("opencode", true),
+        tool("antigravity", false), tool("shell", false),
+    ]}));
+    let ready = |setup| {
+        catalog
+            .items()
+            .iter()
+            .filter(|r| eligible(r, setup))
+            .map(|r| r.id.as_str())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ready(true), ["claude", "codex", "antigravity"]);
+    // Add agent starts through the service's start, as before.
+    assert_eq!(ready(false), ["claude", "codex", "opencode"]);
+    for (runtime, made) in [("antigravity", true), ("opencode", false)] {
+        let mut selected = choice();
+        selected.runtime = runtime;
+        assert_eq!(
+            freeze(REQUEST, &profile(), &catalog, selected).is_some(),
+            made,
+            "{runtime}"
+        );
+    }
+}
+
+#[test]
 fn unavailable_setup_is_not_selectable_and_no_optional_action_is_implied() {
     let mut wire = runtimes();
     let prepared = freeze(REQUEST, &profile(), &catalog(&wire), choice()).unwrap();
     let body: Value = serde_json::from_slice(prepared.bytes(Action::FirstAgent)).unwrap();
     assert_eq!(body["start_greeting"], false);
     assert_eq!(body["agent"]["model"], Value::Null);
-    wire["items"][0]["setup_supported"] = json!(false);
-    assert!(freeze(REQUEST, &profile(), &catalog(&wire), choice()).is_none());
-    wire["items"][0]["setup_supported"] = json!(true);
     wire["items"][0]["available"] = json!(false);
     assert!(freeze(REQUEST, &profile(), &catalog(&wire), choice()).is_none());
 }
@@ -221,19 +253,66 @@ fn a_typed_name_with_spaces_becomes_hyphens() {
     assert_eq!(super::agent_name(" new  agent "), "new-agent");
 }
 #[test]
-fn a_guide_asks_setup_to_make_its_own_folder() {
-    let catalog = catalog(&runtimes());
+fn a_guide_is_the_services_first_agent_request_run_by_backbone_setup() {
+    use std::{fs, os::unix::fs::PermissionsExt};
+    let fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../roster/src/profiles/setup/fixtures/setup-first-agent.json"
+    )))
+    .unwrap();
+    let ready: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../roster/src/profiles/setup/fixtures/first-agent-result.json"
+    )))
+    .unwrap();
+    // A guide in a folder setup makes, on the starter's brief, with a greeting.
     let mut guide = choice();
     guide.name = "guide";
-    guide.project = Path::new("/home/person/Agents/guide");
+    guide.project = Path::new("/home/user/projects/site");
     guide.create = true;
     guide.brief = None;
-    let prepared = freeze(REQUEST, &profile(), &catalog, guide).unwrap();
-    let first: Value = serde_json::from_slice(prepared.bytes(Action::FirstAgent)).unwrap();
-    assert_eq!(first["agent"]["name"], "guide");
-    assert_eq!(first["agent"]["directory"], "/home/person/Agents/guide");
-    assert_eq!(first["agent"]["create_directory"], true);
-    assert_eq!(first["agent"]["brief"]["template"], "orchestrator-v1");
+    guide.greeting = true;
+    let prepared = freeze(REQUEST, &profile(), &catalog(&runtimes()), guide).unwrap();
+    let body: Value = serde_json::from_slice(prepared.bytes(Action::FirstAgent)).unwrap();
+    assert_eq!(body, fixture);
+    // A fake backbone: it takes setup's arguments, keeps the request, and
+    // prints the steps once the profile answered, then the result.
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let mut events = String::new();
+    for (seq, step) in (1..).zip(["preflight", "agent", "launch", "ready", "greeting"]) {
+        let event = json!({"schema_version": 3, "request_id": REQUEST, "seq": seq,
+            "type": "step", "step": step, "status": "completed"});
+        events += &format!("{event}\n");
+    }
+    events += &format!("{ready}\n");
+    fs::write(root.join("events"), events).unwrap();
+    let executable = root.join("backbone");
+    fs::write(
+        &executable,
+        format!(
+            "#!/bin/sh\n[ \"$1 $2 $4\" = 'setup --file --jsonl' ] || exit 9\n/bin/cat \"$3\" > '{}'\n/bin/cat '{}'\n",
+            root.join("request").display(),
+            root.join("events").display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+    let client = Client::new(executable, "/usr/bin:/bin".into()).unwrap();
+    let controller = Controller::new(
+        journal::Journal::open(&root.join("profile-setup")).unwrap(),
+        &client,
+    );
+    let key = controller.enqueue(prepared).unwrap().key;
+    let mut steps = Vec::new();
+    let started = controller
+        .submit(&key, &|| true, |progress| steps.push(progress.event.step))
+        .unwrap();
+    assert_eq!(started.ready_agent.as_deref(), Some("guide"));
+    assert_eq!(steps.len(), 5);
+    let sent: Value = serde_json::from_slice(&fs::read(root.join("request")).unwrap()).unwrap();
+    assert_eq!(sent, fixture);
+    assert!(controller.read(&key).unwrap().closed());
 }
 
 #[test]
@@ -255,7 +334,7 @@ fn a_served_profile_lists_the_rust_services_runtimes() {
     else {
         panic!("a served catalog must give choices")
     };
-    assert!(eligible(&catalog.items()[0]));
+    assert!(eligible(&catalog.items()[0], false));
     // The earlier provider's catalog read is unchanged and refuses this list.
     assert!(load_choices(client, root, &identity, false, &|| true).is_err());
 }
