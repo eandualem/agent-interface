@@ -1,6 +1,8 @@
 //! Private setup request storage; this is not a provider result or authority.
 
-use super::{Action, Agent, CANCEL_LIMIT, Error, Prepared, REQUEST_LIMIT, SCHEMA_VERSION};
+use super::{
+    Action, Agent, CANCEL_LIMIT, Error, Prepared, REQUEST_LIMIT, SCHEMA_VERSION, Version, refused,
+};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -12,12 +14,6 @@ struct Checkpoint {
     checkpoint_version: u32,
     first: String,
     cancel: String,
-}
-/// Read first, so a request saved under another schema is told apart from a
-/// damaged one.
-#[derive(Deserialize)]
-struct Version {
-    schema_version: u32,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -47,7 +43,7 @@ impl Prepared {
     }
 
     /// Restore exact original setup/cancellation choices without discovery,
-    /// new IDs or I/O. A request saved under an earlier schema is
+    /// new IDs or I/O. A request saved under schema 1 or 2 is
     /// `Unsupported`: the service no longer takes it. The caller must
     /// separately validate the original operator context before execution.
     /// This does not restore an interrupted stream, establish readiness or
@@ -58,7 +54,7 @@ impl Prepared {
         }
         let checkpoint: Checkpoint = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
         if checkpoint.checkpoint_version != 1 {
-            return Err(Error::Unsupported);
+            return Err(Error::Invalid);
         }
         if checkpoint.first.len() > REQUEST_LIMIT || checkpoint.cancel.len() > CANCEL_LIMIT {
             return Err(Error::Invalid);
@@ -66,7 +62,7 @@ impl Prepared {
         let version: Version =
             serde_json::from_str(&checkpoint.first).map_err(|_| Error::Invalid)?;
         if version.schema_version != SCHEMA_VERSION {
-            return Err(Error::Unsupported);
+            return Err(refused(version.schema_version));
         }
         let request: Request =
             serde_json::from_str(&checkpoint.first).map_err(|_| Error::Invalid)?;

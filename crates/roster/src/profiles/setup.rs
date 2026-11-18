@@ -230,6 +230,23 @@ fn choices(agent: &Agent) -> bool {
         && brief
 }
 
+/// The schema a saved body says it was written for, read before the body.
+#[derive(Deserialize)]
+struct Version {
+    schema_version: u32,
+}
+
+/// Why a body saved under schema `version` is refused: `Unsupported` for
+/// the earlier schemas 1 and 2, which the service no longer takes; any
+/// other is not one this app wrote, and `Invalid`.
+fn refused(version: u32) -> Error {
+    if matches!(version, 1 | 2) {
+        Error::Unsupported
+    } else {
+        Error::Invalid
+    }
+}
+
 /// A value the app keeps as it came: a step's status, a result's status,
 /// code and retry, and a launch.
 fn token(text: &str) -> bool {

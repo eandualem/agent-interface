@@ -150,6 +150,23 @@ fn a_request_saved_under_schema_2_is_unsupported() {
         Prepared::restore(&bytes(&saved)).err(),
         Some(Error::Unsupported)
     );
+    // A schema to come, or a format this app didn't write, fails closed.
+    let mut later = saved.clone();
+    later["first"] = json!(
+        setup["first_agent"]
+            .to_string()
+            .replace("\"schema_version\":2", "\"schema_version\":4")
+    );
+    assert_eq!(
+        Prepared::restore(&bytes(&later)).err(),
+        Some(Error::Invalid)
+    );
+    let mut format = saved;
+    format["checkpoint_version"] = json!(2);
+    assert_eq!(
+        Prepared::restore(&bytes(&format)).err(),
+        Some(Error::Invalid)
+    );
 }
 
 #[test]

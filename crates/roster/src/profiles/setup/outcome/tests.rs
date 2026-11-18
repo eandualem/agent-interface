@@ -171,19 +171,24 @@ fn malformed_noncanonical_foreign_and_earlier_records_fail_closed() {
             .restore_outcome(Action::FirstAgent, &vec![b' '; LIMIT + 1])
             .is_err()
     );
+    // A format this app didn't write fails closed.
     let mut envelope: Checkpoint = serde_json::from_slice(&bytes).unwrap();
     envelope.format = 2;
     assert_eq!(
         prepared.restore_outcome(Action::FirstAgent, &serde_json::to_vec(&envelope).unwrap()),
-        Err(Error::Unsupported)
+        Err(Error::Invalid)
     );
-    // A result saved under schema 2 is the service's no longer.
-    let mut envelope: Checkpoint = serde_json::from_slice(&bytes).unwrap();
-    let mut result: Value = serde_json::from_str(&envelope.result).unwrap();
-    result["schema_version"] = 2.into();
-    envelope.result = serde_json::to_string(&result).unwrap();
-    assert_eq!(
-        prepared.restore_outcome(Action::FirstAgent, &serde_json::to_vec(&envelope).unwrap()),
-        Err(Error::Unsupported)
-    );
+    // A result saved under schema 2 is the service's no longer; one of a
+    // schema to come is not this app's.
+    for (version, refused) in [(2, Error::Unsupported), (4, Error::Invalid)] {
+        let mut envelope: Checkpoint = serde_json::from_slice(&bytes).unwrap();
+        let mut result: Value = serde_json::from_str(&envelope.result).unwrap();
+        result["schema_version"] = version.into();
+        envelope.result = serde_json::to_string(&result).unwrap();
+        assert_eq!(
+            prepared.restore_outcome(Action::FirstAgent, &serde_json::to_vec(&envelope).unwrap()),
+            Err(refused),
+            "{version}"
+        );
+    }
 }

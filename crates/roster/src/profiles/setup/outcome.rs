@@ -1,6 +1,6 @@
 //! Private normalized terminal observations, never an interrupted stream.
 
-use super::{Action, Error, Event, LINE_LIMIT, Prepared, SCHEMA_VERSION};
+use super::{Action, Error, Event, LINE_LIMIT, Prepared, SCHEMA_VERSION, Version, refused};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -48,7 +48,7 @@ impl Prepared {
 
     /// Restore only a canonical terminal observation for this exact request and
     /// expected action. It does not restore a stream or infer process-exit proof.
-    /// An observation saved under an earlier schema is `Unsupported`.
+    /// An observation saved under schema 1 or 2 is `Unsupported`.
     /// Caller-context and journal validation remain separate requirements.
     pub fn restore_outcome(&self, action: Action, bytes: &[u8]) -> Result<Event, Error> {
         if bytes.len() > LIMIT || bytes.first() != Some(&b'{') {
@@ -56,7 +56,12 @@ impl Prepared {
         }
         let checkpoint: Checkpoint = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
         if checkpoint.format != 1 {
-            return Err(Error::Unsupported);
+            return Err(Error::Invalid);
+        }
+        if let Ok(Version { schema_version }) = serde_json::from_str(&checkpoint.result)
+            && schema_version != SCHEMA_VERSION
+        {
+            return Err(refused(schema_version));
         }
         let event = self.decode_outcome(action, &checkpoint.result)?;
         if self.outcome_checkpoint(&event)? != bytes {
