@@ -655,6 +655,12 @@ impl Browser {
                     agents.get(name).state
                 });
                 entries.extend(leads.into_iter().map(|name| (name, AgentState::Offline)));
+                // An offline agent whose runs go on keeps a row to carry them.
+                for name in agents.offline_with_runs() {
+                    if entries.iter().all(|(listed, _)| *listed != name) {
+                        entries.push((name, AgentState::Offline));
+                    }
+                }
             }
             entries.sort_by_key(|(name, state)| {
                 (

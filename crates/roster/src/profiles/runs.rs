@@ -4,17 +4,24 @@
 //! /api/runs/{run_id}` reads one run, ended or not. An older service has
 //! neither route. Nothing here starts, cancels or retries a run.
 
+use std::time::{Duration, Instant};
+
 use serde::Deserialize;
 use serde_json::value::RawValue;
 
 use super::{Connection, Error, successful};
-use crate::{RESPONSE_LIMIT, Snapshot, is_uuid, within_depth};
+use crate::{RESPONSE_LIMIT, Snapshot, is_uuid, object, views::epoch_seconds, within_depth};
 
 /// Runs that left the list read by their ID after one roster read; any
 /// more are forgotten.
 const LOOKUPS: usize = 8;
 /// Ended runs kept, newest first.
 const FINISHED: usize = 32;
+/// How long one runs read may take; they are optional, so they are not
+/// waited for as long as the roster.
+const WAIT: Duration = Duration::from_secs(3);
+/// How long after a list read its lookups may still start.
+const LOOKING: Duration = Duration::from_secs(5);
 
 /// One run, with the fields this app shows, as the service wrote them. An
 /// optional field that is mistyped reads as absent.
@@ -23,10 +30,10 @@ pub struct Run {
     /// Its ID, 32 lowercase hex digits.
     pub run_id: String,
     /// The registration of the agent that started it.
-    #[serde(default, deserialize_with = "lenient")]
+    #[serde(default, deserialize_with = "crate::lenient")]
     pub agent_id: Option<String>,
     /// The name of the agent that started it.
-    #[serde(default, deserialize_with = "lenient")]
+    #[serde(default, deserialize_with = "crate::lenient")]
     pub agent: Option<String>,
     /// `review`, `build`, `test`, `other` or a kind this app doesn't know.
     pub kind: String,
@@ -36,25 +43,25 @@ pub struct Run {
     /// this app doesn't know.
     pub state: String,
     /// What a queued run waits on.
-    #[serde(default, deserialize_with = "lenient")]
+    #[serde(default, deserialize_with = "crate::lenient")]
     pub waiting_on: Option<String>,
     /// When it was queued, in RFC 3339.
-    #[serde(default, deserialize_with = "lenient")]
+    #[serde(default, deserialize_with = "crate::lenient")]
     pub queued_at: Option<String>,
     /// When it started, in RFC 3339.
-    #[serde(default, deserialize_with = "lenient")]
+    #[serde(default, deserialize_with = "crate::lenient")]
     pub started_at: Option<String>,
     /// When it ended, in RFC 3339.
-    #[serde(default, deserialize_with = "lenient")]
+    #[serde(default, deserialize_with = "crate::lenient")]
     pub finished_at: Option<String>,
     /// Its exit code, once it ended with one.
-    #[serde(default, deserialize_with = "lenient")]
+    #[serde(default, deserialize_with = "crate::lenient")]
     pub exit_code: Option<i64>,
     /// Its last progress line.
-    #[serde(default, deserialize_with = "lenient")]
+    #[serde(default, deserialize_with = "crate::lenient")]
     pub progress: Option<String>,
     /// Who reviews, for a review.
-    #[serde(default, deserialize_with = "lenient")]
+    #[serde(default, deserialize_with = "crate::lenient_object")]
     pub review: Option<Review>,
 }
 
@@ -63,24 +70,14 @@ pub struct Run {
 #[serde(default)]
 pub struct Review {
     /// The CLI it runs in.
-    #[serde(deserialize_with = "lenient")]
+    #[serde(deserialize_with = "crate::lenient")]
     pub runtime: Option<String>,
     /// Its model, when one was named.
-    #[serde(deserialize_with = "lenient")]
+    #[serde(deserialize_with = "crate::lenient")]
     pub model: Option<String>,
     /// Its reasoning effort, when one was named.
-    #[serde(deserialize_with = "lenient")]
+    #[serde(deserialize_with = "crate::lenient")]
     pub effort: Option<String>,
-}
-
-/// A value that doesn't decode as `T`, `null` included, reads as absent.
-fn lenient<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::de::DeserializeOwned,
-{
-    let raw = Box::<RawValue>::deserialize(deserializer)?;
-    Ok(serde_json::from_str(raw.get()).ok())
 }
 
 /// The runs a roster worker has seen on its connection.
@@ -117,6 +114,13 @@ pub struct Book {
     unserved: bool,
 }
 
+/// Runs that left the list at one read, to read by their IDs until `deadline`.
+#[derive(Debug, Default)]
+pub struct Gone {
+    runs: Vec<Run>,
+    deadline: Option<Instant>,
+}
+
 impl Book {
     /// The runs as last read.
     pub fn runs(&self) -> &Runs {
@@ -125,47 +129,78 @@ impl Book {
 
     /// Read the active runs after `roster` was read on `connection`, only
     /// when one of its agents reports runs or some were active at the last
-    /// read, so a service without runs is never asked. A run that left the
-    /// list is read once by its ID and kept when it ended; one that can't
-    /// be read is forgotten. A failed list keeps the book as it was. Runs
-    /// on an I/O worker.
-    pub fn follow(&mut self, connection: &Connection, roster: &Snapshot) {
+    /// read, so a service without runs is never asked. The runs that left
+    /// the list come back for [`Self::settle`], so the new list can be shown
+    /// first. A failed read keeps the book as it was. Runs on an I/O worker.
+    pub fn list(&mut self, connection: &Connection, roster: &Snapshot) -> Gone {
         let reported = roster
             .details
             .values()
             .filter_map(|details| details.background)
             .any(|counts| counts.running.saturating_add(counts.queued) > 0);
         if self.unserved || !connection.served() || (!reported && self.runs.active.is_empty()) {
-            return;
+            return Gone::default();
         }
+        let deadline = Instant::now() + LOOKING;
         let listed = match connection.runs() {
             Ok(listed) => listed,
             Err(Error::Unsupported) => {
                 self.unserved = true;
                 self.runs.active.clear();
-                return;
+                return Gone::default();
             }
-            Err(_) => return,
+            Err(_) => return Gone::default(),
         };
-        let gone: Vec<Run> = std::mem::take(&mut self.runs.active)
+        let runs = std::mem::replace(&mut self.runs.active, listed)
             .into_iter()
-            .filter(|run| listed.iter().all(|now| now.run_id != run.run_id))
+            .filter(|run| self.runs.active.iter().all(|now| now.run_id != run.run_id))
             .take(LOOKUPS)
             .collect();
-        for run in gone {
-            let Ok(ended) = connection.run(&run.run_id) else {
+        Gone {
+            runs,
+            deadline: Some(deadline),
+        }
+    }
+
+    /// Read each run that left the list once by its ID and keep those that
+    /// ended, newest first. A run that can't be read, or isn't reached
+    /// before the deadline or while `live`, is forgotten. Runs on an I/O
+    /// worker.
+    pub fn settle(&mut self, connection: &Connection, gone: Gone, live: &dyn Fn() -> bool) {
+        let Some(deadline) = gone.deadline else {
+            return;
+        };
+        let mut ended = Vec::new();
+        for run in gone.runs {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() || !live() {
+                break;
+            }
+            let Ok(run) = connection.run_within(&run.run_id, left.min(WAIT)) else {
                 continue;
             };
-            if matches!(ended.state.as_str(), "queued" | "running") {
-                continue;
+            if !matches!(run.state.as_str(), "queued" | "running") {
+                ended.push(run);
             }
-            self.runs
-                .finished
-                .retain(|kept| kept.run_id != ended.run_id);
-            self.runs.finished.insert(0, ended);
         }
-        self.runs.finished.truncate(FINISHED);
-        self.runs.active = listed;
+        // Newest first; an end time that doesn't parse counts as oldest.
+        let at = |run: &Run| {
+            run.finished_at
+                .as_deref()
+                .and_then(epoch_seconds)
+                .unwrap_or(f64::NEG_INFINITY)
+        };
+        ended.sort_by(|a, b| {
+            at(b)
+                .total_cmp(&at(a))
+                .then_with(|| b.run_id.cmp(&a.run_id))
+        });
+        self.runs
+            .finished
+            .retain(|kept| ended.iter().all(|run| run.run_id != kept.run_id));
+        ended.append(&mut self.runs.finished);
+        ended.truncate(FINISHED);
+        self.runs.finished = ended;
     }
 }
 
@@ -181,7 +216,7 @@ impl Connection {
         if !self.served {
             return Err(Error::Unsupported);
         }
-        let response = self.response("/api/runs", None, RESPONSE_LIMIT)?;
+        let response = self.response_within("/api/runs", None, RESPONSE_LIMIT, WAIT)?;
         if response.status == 404 {
             return Err(Error::Unsupported);
         }
@@ -193,22 +228,30 @@ impl Connection {
         Ok(listed
             .items
             .into_iter()
-            .filter_map(|item| serde_json::from_str(item.get()).ok())
+            .filter_map(|item| object(item.get()))
             .collect())
     }
 
     /// One run by its ID, ended or not. Only an ID of 32 lowercase hex
     /// digits is put in the path. Runs on an I/O worker.
     pub fn run(&self, run_id: &str) -> Result<Run, Error> {
+        self.run_within(run_id, WAIT)
+    }
+
+    fn run_within(&self, run_id: &str, wait: Duration) -> Result<Run, Error> {
         if !self.served {
             return Err(Error::Unsupported);
         }
         if run_id.len() != 32 || !is_uuid(run_id) {
             return Err(Error::Invalid);
         }
-        let response = self.response(&format!("/api/runs/{run_id}"), None, RESPONSE_LIMIT)?;
+        let response =
+            self.response_within(&format!("/api/runs/{run_id}"), None, RESPONSE_LIMIT, wait)?;
         successful(&response)?;
-        let run: Run = serde_json::from_slice(&response.body).map_err(|_| Error::Invalid)?;
+        let run: Run = std::str::from_utf8(&response.body)
+            .ok()
+            .and_then(object)
+            .ok_or(Error::Invalid)?;
         if run.run_id != run_id {
             return Err(Error::Invalid);
         }

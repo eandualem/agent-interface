@@ -21,6 +21,17 @@ fn roster(body: &[u8]) -> Snapshot {
 
 const REVIEW: &str = "0193a1b2c3d47e5f8a9b0c1d2e3f4a60";
 const BUILD: &str = "0193a1b2c3d47e5f8a9b0c1d2e3f4a61";
+const THIRD: &str = "0193a1b2c3d47e5f8a9b0c1d2e3f4a62";
+
+/// One read as the worker makes it: the list, then the runs that left it.
+fn follow(book: &mut Book, connection: &Connection, roster: &Snapshot) {
+    let gone = book.list(connection, roster);
+    book.settle(connection, gone, &|| true);
+}
+
+fn ids(runs: &[Run]) -> Vec<String> {
+    runs.iter().map(|run| run.run_id.clone()).collect()
+}
 
 #[test]
 fn active_runs_and_one_run_decode_from_the_services_fixtures() {
@@ -92,24 +103,19 @@ fn a_run_that_left_the_list_is_kept_once_it_ended() {
     let busy = roster(include_bytes!("fixtures/agents.json"));
     let idle = roster(br#"{"items":[{"name":"worker","state":"idle","background":{"running":0,"queued":0,"processes":0}}]}"#);
     let mut book = Book::default();
-    book.follow(&connection, &busy);
+    follow(&mut book, &connection, &busy);
     assert_eq!(book.runs().active, decoded(fixture("runs")));
     assert!(book.runs().finished.is_empty());
-    book.follow(&connection, &busy);
-    let ids = |runs: &[Run]| {
-        runs.iter()
-            .map(|run| run.run_id.clone())
-            .collect::<Vec<_>>()
-    };
+    follow(&mut book, &connection, &busy);
     assert_eq!(ids(&book.runs().active), [BUILD]);
     assert_eq!(book.runs().finished.len(), 1);
     assert_eq!(book.runs().finished[0].exit_code, Some(101));
     // No agent reports runs, but the book still held one, so it asks once more.
-    book.follow(&connection, &idle);
+    follow(&mut book, &connection, &idle);
     assert!(book.runs().active.is_empty());
     assert_eq!(ids(&book.runs().finished), [REVIEW]);
     // Nothing is active and nobody reports runs: nothing is asked.
-    book.follow(&connection, &idle);
+    follow(&mut book, &connection, &idle);
     let requests = server.join().unwrap();
     assert_eq!(requests.len(), 6);
     assert!(requests[3].starts_with(&format!("GET /api/runs/{REVIEW} HTTP/1.1\r\n")));
@@ -141,21 +147,19 @@ fn an_older_service_is_never_asked_and_one_without_runs_is_asked_once() {
     earlier.served = false;
     assert_eq!(earlier.runs(), Err(Error::Unsupported));
     assert_eq!(earlier.run(REVIEW), Err(Error::Unsupported));
-    Book::default().follow(&earlier, &busy);
+    follow(&mut Book::default(), &earlier, &busy);
     let mut book = Book::default();
     // An older service lists agents without counts.
-    book.follow(
-        &connection,
-        &roster(br#"{"items":[{"name":"worker","state":"busy"}]}"#),
-    );
-    book.follow(&connection, &busy);
+    let older = roster(br#"{"items":[{"name":"worker","state":"busy"}]}"#);
+    follow(&mut book, &connection, &older);
+    follow(&mut book, &connection, &busy);
     assert_eq!(book.runs().active.len(), 2);
     // A failed read keeps the book.
-    book.follow(&connection, &busy);
+    follow(&mut book, &connection, &busy);
     assert_eq!(book.runs().active.len(), 2);
     // A service without the route has nothing running and isn't asked again.
-    book.follow(&connection, &busy);
-    book.follow(&connection, &busy);
+    follow(&mut book, &connection, &busy);
+    follow(&mut book, &connection, &busy);
     assert_eq!(book.runs(), &Runs::default());
     assert_eq!(server.join().unwrap().len(), 4);
 }
@@ -174,17 +178,25 @@ fn a_run_that_is_not_the_one_asked_for_or_does_not_decode_is_refused() {
         mistyped[field] = value;
     }
     mistyped["review"]["model"] = json!(5);
+    // An array is not a run or a review, though either would decode from one.
+    let positional = json!([BUILD, null, "builder", "build", "cargo build", "running"]);
+    let mut listed_review = fixture("run");
+    listed_review["run_id"] = json!(THIRD);
+    listed_review["review"] = json!(["codex", "gpt-example", "high"]);
     let (connection, server) = served(vec![
         (200, other),
+        (200, positional.clone()),
         (
             200,
-            json!({"items": [{"run_id": REVIEW}, mistyped, {"kind": "test"}]}),
+            json!({"items": [{"run_id": REVIEW}, mistyped, {"kind": "test"}, positional, listed_review]}),
         ),
         (200, json!({"items": {}})),
     ]);
     assert_eq!(connection.run(REVIEW), Err(Error::Invalid));
+    assert_eq!(connection.run(BUILD), Err(Error::Invalid));
     let listed = connection.runs().unwrap();
-    assert_eq!(listed.len(), 1);
+    assert_eq!(ids(&listed), [REVIEW, THIRD]);
+    assert_eq!(listed[1].review, None);
     assert_eq!((listed[0].exit_code, &listed[0].progress), (None, &None));
     assert_eq!(listed[0].agent, None);
     let review = listed[0].review.as_ref().unwrap();
@@ -193,5 +205,77 @@ fn a_run_that_is_not_the_one_asked_for_or_does_not_decode_is_refused() {
         (None, Some("codex"))
     );
     assert_eq!(connection.runs(), Err(Error::Invalid));
+    server.join().unwrap();
+}
+
+#[test]
+fn the_new_list_shows_first_and_a_stop_or_the_deadline_starts_no_lookup() {
+    let mut ended = fixture("run");
+    ended["state"] = json!("finished");
+    ended["finished_at"] = json!("2026-11-10T10:21:47Z");
+    let (connection, server) = served(vec![
+        (200, fixture("runs")),
+        (200, json!({"items": []})),
+        (200, ended),
+        (404, json!({"detail": "not found"})),
+    ]);
+    let busy = roster(include_bytes!("fixtures/agents.json"));
+    let mut book = Book::default();
+    follow(&mut book, &connection, &busy);
+    let gone = book.list(&connection, &busy);
+    // Both runs left the list, which shows before either is read.
+    assert_eq!(book.runs(), &Runs::default());
+    assert_eq!(ids(&gone.runs), [REVIEW, BUILD]);
+    // A stopped worker starts no lookup, and neither does one past its deadline.
+    let stopped = Gone {
+        runs: gone.runs.clone(),
+        deadline: gone.deadline,
+    };
+    book.settle(&connection, stopped, &|| false);
+    let late = Gone {
+        runs: gone.runs.clone(),
+        deadline: Some(Instant::now()),
+    };
+    book.settle(&connection, late, &|| true);
+    assert!(book.runs().finished.is_empty());
+    // With time left each is read once; the one that can't be read is forgotten.
+    book.settle(&connection, gone, &|| true);
+    assert_eq!(ids(&book.runs().finished), [REVIEW]);
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 5);
+    assert!(requests[3].starts_with(&format!("GET /api/runs/{REVIEW} HTTP/1.1\r\n")));
+    assert!(requests[4].starts_with(&format!("GET /api/runs/{BUILD} HTTP/1.1\r\n")));
+}
+
+#[test]
+fn runs_that_end_in_one_read_are_kept_newest_first() {
+    let run = |id: &str, state: &str, finished: Json| {
+        let mut run = fixture("run");
+        run["run_id"] = json!(id);
+        run["state"] = json!(state);
+        run["finished_at"] = finished;
+        run
+    };
+    let (connection, server) = served(vec![
+        (
+            200,
+            json!({"items": [
+                run(REVIEW, "running", Json::Null),
+                run(BUILD, "running", Json::Null),
+                run(THIRD, "running", Json::Null),
+            ]}),
+        ),
+        (200, json!({"items": []})),
+        // Read in list order, they ended in another; a time that doesn't
+        // parse counts as oldest.
+        (200, run(REVIEW, "finished", json!("2026-11-10T10:20:00Z"))),
+        (200, run(BUILD, "failed", json!("2026-11-10T10:25:00Z"))),
+        (200, run(THIRD, "cancelled", json!("soon"))),
+    ]);
+    let busy = roster(include_bytes!("fixtures/agents.json"));
+    let mut book = Book::default();
+    follow(&mut book, &connection, &busy);
+    follow(&mut book, &connection, &busy);
+    assert_eq!(ids(&book.runs().finished), [BUILD, REVIEW, THIRD]);
     server.join().unwrap();
 }

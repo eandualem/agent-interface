@@ -64,13 +64,13 @@ pub struct Waiting {
     /// What it waits on, such as a build slot, as the service wrote it.
     pub on: String,
     /// The agent it waits on, when it waits on an agent.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub on_agent: Option<String>,
     /// Why, as the service wrote it.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub reason: Option<String>,
     /// Since when, in RFC 3339 as the service wrote it.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub since: Option<String>,
 }
 
@@ -84,6 +84,36 @@ pub struct Background {
     pub queued: u64,
     /// Processes it started that still run.
     pub processes: u64,
+}
+
+/// `raw` as `T` only when it is a JSON object that decodes. A derived struct
+/// also decodes from an array, which would read `[0, 0, 0]` as real counts.
+pub(crate) fn object<T: serde::de::DeserializeOwned>(raw: &str) -> Option<T> {
+    if !raw.trim_start().starts_with('{') {
+        return None;
+    }
+    serde_json::from_str(raw).ok()
+}
+
+/// For `deserialize_with`: a value that doesn't decode as `T`, `null`
+/// included, reads as absent instead of failing the value that holds it.
+pub(crate) fn lenient<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let raw = <Box<RawValue> as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(serde_json::from_str(raw.get()).ok())
+}
+
+/// As [`lenient`], for a value that must be a JSON object.
+pub(crate) fn lenient_object<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let raw = <Box<RawValue> as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(object(raw.get()))
 }
 
 /// A running swarm: the agent that started it and the agents working in it.
@@ -190,8 +220,8 @@ fn decode(response: &[u8]) -> Option<Decoded> {
                     .and_then(|value| serde_json::from_str(value).ok()),
                 state_since: field("state_since")
                     .and_then(|value| serde_json::from_str(value).ok()),
-                waiting: field("waiting").and_then(|value| serde_json::from_str(value).ok()),
-                background: field("background").and_then(|value| serde_json::from_str(value).ok()),
+                waiting: field("waiting").and_then(object),
+                background: field("background").and_then(object),
             },
         );
         states.insert(name, state);
@@ -391,7 +421,9 @@ mod tests {
     fn malformed_details_do_not_discard_valid_fields() {
         let mut snapshot = Snapshot::default();
         snapshot.update(
-            br#"{"items":[{"name":"worker","state":"future","online":true,"reason":7,"current_issue":42,"state_since":"invalid","waiting":{"on":7},"background":{"running":"one"}}]}"#,
+            br#"{"items":[{"name":"worker","state":"future","online":true,"reason":7,"current_issue":42,"state_since":"invalid","waiting":{"on":7},"background":{"running":"one"}},
+            {"name":"array","waiting":["build slot"],"background":[0,0,0]},
+            {"name":"lenient","waiting":{"on":"build slot","on_agent":[],"reason":7,"since":1}}]}"#,
         );
         let details = &snapshot.details["worker"];
         assert_eq!(details.online, Some(true));
@@ -399,6 +431,16 @@ mod tests {
         assert_eq!(details.current_issue, Some(42));
         assert_eq!(details.state_since, None);
         assert_eq!((&details.waiting, details.background), (&None, None));
+        // Arrays are not objects, even though they would decode as one.
+        let array = &snapshot.details["array"];
+        assert_eq!((&array.waiting, array.background), (&None, None));
+        // A mistyped optional part leaves the rest of the wait.
+        let waiting = snapshot.details["lenient"].waiting.clone().unwrap();
+        assert_eq!(waiting.on, "build slot");
+        assert_eq!(
+            (waiting.on_agent, waiting.reason, waiting.since),
+            (None, None, None)
+        );
     }
 
     #[test]

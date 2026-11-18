@@ -1025,7 +1025,7 @@ pub struct Process {
     /// Its command line, as the service wrote it.
     pub command: String,
     /// When it started, in RFC 3339 as the service wrote it.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::lenient")]
     pub started_at: Option<String>,
 }
 
@@ -1364,9 +1364,14 @@ impl Agent {
             .collect();
         // Null or mistyped reads as absent, never as an unreadable card.
         let field = |name: &str| document.get(name).map(|raw| raw.get());
-        agent.waiting = field("waiting").and_then(|raw| serde_json::from_str(raw).ok());
-        agent.background = field("background").and_then(|raw| serde_json::from_str(raw).ok());
-        agent.processes = list::<Process>(&document, "processes");
+        agent.waiting = field("waiting").and_then(crate::object);
+        agent.background = field("background").and_then(crate::object);
+        agent.processes = field("processes")
+            .and_then(|raw| serde_json::from_str::<Vec<&RawValue>>(raw).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|process| crate::object(process.get()))
+            .collect();
         Ok(agent)
     }
 }
@@ -1880,11 +1885,16 @@ mod tests {
         // Mistyped fields read as absent and leave the card.
         let agent = Agent::decode(
             br#"{"name":"worker","waiting":"soon","background":{"running":-1},
-            "processes":[{"pid":"x","command":"a"},{"pid":7,"command":"b","started_at":null}]}"#,
+            "processes":[{"pid":"x","command":"a"},{"pid":7,"command":"b","started_at":null},
+            [8,"c","2026-11-10T10:14:02Z"],{"pid":9,"command":"d","started_at":7}]}"#,
         )
         .unwrap();
         assert_eq!((agent.waiting, agent.background), (None, None));
-        assert_eq!(agent.processes.len(), 1);
-        assert_eq!(agent.processes[0].started_at, None);
+        // An array is not a process; a mistyped start time leaves the process.
+        let pids: Vec<_> = agent.processes.iter().map(|process| process.pid).collect();
+        assert_eq!(pids, [7, 9]);
+        assert_eq!(agent.processes[1].started_at, None);
+        let agent = Agent::decode(br#"{"name":"worker","background":[1,0,0]}"#).unwrap();
+        assert_eq!(agent.background, None);
     }
 }

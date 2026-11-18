@@ -25,6 +25,8 @@ pub struct BoundRosterSource {
     updates: Arc<Mutex<Option<BoundRosterUpdate>>>,
     /// True stops the polling worker; false asks it to read now.
     stop: mpsc::Sender<bool>,
+    /// Cleared before a stop, so the worker starts no further runs read.
+    polling: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
     /// Follows the Rust service's push stream, when the connection has one.
     stream: Option<(Arc<AtomicBool>, JoinHandle<()>)>,
@@ -41,6 +43,8 @@ impl BoundRosterSource {
         let pending = Arc::clone(&updates);
         let (stop, stopped) = mpsc::channel();
         let (watched, refresh) = (connection.clone(), stop.clone());
+        let polling = Arc::new(AtomicBool::new(true));
+        let wanted = Arc::clone(&polling);
         let worker = thread::Builder::new()
             .name("bound roster polling".into())
             .spawn(move || {
@@ -56,6 +60,14 @@ impl BoundRosterSource {
                         Some(update.clone());
                     wake();
                 };
+                let live = || wanted.load(Ordering::Relaxed);
+                // Publish the runs only when the book changed.
+                let show_runs = |update: &mut BoundRosterUpdate, runs: &Runs| {
+                    if *runs != update.runs {
+                        update.runs = runs.clone();
+                        publish(update);
+                    }
+                };
                 loop {
                     match connection.roster() {
                         Ok(snapshot) => {
@@ -68,12 +80,12 @@ impl BoundRosterSource {
                         }
                     }
                     publish(&update);
-                    if update.error.is_none() {
-                        book.follow(&connection, &update.snapshot);
-                        if *book.runs() != update.runs {
-                            update.runs = book.runs().clone();
-                            publish(&update);
-                        }
+                    if update.error.is_none() && live() {
+                        // The new list shows before its ended runs are read.
+                        let gone = book.list(&connection, &update.snapshot);
+                        show_runs(&mut update, book.runs());
+                        book.settle(&connection, gone, &live);
+                        show_runs(&mut update, book.runs());
                     }
                     match stopped.recv_timeout(Duration::from_secs(2)) {
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -91,6 +103,7 @@ impl BoundRosterSource {
         let mut source = Self {
             updates,
             stop,
+            polling,
             worker: Some(worker),
             stream: None,
         };
@@ -155,6 +168,7 @@ fn watch(
 
 impl Drop for BoundRosterSource {
     fn drop(&mut self) {
+        self.polling.store(false, Ordering::Relaxed);
         let _ = self.stop.send(true);
         if let Some((live, worker)) = self.stream.take() {
             live.store(false, Ordering::Relaxed);

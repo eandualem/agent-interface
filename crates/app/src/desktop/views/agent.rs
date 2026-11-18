@@ -815,19 +815,27 @@ fn age(at: Option<&str>, now: f64) -> String {
         .unwrap_or_default()
 }
 
-/// One row of the Background section: what it is, a time, and the rest.
+/// One row of the Background section: what it is, a time, its result, which
+/// always shows, and the rest, which gives way first.
 #[derive(Debug, PartialEq)]
 struct Work {
     what: String,
     when: String,
+    result: String,
     text: String,
+}
+
+/// A run's label and last progress line.
+fn described(run: &Run) -> String {
+    let mut parts = vec![run.label.clone()];
+    parts.extend(run.progress.clone());
+    line(&parts.join(" · "))
 }
 
 /// A queued or running run, with how long it has queued or run.
 fn active(run: &Run, now: f64) -> Work {
-    let mut parts = vec![run.label.clone(), run.state.clone()];
-    parts.extend(run.waiting_on.as_ref().map(|on| format!("waits on {on}")));
-    parts.extend(run.progress.clone());
+    let mut result = vec![run.state.clone()];
+    result.extend(run.waiting_on.as_ref().map(|on| format!("waits on {on}")));
     let since = if run.state == "queued" {
         &run.queued_at
     } else {
@@ -836,23 +844,24 @@ fn active(run: &Run, now: f64) -> Work {
     Work {
         what: run.kind.clone(),
         when: age(since.as_deref(), now),
-        text: line(&parts.join(" · ")),
+        result: line(&result.join(" · ")),
+        text: described(run),
     }
 }
 
 /// A run that ended, with when it ended and how long it ran.
 fn ended(run: &Run, now: f64) -> Work {
-    let mut parts = vec![run.label.clone(), run.state.clone()];
-    parts.extend(run.exit_code.map(|code| format!("exit {code}")));
-    parts.extend(run.progress.clone());
+    let mut result = vec![run.state.clone()];
+    result.extend(run.exit_code.map(|code| format!("exit {code}")));
     let time = |at: &Option<String>| at.as_deref().and_then(epoch_seconds);
     if let (Some(start), Some(end)) = (time(&run.started_at), time(&run.finished_at)) {
-        parts.push(format!("ran {}", ago(end - start)));
+        result.push(format!("ran {}", ago(end - start)));
     }
     Work {
         what: run.kind.clone(),
         when: age(run.finished_at.as_deref(), now),
-        text: line(&parts.join(" · ")),
+        result: line(&result.join(" · ")),
+        text: described(run),
     }
 }
 
@@ -860,6 +869,7 @@ fn process(process: &Process, now: f64) -> Work {
     Work {
         what: format!("pid {}", process.pid),
         when: age(process.started_at.as_deref(), now),
+        result: String::new(),
         text: line(&process.command),
     }
 }
@@ -928,6 +938,9 @@ fn background(agent: &Agent, runs: &Runs) -> Option<gpui::Div> {
                     .text_color(c.muted),
             )
             .child(div().flex_shrink_0().text_color(c.text_2).child(row.when))
+            .when(!row.result.is_empty(), |el| {
+                el.child(div().flex_shrink_0().text_color(c.text_2).child(row.result))
+            })
             .child(
                 div()
                     .flex_1()
@@ -1376,9 +1389,8 @@ mod tests {
             Work {
                 what: "review".into(),
                 when: "10m".into(),
-                text:
-                    "Review round 2, gpt-example · running · Reviewing crates/protocol/src/runs.rs"
-                        .into(),
+                result: "running".into(),
+                text: "Review round 2, gpt-example · Reviewing crates/protocol/src/runs.rs".into(),
             }
         );
         // A queued run counts from when it was queued.
@@ -1387,7 +1399,8 @@ mod tests {
             Work {
                 what: "build".into(),
                 when: "1m".into(),
-                text: "cargo build --workspace · queued · waits on build slot".into(),
+                result: "queued · waits on build slot".into(),
+                text: "cargo build --workspace".into(),
             }
         );
         assert_eq!(
@@ -1395,14 +1408,15 @@ mod tests {
             Work {
                 what: "test".into(),
                 when: "2m".into(),
-                text: "cargo test --workspace · failed · exit 101 · test result: FAILED. 211 passed; 1 failed · ran 7m".into(),
+                result: "failed · exit 101 · ran 7m".into(),
+                text: "cargo test --workspace · test result: FAILED. 211 passed; 1 failed".into(),
             }
         );
         let mut unknown = failed.clone();
         unknown.finished_at = Some("later".into());
         let work = ended(&unknown, at("2026-11-10T10:23:47Z"));
         assert_eq!(work.when, "");
-        assert!(!work.text.contains("ran"));
+        assert_eq!(work.result, "failed · exit 101");
     }
 
     #[test]

@@ -276,6 +276,22 @@ impl LiveAgents {
         self.0.current.borrow().activity.get(name).cloned()
     }
 
+    /// Agents of the roster that are offline but still have active runs.
+    pub fn offline_with_runs(&self) -> Vec<String> {
+        let current = self.0.current.borrow();
+        current
+            .activity
+            .keys()
+            .filter(|name| {
+                current
+                    .statuses
+                    .get(*name)
+                    .is_some_and(|status| status.state == AgentState::Offline)
+            })
+            .cloned()
+            .collect()
+    }
+
     /// The profile's running and queued runs together, as `1 running · 2
     /// queued`; none when it has none or its roster is unavailable.
     pub fn background(&self) -> Option<gpui::SharedString> {
@@ -770,6 +786,12 @@ mod tests {
             Some("build queued")
         );
         assert!(agents.activity("builder").is_none());
+        assert!(agents.offline_with_runs().is_empty());
+        // An offline agent with runs is named; one the roster doesn't know is not.
+        let mut update = observation(&profile, "offline");
+        update.runs.active = runs;
+        agents.update_bound(update);
+        assert_eq!(agents.offline_with_runs(), ["worker"]);
     }
 
     #[test]
