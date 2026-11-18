@@ -314,7 +314,7 @@ fn a_later_run_without_an_end_time_stays_behind_dated_ones() {
 }
 
 #[test]
-fn a_list_failing_for_30_seconds_is_stale_until_a_good_read_settles_it() {
+fn a_list_unread_for_30_seconds_is_stale_until_a_good_read_settles_it() {
     let mut ended = fixture("run");
     ended["state"] = json!("finished");
     ended["finished_at"] = json!("2026-11-10T10:21:47Z");
@@ -337,18 +337,18 @@ fn a_list_failing_for_30_seconds_is_stale_until_a_good_read_settles_it() {
         book.settle(&connection, gone, &|| true);
     };
     read(&mut book, 0);
-    // Failures counted from the first one: shown until 30 seconds have passed.
+    // Counted from the last good read: shown until 30 seconds have passed.
     read(&mut book, 10);
-    read(&mut book, 39);
+    read(&mut book, 29);
     assert!(!book.runs().stale);
     assert_eq!(book.runs().of(builder).active.len(), 1);
-    read(&mut book, 40);
+    read(&mut book, 30);
     assert!(book.runs().stale);
     assert!(book.runs().of(builder).active.is_empty());
     // The list is kept inside, so the next good read still finds the run
     // that ended and shows the list again.
     assert_eq!(book.runs().active.len(), 2);
-    read(&mut book, 41);
+    read(&mut book, 31);
     assert!(!book.runs().stale);
     assert_eq!(ids(&book.runs().active), [BUILD]);
     assert_eq!(ids(&book.runs().finished), [REVIEW]);
@@ -357,15 +357,15 @@ fn a_list_failing_for_30_seconds_is_stale_until_a_good_read_settles_it() {
 
 #[test]
 fn a_roster_outage_counts_toward_a_stale_list_until_a_good_list_read() {
+    let review = fixture("runs")["items"][0].clone();
     let mut ended = fixture("run");
     ended["state"] = json!("finished");
     ended["finished_at"] = json!("2026-11-10T10:21:47Z");
     let (connection, server) = served(vec![
-        (200, fixture("runs")),
+        (200, json!({"items": [review]})),
         (503, json!({})),
         (200, json!({"items": []})),
         (200, ended),
-        (404, json!({"detail": "not found"})),
     ]);
     let busy = roster(include_bytes!("fixtures/agents.json"));
     let mut book = Book::default();
@@ -373,21 +373,40 @@ fn a_roster_outage_counts_toward_a_stale_list_until_a_good_list_read() {
     let at = |after: u64| start + Duration::from_secs(after);
     let gone = book.list_at(&connection, &busy, at(0));
     book.settle(&connection, gone, &|| true);
-    // Roster reads fail from 1 s on: no list read, but the clock runs.
-    book.missed_at(at(1));
-    book.missed_at(at(20));
+    // Roster reads that take their whole timeout and fail: the list goes
+    // stale 30 seconds after its last good read, as the roster does.
+    book.missed_at(at(17));
     assert!(!book.runs().stale);
-    book.missed_at(at(31));
+    book.missed_at(at(34));
     assert!(book.runs().stale);
-    // The roster is back but the list still fails: it stays stale.
-    let gone = book.list_at(&connection, &busy, at(33));
+    // The roster is back but the list fails: it stays stale.
+    let gone = book.list_at(&connection, &busy, at(36));
     book.settle(&connection, gone, &|| true);
     assert!(book.runs().stale);
     // A good list clears it and still settles the review that ended.
-    let gone = book.list_at(&connection, &busy, at(35));
+    let gone = book.list_at(&connection, &busy, at(38));
     book.settle(&connection, gone, &|| true);
     assert!(!book.runs().stale);
     assert!(book.runs().active.is_empty());
     assert_eq!(ids(&book.runs().finished), [REVIEW]);
-    assert_eq!(server.join().unwrap().len(), 6);
+    assert_eq!(server.join().unwrap().len(), 5);
+}
+
+#[test]
+fn an_empty_book_is_never_stale() {
+    let (connection, server) = served(vec![(200, json!({"items": []}))]);
+    let busy = roster(include_bytes!("fixtures/agents.json"));
+    let start = Instant::now();
+    let mut never_read = Book::default();
+    never_read.missed_at(start + Duration::from_secs(60));
+    assert!(!never_read.runs().stale);
+    // A good read of an empty list, then a minute of missed reads.
+    let mut book = Book::default();
+    let gone = book.list_at(&connection, &busy, start);
+    book.settle(&connection, gone, &|| true);
+    for after in [30, 60] {
+        book.missed_at(start + Duration::from_secs(after));
+    }
+    assert_eq!(book.runs(), &Runs::default());
+    server.join().unwrap();
 }

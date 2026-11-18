@@ -431,9 +431,9 @@ only active runs, so the finished history starts empty when the app starts
 and holds only runs the app saw queued or running and then read after they
 ended: at most 8 lookups per list read, all within 5 seconds of the list
 read starting, each runs read waiting at most 3 seconds. A run that starts
-and ends between two reads is not recorded. When the list has failed to
-read for 30 seconds, a failed roster read counting as a failed list read,
-its active runs are no longer shown; the next good read
+and ends between two reads is not recorded. Once the list has not been
+read for 30 seconds, whichever read failed, its active runs are no longer
+shown; the next good read
 shows the list again and still finds the runs that ended meanwhile. The
 runs ride the roster update to `LiveAgents`, which the Team rows, the sidebar,
 the status bar and the agent card read.

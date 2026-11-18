@@ -23,8 +23,8 @@ const WAIT: Duration = Duration::from_secs(3);
 /// How long one runs round may take, counted from when its list read
 /// starts: no lookup starts after it, and each waits at most what is left.
 const LOOKING: Duration = Duration::from_secs(5);
-/// How long failing list reads keep showing the last list, as failing
-/// roster reads keep showing the last roster.
+/// How long after its last good read a list is still shown, as the last
+/// good roster is.
 const STALE: Duration = Duration::from_secs(30);
 
 /// One run, with the fields this app shows, as the service wrote them. An
@@ -125,8 +125,8 @@ pub struct Book {
     runs: Runs,
     /// The service answered that it has no runs, so it isn't asked again.
     unserved: bool,
-    /// When the list reads began to fail, since the last good one.
-    failing: Option<Instant>,
+    /// When the list was last read, to tell when it has gone unread too long.
+    listed_at: Option<Instant>,
 }
 
 /// Runs that left the list at one read, to read by their IDs until `deadline`.
@@ -146,8 +146,8 @@ impl Book {
     /// when one of its agents reports runs or some were active at the last
     /// read, so a service without runs is never asked. The runs that left
     /// the list come back for [`Self::settle`], so the new list can be shown
-    /// first. A failed read keeps the book as it was, and after failing for
-    /// 30 seconds marks the list stale. Runs on an I/O worker.
+    /// first. A failed read keeps the book as it was, and marks the list
+    /// stale once it has gone unread for 30 seconds. Runs on an I/O worker.
     pub fn list(&mut self, connection: &Connection, roster: &Snapshot) -> Gone {
         self.list_at(connection, roster, Instant::now())
     }
@@ -167,6 +167,7 @@ impl Book {
             Err(Error::Unsupported) => {
                 self.unserved = true;
                 self.runs.active.clear();
+                self.runs.stale = false;
                 return Gone::default();
             }
             Err(_) => {
@@ -176,7 +177,7 @@ impl Book {
                 return Gone::default();
             }
         };
-        self.failing = None;
+        self.listed_at = Some(now);
         self.runs.stale = false;
         let runs = std::mem::replace(&mut self.runs.active, listed)
             .into_iter()
@@ -189,15 +190,20 @@ impl Book {
         }
     }
 
-    /// Count a roster read that failed as a list read that failed, so a
-    /// list not read for 30 seconds is stale whatever stopped the reading.
+    /// Count a roster read that failed as a list that wasn't read, so a
+    /// list unread for 30 seconds is stale whichever read failed.
     pub fn missed(&mut self) {
         self.missed_at(Instant::now());
     }
 
+    /// The one rule, for a pass without a good list read: a book with active
+    /// runs whose last good list read is 30 seconds old is stale. An empty
+    /// book never is.
     fn missed_at(&mut self, now: Instant) {
-        let since = *self.failing.get_or_insert(now);
-        self.runs.stale = now.saturating_duration_since(since) >= STALE;
+        self.runs.stale = !self.runs.active.is_empty()
+            && self
+                .listed_at
+                .is_some_and(|at| now.saturating_duration_since(at) >= STALE);
     }
 
     /// Read each run that left the list once by its ID and keep those that
