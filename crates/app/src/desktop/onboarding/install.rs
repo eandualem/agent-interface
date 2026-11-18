@@ -6,6 +6,9 @@
 //! service answering. Every fix runs off the UI thread with a deadline, and
 //! a failure explains itself.
 
+mod launchd;
+mod systemd;
+
 use std::{
     ffi::OsString,
     io::Read,
@@ -18,6 +21,9 @@ use std::{
 
 /// Long enough for a package manager or an installer script on a slow line.
 const LIMIT: Duration = Duration::from_secs(15 * 60);
+/// The most bytes a login service's definition, or a drop-in, is read in:
+/// far more than the service writes.
+const DEFINITION_MOST: u64 = 64 * 1024;
 /// How much of a failed command's output is kept to explain it.
 const TAIL: usize = 16 * 1024;
 /// Agent Backbone's own setup waits up to 30 s for its service; this leaves
@@ -169,13 +175,23 @@ fn own_service(home: &Path, backbone: &Path) -> Result<Option<PathBuf>, String> 
             .unwrap_or_else(|| home.join(".config"))
             .join("systemd/user/agent-backbone-rs.service")
     };
-    if !definition.is_file() {
-        return Ok(None);
+    // A look that fails for another reason than its absence leaves nothing
+    // to check it by.
+    match definition.symlink_metadata() {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => {
+            return Err(
+                "The agent service's definition could not be looked at, so it was left alone."
+                    .into(),
+            );
+        }
     }
     // What may change a unit beside it is not this app's to restart, as
     // setup leaves such a unit as it is.
     if !cfg!(target_os = "macos")
-        && let Some(found) = drop_in(&unit_dirs(home, |name| std::env::var_os(name)))
+        && let Some(found) =
+            systemd::drop_in(&systemd::unit_dirs(home, |name| std::env::var_os(name)))
     {
         return Err(format!(
             "{} may change what the agent service runs, so it was left alone.",
@@ -184,142 +200,6 @@ fn own_service(home: &Path, backbone: &Path) -> Result<Option<PathBuf>, String> 
     }
     owned(&definition, home, backbone)?;
     Ok(Some(definition))
-}
-
-/// The folders systemd looks for a user's units and their drop-ins in, as
-/// the service lists them (systemd.unit(5)), each with whether the system's
-/// packages keep it. A relative value is no value.
-fn unit_dirs(home: &Path, variable: impl Fn(&str) -> Option<OsString>) -> Vec<(PathBuf, bool)> {
-    let absolute = |name: &str| {
-        variable(name)
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-    };
-    let each = |name: &str, default: &str| -> Vec<PathBuf> {
-        let value = variable(name).unwrap_or_else(|| default.into());
-        std::env::split_paths(&value)
-            .filter(|path| path.is_absolute())
-            .collect()
-    };
-    let config = absolute("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config"));
-    let data = absolute("XDG_DATA_HOME").unwrap_or_else(|| home.join(".local/share"));
-    let runtime = absolute("XDG_RUNTIME_DIR");
-    let at_runtime = |part: &str| runtime.iter().map(|dir| dir.join(part)).collect::<Vec<_>>();
-    let mut own = vec![config.join("systemd/user.control")];
-    own.extend(at_runtime("systemd/user.control"));
-    own.extend(at_runtime("systemd/transient"));
-    own.extend(at_runtime("systemd/generator.early"));
-    own.push(config.join("systemd/user"));
-    own.extend(
-        each("XDG_CONFIG_DIRS", "/etc/xdg")
-            .into_iter()
-            .map(|dir| dir.join("systemd/user")),
-    );
-    own.push("/etc/systemd/user".into());
-    own.extend(at_runtime("systemd/user"));
-    own.push("/run/systemd/user".into());
-    own.extend(at_runtime("systemd/generator"));
-    own.push(data.join("systemd/user"));
-    let mut vendor: Vec<PathBuf> = each("XDG_DATA_DIRS", "/usr/local/share:/usr/share")
-        .into_iter()
-        .map(|dir| dir.join("systemd/user"))
-        .collect();
-    vendor.push("/usr/local/lib/systemd/user".into());
-    vendor.push("/usr/lib/systemd/user".into());
-    own.into_iter()
-        .map(|dir| (dir, false))
-        .chain(vendor.into_iter().map(|dir| (dir, true)))
-        .chain(
-            at_runtime("systemd/generator.late")
-                .into_iter()
-                .map(|dir| (dir, false)),
-        )
-        .collect()
-}
-
-/// A drop-in systemd reads for the login service's unit in one of `dirs`:
-/// the unit's own, one for its name cut after a dash, or the one for every
-/// service, unless that is the system's packages' and sets timeouts only.
-fn drop_in(dirs: &[(PathBuf, bool)]) -> Option<PathBuf> {
-    for (dir, vendor) in dirs {
-        for name in [
-            "agent-backbone-rs.service.d",
-            "agent-backbone-.service.d",
-            "agent-.service.d",
-        ] {
-            let path = dir.join(name);
-            if path.symlink_metadata().is_ok() {
-                return Some(path);
-            }
-        }
-        let every = dir.join("service.d");
-        if every.symlink_metadata().is_err() {
-            continue;
-        }
-        if !vendor {
-            return Some(every);
-        }
-        if let Some(found) = beyond_timeouts(&every) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-/// A `.conf` drop-in in the system's packages' folder for every service
-/// that sets more than timeouts; one that can't be read counts too.
-fn beyond_timeouts(folder: &Path) -> Option<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(folder) else {
-        return Some(folder.to_path_buf());
-    };
-    for entry in entries {
-        let Ok(entry) = entry else {
-            return Some(folder.to_path_buf());
-        };
-        let path = entry.path();
-        if path.extension().is_none_or(|extension| extension != "conf") {
-            continue;
-        }
-        match std::fs::read_to_string(&path) {
-            Ok(text) if timeouts_only(&text) => {}
-            _ => return Some(path),
-        }
-    }
-    None
-}
-
-/// Whether a drop-in sets only timeouts of `[Service]`, which change
-/// neither what a unit runs nor its variables.
-fn timeouts_only(text: &str) -> bool {
-    const TIMEOUTS: &[&str] = &[
-        "TimeoutSec",
-        "TimeoutStartSec",
-        "TimeoutStopSec",
-        "TimeoutAbortSec",
-        "TimeoutStartFailureMode",
-        "TimeoutStopFailureMode",
-    ];
-    let mut section = "";
-    for line in text.lines().map(str::trim) {
-        if line.is_empty() || line.starts_with(['#', ';']) {
-            continue;
-        }
-        if line.ends_with('\\') {
-            return false;
-        }
-        if let Some(name) = line.strip_prefix('[') {
-            match name.strip_suffix(']') {
-                Some(name) => section = name,
-                None => return false,
-            }
-            continue;
-        }
-        let key = line.split_once('=').map(|(key, _)| key.trim_end());
-        if section != "Service" || !key.is_some_and(|key| TIMEOUTS.contains(&key)) {
-            return false;
-        }
-    }
-    true
 }
 
 /// Set this computer up with Agent Backbone's own setup, `initialize`: it
@@ -415,7 +295,9 @@ impl Answer {
     /// status this app doesn't know has none to match.
     fn exits(&self, exit: Option<i32>) -> bool {
         match self.status.as_str() {
-            _ if self.code == "invalid_request" => exit == Some(2),
+            "completed" | "failed" | "action_required" if self.code == "invalid_request" => {
+                exit == Some(2)
+            }
             "completed" => exit == Some(0),
             "failed" => exit == Some(1),
             "action_required" => exit == Some(3),
@@ -566,8 +448,11 @@ fn backbone_dir(home: &Path, variable: impl Fn(&str) -> Option<OsString>) -> Pat
 /// `backbone`, which the service names by its canonical path, on this app's
 /// Backbone directory. Another's, or one that can't be read, is left alone.
 fn owned(definition: &Path, home: &Path, backbone: &Path) -> Result<(), String> {
-    let text = std::fs::read_to_string(definition)
-        .map_err(|_| "The agent service's definition could not be read.".to_owned())?;
+    // Read as the service reads it: a regular file, not followed, never
+    // waited on, and bounded.
+    let text = read_regular(definition, DEFINITION_MOST).map_err(|_| {
+        "The agent service's definition could not be read, so it was left alone.".to_owned()
+    })?;
     let program = backbone
         .canonicalize()
         .unwrap_or_else(|_| backbone.to_path_buf());
@@ -607,225 +492,33 @@ fn this_installation(text: &str, program: &Path, dir: &Path) -> Result<(), Strin
 /// nothing, so one the service did not write is never taken for its own.
 fn runs(text: &str) -> Option<(String, String)> {
     if text.trim_start().starts_with("<?xml") {
-        runs_plist(text)
+        launchd::runs(text)
     } else {
-        runs_unit(text)
+        systemd::runs(text)
     }
 }
 
-/// A launchd plist as the service writes it: `ProgramArguments` of exactly
-/// the program, `daemon` and `--raw-output`, and `BACKBONE_DIR` once in
-/// `EnvironmentVariables`, each key and its string on one line. `Program`,
-/// which launchd runs in place of the arguments' first, or a comment, which
-/// may show or hide anything, says nothing.
-fn runs_plist(text: &str) -> Option<(String, String)> {
-    if text.contains("<!--") {
-        return None;
+/// What the regular file at `path` holds, when it holds no more than `most`
+/// bytes. It is opened without following a link or waiting on a pipe, and
+/// anything but a regular file is refused.
+fn read_regular(path: &Path, most: u64) -> std::io::Result<String> {
+    use rustix::fs::{Mode, OFlags};
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let file = std::fs::File::from(rustix::fs::open(path, flags, Mode::empty())?);
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
     }
-    let lines: Vec<&str> = text.lines().map(str::trim).collect();
-    let (mut program, mut dir, mut variables) = (None, None, false);
-    for (index, line) in lines.iter().enumerate() {
-        // launchd runs Program in place of the arguments' first.
-        if line.starts_with("<key>Program</key>") {
-            return None;
-        }
-        match *line {
-            "<key>ProgramArguments</key>" => {
-                let [open, first, daemon, raw, close] = lines.get(index + 1..index + 6)? else {
-                    return None;
-                };
-                if program.is_some()
-                    || *open != "<array>"
-                    || *daemon != "<string>daemon</string>"
-                    || *raw != "<string>--raw-output</string>"
-                    || *close != "</array>"
-                {
-                    return None;
-                }
-                program = Some(xml_string(first)?);
-            }
-            "<key>EnvironmentVariables</key>" => {
-                if lines.get(index + 1) != Some(&"<dict>") {
-                    return None;
-                }
-                variables = true;
-            }
-            "</dict>" => variables = false,
-            _ => {}
-        }
-        if let Some(rest) = line.strip_prefix("<key>BACKBONE_DIR</key>") {
-            if !variables || dir.is_some() {
-                return None;
-            }
-            dir = Some(xml_string(rest)?);
-        }
+    let text = std::io::read_to_string(file.take(most + 1))?;
+    if text.len() as u64 > most {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "larger than its bound",
+        ));
     }
-    Some((program?, dir?))
-}
-
-/// The keys each section of the unit the service writes has. Any other,
-/// such as `EnvironmentFile=`, `UnsetEnvironment=` or `ExecStartPre=`, could
-/// run something else or with other variables.
-const UNIT_KEYS: &[(&str, &[&str])] = &[
-    ("Unit", &["Description", "After"]),
-    (
-        "Service",
-        &[
-            "ExecStart",
-            "Environment",
-            "StandardOutput",
-            "StandardError",
-            "Restart",
-            "RestartSec",
-            "KillMode",
-        ],
-    ),
-    ("Install", &["WantedBy"]),
-];
-
-/// A systemd unit as the service writes it, read as systemd reads that
-/// form: one `ExecStart=` of the program, `daemon` and `--raw-output`, and
-/// `BACKBONE_DIR` set once by `Environment=` in `[Service]`. A key it
-/// doesn't write, an empty `Environment=`, a continued line, a specifier or
-/// an escape it doesn't write says nothing.
-fn runs_unit(text: &str) -> Option<(String, String)> {
-    let mut section = "";
-    let (mut started, mut dir): (Option<Vec<String>>, Option<String>) = (None, None);
-    for line in text.lines().map(str::trim) {
-        if line.is_empty() || line.starts_with(['#', ';']) {
-            continue;
-        }
-        if line.ends_with('\\') {
-            return None;
-        }
-        if let Some(name) = line.strip_prefix('[') {
-            section = name.strip_suffix(']')?;
-            continue;
-        }
-        let (key, value) = line.split_once('=')?;
-        let key = key.trim_end();
-        let (_, keys) = UNIT_KEYS.iter().find(|(name, _)| *name == section)?;
-        if !keys.contains(&key) {
-            return None;
-        }
-        match key {
-            "ExecStart" if started.is_none() => started = Some(words(value)?),
-            "ExecStart" => return None,
-            "Environment" => {
-                let assigned = words(value)?;
-                if assigned.is_empty() {
-                    return None;
-                }
-                for word in assigned {
-                    let word = undoubled(&word, '%')?;
-                    if let Some(found) = word.strip_prefix("BACKBONE_DIR=")
-                        && dir.replace(found.to_owned()).is_some()
-                    {
-                        return None;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    let started = started?;
-    let [program, daemon, raw] = &started[..] else {
-        return None;
-    };
-    if daemon != "daemon" || raw != "--raw-output" {
-        return None;
-    }
-    Some((undoubled(&undoubled(program, '%')?, '$')?, dir?))
-}
-
-/// `word` with each doubled `mark` read as one, as systemd reads `%%` and
-/// `$$`. Any other use of `mark`, which systemd replaces with what it
-/// stands for, is not one the service writes.
-fn undoubled(word: &str, mark: char) -> Option<String> {
-    let mut text = String::with_capacity(word.len());
-    let mut chars = word.chars();
-    while let Some(c) = chars.next() {
-        if c == mark && chars.next() != Some(mark) {
-            return None;
-        }
-        text.push(c);
-    }
-    Some(text)
-}
-
-/// The words of a unit's value, unquoted as the service quotes them: bare,
-/// in single quotes, or in double quotes with the escapes it writes.
-fn words(value: &str) -> Option<Vec<String>> {
-    let mut words = Vec::new();
-    let mut rest = value.trim_start();
-    while !rest.is_empty() {
-        let (word, after) = if let Some(quoted) = rest.strip_prefix('\'') {
-            let (word, after) = quoted.split_once('\'')?;
-            (!word.contains('\\')).then(|| (word.to_owned(), after))?
-        } else if let Some(quoted) = rest.strip_prefix('"') {
-            double_quoted(quoted)?
-        } else {
-            let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
-            let (word, after) = rest.split_at(end);
-            (!word.contains(['\\', '\'', '"'])).then(|| (word.to_owned(), after))?
-        };
-        if !after.is_empty() && !after.starts_with(char::is_whitespace) {
-            return None;
-        }
-        words.push(word);
-        rest = after.trim_start();
-    }
-    Some(words)
-}
-
-/// The text of a word in double quotes, from just after its opening quote,
-/// and what follows its closing one. Its escapes are those the service
-/// writes, which systemd reads as C escapes: no others are taken.
-fn double_quoted(quoted: &str) -> Option<(String, &str)> {
-    let mut text = String::new();
-    let mut chars = quoted.char_indices();
-    while let Some((at, c)) = chars.next() {
-        let escaped = match c {
-            '"' => return Some((text, &quoted[at + 1..])),
-            '\\' => chars.next()?.1,
-            c => {
-                text.push(c);
-                continue;
-            }
-        };
-        let decoded = match escaped {
-            '"' | '\\' => escaped,
-            'n' => '\n',
-            'r' => '\r',
-            't' => '\t',
-            'b' => '\u{8}',
-            'f' => '\u{c}',
-            'u' => {
-                let hex: String = (0..4)
-                    .map(|_| chars.next().map(|(_, c)| c))
-                    .collect::<Option<_>>()?;
-                if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-                    return None;
-                }
-                char::from_u32(u32::from_str_radix(&hex, 16).ok()?).filter(|c| *c != '\0')?
-            }
-            _ => return None,
-        };
-        text.push(decoded);
-    }
-    None
-}
-
-/// The text of a plist `<string>`, unescaped.
-fn xml_string(line: &str) -> Option<String> {
-    let text = line.strip_prefix("<string>")?.strip_suffix("</string>")?;
-    Some(
-        text.replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", "\"")
-            .replace("&apos;", "'")
-            .replace("&amp;", "&"),
-    )
+    Ok(text)
 }
 
 fn not_installed() -> String {
@@ -929,234 +622,46 @@ mod tests {
         (directory, format!("{path}:/usr/bin:/bin"))
     }
 
-    /// A word of a unit as the service quotes it.
-    fn quote(word: &str) -> String {
-        let plain = |c: char| c.is_ascii_alphanumeric() || "@%+=:,./-_".contains(c);
-        if !word.is_empty() && word.chars().all(plain) {
-            return word.to_owned();
-        }
-        if word
-            .chars()
-            .any(|c| c == '\'' || c == '\\' || c.is_control())
-        {
-            return serde_json::to_string(word).unwrap();
-        }
-        format!("'{word}'")
-    }
-    /// The unit the service writes for `program` on `dir`.
-    fn unit_of(program: &str, dir: &str) -> String {
-        let program = program.replace('%', "%%").replace('$', "$$");
-        let assignment = format!("BACKBONE_DIR={}", dir.replace('%', "%%"));
-        format!(
-            "[Unit]\nDescription=Agent Backbone: this machine's service for its agents\n\
-             After=default.target\n\n[Service]\nExecStart={} daemon --raw-output\n\
-             Environment={}\nEnvironment=PATH=/usr/bin\nStandardOutput=null\nStandardError=null\n\
-             Restart=on-failure\nRestartSec=3\n# Only its own process is stopped.\n\
-             KillMode=process\n\n[Install]\nWantedBy=default.target\n",
-            quote(&program),
-            quote(&assignment)
-        )
-    }
-    /// The LaunchAgent the service writes for `program` on `dir`.
-    fn plist_of(program: &str, dir: &str) -> String {
-        let escape = |text: &str| -> String {
-            text.chars()
-                .map(|c| match c {
-                    '&' => "&amp;".to_owned(),
-                    '<' => "&lt;".to_owned(),
-                    '>' => "&gt;".to_owned(),
-                    '"' => "&quot;".to_owned(),
-                    '\'' => "&apos;".to_owned(),
-                    c if c.is_control() => format!("&#{};", u32::from(c)),
-                    c => c.to_string(),
-                })
-                .collect()
-        };
-        format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \
-             \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-             <plist version=\"1.0\">\n<dict>\n  <key>Label</key><string>dev.agent-backbone-rs</string>\n\
-             \x20 <key>ProgramArguments</key>\n  <array>\n    <string>{}</string>\n\
-             \x20   <string>daemon</string>\n    <string>--raw-output</string>\n  </array>\n\
-             \x20 <key>EnvironmentVariables</key>\n  <dict>\n    <key>BACKBONE_DIR</key><string>{}</string>\n\
-             \x20   <key>PATH</key><string>/usr/bin</string>\n  </dict>\n\
-             \x20 <key>RunAtLoad</key><true/>\n  <key>KeepAlive</key>\n  <dict>\n\
-             \x20   <key>SuccessfulExit</key><false/>\n  </dict>\n\
-             \x20 <key>ExitTimeOut</key><integer>10</integer>\n\
-             \x20 <key>ProcessType</key><string>Interactive</string>\n</dict>\n</plist>\n",
-            escape(program),
-            escape(dir)
-        )
-    }
-    fn ours(text: &str, program: &str, dir: &str) -> bool {
-        this_installation(text, Path::new(program), Path::new(dir)).is_ok()
-    }
-
     #[test]
-    fn a_unit_is_this_installations_only_when_systemd_would_run_it_so() {
-        for (program, dir) in [
-            ("/opt/bin/backbone", "/home/a/backbone"),
-            ("/opt/my tools/backbone", "/home/a/my backbone"),
-            ("/opt/100% $HOME/backbone", "/home/a/100% $HOME"),
-            ("/opt/it's/back\\bone", "/home/a/\"quoted\"\ttab"),
-        ] {
-            assert!(
-                ours(&unit_of(program, dir), program, dir),
-                "{program} {dir}"
-            );
-        }
-        // Another program or directory whose name only starts as this one's.
-        let (program, dir) = ("/opt/bin/backbone", "/home/a/backbone");
-        assert!(!ours(&unit_of("/opt/bin/backbone-old", dir), program, dir));
-        assert!(!ours(&unit_of(program, "/home/a/backbone/2"), program, dir));
-        // This one's program and directory in comments, or another section.
-        let other = unit_of("/elsewhere/backbone", "/home/b/backbone");
-        let commented = other.replace(
-            "[Service]\n",
-            "[Service]\n# ExecStart=/opt/bin/backbone daemon\n; Environment=BACKBONE_DIR=/home/a/backbone\n",
+    fn another_installations_service_is_left_alone_and_says_why() {
+        let unit = "[Service]\nExecStart=/opt/bin/backbone daemon --raw-output\n\
+                    Environment=BACKBONE_DIR=/home/a/backbone\n";
+        let (program, dir) = (
+            Path::new("/opt/bin/backbone"),
+            Path::new("/home/a/backbone"),
         );
-        assert!(!ours(&commented, program, dir), "{commented}");
-        let misplaced = format!(
-            "[Unit]\nExecStart=/opt/bin/backbone daemon\nEnvironment=BACKBONE_DIR=/home/a/backbone\n{other}"
+        assert_eq!(this_installation(unit, program, dir), Ok(()));
+        let other = this_installation(unit, Path::new("/usr/bin/backbone"), dir);
+        assert!(other.unwrap_err().contains("runs /opt/bin/backbone"));
+        let other = this_installation(unit, program, Path::new("/home/b"));
+        assert!(other.unwrap_err().contains("serves /home/a/backbone"));
+        let unread = this_installation("[Service]\nEnvironmentFile=/x\n", program, dir);
+        assert!(unread.unwrap_err().contains("could not be read"));
+    }
+
+    #[test]
+    fn a_definition_is_read_only_as_a_bounded_regular_file() {
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("unit");
+        std::fs::write(&file, "[Service]\n").unwrap();
+        assert_eq!(read_regular(&file, 64).unwrap(), "[Service]\n");
+        assert!(read_regular(&file, 4).is_err());
+        let link = folder.path().join("link");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        assert!(read_regular(&link, 64).is_err());
+        assert!(read_regular(folder.path(), 64).is_err());
+        // A pipe is refused at once, never waited on.
+        let pipe = folder.path().join("pipe");
+        assert!(
+            Command::new("mkfifo")
+                .arg(&pipe)
+                .status()
+                .unwrap()
+                .success()
         );
-        assert!(!ours(&misplaced, program, dir));
-        // A second start, a specifier or an escape it doesn't write, or a key
-        // that may set, clear or pass on BACKBONE_DIR or run something else.
-        let unit = unit_of(program, dir);
-        assert!(ours(&unit, program, dir));
-        for changed in [
-            unit.replace("Restart=", "ExecStart=/bin/sh daemon\nRestart="),
-            unit.replace("/opt/bin/backbone", "/opt/%h/backbone"),
-            unit.replace(
-                "ExecStart=/opt/bin/backbone",
-                "ExecStart=\"/opt/bin/backbon\\x65\"",
-            ),
-            unit.replace(" daemon", " daemon --other"),
-            unit.replace(" daemon --raw-output", " daemon"),
-            unit.replace("Restart=", "EnvironmentFile=/home/b/env\nRestart="),
-            unit.replace("Restart=", "UnsetEnvironment=BACKBONE_DIR\nRestart="),
-            unit.replace("Restart=", "PassEnvironment=BACKBONE_DIR\nRestart="),
-            unit.replace("Restart=", "Environment=\nRestart="),
-            unit.replace("Restart=", "Environment=BACKBONE_DIR=/home/b\nRestart="),
-            unit.replace("Restart=", "ExecStartPre=/bin/true\nRestart="),
-            unit.replace("After=", "ExecStart=/opt/bin/backbone daemon\nAfter="),
-            format!("Environment=BACKBONE_DIR=/home/b\n{unit}"),
-            format!("{unit}[X-Other]\nKey=value\n"),
-            unit.replace("KillMode=process", "KillMode=process \\"),
-        ] {
-            assert!(!ours(&changed, program, dir), "{changed}");
-        }
-    }
-
-    #[test]
-    fn a_launch_agent_is_this_installations_only_when_launchd_would_run_it_so() {
-        let (program, dir) = ("/opt/my <tools> & 'co'/backbone", "/Users/a/back\"bone\"");
-        assert!(ours(&plist_of(program, dir), program, dir));
-        let plain = ("/opt/bin/backbone", "/Users/a/backbone");
-        // Another program or directory whose name only starts as this one's.
-        assert!(!ours(
-            &plist_of("/opt/bin/backbone-old", plain.1),
-            plain.0,
-            plain.1
-        ));
-        assert!(!ours(
-            &plist_of(plain.0, "/Users/a/backbone/2"),
-            plain.0,
-            plain.1
-        ));
-        // This one's program and directory in a comment only, a Program
-        // launchd would run in place of the one it names, another argument,
-        // or the directory outside its variables or named twice.
-        let other = plist_of("/elsewhere/backbone", "/Users/b/backbone");
-        let commented = other.replacen(
-            "<dict>",
-            "<!-- <string>/opt/bin/backbone</string> <string>/Users/a/backbone</string> -->\n<dict>",
-            1,
-        );
-        let text = plist_of(plain.0, plain.1);
-        assert!(ours(&text, plain.0, plain.1));
-        for changed in [
-            commented,
-            text.replace(
-                "<key>Label</key>",
-                "<key>Program</key><string>/bin/sh</string>\n  <key>Label</key>",
-            ),
-            text.replace(
-                "<string>--raw-output</string>",
-                "<string>--raw-output</string>\n    <string>--other</string>",
-            ),
-            text.replace(
-                "<key>RunAtLoad</key>",
-                "<key>BACKBONE_DIR</key><string>/Users/a/backbone</string>\n  <key>RunAtLoad</key>",
-            ),
-            text.replace(
-                "<key>PATH</key>",
-                "<key>BACKBONE_DIR</key><string>/Users/b/backbone</string>\n    <key>PATH</key>",
-            ),
-        ] {
-            assert!(!ours(&changed, plain.0, plain.1), "{changed}");
-        }
-        // Why another installation's is left alone.
-        let refused = this_installation(&other, Path::new(plain.0), Path::new(plain.1));
-        assert!(refused.unwrap_err().contains("runs /elsewhere/backbone"));
-        let refused = this_installation(&text, Path::new(plain.0), Path::new("/Users/c"));
-        assert!(refused.unwrap_err().contains("serves /Users/a/backbone"));
-    }
-
-    #[test]
-    fn a_unit_a_drop_in_may_change_anywhere_systemd_looks_is_left_alone() {
-        let (own, vendor) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let dirs = [
-            (own.path().to_path_buf(), false),
-            (vendor.path().to_path_buf(), true),
-        ];
-        assert_eq!(drop_in(&dirs), None);
-        for (folder, name) in [
-            (&own, "agent-backbone-rs.service.d"),
-            (&vendor, "agent-.service.d"),
-            (&own, "service.d"),
-        ] {
-            let found = folder.path().join(name);
-            std::fs::create_dir(&found).unwrap();
-            assert_eq!(drop_in(&dirs), Some(found.clone()), "{name}");
-            std::fs::remove_dir(&found).unwrap();
-        }
-        // The system's packages' drop-in for every service counts only when
-        // it sets more than timeouts.
-        let every = vendor.path().join("service.d");
-        std::fs::create_dir(&every).unwrap();
-        let conf = every.join("10-timeout-abort.conf");
-        std::fs::write(
-            &conf,
-            "# Abort hung units\n[Service]\nTimeoutStopFailureMode=abort\n",
-        )
-        .unwrap();
-        assert_eq!(drop_in(&dirs), None);
-        std::fs::write(&conf, "[Service]\nEnvironment=BACKBONE_DIR=/x\n").unwrap();
-        assert_eq!(drop_in(&dirs), Some(conf));
-    }
-
-    #[test]
-    fn systemd_is_looked_in_where_the_service_looks() {
-        let dirs = unit_dirs(Path::new("/home/a"), |name| match name {
-            "XDG_CONFIG_HOME" => Some("/c".into()),
-            "XDG_RUNTIME_DIR" => Some("/r".into()),
-            // A relative value is no value.
-            "XDG_DATA_HOME" => Some("data".into()),
-            _ => None,
-        });
-        for (dir, vendor) in [
-            ("/c/systemd/user", false),
-            ("/r/systemd/transient", false),
-            ("/etc/xdg/systemd/user", false),
-            ("/etc/systemd/user", false),
-            ("/home/a/.local/share/systemd/user", false),
-            ("/usr/share/systemd/user", true),
-            ("/usr/lib/systemd/user", true),
-            ("/r/systemd/generator.late", false),
-        ] {
-            assert!(dirs.contains(&(PathBuf::from(dir), vendor)), "{dir}");
-        }
+        let began = Instant::now();
+        assert!(read_regular(&pipe, 64).is_err());
+        assert!(began.elapsed() < Duration::from_secs(1));
     }
 
     #[test]
@@ -1338,6 +843,7 @@ mod tests {
         }
         // A status this app doesn't know has no exit to match.
         assert!(answer("paused", "new_code").exits(Some(7)));
+        assert!(answer("paused", "invalid_request").exits(Some(1)));
     }
 
     #[test]

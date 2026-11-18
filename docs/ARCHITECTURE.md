@@ -893,6 +893,15 @@ build-time advisory exception are described below.
   carry LGPL-2.1-or-later, MIT-CMU and BSD terms, preserved in the
   [Linux protocol notices](../packaging/wayland-notices.txt). Cargo licence
   metadata alone does not describe those generated-binding inputs.
+- **Login-service rules from agent-backbone-rs:** how the app reads a systemd
+  unit and its drop-ins, and a LaunchAgent, as the service itself writes and
+  reads them, is ported from agent-backbone-rs's
+  `crates/cli/src/commands/service/systemd.rs` and `launchd.rs`, MIT-licensed
+  (Copyright (c) 2026 agent-backbone contributors). The ported code lives in
+  `crates/app/src/desktop/onboarding/install/systemd.rs` and `launchd.rs`,
+  whose headers carry that notice; the packaged notice is in
+  [`packaging/extra-notices.txt`](../packaging/extra-notices.txt). The
+  LaunchAgent is read whole with macOS's own `plutil`. No crate is added.
 - **Bundled colour themes:** colour values from MIT-licensed theme projects
   (Dracula, One Dark Pro, Tokyo Night, Catppuccin, Nord, Gruvbox, Solarized,
   GitHub Primer, One Light), stored as the app's own theme JSON. Their
