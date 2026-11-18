@@ -253,12 +253,13 @@ computer has (`existing_preserved`), or makes the first one and the login
 service (`initialized`). The request lives in memory for the run: after lost
 output, an answer its exit code contradicts, or `outcome_unknown` or
 `setup_failed` with `same_request`, the same request is sent again under the
-same ID, up to three sends in all. When setup finds no service answering and
+same ID, up to three sends. When setup finds no service answering and
 says the same request may follow (`service_unavailable` with `same_request`),
 this installation's own login service is restarted once, within setup's own
 deadline: the LaunchAgent `dev.agent-backbone-rs` on macOS or the systemd user
 unit `agent-backbone-rs.service` on Linux and WSL. The same request is then sent
-again; one send is always kept for after the restart. A service is this
+again; one send is always kept for after the restart, so a run sends at most
+four. A service is this
 installation's only when its definition, in the form the service writes it, runs
 this `backbone` by its canonical path on the app's Backbone directory in
 `BACKBONE_DIR` (`$BACKBONE_DIR`, else `$XDG_DATA_HOME/backbone`, else
