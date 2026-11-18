@@ -245,13 +245,22 @@ handoff until the check has answered, and the tagline then reads "Getting
 things ready…".
 
 The agent service is started without asking and is never named on screen
-unless the person opens Details. One that is installed but not answering is
-restarted once, the way the installer starts it (`launchctl` on macOS, the
-systemd user unit on Linux and WSL), and given 30 seconds to answer. One that
-was never set up is set up with the installer's own request,
-`backbone setup --file REQUEST --jsonl` with `action: initialize`,
-`service: user` and the `core-v1` starter profile, which keeps any existing
-data. If it still does not answer, "Agents can't start yet" offers Try again
+unless the person opens Details. When it doesn't answer, first run runs Agent
+Backbone's own setup, `backbone setup --file REQUEST --jsonl` with a schema-3
+`initialize` request (`profile_name: Default`, `service: user` and the
+`core-v1` starter), which decides what the computer is: it keeps a profile the
+computer has (`existing_preserved`), or makes the first one and the login
+service (`initialized`). The request lives in memory for the run: after lost
+output, or an outcome setup doesn't know yet, the same request is sent again
+under the same ID, up to three sends in all. When setup finds no service answering
+(`service_unavailable`), this installation's own login service is restarted
+once, the LaunchAgent `dev.agent-backbone-rs` on macOS or the systemd user unit
+`agent-backbone-rs.service` on Linux and WSL, and the same request sent again.
+A service is this installation's when its definition names the app's Backbone
+directory in `BACKBONE_DIR`: `$BACKBONE_DIR`, else `$XDG_DATA_HOME/backbone`,
+else `~/.local/share/backbone`. Any other answer is shown in setup's own words,
+such as how to start PostgreSQL. The service is then given 30 seconds to
+answer. If it still does not answer, "Agents can't start yet" offers Try again
 and Continue with terminals; Details holds the technical reason and where the
 service's log is. tmux and Git, when missing, are one screen with one Install
 button. They install through the system's own installer: Apple's command line
@@ -283,21 +292,24 @@ name, the tool it runs in and Start. Each tool card says whether that tool is
 signed in in the profile, will ask to sign in when it starts, isn't installed
 (Install, with the tool's official installer and the login shell's PATH) or
 needs an update. The first choice is a signed-in tool, else an installed one.
-Folder, instructions, model, hooks and greeting sit under More options. The
+Folder, instructions, model and greeting sit under More options. The
 guide starts as `guide`, working in `~/Agents/guide`, which setup creates
 (`create_directory`); a folder the person chooses must already exist. Its brief
 is the coordinating `orchestrator-v1` template or the person's own
-instructions. While it starts, the provider's steps show as one status line
-under the button, and as soon as the guide is running, or waiting for a sign-in
-or permission, its pane opens: a tool that needs signing in asks in that
-terminal. The layer then fades over `reveal_ms` while the panel eases in. Use a
-terminal instead leaves the workspace on a terminal. A start that fails keeps
-the choices, and Try again repeats the same request when nothing changed and
-the provider allows it. Under the Rust service, the guide and Add agent start the
+instructions. The guide starts through setup's schema-3 `first_agent`
+request, saved in the profile's setup journal before it runs and retried or
+cancelled as that saved request. While it starts, setup's steps show as one
+status line under the button, and as soon as setup says its CLI runs
+(`agent_ready`), its pane opens: a sign-in, trust or terms screen may still
+wait in that terminal. The layer then fades over `reveal_ms` while the panel
+eases in. Use a terminal instead leaves the workspace on a terminal. A start
+that fails keeps the choices, and Try again repeats the same request when
+nothing changed and setup allows it. Add agent under the Rust service starts the
 agent with `POST /api/agents/start` on the profile socket, carrying
 `x-backbone-request-id` (a UUIDv7) so a repeat after a lost reply gets the first
-result, and the tool list comes from `backbone runtimes --json`. The earlier
-provider keeps its schema-2 setup requests and their saved recovery.
+result, and the tool list comes from `backbone runtimes --json`. A profile of
+the earlier provider gets no first-agent setup from the app: its Add agent form
+says so.
 
 The layer offers the same persistent interface-size setting as the workspace,
 including during the opening scene. Progress is saved as `[setup]` in
@@ -1482,14 +1494,19 @@ cannot inherit a previously rendered number key or click target. The chooser
 exposes only the supported bound overview and permission card; it never builds a
 name-only bound Agent view.
 
-Profile first-agent setup uses an independent schema-2 request model. Preparation
-captures the full expected profile tuple and immutable agent/hook choices; the
-cancellation body changes only the action and keeps the original request ID.
-Bounded JSON-lines decoding checks every progress and final event against that
-origin and action, enforces monotonic sequence numbers and refuses incomplete or
-contradictory streams. Only a precise provider cancellation acknowledgement allows
-new choices; unsafe cancellation preserves the original operation. These models
-invoke no process and do not activate the legacy setup UI for a bound workspace.
+Profile first-agent setup uses setup schema 3's request model. Preparation
+captures a served profile's ID and immutable agent choices, each checked as the
+setup contract words it: a UUIDv7 request ID, the name, folder, runtime, model
+and brief, and at most 32,768 bytes, or 32,775 for the cancellation, whose body
+changes only the action and keeps the original request ID. Events carry no
+identity: bounded JSON-lines decoding checks each event's schema version and
+request ID, the result's action, rising sequence numbers and one final result,
+and keeps a status, code or retry it doesn't know as it came. Only `agent_ready`
+naming this agent with its CLI running is readiness, and only
+`request_cancelled` naming this request allows new choices; unsafe cancellation
+preserves the original operation. The service's setup fixtures are copied byte
+for byte into `crates/roster/src/profiles/setup/fixtures/`. These models invoke
+no process and do not activate the legacy setup UI for a bound workspace.
 
 Profile runtime catalogs use the captured discovery executable and caller context,
 with all three expected identity fields sent explicitly. Only successful schema-2
@@ -1514,10 +1531,10 @@ not receive SIGPIPE when the consumer finishes or exits. Receipt reads reject an
 observed file above the output limit during invocation; the provider owns the
 logging destination and lifetime of any service that inherits the descriptor.
 
-Profile setup execution owns immutable schema-2 requests and the captured provider
+Profile setup execution owns immutable schema-3 requests and the captured provider
 client. It emits only validated progress steps before exit; terminal readiness or
-cancellation is returned only when the full-origin result matches the process exit
-contract. Timeouts and loss of observation terminate and reap only the direct
+cancellation is returned only when the result matches the process exit contract;
+a status the app doesn't know has no exit code to match. Timeouts and loss of observation terminate and reap only the direct
 command, leaving the same request with an unknown outcome for explicit recovery.
 Neither cleanup nor closing confirms provider cancellation or rollback. The
 consumer does not detach a setup command and allow a concurrent retry.
@@ -1535,8 +1552,10 @@ prose is discarded. A restored record supplies expectations only. Durable storag
 and verification of the original operator/registry context are required before
 any restored request may execute; these model APIs do not activate lifecycle UI.
 
-Setup request checkpoints retain both generated schema-2 bodies byte for byte,
-including cancellation's original ID, profile tuple, hooks, project and brief.
+Setup request checkpoints retain both generated schema-3 bodies byte for byte,
+including cancellation's original ID, profile ID, project and brief. One saved
+under schema 2 is refused as unsupported; the app lists it as a request that
+cannot be validated, which can be forgotten.
 Restoration validates all choices and rejects changed or noncanonical bodies
 without discovery or allocation. The private format records request intent only:
 interrupted output streams and successful readiness/cancellation are not inferred
@@ -1593,10 +1612,10 @@ completion after an earlier post-rename sync failure. The journal's ordinary
 read remains a storage inspection; `read_durable` provides this recovery barrier.
 
 Setup terminal observations have a separate private checkpoint from request
-intent. They retain the original tuple, request, action, sequence and bounded
-outcome/retry fields, including the actual launch ID for confirmed readiness.
+intent. They retain the request, action, sequence and bounded outcome/retry
+fields, including the launch ID, when one was named, for confirmed readiness.
 Normalization removes provider prose and unneeded result details; restoration
-revalidates the result through the existing schema-2 stream rules and requires
+revalidates the result through the schema-3 stream rules and requires
 canonical encoding for the original prepared request and explicit action.
 Progress is never reconstructed as terminal authority. The executor must still
 verify the matching process exit before a controller durably saves an outcome;
