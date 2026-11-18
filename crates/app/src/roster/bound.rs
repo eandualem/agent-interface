@@ -80,7 +80,12 @@ impl BoundRosterSource {
                         }
                     }
                     publish(&update);
-                    if update.error.is_none() && live() {
+                    if update.error.is_some() {
+                        // While the roster can't be read, neither is the
+                        // list: it turns stale on the same clock.
+                        book.missed();
+                        show_runs(&mut update, book.runs());
+                    } else if live() {
                         // The new list shows before its ended runs are read.
                         let gone = book.list(&connection, &update.snapshot);
                         show_runs(&mut update, book.runs());

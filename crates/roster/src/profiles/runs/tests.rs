@@ -354,3 +354,40 @@ fn a_list_failing_for_30_seconds_is_stale_until_a_good_read_settles_it() {
     assert_eq!(ids(&book.runs().finished), [REVIEW]);
     assert_eq!(server.join().unwrap().len(), 7);
 }
+
+#[test]
+fn a_roster_outage_counts_toward_a_stale_list_until_a_good_list_read() {
+    let mut ended = fixture("run");
+    ended["state"] = json!("finished");
+    ended["finished_at"] = json!("2026-11-10T10:21:47Z");
+    let (connection, server) = served(vec![
+        (200, fixture("runs")),
+        (503, json!({})),
+        (200, json!({"items": []})),
+        (200, ended),
+        (404, json!({"detail": "not found"})),
+    ]);
+    let busy = roster(include_bytes!("fixtures/agents.json"));
+    let mut book = Book::default();
+    let start = Instant::now();
+    let at = |after: u64| start + Duration::from_secs(after);
+    let gone = book.list_at(&connection, &busy, at(0));
+    book.settle(&connection, gone, &|| true);
+    // Roster reads fail from 1 s on: no list read, but the clock runs.
+    book.missed_at(at(1));
+    book.missed_at(at(20));
+    assert!(!book.runs().stale);
+    book.missed_at(at(31));
+    assert!(book.runs().stale);
+    // The roster is back but the list still fails: it stays stale.
+    let gone = book.list_at(&connection, &busy, at(33));
+    book.settle(&connection, gone, &|| true);
+    assert!(book.runs().stale);
+    // A good list clears it and still settles the review that ended.
+    let gone = book.list_at(&connection, &busy, at(35));
+    book.settle(&connection, gone, &|| true);
+    assert!(!book.runs().stale);
+    assert!(book.runs().active.is_empty());
+    assert_eq!(ids(&book.runs().finished), [REVIEW]);
+    assert_eq!(server.join().unwrap().len(), 6);
+}

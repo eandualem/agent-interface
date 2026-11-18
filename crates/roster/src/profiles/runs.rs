@@ -172,8 +172,7 @@ impl Book {
             Err(_) => {
                 // The list stays inside, so a later read still finds the
                 // runs that ended meanwhile.
-                let since = *self.failing.get_or_insert(now);
-                self.runs.stale = now.saturating_duration_since(since) >= STALE;
+                self.missed_at(now);
                 return Gone::default();
             }
         };
@@ -188,6 +187,17 @@ impl Book {
             runs,
             deadline: Some(deadline),
         }
+    }
+
+    /// Count a roster read that failed as a list read that failed, so a
+    /// list not read for 30 seconds is stale whatever stopped the reading.
+    pub fn missed(&mut self) {
+        self.missed_at(Instant::now());
+    }
+
+    fn missed_at(&mut self, now: Instant) {
+        let since = *self.failing.get_or_insert(now);
+        self.runs.stale = now.saturating_duration_since(since) >= STALE;
     }
 
     /// Read each run that left the list once by its ID and keep those that
