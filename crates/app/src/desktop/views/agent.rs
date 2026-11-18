@@ -4,8 +4,13 @@
 //! usage. Choosing a skill or policy reads it here; nothing opens elsewhere.
 
 use agent_interface_core::AgentSection;
-use agent_interface_roster::views::{
-    Agent, Data, Instructions, Loadout, LocalSkill, Reason, Received, Usage,
+use agent_interface_roster::{
+    Background, Waiting,
+    profiles::runs::{Run, Runs},
+    views::{
+        Agent, Data, Instructions, Loadout, LocalSkill, Process, Reason, Received, Usage,
+        epoch_seconds, now,
+    },
 };
 use gpui::{AnyElement, Context, Div, SharedString, div, prelude::*, px};
 
@@ -14,6 +19,7 @@ use super::{
     skills, usage,
 };
 use crate::desktop::{
+    agent_status::counted,
     components::{self as ui, AgentState, Tone},
     design::{colors, tokens},
 };
@@ -123,7 +129,7 @@ pub(super) fn body(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -
     }
 
     let content = match pane.section {
-        AgentSection::Overview => overview(agent, status.state),
+        AgentSection::Overview => overview(agent, status.state, &Runs::default()),
         AgentSection::Permissions => permissions(agent),
         AgentSection::Connections => connections(agent),
         AgentSection::Skills => skills_section(agent, cx, Some(ViewPane::open)),
@@ -670,8 +676,9 @@ pub(super) fn tab(
 }
 
 /// `state` is the agent's state as the pane's header shows it: the card's
-/// details apply only while it is the state they were read with.
-pub(super) fn overview(agent: &Agent, state: AgentState) -> AnyElement {
+/// details apply only while it is the state they were read with. `runs` are
+/// the agent's from its profile's roster.
+pub(super) fn overview(agent: &Agent, state: AgentState, runs: &Runs) -> AnyElement {
     let (t, c) = (tokens(), colors());
     let matching = state == AgentState::from_runtime(&agent.state);
     let age = matching.then_some(agent.state_age_seconds).flatten();
@@ -730,6 +737,10 @@ pub(super) fn overview(agent: &Agent, state: AgentState) -> AnyElement {
     for tag in &agent.tags {
         tags = tags.child(ui::pill(tag.clone()));
     }
+    let waiting = agent
+        .waiting
+        .as_ref()
+        .map(|waiting| ui::fact("Waiting on", div().child(waits(waiting, now() as f64))));
     body = body.child(
         div()
             .flex_shrink_0()
@@ -754,6 +765,7 @@ pub(super) fn overview(agent: &Agent, state: AgentState) -> AnyElement {
             ))
             .child(ui::fact("Tags", tags))
             .child(ui::fact("Working on", mono(working)))
+            .children(waiting)
             .child(ui::fact(
                 "In this state",
                 div().child(
@@ -775,7 +787,153 @@ pub(super) fn overview(agent: &Agent, state: AgentState) -> AnyElement {
         "newest first",
         &recent,
     ));
+    body = body.children(background(agent, runs));
     body.into_any_element()
+}
+
+/// Finished runs the Background section lists.
+const FINISHED_SHOWN: usize = 5;
+
+/// What an agent waits on, why and for how long, on one line.
+fn waits(waiting: &Waiting, now: f64) -> String {
+    let mut parts = vec![match &waiting.on_agent {
+        Some(agent) => format!("{} {agent}", waiting.on),
+        None => waiting.on.clone(),
+    }];
+    parts.extend(waiting.reason.clone().filter(|reason| !reason.is_empty()));
+    let since = age(waiting.since.as_deref(), now);
+    if !since.is_empty() {
+        parts.push(format!("for {since}"));
+    }
+    line(&parts.join(" · "))
+}
+
+/// How long before `now` an RFC 3339 time was; empty when it doesn't parse.
+fn age(at: Option<&str>, now: f64) -> String {
+    at.and_then(epoch_seconds)
+        .map(|at| ago(now - at))
+        .unwrap_or_default()
+}
+
+/// One row of the Background section: what it is, a time, and the rest.
+#[derive(Debug, PartialEq)]
+struct Work {
+    what: String,
+    when: String,
+    text: String,
+}
+
+/// A queued or running run, with how long it has queued or run.
+fn active(run: &Run, now: f64) -> Work {
+    let mut parts = vec![run.label.clone(), run.state.clone()];
+    parts.extend(run.waiting_on.as_ref().map(|on| format!("waits on {on}")));
+    parts.extend(run.progress.clone());
+    let since = if run.state == "queued" {
+        &run.queued_at
+    } else {
+        &run.started_at
+    };
+    Work {
+        what: run.kind.clone(),
+        when: age(since.as_deref(), now),
+        text: line(&parts.join(" · ")),
+    }
+}
+
+/// A run that ended, with when it ended and how long it ran.
+fn ended(run: &Run, now: f64) -> Work {
+    let mut parts = vec![run.label.clone(), run.state.clone()];
+    parts.extend(run.exit_code.map(|code| format!("exit {code}")));
+    parts.extend(run.progress.clone());
+    let time = |at: &Option<String>| at.as_deref().and_then(epoch_seconds);
+    if let (Some(start), Some(end)) = (time(&run.started_at), time(&run.finished_at)) {
+        parts.push(format!("ran {}", ago(end - start)));
+    }
+    Work {
+        what: run.kind.clone(),
+        when: age(run.finished_at.as_deref(), now),
+        text: line(&parts.join(" · ")),
+    }
+}
+
+fn process(process: &Process, now: f64) -> Work {
+    Work {
+        what: format!("pid {}", process.pid),
+        when: age(process.started_at.as_deref(), now),
+        text: line(&process.command),
+    }
+}
+
+/// The Background section's rows: active runs, the latest finished ones, then
+/// processes.
+fn background_rows(agent: &Agent, runs: &Runs, now: f64) -> Vec<Work> {
+    runs.active
+        .iter()
+        .map(|run| active(run, now))
+        .chain(
+            runs.finished
+                .iter()
+                .take(FINISHED_SHOWN)
+                .map(|run| ended(run, now)),
+        )
+        .chain(agent.processes.iter().map(|each| process(each, now)))
+        .collect()
+}
+
+/// What the counts say when there are no rows to list. The counts come with
+/// the card's own read and the runs with the roster's, so counts without rows
+/// are runs not read yet.
+fn quiet(counts: Background) -> Option<String> {
+    if counts == Background::default() {
+        return Some("Nothing runs in the background.".into());
+    }
+    counted(counts.running, counts.queued, ", ")
+}
+
+/// What the agent runs in the background; nothing for a service that doesn't
+/// report it.
+fn background(agent: &Agent, runs: &Runs) -> Option<gpui::Div> {
+    let counts = agent.background?;
+    let (t, c) = (tokens(), colors());
+    let mut section = div()
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .gap(px(t.space.s4))
+        .child(ui::view_heading("BACKGROUND", "finished ones since this app opened").px(px(0.0)));
+    let rows = background_rows(agent, runs, now() as f64);
+    if rows.is_empty() {
+        section = section.children(
+            quiet(counts)
+                .map(|quiet| ui::text(div().text_color(c.muted), &t.text.status).child(quiet)),
+        );
+    }
+    for row in rows {
+        section = section.child(
+            ui::text(
+                div().flex().items_baseline().gap(px(t.space.s10)),
+                &t.text.status,
+            )
+            .child(
+                mono(row.what)
+                    .flex_shrink_0()
+                    .w(px(t.size.fact_label))
+                    .text_color(c.muted),
+            )
+            .child(div().flex_shrink_0().text_color(c.text_2).child(row.when))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_color(c.muted)
+                    .child(row.text),
+            ),
+        );
+    }
+    Some(section)
 }
 
 fn messages(label: &str, note: &'static str, messages: &[&Received]) -> gpui::Div {
@@ -1156,4 +1314,139 @@ fn permissions(agent: &Agent) -> AnyElement {
         .child(set)
         .child(own)
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The service's fixture of its active runs, and of a run that ended.
+    fn fixture_runs() -> (Vec<Run>, Run) {
+        let listed: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../roster/src/profiles/runs/fixtures/runs.json"
+        )))
+        .unwrap();
+        let changed: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../roster/src/profiles/runs/fixtures/run-changed.json"
+        )))
+        .unwrap();
+        (
+            serde_json::from_str(&listed["items"].to_string()).unwrap(),
+            serde_json::from_str(&changed["run"].to_string()).unwrap(),
+        )
+    }
+
+    fn at(time: &str) -> f64 {
+        epoch_seconds(time).unwrap()
+    }
+
+    #[test]
+    fn a_wait_says_on_what_why_and_for_how_long() {
+        let mut waiting = Waiting {
+            on: "agent".into(),
+            on_agent: Some("reviewer".into()),
+            reason: Some("Waiting for the review of the protocol change.".into()),
+            since: Some("2026-11-10T10:20:00Z".into()),
+        };
+        assert_eq!(
+            waits(&waiting, at("2026-11-10T10:23:00Z")),
+            "agent reviewer · Waiting for the review of the protocol change. · for 3m"
+        );
+        // A time that doesn't parse shows no duration.
+        waiting.since = Some("soon".into());
+        waiting.on_agent = None;
+        waiting.reason = None;
+        assert_eq!(waits(&waiting, at("2026-11-10T10:23:00Z")), "agent");
+    }
+
+    #[test]
+    fn runs_say_what_they_do_and_for_how_long() {
+        let (runs, failed) = fixture_runs();
+        assert_eq!(
+            active(&runs[0], at("2026-11-10T10:22:30Z")),
+            Work {
+                what: "review".into(),
+                when: "10m".into(),
+                text:
+                    "Review round 2, gpt-example · running · Reviewing crates/protocol/src/runs.rs"
+                        .into(),
+            }
+        );
+        // A queued run counts from when it was queued.
+        assert_eq!(
+            active(&runs[1], at("2026-11-10T10:14:05Z")),
+            Work {
+                what: "build".into(),
+                when: "1m".into(),
+                text: "cargo build --workspace · queued · waits on build slot".into(),
+            }
+        );
+        assert_eq!(
+            ended(&failed, at("2026-11-10T10:23:47Z")),
+            Work {
+                what: "test".into(),
+                when: "2m".into(),
+                text: "cargo test --workspace · failed · exit 101 · test result: FAILED. 211 passed; 1 failed · ran 7m".into(),
+            }
+        );
+        let mut unknown = failed.clone();
+        unknown.finished_at = Some("later".into());
+        let work = ended(&unknown, at("2026-11-10T10:23:47Z"));
+        assert_eq!(work.when, "");
+        assert!(!work.text.contains("ran"));
+    }
+
+    #[test]
+    fn the_background_lists_active_runs_five_finished_then_processes() {
+        let (runs, failed) = fixture_runs();
+        let agent = Agent {
+            background: Some(Background {
+                running: 1,
+                queued: 0,
+                processes: 1,
+            }),
+            processes: vec![Process {
+                pid: 48213,
+                command: "cargo test --workspace".into(),
+                started_at: Some("2026-11-10T10:14:02Z".into()),
+            }],
+            ..Agent::default()
+        };
+        let book = Runs {
+            active: vec![runs[0].clone()],
+            finished: vec![failed; 7],
+        };
+        let rows = background_rows(&agent, &book, at("2026-11-10T10:24:02Z"));
+        let what: Vec<_> = rows.iter().map(|row| row.what.as_str()).collect();
+        assert_eq!(
+            what,
+            [
+                "review",
+                "test",
+                "test",
+                "test",
+                "test",
+                "test",
+                "pid 48213"
+            ]
+        );
+        assert_eq!(rows[6].when, "10m");
+        assert!(background_rows(&Agent::default(), &Runs::default(), 0.0).is_empty());
+        // With nothing to list, the line says what the counts say.
+        assert_eq!(
+            quiet(Background::default()).as_deref(),
+            Some("Nothing runs in the background.")
+        );
+        assert_eq!(
+            agent.background.and_then(quiet).as_deref(),
+            Some("1 running")
+        );
+        let processes = Background {
+            processes: 2,
+            ..Background::default()
+        };
+        assert_eq!(quiet(processes), None);
+    }
 }

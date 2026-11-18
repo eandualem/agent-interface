@@ -10,7 +10,10 @@ use std::{
 
 use agent_interface_roster::{
     Snapshot,
-    profiles::{Connection, ConnectionKey, Identity},
+    profiles::{
+        Connection, ConnectionKey, Identity,
+        runs::{Run, Runs},
+    },
 };
 use futures::{StreamExt, channel::mpsc};
 use gpui::{App, BorrowAppContext, Global, Task};
@@ -79,6 +82,8 @@ pub(super) struct Status {
     pub label: String,
     pub since: Option<f64>,
     pub reason: Option<String>,
+    /// What it waits on and how many runs it has, when the service says.
+    pub line: Option<String>,
 }
 
 impl Status {
@@ -89,6 +94,7 @@ impl Status {
             label: state.word().into(),
             since: None,
             reason: None,
+            line: None,
         }
     }
 
@@ -102,12 +108,27 @@ impl Status {
     }
 }
 
+/// An agent's active runs, as its sidebar row shows them.
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct Activity {
+    /// Each active review: who reviews, and its state as written.
+    pub reviews: Vec<(String, String)>,
+    /// Its other active runs in a few words, such as `build running`.
+    pub runs: Option<String>,
+}
+
 struct Current {
     snapshot: Option<Snapshot>,
     statuses: HashMap<String, Rc<Status>>,
     active: Option<Rc<HashMap<String, AgentState>>>,
     unknown: Rc<Status>,
     unavailable: Rc<Status>,
+    /// Background runs from the profile's book.
+    runs: Runs,
+    /// Active runs by the name of the agent that started them.
+    activity: HashMap<String, Rc<Activity>>,
+    /// The profile's running and queued runs together, when it has any.
+    background: Option<gpui::SharedString>,
 }
 
 impl Default for Current {
@@ -118,8 +139,77 @@ impl Default for Current {
             active: None,
             unknown: Rc::new(Status::new(AgentState::Unknown)),
             unavailable: Rc::new(Status::new(AgentState::Unavailable)),
+            runs: Runs::default(),
+            activity: HashMap::new(),
+            background: None,
         }
     }
+}
+
+/// The non-zero ones of `{n} running` and `{n} queued`, joined by `separator`.
+pub(super) fn counted(running: u64, queued: u64, separator: &str) -> Option<String> {
+    let parts: Vec<String> = [(running, "running"), (queued, "queued")]
+        .into_iter()
+        .filter(|(count, _)| *count > 0)
+        .map(|(count, word)| format!("{count} {word}"))
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(separator))
+}
+
+/// The line under an agent's state: what it waits on, then its run counts.
+fn waits_and_runs(details: &agent_interface_roster::AgentDetails) -> Option<String> {
+    let waiting = details.waiting.as_ref().map(|waiting| {
+        let agent = waiting.on_agent.as_ref().map(|agent| format!(" {agent}"));
+        format!("waits on {}{}", waiting.on, agent.unwrap_or_default())
+    });
+    let runs = details
+        .background
+        .and_then(|counts| counted(counts.running, counts.queued, ", "));
+    match (waiting, runs) {
+        (Some(waiting), Some(runs)) => Some(format!("{waiting} · {runs}")),
+        (waiting, runs) => waiting.or(runs),
+    }
+}
+
+/// Who a review asked: its model, else its CLI, else the run's label, then
+/// its effort when named.
+fn reviewer(run: &Run) -> String {
+    let review = run.review.as_ref();
+    let who = review
+        .and_then(|review| review.model.clone().or_else(|| review.runtime.clone()))
+        .unwrap_or_else(|| run.label.clone());
+    match review.and_then(|review| review.effort.as_ref()) {
+        Some(effort) => format!("{who} {effort}"),
+        None => who,
+    }
+}
+
+/// Each agent's active runs: its reviews one by one, the rest in a few words.
+fn activity(runs: &Runs) -> HashMap<String, Rc<Activity>> {
+    let mut started: HashMap<&str, Vec<&Run>> = HashMap::new();
+    for run in &runs.active {
+        if let Some(agent) = run.agent.as_deref() {
+            started.entry(agent).or_default().push(run);
+        }
+    }
+    started
+        .into_iter()
+        .map(|(agent, runs)| {
+            let (reviews, others): (Vec<&Run>, Vec<&Run>) =
+                runs.into_iter().partition(|run| run.kind == "review");
+            let count = |state: &str| others.iter().filter(|run| run.state == state).count();
+            let runs = match others.as_slice() {
+                [] => None,
+                [run] => Some(format!("{} {}", run.kind, run.state)),
+                _ => counted(count("running") as u64, count("queued") as u64, ", "),
+            };
+            let reviews = reviews
+                .into_iter()
+                .map(|run| (reviewer(run), run.state.clone()))
+                .collect();
+            (agent.to_owned(), Rc::new(Activity { reviews, runs }))
+        })
+        .collect()
 }
 
 /// How long failed reads keep showing the last roster before it is reported
@@ -174,6 +264,22 @@ impl LiveAgents {
 
     pub fn observed(&self) -> bool {
         self.0.current.borrow().snapshot.is_some()
+    }
+
+    /// The background runs of the agent with this registration.
+    pub fn runs_of(&self, registration: &str) -> Runs {
+        self.0.current.borrow().runs.of(registration)
+    }
+
+    /// The active runs of the agent with this name, when it has any.
+    pub fn activity(&self, name: &str) -> Option<Rc<Activity>> {
+        self.0.current.borrow().activity.get(name).cloned()
+    }
+
+    /// The profile's running and queued runs together, as `1 running · 2
+    /// queued`; none when it has none or its roster is unavailable.
+    pub fn background(&self) -> Option<gpui::SharedString> {
+        self.0.current.borrow().background.clone()
     }
 
     /// A missed read is not yet an outage: the last roster stays shown while
@@ -232,10 +338,24 @@ impl LiveAgents {
                         if let Some(suffix) = suffix.filter(|s| !s.is_empty()) {
                             status.label = format!("{} · {suffix}", status.state.word());
                         }
+                        status.line = waits_and_runs(details);
                     }
                     (name.clone(), Rc::new(status))
                 })
                 .collect();
+            let (running, queued) = snapshot
+                .details
+                .values()
+                .filter_map(|details| details.background)
+                .fold((0u64, 0u64), |(running, queued), counts| {
+                    (
+                        running.saturating_add(counts.running),
+                        queued.saturating_add(counts.queued),
+                    )
+                });
+            current.background = counted(running, queued, " · ")
+                .filter(|_| snapshot.error.is_none())
+                .map(Into::into);
             current.active = snapshot.error.is_none().then(|| {
                 Rc::new(
                     current
@@ -318,7 +438,16 @@ impl LiveAgents {
         if self.0.origin.as_ref() != Some(&Origin::Bound(update.identity)) {
             return false;
         }
-        match update.error {
+        let runs = {
+            let mut current = self.0.current.borrow_mut();
+            let changed = current.runs != update.runs;
+            if changed {
+                current.activity = activity(&update.runs);
+                current.runs = update.runs;
+            }
+            changed
+        };
+        let roster = match update.error {
             None => self.update(update.snapshot),
             Some(error) => {
                 update.snapshot.unavailable();
@@ -330,7 +459,8 @@ impl LiveAgents {
                     self.replace(update.snapshot)
                 }
             }
-        }
+        };
+        runs || roster
     }
 
     fn take_update(&self) -> Option<bool> {
@@ -526,7 +656,120 @@ mod tests {
             identity: identity.clone(),
             snapshot,
             error: None,
+            runs: Runs::default(),
         }
+    }
+
+    /// The service's fixture of a roster and of its active runs.
+    fn fixture(name: &str) -> &'static [u8] {
+        match name {
+            "agents" => include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../roster/src/profiles/runs/fixtures/agents.json"
+            )),
+            _ => include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../roster/src/profiles/runs/fixtures/runs.json"
+            )),
+        }
+    }
+
+    #[test]
+    fn the_list_line_and_the_profile_counts_come_from_the_roster() {
+        let agents = LiveAgents::default();
+        let mut snapshot = Snapshot::default();
+        snapshot.update(fixture("agents"));
+        agents.update(snapshot.clone());
+        assert_eq!(
+            agents.get("worker").line.as_deref(),
+            Some("waits on build slot · 1 running, 1 queued")
+        );
+        assert_eq!(agents.get("worker").label, "needs you · permission");
+        assert_eq!(agents.get("reviewer").line, None);
+        assert_eq!(agents.background().as_deref(), Some("1 running · 1 queued"));
+        snapshot.update(
+            br#"{"items":[{"name":"worker","state":"busy","background":{"running":0,"queued":2},
+            "waiting":{"on":"agent","on_agent":"reviewer","reason":null,"since":null}}]}"#,
+        );
+        agents.update(snapshot.clone());
+        assert_eq!(
+            agents.get("worker").line.as_deref(),
+            Some("waits on agent reviewer · 2 queued")
+        );
+        assert_eq!(agents.background().as_deref(), Some("2 queued"));
+        // An older service: the row and the status bar are as before.
+        snapshot.update(br#"{"items":[{"name":"worker","state":"busy"}]}"#);
+        agents.update(snapshot.clone());
+        assert_eq!(
+            (agents.get("worker").line.clone(), agents.background()),
+            (None, None)
+        );
+        // Counts are not shown from a roster that can no longer be read.
+        snapshot.update(fixture("agents"));
+        snapshot.unavailable();
+        snapshot.observed_at = std::time::Instant::now().checked_sub(TOLERANCE);
+        agents.update(snapshot);
+        assert_eq!(agents.background(), None);
+    }
+
+    #[test]
+    fn runs_ride_a_bound_update_to_the_card_and_the_sidebar() {
+        let listed: serde_json::Value = serde_json::from_slice(fixture("runs")).unwrap();
+        let mut runs: Vec<Run> = serde_json::from_str(&listed["items"].to_string()).unwrap();
+        // A review without a model names its CLI; one without details, its label.
+        let mut unnamed = runs[0].clone();
+        unnamed.run_id = "0193a1b2c3d47e5f8a9b0c1d2e3f4a62".into();
+        unnamed.review.as_mut().unwrap().model = None;
+        let mut bare = runs[0].clone();
+        bare.run_id = "0193a1b2c3d47e5f8a9b0c1d2e3f4a63".into();
+        bare.review = None;
+        bare.state = "queued".into();
+        let mut test = runs[1].clone();
+        test.run_id = "0193a1b2c3d47e5f8a9b0c1d2e3f4a64".into();
+        test.kind = "test".into();
+        test.state = "running".into();
+        runs.extend([unnamed, bare]);
+        let profile = origin("a", "1");
+        let agents = LiveAgents(Rc::new(Source {
+            origin: Some(profile.clone()),
+            ..Source::default()
+        }));
+        let mut update = observation(&profile, "busy");
+        update.runs.active = runs.clone();
+        assert!(agents.update_bound(update.clone()));
+        // An unchanged roster with changed runs still redraws.
+        update.runs.active.push(test);
+        assert!(agents.update_bound(update.clone()));
+        assert!(!agents.update_bound(update));
+        let builder = agents.activity("builder").unwrap();
+        assert_eq!(
+            builder.reviews,
+            [
+                ("gpt-example high".to_owned(), "running".to_owned()),
+                ("codex high".to_owned(), "running".to_owned()),
+                (
+                    "Review round 2, gpt-example".to_owned(),
+                    "queued".to_owned()
+                ),
+            ]
+        );
+        assert_eq!(builder.runs, None);
+        let worker = agents.activity("worker").unwrap();
+        assert!(worker.reviews.is_empty());
+        assert_eq!(worker.runs.as_deref(), Some("1 running, 1 queued"));
+        assert!(agents.activity("reviewer").is_none());
+        // The card finds its agent's runs by registration.
+        let card = agents.runs_of("1234567890abcdef1234567890abcdef");
+        assert_eq!(card.active.len(), 2);
+        assert!(card.finished.is_empty());
+        let mut update = observation(&profile, "busy");
+        update.runs.active = vec![runs[1].clone()];
+        agents.update_bound(update);
+        assert_eq!(
+            agents.activity("worker").unwrap().runs.as_deref(),
+            Some("build queued")
+        );
+        assert!(agents.activity("builder").is_none());
     }
 
     #[test]

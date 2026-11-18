@@ -407,14 +407,29 @@ is compared there.
 
 The service also pushes agent state changes on `GET /api/stream`, as
 Server-Sent Events. `Connection::watch` follows that stream on a worker of its
-own and reads only each frame's kind: the opening `hello`, `agent.state` and
-`resync` each ask the roster worker for a read at once. The frames' values are
+own and reads only each frame's kind: the opening `hello`, `agent.state`,
+`agent.changed` (what an agent waits on, or its background counts), `run.changed`
+and `resync` each ask the roster worker for a read at once. A service that
+does not know a kind ignores it. The frames' values are
 not applied and no cursor is kept, so a stream opened again simply reads the
 states again. A stream that breaks, or stays silent for 45 seconds against the
 service's 15-second heartbeat, is opened again two seconds later. When the
 stream worker cannot start, the roster is polled as before. The
 two-second poll continues, because agents joining or leaving the roster are
 not pushed.
+
+Each agent in the service's list may say what it waits on outside itself and
+how many runs (reviews, builds, tests) and processes it has in the
+background; an older service has neither field, and the app then shows what
+it showed before. After publishing each roster, the worker reads the active
+runs with `GET /api/runs`, but only while an agent reports queued or running
+runs or some were active at the last read, so an older service is never asked;
+a 404 stops the asking for the worker's life. A run that has left the list is
+read once by its ID and kept, newest first and bounded, when it has ended.
+The service lists only active runs, so the finished runs the app shows are
+those that ended while it watched the profile, and none after it starts. The
+runs ride the roster update to `LiveAgents`, which the Team rows, the sidebar,
+the status bar and the agent card read.
 
 A workspace saved without a profile was served by the earlier Python service
 without a binding, and shows no agents once the Rust service has taken its

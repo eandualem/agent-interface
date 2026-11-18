@@ -1,4 +1,5 @@
-//! The Rust service's push stream, read as a signal that agent states changed.
+//! The Rust service's push stream, read as a signal that agent states or
+//! background runs changed.
 
 use std::time::Duration;
 
@@ -13,10 +14,12 @@ const LINE_LIMIT: usize = 64 * 1024;
 
 impl Connection {
     /// Follow this profile's push stream until `live` is false, calling
-    /// `changed` whenever agent states should be read again: when the stream
-    /// opens, when an agent's state changes and when the service says events
-    /// were missed. The events' own values are not used, so no cursor is kept:
-    /// a stream that is opened again reads the states again.
+    /// `changed` whenever agents should be read again: when the stream opens,
+    /// when an agent's state, wait or background counts change, when a run
+    /// changes and when the service says events were missed. A service that
+    /// doesn't know a kind ignores it. The events' own values are not used,
+    /// so no cursor is kept: a stream that is opened again reads the states
+    /// again.
     ///
     /// Only the Rust service has the stream; any other connection is
     /// `Unsupported`. A stream that ends while `live` is an error. Blocks its
@@ -28,7 +31,7 @@ impl Connection {
         let mut frames = Frames::default();
         local::stream(
             self.socket.to_str().ok_or(Error::Invalid)?,
-            "/api/stream?kinds=agent.state,resync",
+            "/api/stream?kinds=agent.state,agent.changed,run.changed,resync",
             &self.identity.profile_id,
             QUIET,
             live,
@@ -46,7 +49,7 @@ impl Connection {
 #[derive(Default)]
 struct Frames {
     line: Vec<u8>,
-    /// Whether the frame being read is one that changes agent states.
+    /// Whether the frame being read is one that changes what is shown.
     relevant: bool,
 }
 
@@ -68,7 +71,10 @@ impl Frames {
                     changed();
                 }
             } else if let Some(kind) = line.strip_prefix(b"event:") {
-                self.relevant = matches!(kind.trim_ascii(), b"hello" | b"agent.state" | b"resync");
+                self.relevant = matches!(
+                    kind.trim_ascii(),
+                    b"hello" | b"agent.state" | b"agent.changed" | b"run.changed" | b"resync"
+                );
             }
             self.line.clear();
         }
@@ -94,5 +100,27 @@ mod tests {
         assert!(push(b"id: a:0\nevent:resync\ndata: {}\n\n"));
         assert!(!push(&vec![b'x'; LINE_LIMIT + 1]));
         assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn run_and_agent_changes_from_the_services_fixtures_signal_a_read() {
+        let mut frames = Frames::default();
+        let mut count = 0;
+        for (kind, data) in [
+            (
+                "run.changed",
+                include_str!("runs/fixtures/run-changed.json"),
+            ),
+            (
+                "agent.changed",
+                include_str!("runs/fixtures/agent-changed.json"),
+            ),
+        ] {
+            // One frame's data is one line of JSON.
+            let data: serde_json::Value = serde_json::from_str(data).unwrap();
+            let frame = format!("id: a:4\nevent: {kind}\ndata: {data}\n\n");
+            assert!(frames.push(frame.as_bytes(), &mut || count += 1));
+        }
+        assert_eq!(count, 2);
     }
 }

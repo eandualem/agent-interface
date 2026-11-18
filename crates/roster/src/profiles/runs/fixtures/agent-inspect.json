@@ -1,0 +1,64 @@
+{
+  "name": "builder",
+  "registration_id": "0193a1b2c3d47e5f8a9b0c1d2e3f4a5b",
+  "known": true,
+  "online": true,
+  "dir": "/work/app",
+  "description": "Builds the app",
+  "tags": ["build"],
+  "runtime": "claude",
+  "model": null,
+  "model_source": "runtime_default",
+  "repo": "example/app",
+  "watches": ["example/web"],
+  "subscriptions": [
+    {"id": 3, "source": "gmail", "filter": "from:alerts@example.com", "priority": "high"}
+  ],
+  "state": "busy",
+  "reason": null,
+  "current_issue": 42,
+  "current_repo": "example/app",
+  "state_source": "push",
+  "state_age_seconds": 4.4,
+  "delivery": "agent_working",
+  "session_id": "0d6f2a4e-8b1c-4e7a-9f3d-2c5b7a1e9d40",
+  "last_message": "The tests pass.",
+  "detail": null,
+  "evidence": ["runtime: claude", "hook state 'busy' written 4s ago (fresh)"],
+  "tmux": {
+    "created": 1794297600,
+    "activity": 1794301196,
+    "attached": false,
+    "windows": 1,
+    "launch": "0193a1b2c3d47e5f8a9b0c1d2e3f4a5b"
+  },
+  "pane_tail": ["❯ cargo test", "test result: ok. 12 passed"],
+  "recent_deliveries": [
+    {
+      "id": 42,
+      "kind": "direct_message",
+      "repo": "",
+      "issue_number": null,
+      "target_entity": "",
+      "session_name": "builder",
+      "outcome": "agent_working",
+      "source": "api-messages",
+      "preview": "[via:backbone from:planner] The review is ready.",
+      "created_at": "2026-11-10T10:15:00.5Z"
+    }
+  ],
+  "restart": null,
+  "machine": {"id": "5f2c9e0d1b7a4e38", "name": "laptop"},
+  "waiting": null,
+  "background": {"running": 1, "queued": 0, "processes": 1},
+  "processes": [
+    {"pid": 48213, "command": "cargo test --workspace", "started_at": "2026-11-10T10:14:02Z"}
+  ],
+  "role": "orchestrator",
+  "superior": null,
+  "mode": "unsandboxed",
+  "grants": [
+    {"kind": "docker", "machine": "5f2c9e0d1b7a4e38", "machine_name": "laptop"}
+  ],
+  "ceiling": []
+}

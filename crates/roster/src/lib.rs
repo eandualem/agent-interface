@@ -52,6 +52,38 @@ pub struct AgentDetails {
     pub current_issue: Option<u64>,
     /// Provider timestamp of the state observation.
     pub state_since: Option<f64>,
+    /// What the agent waits on outside itself; absent from an older service.
+    pub waiting: Option<Waiting>,
+    /// How much it runs in the background; absent from an older service.
+    pub background: Option<Background>,
+}
+
+/// What an agent waits on outside itself, as the Rust service reports it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct Waiting {
+    /// What it waits on, such as a build slot, as the service wrote it.
+    pub on: String,
+    /// The agent it waits on, when it waits on an agent.
+    #[serde(default)]
+    pub on_agent: Option<String>,
+    /// Why, as the service wrote it.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// Since when, in RFC 3339 as the service wrote it.
+    #[serde(default)]
+    pub since: Option<String>,
+}
+
+/// How many runs and processes an agent has in the background.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(default)]
+pub struct Background {
+    /// Its runs that are running.
+    pub running: u64,
+    /// Its runs that wait to start.
+    pub queued: u64,
+    /// Processes it started that still run.
+    pub processes: u64,
 }
 
 /// A running swarm: the agent that started it and the agents working in it.
@@ -158,6 +190,8 @@ fn decode(response: &[u8]) -> Option<Decoded> {
                     .and_then(|value| serde_json::from_str(value).ok()),
                 state_since: field("state_since")
                     .and_then(|value| serde_json::from_str(value).ok()),
+                waiting: field("waiting").and_then(|value| serde_json::from_str(value).ok()),
+                background: field("background").and_then(|value| serde_json::from_str(value).ok()),
             },
         );
         states.insert(name, state);
@@ -357,13 +391,44 @@ mod tests {
     fn malformed_details_do_not_discard_valid_fields() {
         let mut snapshot = Snapshot::default();
         snapshot.update(
-            br#"{"items":[{"name":"worker","state":"future","online":true,"reason":7,"current_issue":42,"state_since":"invalid"}]}"#,
+            br#"{"items":[{"name":"worker","state":"future","online":true,"reason":7,"current_issue":42,"state_since":"invalid","waiting":{"on":7},"background":{"running":"one"}}]}"#,
         );
         let details = &snapshot.details["worker"];
         assert_eq!(details.online, Some(true));
         assert_eq!(details.reason, None);
         assert_eq!(details.current_issue, Some(42));
         assert_eq!(details.state_since, None);
+        assert_eq!((&details.waiting, details.background), (&None, None));
+    }
+
+    #[test]
+    fn waiting_and_background_decode_from_the_services_fixture() {
+        let mut snapshot = Snapshot::default();
+        snapshot.update(include_bytes!("profiles/runs/fixtures/agents.json"));
+        let worker = &snapshot.details["worker"];
+        assert_eq!(
+            worker.waiting,
+            Some(Waiting {
+                on: "build slot".into(),
+                on_agent: None,
+                reason: Some("Two builds already run on this machine.".into()),
+                since: Some("2026-11-10T09:58:20Z".into()),
+            })
+        );
+        let counts = |running, queued, processes| {
+            Some(Background {
+                running,
+                queued,
+                processes,
+            })
+        };
+        assert_eq!(worker.background, counts(1, 1, 2));
+        let reviewer = &snapshot.details["reviewer"];
+        assert_eq!(reviewer.waiting, None);
+        assert_eq!(reviewer.background, counts(0, 0, 0));
+        // An older service has neither field.
+        snapshot.update(br#"{"items":[{"name":"worker","state":"idle"}]}"#);
+        assert_eq!(snapshot.details["worker"], AgentDetails::default());
     }
 
     #[test]

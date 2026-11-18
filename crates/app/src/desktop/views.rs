@@ -340,7 +340,9 @@ impl ViewPane {
             }
             let connection = connection.clone();
             let visible = pane.visible.clone();
-            let card = cx.new(|cx| bound_agent::Card::new(connection, &pane.view, visible, cx));
+            let agents = pane.agents.clone();
+            let card =
+                cx.new(|cx| bound_agent::Card::new(connection, agents, &pane.view, visible, cx));
             // A chosen skill or policy opens in this pane's reader, in place of
             // the card until the person goes back.
             pane._search.push(

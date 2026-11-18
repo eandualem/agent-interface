@@ -1,7 +1,10 @@
 //! Roster polling owned by one verified profile connection.
 
 use super::*;
-use agent_interface_roster::profiles::{Connection, Error, Identity};
+use agent_interface_roster::profiles::{
+    Connection, Error, Identity,
+    runs::{Book, Runs},
+};
 
 /// One complete observation, including the origin of retained stale metadata.
 #[derive(Clone, Debug)]
@@ -12,6 +15,8 @@ pub struct BoundRosterUpdate {
     pub snapshot: Snapshot,
     /// The latest failure category, without provider prose or credentials.
     pub error: Option<Error>,
+    /// Background runs as last read; kept as they were when a read fails.
+    pub runs: Runs,
 }
 
 /// An independent cache and polling worker for one immutable connection.
@@ -27,7 +32,8 @@ pub struct BoundRosterSource {
 
 impl BoundRosterSource {
     /// Read immediately, then two seconds after each completed attempt, and
-    /// at once when the Rust service's push stream reports a changed state.
+    /// at once when the Rust service's push stream reports a change. Runs
+    /// are read after each roster is published, so states never wait on them.
     /// The connection retains its verified tuple, endpoint and credential for
     /// this worker's lifetime. `wake` runs after publishing a complete update.
     pub fn start(connection: Connection, wake: impl Fn() + Send + 'static) -> io::Result<Self> {
@@ -42,6 +48,13 @@ impl BoundRosterSource {
                     identity: connection.identity().clone(),
                     snapshot: Snapshot::default(),
                     error: None,
+                    runs: Runs::default(),
+                };
+                let mut book = Book::default();
+                let publish = |update: &BoundRosterUpdate| {
+                    *pending.lock().unwrap_or_else(|error| error.into_inner()) =
+                        Some(update.clone());
+                    wake();
                 };
                 loop {
                     match connection.roster() {
@@ -54,9 +67,14 @@ impl BoundRosterSource {
                             update.error = Some(standing(update.error, error));
                         }
                     }
-                    *pending.lock().unwrap_or_else(|error| error.into_inner()) =
-                        Some(update.clone());
-                    wake();
+                    publish(&update);
+                    if update.error.is_none() {
+                        book.follow(&connection, &update.snapshot);
+                        if *book.runs() != update.runs {
+                            update.runs = book.runs().clone();
+                            publish(&update);
+                        }
+                    }
                     match stopped.recv_timeout(Duration::from_secs(2)) {
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
                         // Several changes at once need one read; a stop among

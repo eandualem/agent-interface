@@ -97,6 +97,10 @@ impl Browser {
                             .child(format!("profile: {profile}")),
                     );
                 }
+                // What the profile's agents run in the background, when any.
+                if let Some(runs) = self.active_agents().and_then(|agents| agents.background()) {
+                    left = left.child(div().text_color(c.text_2).child(runs));
+                }
                 match model.tab() {
                     Some(tab) => {
                         let panes = tab.tree.leaves();
