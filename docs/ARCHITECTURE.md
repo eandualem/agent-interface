@@ -546,11 +546,10 @@ clipboard JavaScript bridge.
 
 For new agent launches, the app captures its foreground and background and sends
 `terminal_defaults` only when the saved runtime advertises support through
-Backbone's runtime catalog. First-agent setup saves these values with the request;
-retries keep the original colours, and legacy requests still omit the field.
-Backbone seeds the new pane before executing the CLI. This closes the interval
-before Interface attaches, including on tmux versions without control-client
-colour reporting. Attached clients continue reporting their current defaults.
+Backbone's runtime catalog. Backbone seeds the new pane before executing the CLI.
+This closes the interval before Interface attaches, including on tmux versions
+without control-client colour reporting. Attached clients continue reporting
+their current defaults.
 A CLI that caches colours at startup may need a user-requested restart to adapt
 to a later appearance change; Interface does not restart it or reinterpret its
 explicit RGB output.
