@@ -285,6 +285,9 @@ struct Wire {
     completed_steps: Option<Vec<String>>,
     #[serde(default)]
     data: Option<Value>,
+    /// Read only to check its type: provider prose is never kept.
+    #[serde(default)]
+    message: Option<String>,
 }
 
 /// A bounded JSON-lines decoder owned by one exact request and action.
@@ -373,6 +376,9 @@ impl Stream {
                 .filter(|retry| token(retry))
                 .ok_or(Error::Invalid)?;
             let steps = wire.completed_steps.ok_or(Error::Invalid)?;
+            if wire.message.is_none() {
+                return Err(Error::Invalid);
+            }
             if steps.iter().any(|step| !valid_id(step)) {
                 return Err(Error::Invalid);
             }

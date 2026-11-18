@@ -31,7 +31,7 @@ impl Prepared {
             "schema_version":SCHEMA_VERSION,"type":"result",
             "request_id":event.request_id,"action":event.action.name(),
             "seq":event.sequence,"status":event.status,"code":event.code,
-            "retry":event.retry,"completed_steps":[],"data":data,
+            "message":"","retry":event.retry,"completed_steps":[],"data":data,
         }))
         .map_err(|_| Error::Invalid)?;
         let validated = self.decode_outcome(event.action, &result)?;

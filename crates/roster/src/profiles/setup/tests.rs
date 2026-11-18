@@ -405,6 +405,8 @@ fn values_this_app_does_not_know_are_kept_and_malformed_ones_poison() {
         ("type", json!("progress")),
         ("action", json!("initialize")),
         ("action", Value::Null),
+        ("message", Value::Null),
+        ("message", json!(3)),
     ] {
         let mut malformed = answer(Action::FirstAgent, "failed", "launch_failed", "none");
         malformed[field] = value.clone();
@@ -413,9 +415,19 @@ fn values_this_app_does_not_know_are_kept_and_malformed_ones_poison() {
             "{field}: {value}"
         );
     }
-    let mut nameless = step(1, "preflight", "running");
-    nameless["step"] = Value::Null;
-    assert!(decode(Action::FirstAgent, &nameless).is_err());
+    for (field, value) in [
+        ("step", Value::Null),
+        ("step", json!(3)),
+        ("status", Value::Null),
+        ("status", json!(true)),
+    ] {
+        let mut malformed = step(1, "preflight", "running");
+        malformed[field] = value.clone();
+        assert!(
+            decode(Action::FirstAgent, &malformed).is_err(),
+            "step {field}: {value}"
+        );
+    }
     let mut earlier = ready();
     earlier["schema_version"] = json!(2);
     let mut stream = prepared(guide()).stream(Action::FirstAgent);
