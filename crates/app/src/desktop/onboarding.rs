@@ -280,8 +280,8 @@ impl Onboarding {
         cx.notify();
     }
 
-    /// Start the agent service without asking: restarted once if it doesn't
-    /// answer, or set up as the installer does if it never was.
+    /// Start the agent service without asking, with Agent Backbone's own
+    /// setup, which keeps what this computer has or sets it up.
     fn start_service(&mut self, cx: &mut Context<Self>) {
         let Some(probe) = self.probe.clone() else {
             return;
@@ -886,32 +886,16 @@ impl Render for Onboarding {
 }
 
 /// Start the agent service, or set it up, and wait for it to answer.
-/// Blocks; runs off the UI thread.
+/// Setup decides what this computer is: it keeps a profile it has, makes
+/// the first one, or restarts this installation's service once. Blocks;
+/// runs off the UI thread.
 fn start(probe: &Probe) -> Result<(), String> {
-    let logs = if cfg!(target_os = "macos") {
-        "Its log is backbone.log in its data folder."
-    } else {
-        "Its log: journalctl --user -u agent-backbone.service -n 80"
-    };
     match &probe.backbone {
         Backbone::Running => Err(format!(
             "Agent Backbone answered, but its backbone command was not found on this computer's PATH ({}).",
             probe.path_env
         )),
-        Backbone::Unreachable(reason) => {
-            if let install::Outcome::Failed(why) = install::restart_backbone(&probe.path_env) {
-                return Err(format!(
-                    "Agent Backbone did not answer ({reason}), and restarting its service failed: {why}"
-                ));
-            }
-            answered().ok_or_else(|| {
-                format!(
-                    "Agent Backbone did not answer after one restart (waited {} s). {logs}",
-                    SERVICE_WAIT.as_secs()
-                )
-            })
-        }
-        Backbone::NotSetUp => {
+        Backbone::Unreachable(_) | Backbone::NotSetUp => {
             let Some(backbone) = probe.path("backbone") else {
                 return Err(
                     "Agent Backbone isn't installed. Run the Agent Interface installer again."
@@ -921,7 +905,7 @@ fn start(probe: &Probe) -> Result<(), String> {
             install::initialize_backbone(backbone, &probe.path_env)?;
             answered().ok_or_else(|| {
                 format!(
-                    "Agent Backbone was set up but did not answer (waited {} s). {logs}",
+                    "Agent Backbone was set up but did not answer (waited {} s). Its log is service.log in Agent Backbone's directory.",
                     SERVICE_WAIT.as_secs()
                 )
             })
