@@ -176,6 +176,19 @@ fn each_code_says_what_happened_by_what_may_follow_it() {
     s.cancellation_result.as_mut().unwrap().cancelled = true;
     assert!(outcome(&s).is_none() && s.closed());
     assert_eq!(status(&s), "Safely cancelled");
+    // Its launch failed: the agent was added, and its CLI isn't running.
+    let s = answered(false, "failed", "launch_failed", "none");
+    assert_eq!(status(&s), "Agent added, not running");
+    assert!(outcome(&s).unwrap().contains("worker was added"));
+    // A status this app doesn't know never reads as cancelled.
+    for cancel in [false, true] {
+        let s = answered(cancel, "paused", "request_cancelled", "new_request");
+        assert_eq!(
+            outcome(&s).as_deref(),
+            Some("The profile answered: request_cancelled.")
+        );
+        assert_ne!(status(&s), "Safely cancelled");
+    }
     // Started: its terminal is the next step.
     let mut s = answered(false, "completed", "agent_ready", "none");
     s.first_result.as_mut().unwrap().ready_agent = Some("worker".into());
@@ -474,4 +487,23 @@ fn an_unreachable_profile_keeps_an_unresolved_start_and_its_request_id() {
         })
         .collect();
     assert_eq!(posts, [first, first]);
+}
+
+#[test]
+fn a_fresh_start_sends_only_its_open_request_until_it_is_closed() {
+    assert_eq!(saved_open(None), None);
+    // Saved and never sent: it is sent.
+    let mut saved = snapshot();
+    saved.phase = Phase::Prepared;
+    assert_eq!(saved_open(Some(&saved)), Some(true));
+    for (retry, again) in [
+        ("same_request", Some(true)),
+        // Open, but not sent again: no Try again, and no new request.
+        ("later", Some(false)),
+        ("new_request", None),
+        ("none", None),
+    ] {
+        let s = answered(false, "action_required", "outcome_unknown", retry);
+        assert_eq!(saved_open(Some(&s)), again, "{retry}");
+    }
 }

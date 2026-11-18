@@ -22,6 +22,9 @@ pub enum Phase {
 pub enum Error {
     /// Invalid or unsupported stored envelope.
     Invalid,
+    /// Saved under an earlier setup schema, which no service takes now. It
+    /// holds back no other request and can be forgotten.
+    Earlier,
     /// No record exists under this key.
     Missing,
     /// This action does not match the durable submission state.
@@ -186,7 +189,11 @@ impl Controller {
             if std::time::Instant::now() >= deadline {
                 return Err(Error::Client(super::Error::TimedOut));
             }
-            let (_, existing) = inspect(&record)?;
+            let existing = match inspect(&record) {
+                Ok((_, existing)) => existing,
+                Err(Error::Earlier) => return Ok(()),
+                Err(error) => return Err(error),
+            };
             if std::time::Instant::now() >= deadline {
                 return Err(Error::Client(super::Error::TimedOut));
             }
@@ -237,7 +244,11 @@ impl Controller {
                 return Err(Error::Client(super::Error::TimedOut));
             }
             let record = self.journal.read_durable(&key)?.ok_or(Error::Missing)?;
-            let (_, snapshot) = inspect(&record)?;
+            let snapshot = match inspect(&record) {
+                Ok((_, snapshot)) => snapshot,
+                Err(Error::Earlier) => continue,
+                Err(error) => return Err(error),
+            };
             if snapshot.profile_id == profile_id && !snapshot.closed() {
                 pending.push(snapshot);
             }
@@ -417,8 +428,8 @@ impl Controller {
 
 // Validate the existing format-1 capsule and outcomes without constructing an
 // executor. Admission uses only this durable metadata. A request or outcome
-// the model refuses, one saved under an earlier schema among them, cannot be
-// validated, and so can be forgotten.
+// the model refuses cannot be validated, and so can be forgotten; one saved
+// under an earlier schema is told apart, as it holds back nothing.
 fn inspect(record: &journal::Record) -> Result<(Envelope, Snapshot), Error> {
     let envelope: Envelope =
         serde_json::from_slice(record.payload()).map_err(|_| Error::Invalid)?;
@@ -432,7 +443,11 @@ fn inspect(record: &journal::Record) -> Result<(Envelope, Snapshot), Error> {
         super::recovery::Kind::Setup,
         envelope.capsule.as_bytes(),
     )?;
-    let prepared = Prepared::restore(&state).map_err(|_| Error::Invalid)?;
+    let refused = |error| match error {
+        agent_interface_roster::profiles::Error::Unsupported => Error::Earlier,
+        _ => Error::Invalid,
+    };
+    let prepared = Prepared::restore(&state).map_err(refused)?;
     if Controller::key(prepared.request_id()) != record.id()
         || (envelope.phase == Phase::Prepared
             && (envelope.first.is_some() || envelope.cancel.is_some()))
@@ -442,7 +457,7 @@ fn inspect(record: &journal::Record) -> Result<(Envelope, Snapshot), Error> {
     let outcome = |action, bytes: &String| {
         prepared
             .restore_outcome(action, bytes.as_bytes())
-            .map_err(|_| Error::Invalid)
+            .map_err(refused)
     };
     let snapshot = Snapshot {
         key: record.id().into(),

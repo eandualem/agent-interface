@@ -195,9 +195,10 @@ impl Form {
         let directory = self.library.clone();
         let expected = self.profile.expected_identity();
         let served = self.profile.served();
+        let setup = self.guide;
         let work = cx.background_executor().spawn(async move {
             let identity = expected.map_err(|_| "This profile has no ready instance for setup.")?;
-            load_choices(client, directory, &identity, served, &|| {
+            load_choices(client, directory, &identity, served, setup, &|| {
                 worker.load(Ordering::Acquire)
             })
         });
@@ -297,6 +298,8 @@ impl Form {
         self.guide = true;
         self.first = first;
         self.connection = connection;
+        // Read again as a guide's: its start is saved before it runs.
+        self.load(false, cx);
         self.name = cx.new(|cx| NameField::bare(GUIDE, window, cx));
         self._fields.push(
             cx.subscribe(&self.name, |form: &mut Self, _, event: &NameEvent, cx| {
@@ -441,13 +444,15 @@ impl Form {
         if self.busy(cx) {
             return;
         }
-        let again = !self.changed
-            && self
-                .start
-                .as_ref()
-                .is_some_and(|(pane, _)| pane.update(cx, |pane, cx| pane.retry(cx)));
-        if again {
-            cx.notify();
+        // While the request a start saved is open, Try again sends that
+        // request, whatever was changed since; a new one only once it is
+        // closed, or cancelled or forgotten under Earlier setups.
+        if let Some((pane, _)) = &self.start
+            && pane.read(cx).saved_open().is_some()
+        {
+            if pane.update(cx, |pane, cx| pane.retry(cx)) {
+                cx.notify();
+            }
             return;
         }
         // Saved before it runs, so a lost answer is asked about again under
@@ -571,6 +576,14 @@ impl Form {
 
     /// Whether Start can send what the screen shows.
     fn can_start(&self, cx: &Context<Self>) -> bool {
+        // A start's open request is sent again, or nothing is.
+        if let Some(sendable) = self
+            .start
+            .as_ref()
+            .and_then(|(pane, _)| pane.read(cx).saved_open())
+        {
+            return sendable;
+        }
         if self.profile.served() && !self.guide {
             self.served_start(cx).is_some()
         } else {
@@ -680,13 +693,18 @@ fn load_choices(
     directory: PathBuf,
     identity: &agent_interface_roster::profiles::Identity,
     served: bool,
+    setup: bool,
     live: &dyn Fn() -> bool,
 ) -> Result<State, &'static str> {
     let journal = journal::Journal::open(&directory.join("profile-setup"))
         .map_err(|_| "Private setup storage is unavailable.")?;
     let controller = Arc::new(Controller::new(journal, &client));
-    let Ok(pending) = controller.pending(&identity.profile_id, live) else {
-        return Ok(State::Unchecked(controller));
+    let pending = match controller.pending(&identity.profile_id, live) {
+        Ok(pending) => pending.len(),
+        // A guide's start is saved here first, so it waits for recovery;
+        // Add agent starts with the service's own start, saved nowhere.
+        Err(_) if setup => return Ok(State::Unchecked(controller)),
+        Err(_) => 0,
     };
     let catalog = if served {
         client.served_runtimes(identity, live)
@@ -699,7 +717,7 @@ fn load_choices(
     Ok(State::Ready {
         controller,
         catalog,
-        pending: pending.len(),
+        pending,
     })
 }
 struct Selection<'a> {
@@ -1383,7 +1401,20 @@ impl Form {
             .as_ref()
             .filter(|_| busy)
             .map(|(pane, _)| setup::stage(pane.read(cx).step(), &name));
-        let problem = failure.or(install_failed).or(self.error.map(str::to_owned));
+        let problem = failure
+            .map(|failure| {
+                match self.start.as_ref().and_then(|(pane, _)| pane.read(cx).saved_open()) {
+                    Some(true) if self.changed => format!(
+                        "{failure} Try again sends it as it was; to change it, cancel or forget it under Earlier setups."
+                    ),
+                    Some(false) => format!(
+                        "{failure} It can't be sent again: cancel or forget it under Earlier setups."
+                    ),
+                    _ => failure,
+                }
+            })
+            .or(install_failed)
+            .or(self.error.map(str::to_owned));
         let expected = ticket.clone();
         let tail =
             div()

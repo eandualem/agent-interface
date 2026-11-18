@@ -82,6 +82,12 @@ fn status(s: &Snapshot) -> &'static str {
         "Cancellation outcome not confirmed"
     } else if s.first_result.is_none() && s.cancellation_result.is_none() {
         "Setup outcome not confirmed"
+    } else if s
+        .first_result
+        .as_ref()
+        .is_some_and(|e| e.code.as_deref() == Some("launch_failed"))
+    {
+        "Agent added, not running"
     } else if s.closed() {
         "Agent not added"
     } else {
@@ -108,7 +114,7 @@ fn outcome(s: &Snapshot) -> Option<String> {
     Some(match (event.code.as_deref()?, event.retry.as_deref()) {
         ("agent_ready", _) => return None,
         ("request_cancelled", _) if event.cancelled => return None,
-        ("request_cancelled", _) => "This request was cancelled, so it never runs. Start again to make a new one.".into(),
+        ("request_cancelled", _) if event.status == "failed" => "This request was cancelled, so it never runs. Start again to make a new one.".into(),
         ("agent_conflict", Some("none")) => format!(
             "{name} was added, but another terminal or session uses its name now. Look at it in the workspace before adding it again."
         ),
@@ -117,7 +123,9 @@ fn outcome(s: &Snapshot) -> Option<String> {
         ),
         ("runtime_missing", _) => "This tool isn't installed where the profile can use it, or setup doesn't start it. Install it or choose another, then start again.".into(),
         ("starter_conflict", _) => "The profile's starter isn't as a first agent needs it: a starter policy, skill or the guide's brief is missing or changed. Fix it, then start again.".into(),
-        ("launch_failed", _) => "The CLI exited right after starting, so the agent is not running. Run the CLI in a terminal in the agent's folder to see why, then start the agent again.".into(),
+        ("launch_failed", _) => format!(
+            "{name} was added, but its CLI exited right after starting, so it isn't running. Run the CLI in a terminal in its folder to see why, then start it again."
+        ),
         ("service_unavailable", Some("same_request")) => "The profile's service isn't answering, so nothing was sent. Start it with backbone up --detach, then try again.".into(),
         ("service_unavailable", _) => "The profile couldn't reach the computer the agent runs on. Start again once it answers.".into(),
         ("installation_conflict", _) => "This request is for another profile, or this computer is no longer the profile's. Open the profile again before adding agents.".into(),
@@ -141,10 +149,20 @@ fn outcome(s: &Snapshot) -> Option<String> {
         (code, _) => format!("The profile answered: {code}."),
     })
 }
+/// Whether a saved request that is still open can be sent again; `None`
+/// when it is closed, or none was saved.
+fn saved_open(snapshot: Option<&Snapshot>) -> Option<bool> {
+    snapshot
+        .filter(|s| !s.closed())
+        .map(|s| Command::Submit.allowed(Some(s)) || Command::Retry.allowed(Some(s)))
+}
 fn message(error: Error) -> &'static str {
     match error {
         Error::Missing => "The original saved request is missing. No replacement was created.",
         Error::Invalid => "This saved setup request could not be validated.",
+        Error::Earlier => {
+            "This setup request was saved by an earlier version, and no service takes it now. Forget it."
+        }
         Error::WrongPhase | Error::Completed => {
             "The saved request changed. Reload its original state."
         }
@@ -823,6 +841,16 @@ impl Pane {
             .or_else(|| Some("It stopped before it was ready. Try again.".to_owned()))
     }
 
+    /// The saved request this start made, while it is open: whether it can
+    /// be sent again. `None` when none is open, so new choices may make a
+    /// new request.
+    pub fn saved_open(&self) -> Option<bool> {
+        let Page::Operation { snapshot, .. } = &self.page else {
+            return None;
+        };
+        saved_open(snapshot.as_deref())
+    }
+
     /// Try the same request again, when the provider allows it. Returns false
     /// when only a new request can go on.
     pub fn retry(&mut self, cx: &mut Context<Self>) -> bool {
@@ -836,11 +864,15 @@ impl Pane {
         let Page::Operation { snapshot, .. } = &self.page else {
             return false;
         };
-        if !Command::Retry.allowed(snapshot.as_deref()) {
+        // Saved but never sent: send it now.
+        let command = [Command::Submit, Command::Retry]
+            .into_iter()
+            .find(|command| command.allowed(snapshot.as_deref()));
+        let Some(command) = command else {
             return false;
-        }
+        };
         let ticket = self.ticket.0.clone();
-        self.invoke(Command::Retry, &ticket, cx);
+        self.invoke(command, &ticket, cx);
         true
     }
 
@@ -1111,7 +1143,9 @@ impl Render for Pane {
                             );
                         }
                     }
-                    if snapshot.is_some() || self.error == Some(Error::Invalid) {
+                    if snapshot.is_some()
+                        || matches!(self.error, Some(Error::Invalid | Error::Earlier))
+                    {
                         let ticket = ticket.clone();
                         body = body
                             .child(ui::group_note("Forgetting removes this saved request from the app. It does not stop or remove an agent."))

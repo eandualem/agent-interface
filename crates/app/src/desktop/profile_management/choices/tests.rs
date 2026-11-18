@@ -207,6 +207,7 @@ fn an_open_request_leaves_new_choices_and_an_unreadable_one_precedes_the_catalog
             root.clone(),
             &profile().expected_identity().unwrap(),
             true,
+            true,
             &|| true,
         )
         .is_err()
@@ -219,12 +220,15 @@ fn an_open_request_leaves_new_choices_and_an_unreadable_one_precedes_the_catalog
         .unwrap();
     let mut other = profile().expected_identity().unwrap();
     other.profile_id = "0a1b2c3d4e60".into();
-    let state = load_choices(client, root, &other, true, &|| true).unwrap();
+    let state = load_choices(client.clone(), root.clone(), &other, true, true, &|| true).unwrap();
     let State::Unchecked(retained) = state else {
-        panic!("an unreadable record must not expose choices")
+        panic!("an unreadable record must not expose a guide's choices")
     };
     assert_eq!(retained.ids().unwrap().len(), 2);
     assert!(!calls.exists());
+    // Add agent saves nothing there, so it goes on to the profile's tools.
+    assert!(load_choices(client, root, &other, true, false, &|| true).is_err());
+    assert!(calls.exists());
 }
 #[test]
 fn the_default_brief_is_the_fresh_install_template() {
@@ -329,14 +333,20 @@ fn a_served_profile_lists_the_rust_services_runtimes() {
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
     let client = Client::new(executable, "/usr/bin:/bin".into()).unwrap();
     let identity = profile().expected_identity().unwrap();
-    let State::Ready { catalog, .. } =
-        load_choices(client.clone(), root.clone(), &identity, true, &|| true).unwrap()
-    else {
+    let State::Ready { catalog, .. } = load_choices(
+        client.clone(),
+        root.clone(),
+        &identity,
+        true,
+        false,
+        &|| true,
+    )
+    .unwrap() else {
         panic!("a served catalog must give choices")
     };
     assert!(eligible(&catalog.items()[0], false));
     // The earlier provider's catalog read is unchanged and refuses this list.
-    assert!(load_choices(client, root, &identity, false, &|| true).is_err());
+    assert!(load_choices(client, root, &identity, false, false, &|| true).is_err());
 }
 
 #[test]

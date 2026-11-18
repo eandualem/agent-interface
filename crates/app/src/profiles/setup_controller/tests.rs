@@ -552,7 +552,7 @@ fn a_retry_this_app_does_not_know_keeps_the_request_open_without_a_retry() {
 }
 
 #[test]
-fn a_request_saved_under_schema_2_cannot_be_validated_and_can_be_forgotten() {
+fn a_request_saved_under_schema_2_holds_nothing_back_and_can_be_forgotten() {
     let fixtures: Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../roster/tests/fixtures/profiles-v1.json"
@@ -584,11 +584,15 @@ fn a_request_saved_under_schema_2_cannot_be_validated_and_can_be_forgotten() {
         .unwrap()
         .save(&key, None, &serde_json::to_vec(&envelope).unwrap())
         .unwrap();
-    assert_eq!(controller.read(&key), Err(Error::Invalid));
-    // Until it is forgotten, saved requests can't be checked, so none is added.
-    assert_eq!(controller.pending(PROFILE, &|| true), Err(Error::Invalid));
-    assert_eq!(controller.enqueue(intent()), Err(Error::Invalid));
+    assert_eq!(controller.read(&key), Err(Error::Earlier));
+    // It holds back no other request, of this profile or another, and stays
+    // listed until it is forgotten.
+    assert_eq!(controller.pending(PROFILE, &|| true), Ok(Vec::new()));
+    let added = controller.enqueue(intent()).unwrap();
+    controller.enqueue(intent_for(2, OTHER)).unwrap();
+    assert_eq!(controller.pending(PROFILE, &|| true).unwrap(), vec![added]);
+    assert_eq!(controller.ids().unwrap().len(), 3);
     controller.forget(&key, None).unwrap();
-    controller.enqueue(intent()).unwrap();
+    assert_eq!(controller.read(&key), Err(Error::Missing));
     assert_eq!(fixture.calls(), "");
 }
