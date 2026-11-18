@@ -125,7 +125,8 @@ pub struct Book {
     runs: Runs,
     /// The service answered that it has no runs, so it isn't asked again.
     unserved: bool,
-    /// When the list was last read, to tell when it has gone unread too long.
+    /// When the roster read that the last good list read followed was
+    /// observed: the moment both 30 seconds are counted from.
     listed_at: Option<Instant>,
 }
 
@@ -147,7 +148,7 @@ impl Book {
     /// read, so a service without runs is never asked. The runs that left
     /// the list come back for [`Self::settle`], so the new list can be shown
     /// first. A failed read keeps the book as it was, and marks the list
-    /// stale once it has gone unread for 30 seconds. Runs on an I/O worker.
+    /// stale as [`Self::expire`] does. Runs on an I/O worker.
     pub fn list(&mut self, connection: &Connection, roster: &Snapshot) -> Gone {
         self.list_at(connection, roster, Instant::now())
     }
@@ -173,11 +174,11 @@ impl Book {
             Err(_) => {
                 // The list stays inside, so a later read still finds the
                 // runs that ended meanwhile.
-                self.missed_at(now);
+                self.expire_at(now);
                 return Gone::default();
             }
         };
-        self.listed_at = Some(now);
+        self.listed_at = Some(roster.observed_at.unwrap_or(now));
         self.runs.stale = false;
         let runs = std::mem::replace(&mut self.runs.active, listed)
             .into_iter()
@@ -190,16 +191,21 @@ impl Book {
         }
     }
 
-    /// Count a roster read that failed as a list that wasn't read, so a
-    /// list unread for 30 seconds is stale whichever read failed.
-    pub fn missed(&mut self) {
-        self.missed_at(Instant::now());
+    /// Mark the list stale when it is too old to show. The worker calls it at
+    /// the start of every pass, before the pass publishes anything.
+    pub fn expire(&mut self) {
+        self.expire_at(Instant::now());
     }
 
-    /// The one rule, for a pass without a good list read: a book with active
-    /// runs whose last good list read is 30 seconds old is stale. An empty
-    /// book never is.
-    fn missed_at(&mut self, now: Instant) {
+    /// The one rule: a book with active runs whose last good list read
+    /// followed a roster read 30 seconds or more old is stale; an empty book
+    /// never is. A good list read clears it. Evaluated at the start of every
+    /// pass and when a list read fails, so every update the worker publishes
+    /// has `stale` true exactly when the book has active runs and its last
+    /// good list read followed a roster read 30 seconds or more old at the
+    /// start of that pass (or, after a failed list read, when that read
+    /// started).
+    fn expire_at(&mut self, now: Instant) {
         self.runs.stale = !self.runs.active.is_empty()
             && self
                 .listed_at

@@ -433,7 +433,8 @@ ended: at most 8 lookups per list read, all within 5 seconds of the list
 read starting, each runs read waiting at most 3 seconds. A run that starts
 and ends between two reads is not recorded. Once the list has not been
 read for 30 seconds, whichever read failed, its active runs are no longer
-shown; the next good read
+shown; the 30 seconds run from the roster read that the last good list
+read followed, so the runs stop showing when the roster does. The next good read
 shows the list again and still finds the runs that ended meanwhile. The
 runs ride the roster update to `LiveAgents`, which the Team rows, the sidebar,
 the status bar and the agent card read.

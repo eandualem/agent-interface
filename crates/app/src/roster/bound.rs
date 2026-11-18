@@ -79,13 +79,14 @@ impl BoundRosterSource {
                             update.error = Some(standing(update.error, error));
                         }
                     }
+                    // The pass's first publication already says whether the
+                    // runs are too old to show, whatever the roster read did.
+                    book.expire();
+                    if *book.runs() != update.runs {
+                        update.runs = book.runs().clone();
+                    }
                     publish(&update);
-                    if update.error.is_some() {
-                        // While the roster can't be read, neither is the
-                        // list: it turns stale on the same clock.
-                        book.missed();
-                        show_runs(&mut update, book.runs());
-                    } else if live() {
+                    if update.error.is_none() && live() {
                         // The new list shows before its ended runs are read.
                         let gone = book.list(&connection, &update.snapshot);
                         show_runs(&mut update, book.runs());
