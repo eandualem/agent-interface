@@ -96,16 +96,38 @@ fn status(s: &Snapshot) -> &'static str {
         "Needs attention"
     }
 }
-/// The latest first-agent result says nothing of whether the agent was
-/// registered: it is kept no longer, not known, or another took its name,
-/// before or after registration.
+/// The codes setup gives a first agent or its cancellation that the app
+/// words for itself.
+const KNOWN: &[&str] = &[
+    "agent_ready",
+    "request_cancelled",
+    "agent_conflict",
+    "runtime_missing",
+    "starter_conflict",
+    "launch_failed",
+    "service_unavailable",
+    "installation_conflict",
+    "request_conflict",
+    "request_expired",
+    "outcome_unknown",
+    "cancellation_unsafe",
+    "setup_failed",
+    "operator_required",
+    "invalid_request",
+];
+/// The latest first-agent result, with nothing to follow it, says nothing
+/// of whether the agent was registered: it is kept no longer, not known,
+/// another took its name before or after registration, or its code is one
+/// the app doesn't know.
 fn unknown_whether_added(s: &Snapshot) -> bool {
     s.first_result.as_ref().is_some_and(|e| {
         e.retry.as_deref() == Some("none")
-            && matches!(
-                e.code.as_deref(),
-                Some("outcome_unknown" | "request_expired" | "agent_conflict")
-            )
+            && e.code.as_deref().is_some_and(|code| {
+                matches!(
+                    code,
+                    "outcome_unknown" | "request_expired" | "agent_conflict"
+                ) || !KNOWN.contains(&code)
+            })
     })
 }
 /// The agent's CLI runs. Its terminal may still ask for a sign-in, trust or
@@ -151,8 +173,12 @@ fn outcome(s: &Snapshot) -> Option<String> {
         ("outcome_unknown", Some("same_request")) => format!(
             "What came of it isn't known yet. Try again: it asks about the same request, so {name} isn't added twice."
         ),
-        ("outcome_unknown", _) => format!(
+        ("outcome_unknown", Some("none")) => format!(
             "The profile doesn't know whether {name} was added, and this request never runs again. Look at the workspace before adding it again."
+        ),
+        ("outcome_unknown", retry) => format!(
+            "What came of it isn't known, and what may follow, {}, isn't one this app knows, so it is kept open and not sent again. Look at the workspace before adding {name} again.",
+            retry.unwrap_or("nothing")
         ),
         ("cancellation_unsafe", _) => format!(
             "Setup had already begun to change things, so it wasn't cancelled. Look at {name} in the workspace: a cancellation is not a rollback."
@@ -160,6 +186,9 @@ fn outcome(s: &Snapshot) -> Option<String> {
         ("setup_failed", _) => "Setup stopped on an error of its own before it changed anything. Try again.".into(),
         ("operator_required", _) => "Only you can add a first agent, not one of your agents. Open Agent Interface yourself, then start again.".into(),
         ("invalid_request", _) => "The agent's name, folder, model or instructions were refused. Go back and change them.".into(),
+        (code, Some("none")) => format!(
+            "The profile answered: {code}. It isn't known whether {name} was added: look at the workspace before adding it again."
+        ),
         (code, _) => format!("The profile answered: {code}."),
     })
 }

@@ -154,6 +154,10 @@ fn each_code_says_what_happened_by_what_may_follow_it() {
         "failed operator_required none: not one of your agents",
         "failed invalid_request new_request: were refused",
         "paused new_code later: new_code",
+        // A retry this app doesn't know: kept open, never "never runs again".
+        "action_required outcome_unknown later: isn't one this app knows",
+        // A code it doesn't know with nothing to follow: look first.
+        "failed new_code none: It isn't known whether worker was added",
     ] {
         let (s, again, open) = read(row, false);
         assert_eq!(Command::Retry.allowed(Some(&s)), again, "{row}");
@@ -181,6 +185,7 @@ fn each_code_says_what_happened_by_what_may_follow_it() {
         ("action_required", "outcome_unknown"),
         ("failed", "request_expired"),
         ("failed", "agent_conflict"),
+        ("failed", "new_code"),
     ] {
         let s = answered(false, row.0, row.1, "none");
         assert_eq!(status(&s), "Not known whether it was added", "{row:?}");
@@ -189,6 +194,9 @@ fn each_code_says_what_happened_by_what_may_follow_it() {
         status(&answered(false, "failed", "agent_conflict", "new_request")),
         "Agent not added"
     );
+    let unknown = answered(false, "action_required", "outcome_unknown", "later");
+    assert!(!outcome(&unknown).unwrap().contains("never runs again"));
+    assert_eq!(status(&unknown), "Needs attention");
     // Its launch failed: the agent was added, and its CLI isn't running.
     let s = answered(false, "failed", "launch_failed", "none");
     assert_eq!(status(&s), "Agent added, not running");
