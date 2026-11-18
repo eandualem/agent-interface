@@ -144,8 +144,11 @@ pub(in crate::desktop) struct Onboarding {
     resume: Option<String>,
     /// The request making it, when the app closed before it was made.
     resume_request: Option<(String, Option<(String, String)>)>,
-    /// The service was restarted or set up once; only Try again repeats it.
+    /// The service was set up once; only Try again repeats it.
     repaired: bool,
+    /// This run's setup request, while setup says the same request may
+    /// follow: Try again sends it again. It is kept in memory only.
+    setup_request: Option<String>,
     /// The guide's pane asked for, and why it didn't open if it didn't.
     opening: Option<(Open, Option<&'static str>)>,
     directory: Option<PathBuf>,
@@ -189,6 +192,7 @@ impl Onboarding {
             resume,
             resume_request,
             repaired: false,
+            setup_request: None,
             opening: None,
             directory,
         };
@@ -305,10 +309,15 @@ impl Onboarding {
         }
         self.repaired = true;
         self.service = Service::Starting;
-        let work = cx.background_executor().spawn(async move { start(&probe) });
+        let mut request = self.setup_request.take();
+        let work = cx.background_executor().spawn(async move {
+            let result = start(&probe, &mut request);
+            (result, request)
+        });
         cx.spawn(async move |view, cx| {
-            let result = work.await;
+            let (result, request) = work.await;
             let _ = view.update(cx, |view, cx| {
+                view.setup_request = request;
                 match result {
                     Ok(()) => {
                         view.service = Service::Ready;
@@ -886,10 +895,11 @@ impl Render for Onboarding {
 }
 
 /// Start the agent service, or set it up, and wait for it to answer.
-/// Setup decides what this computer is: it keeps a profile it has, makes
-/// the first one, or restarts this installation's service once. Blocks;
-/// runs off the UI thread.
-fn start(probe: &Probe) -> Result<(), String> {
+/// Setup decides what this computer is: it keeps a profile it has, or makes
+/// the first one and starts this installation's service. `request` is this
+/// run's setup request, kept for Try again while setup says it may follow.
+/// Blocks; runs off the UI thread.
+fn start(probe: &Probe, request: &mut Option<String>) -> Result<(), String> {
     match &probe.backbone {
         Backbone::Running => Err(format!(
             "Agent Backbone answered, but its backbone command was not found on this computer's PATH ({}).",
@@ -902,7 +912,7 @@ fn start(probe: &Probe) -> Result<(), String> {
                         .into(),
                 );
             };
-            install::initialize_backbone(backbone, &probe.path_env)?;
+            install::initialize_backbone(backbone, &probe.path_env, request)?;
             answered().ok_or_else(|| {
                 format!(
                     "Agent Backbone was set up but did not answer (waited {} s). Its log is service.log in Agent Backbone's directory.",

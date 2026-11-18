@@ -250,24 +250,16 @@ Backbone's own setup, `backbone setup --file REQUEST --jsonl` with a schema-3
 `initialize` request (`profile_name: Default`, `service: user` and the
 `core-v1` starter), which decides what the computer is: it keeps a profile the
 computer has (`existing_preserved`), or makes the first one and the login
-service (`initialized`). The request lives in memory for the run: after lost
-output, an answer its exit code contradicts, or `outcome_unknown` or
+service (`initialized`), starting this installation's own login service. The
+app restarts no service itself: it can't tell safely whose a login service is,
+and setup starts this installation's. The request lives in memory for the run:
+after lost output, an answer its exit code contradicts, or `outcome_unknown` or
 `setup_failed` with `same_request`, the same request is sent again under the
-same ID, up to three sends. When setup finds no service answering and
-says the same request may follow (`service_unavailable` with `same_request`),
-this installation's own login service is restarted once, within setup's own
-deadline: the LaunchAgent `dev.agent-backbone-rs` on macOS or the systemd user
-unit `agent-backbone-rs.service` on Linux and WSL. The same request is then sent
-again; one send is always kept for after the restart, so a run sends at most
-four. A service is this
-installation's only when its definition, in the form the service writes it, runs
-this `backbone` by its canonical path on the app's Backbone directory in
-`BACKBONE_DIR` (`$BACKBONE_DIR`, else `$XDG_DATA_HOME/backbone`, else
-`~/.local/share/backbone`), and, for a systemd unit, no drop-in in a folder
-systemd looks in for the user's units may change it; any other is left alone.
-Any other answer is shown in setup's own words, such as how to start
-PostgreSQL. The service is then given 30 seconds to
-answer. If it still does not answer, "Agents can't start yet" offers Try again
+same ID, up to three sends. Any other answer is shown in setup's own words,
+such as how to start the service (`service_unavailable`, which names
+`backbone up --detach`) or PostgreSQL; when setup says the same request may
+follow, Try again sends it again, else a new one. The service is then given
+30 seconds to answer. If it still does not answer, "Agents can't start yet" offers Try again
 and Continue with terminals; Details holds the technical reason and where the
 service's log is. tmux and Git, when missing, are one screen with one Install
 button. They install through the system's own installer: Apple's command line
@@ -344,10 +336,10 @@ Default, with the person's own CLI sign-ins.
   so the GitHub CLI sign-in and SSH keys of the person's own account are not
   visible to its agents. Running `gh auth login` and `gh auth setup-git` in a
   shell in that profile is the supported way today.
-- The service repair restarts and sets up the Default profile's login service
-  only. Under WSL it needs systemd enabled in `/etc/wsl.conf`; without it the
-  restart fails and first run offers Continue with terminals. WSL has not been
-  verified with this flow.
+- First run's setup sets up the Default profile and its login service only,
+  and restarts no service. Under WSL it needs systemd enabled in
+  `/etc/wsl.conf`; without it setup can't start the login service and first run
+  offers Continue with terminals. WSL has not been verified with this flow.
 
 ## Appearance and integrations
 
@@ -894,15 +886,6 @@ build-time advisory exception are described below.
   carry LGPL-2.1-or-later, MIT-CMU and BSD terms, preserved in the
   [Linux protocol notices](../packaging/wayland-notices.txt). Cargo licence
   metadata alone does not describe those generated-binding inputs.
-- **Login-service rules from agent-backbone-rs:** how the app reads a systemd
-  unit and its drop-ins, and a LaunchAgent, as the service itself writes and
-  reads them, is ported from agent-backbone-rs's
-  `crates/cli/src/commands/service/systemd.rs` and `launchd.rs`, MIT-licensed
-  (Copyright (c) 2026 agent-backbone contributors). The ported code lives in
-  `crates/app/src/desktop/onboarding/install/systemd.rs` and `launchd.rs`,
-  whose headers carry that notice; the packaged notice is in
-  [`packaging/extra-notices.txt`](../packaging/extra-notices.txt). The
-  LaunchAgent is read whole with macOS's own `plutil`. No crate is added.
 - **Bundled colour themes:** colour values from MIT-licensed theme projects
   (Dracula, One Dark Pro, Tokyo Night, Catppuccin, Nord, Gruvbox, Solarized,
   GitHub Primer, One Light), stored as the app's own theme JSON. Their
