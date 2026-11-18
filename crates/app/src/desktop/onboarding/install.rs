@@ -5,6 +5,7 @@
 //! installation's login service. Every fix runs off the UI thread with a
 //! deadline, and a failure explains itself.
 
+use agent_interface_roster::profiles::setup::token;
 use std::{
     io::Read,
     os::unix::fs::FileExt,
@@ -323,6 +324,21 @@ fn answer(printed: &str, request_id: &str) -> Option<Answer> {
             return None;
         }
         seq = line.seq;
+        // Every value kept as it came is a bounded token, as a first agent's
+        // events are read.
+        let tokens = |values: &[&Option<String>]| {
+            values
+                .iter()
+                .all(|value| value.as_deref().is_none_or(token))
+        };
+        if !tokens(&[&line.step, &line.status, &line.code, &line.retry])
+            || line
+                .completed_steps
+                .as_ref()
+                .is_some_and(|steps| !steps.iter().all(|step| token(step)))
+        {
+            return None;
+        }
         match line.kind.as_str() {
             "step" if line.step.is_some() && line.status.is_some() => {}
             "result"
@@ -497,8 +513,22 @@ mod tests {
         ] {
             assert_eq!(answer(&printed, ID), None, "{printed}");
         }
+        // A value over its bound, or not a token, as a first agent's are read.
+        let long = serde_json::Value::from("c".repeat(129));
+        for (field, value) in [
+            ("retry", long.clone()),
+            ("code", "a b".into()),
+            ("status", long.clone()),
+            ("completed_steps", serde_json::json!([long.clone()])),
+        ] {
+            let mut result = fixture("result");
+            result[field] = value;
+            let printed = format!("{}\n{result}\n", fixture("step"));
+            assert_eq!(answer(&printed, ID), None, "{printed}");
+        }
         for (field, value) in [
             ("step", serde_json::Value::Null),
+            ("step", long),
             ("status", serde_json::Value::Null),
             ("status", 3.into()),
         ] {

@@ -247,9 +247,9 @@ fn refused(version: u32) -> Error {
     }
 }
 
-/// A value the app keeps as it came: a step's status, a result's status,
-/// code and retry, and a launch.
-fn token(text: &str) -> bool {
+/// A value setup's events may carry that the app keeps as it came: a step's
+/// status, a result's status, code and retry, and a launch, bounded.
+pub fn token(text: &str) -> bool {
     valid_id(text) && text.len() <= 128
 }
 
