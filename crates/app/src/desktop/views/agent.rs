@@ -883,11 +883,20 @@ fn background_rows(agent: &Agent, runs: &Runs, now: f64) -> Vec<Work> {
 /// What the counts say when there are no rows to list. The counts come with
 /// the card's own read and the runs with the roster's, so counts without rows
 /// are runs not read yet.
-fn quiet(counts: Background) -> Option<String> {
+fn quiet(counts: Background) -> String {
     if counts == Background::default() {
-        return Some("Nothing runs in the background.".into());
+        return "Nothing runs in the background.".into();
     }
+    let processes = match counts.processes {
+        0 => None,
+        1 => Some("1 process".to_owned()),
+        many => Some(format!("{many} processes")),
+    };
     counted(counts.running, counts.queued, ", ")
+        .into_iter()
+        .chain(processes)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// What the agent runs in the background; nothing for a service that doesn't
@@ -903,10 +912,8 @@ fn background(agent: &Agent, runs: &Runs) -> Option<gpui::Div> {
         .child(ui::view_heading("BACKGROUND", "finished ones since this app opened").px(px(0.0)));
     let rows = background_rows(agent, runs, now() as f64);
     if rows.is_empty() {
-        section = section.children(
-            quiet(counts)
-                .map(|quiet| ui::text(div().text_color(c.muted), &t.text.status).child(quiet)),
-        );
+        section =
+            section.child(ui::text(div().text_color(c.muted), &t.text.status).child(quiet(counts)));
     }
     for row in rows {
         section = section.child(
@@ -1436,17 +1443,21 @@ mod tests {
         assert!(background_rows(&Agent::default(), &Runs::default(), 0.0).is_empty());
         // With nothing to list, the line says what the counts say.
         assert_eq!(
-            quiet(Background::default()).as_deref(),
-            Some("Nothing runs in the background.")
+            quiet(Background::default()),
+            "Nothing runs in the background."
         );
-        assert_eq!(
-            agent.background.and_then(quiet).as_deref(),
-            Some("1 running")
-        );
+        assert_eq!(quiet(agent.background.unwrap()), "1 running, 1 process");
+        let processes = Background {
+            queued: 3,
+            processes: 2,
+            ..Background::default()
+        };
+        assert_eq!(quiet(processes), "3 queued, 2 processes");
+        // Processes alone still say something rather than nothing.
         let processes = Background {
             processes: 2,
             ..Background::default()
         };
-        assert_eq!(quiet(processes), None);
+        assert_eq!(quiet(processes), "2 processes");
     }
 }
