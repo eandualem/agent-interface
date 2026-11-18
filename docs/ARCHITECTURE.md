@@ -251,15 +251,21 @@ Backbone's own setup, `backbone setup --file REQUEST --jsonl` with a schema-3
 `core-v1` starter), which decides what the computer is: it keeps a profile the
 computer has (`existing_preserved`), or makes the first one and the login
 service (`initialized`). The request lives in memory for the run: after lost
-output, or an outcome setup doesn't know yet, the same request is sent again
-under the same ID, up to three sends in all. When setup finds no service answering
-(`service_unavailable`), this installation's own login service is restarted
-once, the LaunchAgent `dev.agent-backbone-rs` on macOS or the systemd user unit
-`agent-backbone-rs.service` on Linux and WSL, and the same request sent again.
-A service is this installation's when its definition names the app's Backbone
-directory in `BACKBONE_DIR`: `$BACKBONE_DIR`, else `$XDG_DATA_HOME/backbone`,
-else `~/.local/share/backbone`. Any other answer is shown in setup's own words,
-such as how to start PostgreSQL. The service is then given 30 seconds to
+output, an answer its exit code contradicts, or `outcome_unknown` or
+`setup_failed` with `same_request`, the same request is sent again under the
+same ID, up to three sends in all. When setup finds no service answering and
+says the same request may follow (`service_unavailable` with `same_request`),
+this installation's own login service is restarted once, within setup's own
+deadline: the LaunchAgent `dev.agent-backbone-rs` on macOS or the systemd user
+unit `agent-backbone-rs.service` on Linux and WSL. The same request is then sent
+again; one send is always kept for after the restart. A service is this
+installation's only when its definition, in the form the service writes it, runs
+this `backbone` by its canonical path on the app's Backbone directory in
+`BACKBONE_DIR` (`$BACKBONE_DIR`, else `$XDG_DATA_HOME/backbone`, else
+`~/.local/share/backbone`), and, for a systemd unit, no drop-in in a folder
+systemd looks in for the user's units may change it; any other is left alone.
+Any other answer is shown in setup's own words, such as how to start
+PostgreSQL. The service is then given 30 seconds to
 answer. If it still does not answer, "Agents can't start yet" offers Try again
 and Continue with terminals; Details holds the technical reason and where the
 service's log is. tmux and Git, when missing, are one screen with one Install
@@ -303,8 +309,10 @@ status line under the button, and as soon as setup says its CLI runs
 (`agent_ready`), its pane opens: a sign-in, trust or terms screen may still
 wait in that terminal. The layer then fades over `reveal_ms` while the panel
 eases in. Use a terminal instead leaves the workspace on a terminal. A start
-that fails keeps the choices, and Try again repeats the same request when
-nothing changed and setup allows it. Add agent under the Rust service starts the
+that fails keeps the choices. While its saved request is open, Try again sends
+that request again when setup allows it, whatever was changed since; a new one
+follows only once it is closed, cancelled or forgotten under Earlier setups.
+Add agent under the Rust service starts the
 agent with `POST /api/agents/start` on the profile socket, carrying
 `x-backbone-request-id` (a UUIDv7) so a repeat after a lost reply gets the first
 result, and the tool list comes from `backbone runtimes --json`. A profile of
@@ -1668,31 +1676,34 @@ the field is omitted, keeping the request's bytes unchanged, and recovery restor
 whichever request was saved. The guide screen reads the profile's runtime catalog
 and asks `GET /api/profile/accounts/status` once for each installed CLI, so each
 tool card can say whether it is signed in; signed in means a stored sign-in, not a
-working account. Its Start submits the same setup request as Add agent. Setup is
-complete once the CLI has started, or is waiting for a sign-in or permission,
-whatever it shows: its pane opens then, so a sign-in happens in its terminal and
-focus lands there. A CLI that exits right away is a failed setup with the
-provider's explanation, shown under the button; recovery of its saved request
-stays under Earlier setups and in the profile's Settings page.
+working account. Its Start saves and sends setup's `first_agent` request; Add
+agent under the Rust service uses the service's own start instead. Setup is
+complete once setup says the CLI runs (`agent_ready`), whatever its terminal
+shows: its pane opens then, so a sign-in happens in its terminal and focus lands
+there. A CLI that exits right away is a failed setup, worded by its code under
+the button; recovery of its saved request stays under Earlier setups and in the
+profile's Settings page.
 
 Native profile management exposes saved first-agent setup separately from the
 current runtime catalog. It opens a private setup journal from the already
 resolved library directory and renders validated records in bounded pages.
-Retries and cancellation retain the original profile tuple and request bytes. Progress is checked against its journal key, request, tuple and
+Retries and cancellation retain the original profile ID and request bytes. Progress is checked against its journal key, request, profile and
 revision; superseded pane tasks cannot publish results. Stopping observation
 reloads the same record and never reports safe cancellation. Confirmed setup
 readiness does not authorize account access or open an ambient terminal.
 
 Fresh setup admission validates existing durable setup records and inserts the
-new intent under one journal lock. An open request blocks only the same agent name
-in the same full profile instance, so a second agent can be added while another
-needs attention. A request closes on confirmed readiness, safe cancellation, or a
-result whose retry policy says this same request can go no further (a name already
-in use answers `new_request`, for example). A result the provider says can be retried
-(`launch_timeout`, `runtime_permission`) stays open, and the recovery view shows fixed
-text for its code. Forgetting a request removes only the app's saved record; it runs
-no command and keeps any agent the request created. Malformed records fail closed
-until they are forgotten; unsafe storage always fails closed. A directory durability barrier precedes the
+new intent under one journal lock. An open request blocks every other first-agent
+request of the same profile, whatever agent it adds, since it may still make the
+profile's first agent; a guide's Start waits while one is open. A request closes
+on confirmed readiness, safe cancellation, or a result whose retry policy says this
+same request can go no further (`new_request` or `none`). One setup says can be
+sent again (`outcome_unknown` or `setup_failed` with `same_request`), or whose
+retry the app doesn't know, stays open, and the recovery view shows fixed text for
+its code and retry. Forgetting a request removes only the app's saved record; it
+runs no command and keeps any agent the request created. A request saved under
+schema 1 or 2 holds nothing back and stays listed to be forgotten. Other malformed
+records fail closed until they are forgotten; unsafe storage always fails closed. A directory durability barrier precedes the
 check, and the bounded scan has a read budget. Catalog-facing pending reads are
 observations only: actual admission repeats the check atomically. This local
 journal rule does not replace the provider's own request serialization.
@@ -1711,14 +1722,15 @@ A failed roster read loses status, not access: tmux keeps the sessions and panes
 attached, with a status note, while the read retries.
 
 Native first-agent setup captures one atomic registry profile and the operator
-client before loading choices. It checks the independent private setup journal
-for open requests, which it points to without blocking other agent names, and then
-reads that instance's schema-2 runtime catalog.
+client before loading choices. A guide checks the independent private setup
+journal for open requests of the profile, which hold back a new one, and then
+reads the Rust service's runtime catalog (`backbone runtimes --json`); setup
+starts Claude Code, Codex and Antigravity only. Add agent opens no journal.
 An explicit project folder, name, brief, runtime and optional catalog model are
-frozen with hook and greeting choices into one original request. Gemini CLI and
-Antigravity CLI can't take a brief silently, so Agent Backbone sends it as their
-first turn; with the default brief, which asks the agent to greet, the request
-asks for no separate greeting. Compatibility
+frozen with the greeting choice into one original request. Antigravity CLI can't
+take a brief silently, so Agent Backbone sends it as its first turn; with the
+default brief, which asks the agent to greet, the request asks for no separate
+greeting. Compatibility
 and authentication observations remain separate; neither opens a terminal or
 connects a workspace. Confirmation hands the retained controller and prepared
 request to recovery with its original key established before admission or I/O.
