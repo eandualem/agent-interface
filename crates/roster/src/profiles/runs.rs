@@ -248,6 +248,9 @@ impl Connection {
         let response =
             self.response_within(&format!("/api/runs/{run_id}"), None, RESPONSE_LIMIT, wait)?;
         successful(&response)?;
+        if !within_depth(&response.body) {
+            return Err(Error::Invalid);
+        }
         let run: Run = std::str::from_utf8(&response.body)
             .ok()
             .and_then(object)

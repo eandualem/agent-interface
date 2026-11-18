@@ -183,8 +183,12 @@ fn a_run_that_is_not_the_one_asked_for_or_does_not_decode_is_refused() {
     let mut listed_review = fixture("run");
     listed_review["run_id"] = json!(THIRD);
     listed_review["review"] = json!(["codex", "gpt-example", "high"]);
+    // A body nested deeper than the roster allows is refused before decoding.
+    let mut deep = fixture("run");
+    deep["progress"] = (0..129).fold(json!(0), |inner, _| json!([inner]));
     let (connection, server) = served(vec![
         (200, other),
+        (200, deep),
         (200, positional.clone()),
         (
             200,
@@ -192,6 +196,7 @@ fn a_run_that_is_not_the_one_asked_for_or_does_not_decode_is_refused() {
         ),
         (200, json!({"items": {}})),
     ]);
+    assert_eq!(connection.run(REVIEW), Err(Error::Invalid));
     assert_eq!(connection.run(REVIEW), Err(Error::Invalid));
     assert_eq!(connection.run(BUILD), Err(Error::Invalid));
     let listed = connection.runs().unwrap();
