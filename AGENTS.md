@@ -54,11 +54,18 @@ server.
 
 ## Models and swarms
 
-- Implementation code is written by you, or by swarm members running Claude
-  Code with `claude-opus-5-5`. No other model writes implementation code.
-- Use Codex `gpt-6-astra` as much as the work needs, in swarms too, for
-  research, analysis, benchmarking and verification. Codex `gpt-5.6-sol` may
-  serve in a swarm in a non-implementation role. Fable models are not used.
+- Implementation code is written by you, or by a swarm's one coder running
+  Claude Code with `claude-opus-5-5`. No other model writes implementation
+  code.
+- A swarm's coordinator runs Claude Code with `claude-fable-5-2`. It designs
+  and directs the work; it writes no implementation code and never reviews.
+- Reviews run in rounds, each in an independent context at high effort:
+  round 1 on Codex `gpt-6.2-sol`, round 2 on Codex `gpt-6.2-astra` even after
+  a clean round 1, then `gpt-6.2-astra` again while the previous round found
+  issues. From round 2 on, a clean round ends the chain. A swarm's reviewers
+  are its own members and keep their context across rounds.
+- Use Codex `gpt-6.2-astra` as much as the work needs for research, analysis,
+  benchmarking and verification.
 - Work at the depth the problem needs: progress matters more than token
   economy.
 
