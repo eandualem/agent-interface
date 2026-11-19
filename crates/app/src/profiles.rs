@@ -110,8 +110,9 @@ impl Client {
         profiles::list(&bytes).map_err(Error::Profile)
     }
 
-    /// The profile that unbound workspaces belong to under the Rust service,
-    /// if its list names exactly one; see [`profiles::home`].
+    /// The one profile the Rust service's list serves with its home here, if
+    /// it names exactly one; see [`profiles::home`]. Workspace routing does not
+    /// use it: a workspace without a profile stays tmux only.
     pub fn home(&self, live: &dyn Fn() -> bool) -> Result<Option<Item>, Error> {
         let bytes = self.read(&["profiles", "list", "--json"], live, TIMEOUT)?;
         // A list the app would refuse names no home either.
