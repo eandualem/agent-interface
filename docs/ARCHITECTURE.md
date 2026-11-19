@@ -788,8 +788,10 @@ had read by then is kept for the next opening.
   are binary, come from the new commit (`--attr-source`), not from the
   checkout's files or system or user attribute files (`GIT_ATTR_NOSYSTEM=1`,
   `core.attributesFile=/dev/null`); the clone's own configuration still
-  applies, as it is the person's. Git pointers in Documents need Git 2.41 or
-  later; with older Git they are shown as their authors wrote them.
+  applies, as it is the person's. Diffs need Git 2.41 or later and code
+  references Git 2.31 or later; with older Git a pointer is shown as its
+  author wrote it. Git 2.31 does not honour `GIT_CONFIG_GLOBAL`, so there the
+  user's own global configuration applies.
   A file is read with
   `git cat-file blob`. Each command stops after 3 seconds or 4 MiB of output,
   no command starts after a page's 8 seconds, and a diff or code view holds at
@@ -810,11 +812,13 @@ had read by then is kept for the next opening.
   `assets/document/theme.css`; long lines scroll inside the view. Only UTF-8
   text is shown, and text from Git is escaped. No script, bridge or network access is added, and the
   content policy is unchanged.
-- **Nothing to show.** A pointer with no matching checkout or commit, a path
-  missing at that commit, a diff that touches a submodule, a binary file at a
-  code pointer, a path or text that is not UTF-8 or holds a NUL byte, a read
-  that is too large or too slow, or a view past 32 MiB of views on the page
-  stays exactly as authored.
+- **Nothing to show.** A pointer with no matching checkout or commit, a code
+  pointer's path missing at that commit, a diff that touches a submodule, a
+  binary file at a code pointer, a path or text that is not UTF-8 or holds a
+  NUL byte, a read that is too large or too slow, or a view past 32 MiB of
+  views on the page stays exactly as authored. A diff's `data-paths` only
+  filter it: a listed path with no change is not shown, and a diff with no
+  changes in its paths shows "0 files changed".
 
 The experimental Artifacts pane is independent of Backbone. `app::artifacts`
 copies a UTF-8 HTML document and small metadata record into an immutable UUID

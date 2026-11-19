@@ -194,8 +194,13 @@ mod tests {
         assert!(!out.contains("<figcaption>"));
         // No script is added: the page's own is still the only one.
         assert_eq!(out.matches("<script").count(), 1);
-        // An answer is kept, but only a checkout at hand with the commits
-        // gives it again.
+        // An answer is kept: with the file's contents gone from the checkout,
+        // only the cache can give the same page again. But only a checkout
+        // at hand with the commits gives it.
+        for blob in [format!("{first}:a.txt"), format!("{second}:a.txt")] {
+            let id = git(&dir, &["rev-parse", &blob]);
+            std::fs::remove_file(dir.join(".git/objects").join(&id[..2]).join(&id[2..])).unwrap();
+        }
         assert_eq!(transform(&html, &folders, later()).as_ref(), Some(&out));
         assert_eq!(transform(&html, &[], later()), None);
         std::fs::remove_dir_all(dir.join(".git")).unwrap();

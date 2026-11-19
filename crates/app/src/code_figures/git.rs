@@ -24,21 +24,31 @@ pub fn run(dir: &Path, args: &[&str], limit: usize, deadline: Instant) -> Option
         return None;
     }
     let mut child = command(dir, args).spawn().ok()?;
-    let mut stdout = child.stdout.take()?;
-    let reader = thread::spawn(move || {
-        let mut out = Vec::new();
-        let read = (&mut stdout).take(limit as u64 + 1).read_to_end(&mut out);
-        read.ok().filter(|_| out.len() <= limit).map(|_| out)
-    });
-    let deadline = deadline.min(Instant::now() + TIMEOUT);
     let stop = |child: &mut std::process::Child| {
         let _ = child.kill();
         let _ = child.wait();
     };
+    let Some(mut stdout) = child.stdout.take() else {
+        stop(&mut child);
+        return None;
+    };
+    let reader = thread::Builder::new()
+        .name("git output".into())
+        .spawn(move || {
+            let mut out = Vec::new();
+            let read = (&mut stdout).take(limit as u64 + 1).read_to_end(&mut out);
+            read.ok().filter(|_| out.len() <= limit).map(|_| out)
+        });
+    let Ok(reader) = reader else {
+        stop(&mut child);
+        return None;
+    };
+    let deadline = deadline.min(Instant::now() + TIMEOUT);
     while !reader.is_finished() {
         if Instant::now() >= deadline {
+            // The reader ends when the output closes; it is not waited for,
+            // in case something Git started still holds the output open.
             stop(&mut child);
-            let _ = reader.join();
             return None;
         }
         thread::sleep(Duration::from_millis(2));
@@ -672,6 +682,13 @@ pub(super) mod tests {
         assert!(run(dir.path(), &args, 64, later()).is_some());
         assert_eq!(run(dir.path(), &args, 4, later()), None);
         assert_eq!(run(dir.path(), &args, 64, Instant::now()), None);
+        // A command still running at its deadline is stopped, and the read
+        // returns soon after.
+        let started = Instant::now();
+        let slow = ["-c", "alias.slow=!sleep 3", "slow"];
+        let soon = started + Duration::from_millis(300);
+        assert_eq!(run(dir.path(), &slow, 64, soon), None);
+        assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(
             run(&PathBuf::from("/nonexistent"), &args, 64, later()),
             None
