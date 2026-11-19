@@ -296,20 +296,48 @@ fn conversations_keep_delayed_sends_retries_pagination_and_markers_on_original_b
 }
 
 #[test]
-fn feedback_on_an_oversized_record_is_refused_before_sending() {
-    // One byte over the author lookup's limit for an answer.
+fn feedback_reads_an_author_record_up_to_the_limit_and_refuses_one_past_it() {
+    // The author lookup's limit for an answer.
     let limit = 4 * 1024 * 1024;
-    let oversized = json!({"x": "a".repeat(limit + 1 - r#"{"x":""}"#.len())});
-    assert_eq!(oversized.to_string().len(), limit + 1);
-    let (_dir, connection, server) = provider("a", vec![Step::get("/api/responses/7", oversized)]);
-    let client = feedback::Client::new(connection.clone(), connection.identity(), item()).unwrap();
+    // A valid author record padded to exactly `size` bytes.
+    let author = |size: usize| {
+        let record = |padding: String| json!({"id":7,"author_id":"b".repeat(32),"agent_name":"current-worker","padding":padding});
+        let padded = record("a".repeat(size - record(String::new()).to_string().len()));
+        assert_eq!(padded.to_string().len(), size);
+        padded
+    };
+    let body = json!({"target_session":"current-worker","from_entity":"agent-interface-app",
+        "message":"Feedback on response #7 (source=/api/responses/7).\n\nFeedback","priority":false});
+    // At the limit the record is read and the feedback is sent.
+    let (_dir_a, a, server_a) = provider(
+        "a",
+        vec![
+            Step::get("/api/responses/7", author(limit)),
+            Step::post(
+                "/api/messages",
+                body,
+                json!({"ok":true,"queued":false,"outcome":"delivered","detail":"sentinel-a"}),
+            ),
+        ],
+    );
+    let client_a = feedback::Client::new(a.clone(), a.identity(), item()).unwrap();
     assert_eq!(
-        client.send("Feedback"),
+        client_a.send("Feedback"),
+        feedback::Outcome::Accepted("sentinel-a".into())
+    );
+    server_a.join().unwrap();
+    // One byte over, it is refused, and no POST follows: the fixture has no
+    // step for one.
+    let (_dir_b, b, server_b) =
+        provider("b", vec![Step::get("/api/responses/7", author(limit + 1))]);
+    let client_b = feedback::Client::new(b.clone(), b.identity(), item()).unwrap();
+    assert_eq!(
+        client_b.send("Feedback"),
         feedback::Outcome::Refused(
             "Could not verify the author. Your feedback has not been sent.".into()
         )
     );
-    server.join().unwrap();
+    server_b.join().unwrap();
 }
 
 fn item() -> ReportItem {
