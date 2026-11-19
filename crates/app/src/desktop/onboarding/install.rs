@@ -645,11 +645,16 @@ mod tests {
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         // A test thread that forked while this one had the script open
         // keeps it open for writing until its child execs, and until then
-        // running it fails with ETXTBSY. Wait for one run to start: it exits
-        // 9 at once, on arguments setup never takes.
+        // running it fails with ETXTBSY. Wait a few seconds for one run to
+        // start: it exits 9 at once, on arguments setup never takes.
+        let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             match std::process::Command::new(&script).status() {
                 Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "the fake backbone stayed busy (ETXTBSY) for 5 s: {error}"
+                    );
                     std::thread::yield_now()
                 }
                 started => {
