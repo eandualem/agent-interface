@@ -116,13 +116,17 @@ fn open(out: &mut String, caption: Option<&str>, header: &str) {
 }
 
 /// Open a view's outer `<details open>`, left to right as code is in a page
-/// of any direction, and its summary: a caption keeps its own direction.
+/// of any direction, and its summary: a caption keeps its own direction,
+/// and its class tells the stylesheet the markup in it is the author's.
 /// The summary is closed here only for a caption.
 fn view(out: &mut String, class: &str, caption: Option<&str>) {
     let _ = write!(out, r#"<details open dir="ltr" class="{class}"><summary"#);
     match caption {
         Some(caption) => {
-            let _ = write!(out, r#" dir="auto">{caption}</summary>"#);
+            let _ = write!(
+                out,
+                r#" class="ai-git-caption" dir="auto">{caption}</summary>"#
+            );
         }
         None => out.push('>'),
     }
@@ -271,13 +275,13 @@ mod tests {
         assert!(html.contains("Binary file"));
         let html = diff(&[renamed], Some("The <em>move</em>"), ANY).unwrap();
         assert!(html.starts_with(
-            r#"<details open dir="ltr" class="ai-git"><summary dir="auto">The <em>move</em></summary><div class="ai-git-head">old.rs → new.rs (renamed)</div><div"#
+            r#"<details open dir="ltr" class="ai-git"><summary class="ai-git-caption" dir="auto">The <em>move</em></summary><div class="ai-git-head">old.rs → new.rs (renamed)</div><div"#
         ));
         assert_eq!(html.matches("<details").count(), 1);
         assert!(html.ends_with("</details>"));
         let none = diff(&[], Some("cap"), ANY).unwrap();
         assert!(none.contains(
-            r#"<summary dir="auto">cap</summary><div class="ai-git-head">0 files changed</div>"#
+            r#"<summary class="ai-git-caption" dir="auto">cap</summary><div class="ai-git-head">0 files changed</div>"#
         ));
         assert!(
             diff(&[], None, ANY)
@@ -307,7 +311,7 @@ mod tests {
         // A right-to-left caption keeps its own direction.
         let html = code("a.rs", "x\n", None, Some("שלום"), ANY).unwrap();
         assert!(html.starts_with(
-            r#"<details open dir="ltr" class="ai-git"><summary dir="auto">שלום</summary>"#
+            r#"<details open dir="ltr" class="ai-git"><summary class="ai-git-caption" dir="auto">שלום</summary>"#
         ));
         let lone = diff(&[file("a.rs", vec![])], None, ANY).unwrap();
         assert!(
@@ -325,7 +329,7 @@ mod tests {
         assert!(!html.contains(">one<"));
         let whole = code("a.rs", text, None, Some("cap"), ANY).unwrap();
         assert!(whole.starts_with(
-            r#"<details open dir="ltr" class="ai-git"><summary dir="auto">cap</summary><div class="ai-git-head">a.rs</div>"#
+            r#"<details open dir="ltr" class="ai-git"><summary class="ai-git-caption" dir="auto">cap</summary><div class="ai-git-head">a.rs</div>"#
         ));
         assert_eq!(whole.matches("<details").count(), 1);
         assert_eq!(whole.matches("<tr>").count(), 3);

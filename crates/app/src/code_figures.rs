@@ -259,7 +259,7 @@ mod tests {
         assert!(out.starts_with(&format!("{before}<figure data-backbone-diff=")));
         assert!(out.ends_with("</figure><p>End</p>"));
         assert!(out.contains(
-            r#"<details open dir="ltr" class="ai-git"><summary dir="auto">The <b>fix</b></summary><div class="ai-git-head">a.txt</div><div class="ai-git-scroll">"#
+            r#"<details open dir="ltr" class="ai-git"><summary class="ai-git-caption" dir="auto">The <b>fix</b></summary><div class="ai-git-head">a.txt</div><div class="ai-git-scroll">"#
         ));
         assert!(out.contains(r#"<td class="ai-git-s">+</td><td class="ai-git-t">TWO</td>"#));
         assert!(out.contains("<summary>a.txt · lines 2–2</summary>"));

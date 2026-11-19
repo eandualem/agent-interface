@@ -228,6 +228,51 @@ mod tests {
     }
 
     #[test]
+    fn every_rule_of_the_view_ranks_above_a_documents() {
+        let css = include_str!("../../../assets/document/theme.css");
+        let start = css.find("/* Git diffs and code").expect("the view's rules");
+        // The view's rules, without their comments.
+        let mut view = String::new();
+        let mut rest = &css[start..];
+        while let Some(open) = rest.find("/*") {
+            view.push_str(&rest[..open]);
+            let close = rest[open..].find("*/").expect("comment end");
+            rest = &rest[open + close + 2..];
+        }
+        view.push_str(rest);
+        assert!(
+            view.contains("all: initial !important") && view.contains("all: revert !important")
+        );
+        for rule in view
+            .split('}')
+            .map(str::trim)
+            .filter(|rule| !rule.is_empty())
+        {
+            let (selectors, body) = rule.split_once('{').expect("a rule");
+            // Selectors, split at commas outside parentheses.
+            let (mut depth, mut from, mut list) = (0, 0, Vec::new());
+            for (at, c) in selectors.char_indices() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    ',' if depth == 0 => {
+                        list.push(&selectors[from..at]);
+                        from = at + 1;
+                    }
+                    _ => {}
+                }
+            }
+            list.push(&selectors[from..]);
+            for selector in list {
+                assert!(selector.trim().starts_with(".ai-git.ai-git"), "{selector}");
+            }
+            for declaration in body.split(';').map(str::trim).filter(|d| !d.is_empty()) {
+                assert!(declaration.ends_with("!important"), "{declaration}");
+            }
+        }
+    }
+
+    #[test]
     fn diff_signs_read_on_their_fill_in_every_shipped_theme() {
         for id in [
             "dark",

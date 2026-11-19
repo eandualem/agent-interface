@@ -45,39 +45,77 @@ hr { border: 0 !important; height: 1px; background-color: var(--ai-line) !import
 }
 :where(input, textarea)::placeholder { color: var(--ai-muted); }
 /* Git diffs and code the app shows in place of a document's pointers. Each
-   opens and closes as <details>; long lines scroll inside it. */
-.ai-git {
-  margin: 12px 0; border: 1px solid var(--ai-line); border-radius: 6px; overflow: hidden;
+   opens and closes as <details>; long lines scroll inside it. The view is
+   the app's own: its root starts from initial values and its parts from the
+   browser's own, then the rules below apply, all of them important and
+   above any rule of a document's that is not, so a document reaches in only
+   with a rule that ranks higher (important, or with an ID). The author's
+   markup inside a caption stays the author's. */
+.ai-git.ai-git {
+  all: initial !important;
+  /* What the view took from the page before: the theme's own html, :root
+     and body rules. */
+  font-family: system-ui !important;
+  color-scheme: inherit !important;
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  /* A details element's own. */
+  display: block !important;
+  margin: 12px 0 !important;
+  border: 1px solid var(--ai-line) !important;
+  border-radius: 6px !important;
+  overflow: hidden !important;
+  background: var(--ai-background) !important;
+  color: var(--ai-text) !important;
 }
-.ai-git summary { padding: 6px 10px; cursor: pointer; font-weight: 600; }
-/* A file's header keeps its spaces: 'a  b.txt' is not 'a b.txt'. */
-.ai-git-file > summary, .ai-git-head {
-  font: 600 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap;
-}
-.ai-git-head { padding: 4px 10px; border-top: 1px solid var(--ai-line); }
-.ai-git .ai-git-file { border-top: 1px solid var(--ai-line); }
-.ai-git-scroll { overflow-x: auto; }
-table.ai-git-lines {
-  border: 0 !important; border-radius: 0; border-collapse: collapse !important;
-  margin: 0; width: 100%; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-.ai-git-lines td {
-  border: 0 !important; border-radius: 0 !important; padding: 0 8px; white-space: pre;
-  tab-size: 4; vertical-align: top;
-}
-.ai-git-lines td.ai-git-t { width: 100%; }
-.ai-git-lines td:is(.ai-git-n, .ai-git-s) { text-align: right; }
-.ai-git-lines td.ai-git-s { padding: 0 2px; }
-/* The view's fills and colours, forced and strong enough to win over a
-   document's own rules for cells, rows or divs, such as striped rows, and
-   over the link colour the rule for links above forces on everything inside
-   a link. Every surface whose colour is forced has its fill forced too:
-   the box, its parts and every cell by default, then the row fills. */
-.ai-git.ai-git, .ai-git.ai-git :is(details, div, td) {
-  background: var(--ai-background) !important; color: var(--ai-text) !important;
+.ai-git.ai-git :where(:not(.ai-git-caption *)) {
+  all: revert !important;
+  -webkit-user-select: text !important;
+  user-select: text !important;
 }
 .ai-git.ai-git summary {
-  background: var(--ai-table-head) !important; color: var(--ai-text) !important;
+  padding: 6px 10px !important;
+  cursor: pointer !important;
+  font-weight: 600 !important;
+  background: var(--ai-table-head) !important;
+  color: var(--ai-text) !important;
+}
+/* A file's header keeps its spaces: 'a  b.txt' is not 'a b.txt'. */
+.ai-git.ai-git :is(.ai-git-file > summary, .ai-git-head) {
+  font: 600 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace !important;
+  white-space: pre-wrap !important;
+}
+.ai-git.ai-git .ai-git-head {
+  padding: 4px 10px !important;
+  border-top: 1px solid var(--ai-line) !important;
+}
+.ai-git.ai-git .ai-git-file { border-top: 1px solid var(--ai-line) !important; }
+.ai-git.ai-git .ai-git-scroll { overflow-x: auto !important; }
+.ai-git.ai-git table.ai-git-lines {
+  border: 0 !important;
+  border-radius: 0 !important;
+  border-collapse: collapse !important;
+  border-spacing: 0 !important;
+  margin: 0 !important;
+  width: 100% !important;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace !important;
+}
+.ai-git.ai-git .ai-git-lines td {
+  border: 0 !important;
+  border-radius: 0 !important;
+  padding: 0 8px !important;
+  white-space: pre !important;
+  tab-size: 4 !important;
+  vertical-align: top !important;
+}
+.ai-git.ai-git .ai-git-lines td.ai-git-t { width: 100% !important; }
+.ai-git.ai-git .ai-git-lines td:is(.ai-git-n, .ai-git-s) { text-align: right !important; }
+.ai-git.ai-git .ai-git-lines td.ai-git-s { padding: 0 2px !important; }
+/* Every part whose colour is forced has its fill forced too: the box's
+   parts and every cell by default, then the row fills. */
+.ai-git.ai-git :is(details, div, td) {
+  background: var(--ai-background) !important;
+  color: var(--ai-text) !important;
 }
 .ai-git.ai-git .ai-git-lines tr.ai-git-add td { background: var(--ai-diff-add) !important; }
 .ai-git.ai-git .ai-git-lines tr.ai-git-remove td { background: var(--ai-diff-remove) !important; }
