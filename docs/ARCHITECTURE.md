@@ -812,8 +812,9 @@ not be read is never remembered.
   no command starts after a page's 8 seconds, and a diff or code view holds at
   most 20,000 rows, counted while it is read and drawn. Commits do not change,
   so answers are kept for the session, up to 64 MiB, by the clone that gave
-  them, and used again only while that clone is still a candidate and still
-  has the commits. Nothing is
+  them and what Git read (a file at a commit, or a diff's commits and paths,
+  so excerpts of one file share one read), and used again only while that
+  clone is still a candidate and still has the commits. Nothing is
   written to a checkout.
 - **The view.** Each pointer becomes `<details open>`, so it collapses and
   expands without a script. For one file or a code reference, its summary is

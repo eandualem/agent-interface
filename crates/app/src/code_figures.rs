@@ -92,9 +92,9 @@ impl Read {
 
 /// Keep `read` under `key`, charged once even when another read stored the
 /// same answer meanwhile.
-fn remember(cache: &mut (Answers, usize), key: (PathBuf, Pointer), read: Arc<Read>) {
+fn remember(cache: &mut (Answers, usize), key: (PathBuf, Question), read: Arc<Read>) {
     let charge = |read: &Read| {
-        read.size() + size_of::<(PathBuf, Pointer)>() + key.0.capacity() + held(&key.1)
+        read.size() + size_of::<(PathBuf, Question)>() + key.0.capacity() + key.1.held()
     };
     if let Some(old) = cache.0.remove(&key) {
         cache.1 = cache.1.saturating_sub(charge(&old));
@@ -107,29 +107,56 @@ fn remember(cache: &mut (Answers, usize), key: (PathBuf, Pointer), read: Arc<Rea
     cache.0.insert(key, read);
 }
 
-/// The memory a pointer's strings hold.
-fn held(pointer: &Pointer) -> usize {
-    match pointer {
-        Pointer::Diff {
-            repo,
-            base,
-            head,
-            paths,
-        } => {
-            let paths = paths.as_ref().map_or(0, |paths| {
-                paths.capacity() * size_of::<String>()
-                    + paths.iter().map(String::capacity).sum::<usize>()
-            });
-            repo.capacity() + base.capacity() + head.capacity() + paths
+/// What Git reads for a pointer, all its answer depends on: not the
+/// repository's name, already matched to the clone, nor a code pointer's
+/// lines, chosen from the whole file afterwards.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum Question {
+    Diff {
+        base: String,
+        head: String,
+        paths: Option<Vec<String>>,
+    },
+    File {
+        commit: String,
+        path: String,
+    },
+}
+
+impl Question {
+    fn of(pointer: &Pointer) -> Self {
+        match pointer {
+            Pointer::Diff {
+                base, head, paths, ..
+            } => Self::Diff {
+                base: base.clone(),
+                head: head.clone(),
+                paths: paths.clone(),
+            },
+            Pointer::Code { commit, path, .. } => Self::File {
+                commit: commit.clone(),
+                path: path.clone(),
+            },
         }
-        Pointer::Code {
-            repo, commit, path, ..
-        } => repo.capacity() + commit.capacity() + path.capacity(),
+    }
+
+    /// The memory its strings hold.
+    fn held(&self) -> usize {
+        match self {
+            Self::Diff { base, head, paths } => {
+                let paths = paths.as_ref().map_or(0, |paths| {
+                    paths.capacity() * size_of::<String>()
+                        + paths.iter().map(String::capacity).sum::<usize>()
+                });
+                base.capacity() + head.capacity() + paths
+            }
+            Self::File { commit, path } => commit.capacity() + path.capacity(),
+        }
     }
 }
 
 /// Answers by the clone (its common Git directory) that gave them.
-type Answers = HashMap<(PathBuf, Pointer), Arc<Read>>;
+type Answers = HashMap<(PathBuf, Question), Arc<Read>>;
 
 /// The session's answers and the memory they hold.
 static CACHE: LazyLock<Mutex<(Answers, usize)>> = LazyLock::new(Default::default);
@@ -187,7 +214,7 @@ fn answer(pointer: &Pointer, checkouts: &[Checkout], until: &Until) -> Option<Ar
         {
             continue;
         }
-        let key = (checkout.common().to_owned(), pointer.clone());
+        let key = (checkout.common().to_owned(), Question::of(pointer));
         if let Some(read) = cache().0.get(&key).cloned() {
             return Some(read);
         }
@@ -310,18 +337,46 @@ mod tests {
     #[test]
     fn an_answer_stored_twice_is_charged_once() {
         let mut cache = (Answers::new(), 0);
-        let pointer = Pointer::Code {
-            repo: "owner/name".into(),
+        let question = Question::File {
             commit: "0".repeat(40),
             path: "a.txt".into(),
-            lines: None,
         };
-        let key = (PathBuf::from("/clone/.git"), pointer);
+        let key = (PathBuf::from("/clone/.git"), question);
         let read = || Arc::new(Read::Code("text".into()));
         remember(&mut cache, key.clone(), read());
         let once = cache.1;
         remember(&mut cache, key, read());
         assert_eq!((cache.0.len(), cache.1), (1, once));
+    }
+
+    #[test]
+    fn excerpts_of_one_file_share_one_read() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("checkout");
+        std::fs::create_dir(&dir).unwrap();
+        let (_, second) = repository(&dir, "https://github.com/owner/name");
+        let excerpt = |repo: &str, lines: &str| {
+            format!(
+                r#"<figure data-backbone-code="1" data-repo="{repo}" data-commit="{second}" data-path="a.txt" data-lines="{lines}"></figure>"#
+            )
+        };
+        let html = format!(
+            "{}{}",
+            excerpt("owner/name", "1"),
+            excerpt("Owner/Name", "2-3")
+        );
+        let out = transform(&html, std::slice::from_ref(&dir), &later()).unwrap();
+        assert!(out.contains("lines 1–1") && out.contains("lines 2–3"));
+        let clone = checkout::checkouts(&[dir], &later())[0].common().to_owned();
+        let cache = CACHE.lock().unwrap_or_else(|error| error.into_inner());
+        assert_eq!(
+            cache
+                .0
+                .keys()
+                .filter(|(common, _)| *common == clone)
+                .count(),
+            1
+        );
     }
 
     #[test]
