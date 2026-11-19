@@ -286,7 +286,8 @@ impl ViewPane {
             cost: false,
             expanded: HashSet::new(),
             records: Records::All,
-            section: view.section.unwrap_or_default(),
+            // The agent card's Opened event sets the section its reader lists.
+            section: AgentSection::default(),
             query: String::new(),
             search: None,
             open: None,

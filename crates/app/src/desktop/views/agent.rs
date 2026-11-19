@@ -46,20 +46,15 @@ pub(super) fn body(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -
             .into_any_element();
     }
     // A skill or policy opened from the profile's agent card shows in the
-    // reader; going back shows the card.
-    let Some(card) = &pane.bound_agent else {
-        return ui::empty_state(
-            ui::empty_tile("user", c.selected, c.muted),
-            "No agent card",
-            "Reopen this agent from the profile's Team view.",
-        )
-        .into_any_element();
-    };
+    // reader; going back shows the card. Only that card sets this data.
     let header =
         ui::view_header("user", agent.name.clone()).child(ui::badge(agent.runtime.clone()));
     match page(pane, agent) {
         Some(page) => reader::render(pane, header, page, cx),
-        None => div().size_full().child(card.clone()).into_any_element(),
+        None => div()
+            .size_full()
+            .children(pane.bound_agent.clone())
+            .into_any_element(),
     }
 }
 
