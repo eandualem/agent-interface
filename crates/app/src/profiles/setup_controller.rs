@@ -354,10 +354,7 @@ impl Controller {
                     return Err(Error::WrongPhase);
                 }
                 if stored.phase == Phase::CancelPending
-                    && !stored.cancel.as_ref().is_some_and(|event| {
-                        event.status == "action_required"
-                            && event.code.as_deref() == Some("cancellation_unsafe")
-                    })
+                    && !stored.cancel.as_ref().is_some_and(left_open)
                 {
                     return Err(Error::WrongPhase);
                 }
@@ -484,6 +481,16 @@ enum Invocation {
     Retry,
     Cancel,
     RetryCancel,
+}
+/// Whether a cancellation's answer leaves the original request open to be
+/// sent again: it says the request had begun, so it isn't cancelled, or it
+/// is final and didn't cancel it, so the original is as it was, unless the
+/// original is too old to run now.
+pub fn left_open(cancel: &Event) -> bool {
+    !cancel.cancelled
+        && (cancel.code.as_deref() == Some("cancellation_unsafe")
+            || (matches!(cancel.retry.as_deref(), Some("new_request" | "none"))
+                && cancel.code.as_deref() != Some("request_expired")))
 }
 fn retry_allowed(event: Option<&Event>) -> Result<(), Error> {
     if event.is_some_and(|event| event.retry.as_deref() != Some("same_request")) {

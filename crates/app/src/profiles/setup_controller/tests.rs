@@ -192,39 +192,41 @@ fn lost_cancellation_reply_can_only_retry_the_original_cancel_after_restart() {
 
 #[test]
 fn unsafe_cancellation_preserves_original_setup_and_respects_both_retry_policies() {
-    let fixture = Fixture::new("");
-    fixture.needs_action("same_request");
-    let controller = fixture.controller();
-    let key = controller.enqueue(intent()).unwrap().key;
-    controller.submit(&key, &|| true, |_| {}).unwrap();
-    fixture.reply(
-        Action::CancelFirstAgent,
-        &answer(
-            &id(),
-            "cancel_first_agent",
-            "action_required",
-            "cancellation_unsafe",
-            "none",
-        ),
-        3,
-    );
-    let refused = controller.cancel(&key, &|| true, |_| {}).unwrap();
-    assert!(!refused.cancelled);
-    assert_eq!(
-        controller.retry_cancel(&key, &|| true, |_| {}),
-        Err(Error::RetryRefused)
-    );
-    fixture.reply(Action::FirstAgent, &ready(&id()), 0);
-    let ready = fixture.controller().retry(&key, &|| true, |_| {}).unwrap();
-    assert_eq!(ready.ready_agent.as_deref(), Some("guide"));
-    let saved = fixture.controller().read(&key).unwrap();
-    assert_eq!(saved.first_result, Some(ready));
-    assert_eq!(saved.cancellation_result, Some(refused));
-    assert_eq!(
-        controller.cancel(&key, &|| true, |_| {}),
-        Err(Error::Completed)
-    );
-    assert_eq!(fixture.calls(), "first\ncancel\nfirst\n");
+    // Begun already, its ID used for another request, or refused: the
+    // original isn't cancelled and may be sent again.
+    for (status, code, retry, exit) in [
+        ("action_required", "cancellation_unsafe", "none", 3),
+        ("failed", "request_conflict", "new_request", 1),
+        ("failed", "invalid_request", "new_request", 2),
+    ] {
+        let fixture = Fixture::new("");
+        fixture.needs_action("same_request");
+        let controller = fixture.controller();
+        let key = controller.enqueue(intent()).unwrap().key;
+        controller.submit(&key, &|| true, |_| {}).unwrap();
+        fixture.reply(
+            Action::CancelFirstAgent,
+            &answer(&id(), "cancel_first_agent", status, code, retry),
+            exit,
+        );
+        let refused = controller.cancel(&key, &|| true, |_| {}).unwrap();
+        assert!(!refused.cancelled);
+        assert_eq!(
+            controller.retry_cancel(&key, &|| true, |_| {}),
+            Err(Error::RetryRefused)
+        );
+        fixture.reply(Action::FirstAgent, &ready(&id()), 0);
+        let ready = fixture.controller().retry(&key, &|| true, |_| {}).unwrap();
+        assert_eq!(ready.ready_agent.as_deref(), Some("guide"));
+        let saved = fixture.controller().read(&key).unwrap();
+        assert_eq!(saved.first_result, Some(ready));
+        assert_eq!(saved.cancellation_result, Some(refused));
+        assert_eq!(
+            controller.cancel(&key, &|| true, |_| {}),
+            Err(Error::Completed)
+        );
+        assert_eq!(fixture.calls(), "first\ncancel\nfirst\n");
+    }
 }
 
 #[test]

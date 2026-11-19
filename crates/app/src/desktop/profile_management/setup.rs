@@ -54,10 +54,9 @@ impl Command {
                 s.phase != Phase::Prepared
                     && retry(s.first_result.as_ref())
                     && (s.phase != Phase::CancelPending
-                        || s.cancellation_result.as_ref().is_some_and(|e| {
-                            e.status == "action_required"
-                                && e.code.as_deref() == Some("cancellation_unsafe")
-                        }))
+                        || s.cancellation_result
+                            .as_ref()
+                            .is_some_and(crate::profiles::setup_controller::left_open))
             }
             Self::RetryCancel => {
                 s.phase != Phase::Prepared
