@@ -476,9 +476,14 @@ fn an_exited_ordinary_shell_is_kept_rather_than_restarted() {
         .unwrap();
     let socket = PathBuf::from(socket.trim());
     let root = server.address().0;
-    // It outlives the remain-on-exit setting, then exits.
+    // It runs until the test creates its sentinel file, then exits.
     let shell = root.join("exiting-shell");
-    std::fs::write(&shell, "#!/bin/sh\nsleep 1\n").unwrap();
+    let sentinel = root.join("exiting-shell.exit");
+    std::fs::write(
+        &shell,
+        "#!/bin/sh\nwhile [ ! -e \"$0.exit\" ]; do sleep 0.05; done\n",
+    )
+    .unwrap();
     std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700)).unwrap();
     let mut environment = Environment::capture().unwrap();
     environment.shell = shell;
@@ -494,6 +499,8 @@ fn an_exited_ordinary_shell_is_kept_rather_than_restarted() {
         }]
     };
     ensure(&socket, &request(), &environment).unwrap();
+    // ensure has set remain-on-exit, so the pane stays once the shell exits.
+    std::fs::write(&sentinel, "").unwrap();
     let dead = || {
         server
             .run(&[
