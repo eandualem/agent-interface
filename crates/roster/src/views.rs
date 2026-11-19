@@ -880,8 +880,6 @@ pub struct Received {
 pub struct Agent {
     /// Agent name.
     pub name: String,
-    /// Whether Backbone knows it.
-    pub known: bool,
     /// Whether its session is running.
     pub online: bool,
     /// The CLI.

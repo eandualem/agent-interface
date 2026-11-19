@@ -104,7 +104,7 @@ pub(super) struct Conversation {
     agents: crate::desktop::agent_status::LiveAgents,
     /// The record messages are about and where to send them; `None` when the
     /// owning view delivers them itself.
-    record: Option<(ReportItem, Box<feedback::Client>)>,
+    record: Option<(ReportItem, feedback::Client)>,
     agent: String,
     about: &'static str,
     anchor: Option<String>,
@@ -365,10 +365,9 @@ impl Conversation {
         conversation.visible = visible;
         conversation.agent = item.author.clone();
         conversation.anchor = Some(format!("#{}", item.id));
-        let feedback = Box::new(
+        let feedback =
             feedback::Client::new(connection.clone(), connection.identity(), item.clone())
-                .expect("original record binding"),
-        );
+                .expect("original record binding");
         if let Some((kind, id)) = item.conversation() {
             let origin = connection.identity().clone();
             let bound = match stored::Client::new(connection, &origin, kind, id) {
@@ -608,8 +607,7 @@ impl Conversation {
         self.plan_anchor.is_some() && (!self.draft(cx).is_empty() || !self.disposable())
     }
 
-    /// Nothing would be lost by replacing it: no message still sending or
-    /// awaiting a retry. A draft moves to the replacement.
+    /// No message is still sending or awaiting a retry.
     fn disposable(&self) -> bool {
         self.messages.iter().all(|message| {
             !matches!(
@@ -1287,7 +1285,7 @@ impl Conversation {
 
     /// Send message `index` once, on an I/O worker.
     fn deliver(&mut self, index: usize, cx: &mut Context<Self>) {
-        let Some((_, target)) = self.record.clone() else {
+        let Some(target) = self.record.as_ref().map(|(_, target)| target.clone()) else {
             return;
         };
         let message = &mut self.messages[index];

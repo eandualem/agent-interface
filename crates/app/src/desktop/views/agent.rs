@@ -31,20 +31,6 @@ fn held(message: &Received) -> bool {
 }
 
 pub(super) fn body(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -> AnyElement {
-    let c = colors();
-    if !agent.known {
-        return div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(ui::view_header("user", agent.name.clone()))
-            .child(ui::empty_state(
-                ui::empty_tile("user", c.selected, c.muted),
-                "Backbone does not know this agent",
-                format!("{} may have been renamed or removed.", agent.name),
-            ))
-            .into_any_element();
-    }
     // A skill or policy opened from the profile's agent card shows in the
     // reader; going back shows the card. Only that card sets this data.
     let header =
