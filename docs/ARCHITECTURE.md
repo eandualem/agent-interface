@@ -1614,7 +1614,9 @@ read remains a storage inspection; `read_durable` provides this recovery barrier
 Setup terminal observations have a separate private checkpoint from request
 intent. They retain the request, action, sequence and bounded outcome/retry
 fields, including the launch ID, when one was named, for confirmed readiness.
-Normalization removes provider prose and unneeded result details; restoration
+Normalization keeps setup's message as one line of plain text, at most 300
+characters, with control and direction-changing characters removed, and drops
+other provider prose and unneeded result details; restoration
 revalidates the result through the schema-3 stream rules and requires
 canonical encoding for the original prepared request and explicit action.
 Progress is never reconstructed as terminal authority. The executor must still
@@ -1689,11 +1691,17 @@ Fresh setup admission validates existing durable setup records and inserts the
 new intent under one journal lock. An open request blocks every other first-agent
 request of the same profile, whatever agent it adds, since it may still make the
 profile's first agent; a guide's Start waits while one is open. A request closes
-on confirmed readiness, safe cancellation, or a result whose retry policy says this
-same request can go no further (`new_request` or `none`). One setup says can be
+on confirmed readiness, safe cancellation, a cancellation answered
+`request_expired` (the request never runs now; what came of it before stays
+unknown and listed), or a result whose retry policy says this same request can
+go no further (`new_request` or `none`). One setup says can be
 sent again (`outcome_unknown` or `setup_failed` with `same_request`), or whose
-retry the app doesn't know, stays open, and the recovery view shows fixed text for
-its code and retry. Forgetting a request removes only the app's saved record; it
+retry the app doesn't know, stays open. The recovery view shows the result's code
+with the app's own words where it can point to a remedy (`cancellation_unsafe`,
+`agent_conflict`, `runtime_missing`, `invalid_request`, `service_unavailable`),
+else setup's kept message, then a next step taken from the same retry and open
+or closed state that offers its buttons. It never says the agent wasn't added:
+the answer to a request sent again may describe only that send. Forgetting a request removes only the app's saved record; it
 runs no command and keeps any agent the request created. A request saved under
 schema 1 or 2 holds nothing back and stays listed to be forgotten. Other malformed
 records fail closed until they are forgotten; unsafe storage always fails closed. A directory durability barrier precedes the

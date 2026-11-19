@@ -76,13 +76,21 @@ fn nonready_outcomes_keep_status_code_and_retry_as_they_came() {
 }
 
 #[test]
-fn provider_prose_and_unneeded_data_are_not_retained() {
+fn only_setup_s_message_is_retained_as_one_bounded_line() {
     let prepared = prepared(guide());
     let mut value = ready();
-    value["message"] = "provider-private-detail".into();
+    value["message"] = format!(
+        "  the agent\u{1b}[31m\nruns\u{202e} now {}",
+        "x".repeat(400)
+    )
+    .into();
     value["data"]["evidence"] = "provider-private-detail".into();
     value["completed_steps"] = json!(["provider-private-detail"]);
     let original = event(&prepared, Action::FirstAgent, &value);
+    let kept = original.message.as_deref().unwrap();
+    assert!(kept.starts_with("the agent [31m runs now xxx"));
+    assert_eq!(kept.chars().count(), 300);
+    assert!(!kept.chars().any(|c| c.is_control() || c == '\u{202e}'));
     let bytes = prepared.outcome_checkpoint(&original).unwrap();
     assert!(
         !String::from_utf8(bytes.clone())

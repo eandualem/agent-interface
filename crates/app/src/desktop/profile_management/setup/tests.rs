@@ -26,6 +26,7 @@ fn event(s: &Snapshot) -> Event {
         cancelled: false,
         ready_agent: None,
         launch_id: None,
+        message: None,
     }
 }
 #[test]
@@ -118,134 +119,149 @@ fn answered(cancel: bool, status: &str, code: &str, retry: &str) -> Snapshot {
 }
 
 #[test]
-fn each_code_says_what_happened_by_what_may_follow_it() {
-    // "status code retry: words it says". Only same_request sends the
-    // request again, and only new_request and none close it: a retry this
-    // app doesn't know keeps it open, unsent.
-    let read = |row: &'static str, cancel: bool| {
-        let (result, says) = row.split_once(": ").unwrap();
-        let [status, code, retry] = result.split(' ').collect::<Vec<_>>()[..] else {
-            panic!("{row}")
-        };
-        let s = answered(cancel, status, code, retry);
-        let text = outcome(&s).unwrap();
-        assert!(text.contains(says), "{row}: {text}");
-        (
-            s,
-            retry == "same_request",
-            !matches!(retry, "new_request" | "none"),
-        )
-    };
-    for row in [
-        "failed agent_conflict new_request: isn't free, or the folder is missing",
-        "failed agent_conflict none: uses the name worker or its folder now",
-        "action_required runtime_missing new_request: isn't installed",
-        "failed runtime_missing new_request: isn't installed",
-        "failed starter_conflict new_request: starter",
-        // Start again only where a new request may follow.
-        "failed runtime_missing none: It isn't known whether worker was added",
-        "failed service_unavailable none: It isn't known whether worker was added",
-        "failed launch_failed none: did not start, or exited right after starting",
-        "action_required service_unavailable same_request: did not answer. Try again: it sends the same request",
-        "action_required service_unavailable new_request: couldn't reach",
-        "failed installation_conflict none: It isn't known whether worker was added",
-        "failed request_conflict new_request: used for another request",
-        "failed request_expired none: never runs now",
-        "failed request_cancelled new_request: was cancelled",
-        "action_required outcome_unknown same_request: isn't known yet",
-        "action_required outcome_unknown none: never runs again",
-        "action_required outcome_unknown new_request: only a new request can follow",
-        "failed setup_failed same_request: before this attempt changed anything",
-        "failed operator_required none: only the machine's operator may do it. worker may have been added",
-        "failed invalid_request new_request: refused the request as it was sent",
-        "paused new_code later: new_code",
-        // A retry this app doesn't know: kept open, never "never runs again".
-        "action_required outcome_unknown later: isn't one this app knows",
-        // A code it doesn't know with nothing to follow: look first.
-        "failed new_code none: It isn't known whether worker was added",
-    ] {
-        let (s, again, open) = read(row, false);
-        assert_eq!(Command::Retry.allowed(Some(&s)), again, "{row}");
-        assert_eq!(!s.closed(), open, "{row}");
-        assert_eq!(Command::Cancel.allowed(Some(&s)), open, "{row}");
-    }
-    for row in [
-        "action_required outcome_unknown same_request: Send the cancellation again",
-        "action_required service_unavailable same_request: did not answer",
-        "action_required cancellation_unsafe none: not a rollback",
-        "failed request_conflict new_request: so it isn't cancelled: it stays open",
-        "failed request_expired none: never runs now",
-        "failed installation_conflict none: another profile",
-        "failed invalid_request new_request: refused the cancellation",
-    ] {
-        let (s, again, _) = read(row, true);
-        assert_eq!(Command::RetryCancel.allowed(Some(&s)), again, "{row}");
-        // A final answer that didn't cancel it leaves the request open to be
-        // sent again, unless it is too old to run now.
-        let open = !row.contains("same_request") && !row.contains("request_expired");
-        assert_eq!(Command::Retry.allowed(Some(&s)), open, "{row}");
-    }
-    // The one answer that confirms a cancellation.
-    let mut s = answered(true, "completed", "request_cancelled", "new_request");
-    s.cancellation_result.as_mut().unwrap().cancelled = true;
-    assert!(outcome(&s).is_none() && s.closed());
-    assert_eq!(status(&s), "Safely cancelled");
-    // Whether the agent was added isn't known from these.
-    for row in [
-        ("action_required", "outcome_unknown"),
-        ("failed", "request_expired"),
-        ("failed", "agent_conflict"),
-        ("failed", "operator_required"),
-        ("failed", "installation_conflict"),
-        ("failed", "runtime_missing"),
-        ("failed", "new_code"),
-    ] {
-        let s = answered(false, row.0, row.1, "none");
-        assert_eq!(status(&s), "Not known whether it was added", "{row:?}");
-    }
-    // Nor from these, as the answer to a request sent again may describe
-    // only that send.
-    for code in ["invalid_request", "new_code"] {
-        let s = answered(false, "failed", code, "new_request");
-        assert_eq!(status(&s), "Not known whether it was added", "{code}");
-    }
-    // Only these say it wasn't, whenever they come.
-    for code in [
+fn every_answer_s_words_agree_with_its_status_and_buttons() {
+    // The codes with the app's own words, and one it doesn't know, which
+    // shows setup's message.
+    let named = [
+        "agent_ready",
+        "request_cancelled",
+        "cancellation_unsafe",
         "agent_conflict",
         "runtime_missing",
-        "starter_conflict",
+        "invalid_request",
         "service_unavailable",
-        "request_conflict",
-        "request_cancelled",
-    ] {
-        let s = answered(false, "failed", code, "new_request");
-        assert_eq!(status(&s), "Agent not added", "{code}");
-    }
-    assert_eq!(
-        status(&answered(
-            false,
-            "action_required",
-            "outcome_unknown",
-            "new_request"
-        )),
-        "Not known whether it was added"
-    );
-    let unknown = answered(false, "action_required", "outcome_unknown", "later");
-    assert!(!outcome(&unknown).unwrap().contains("never runs again"));
-    assert_eq!(status(&unknown), "Needs attention");
-    // Its launch failed: the agent was added, and its CLI isn't running.
-    let s = answered(false, "failed", "launch_failed", "none");
-    assert_eq!(status(&s), "Agent added, not running");
-    assert!(outcome(&s).unwrap().contains("worker was added"));
-    // A status this app doesn't know never reads as cancelled.
+    ];
     for cancel in [false, true] {
-        let s = answered(cancel, "paused", "request_cancelled", "new_request");
-        assert_eq!(
-            outcome(&s).as_deref(),
-            Some("The profile answered: request_cancelled.")
-        );
-        assert_ne!(status(&s), "Safely cancelled");
+        for given in ["completed", "failed", "action_required", "paused"] {
+            for code in named.into_iter().chain(["new_code"]) {
+                for retry in ["same_request", "new_request", "none", "later"] {
+                    let row = format!("cancel {cancel}: {given} {code} {retry}");
+                    let mut s = answered(cancel, given, code, retry);
+                    // What the decoder confirms of these, and nothing else.
+                    let result = if cancel {
+                        s.cancellation_result.as_mut()
+                    } else {
+                        s.first_result.as_mut()
+                    }
+                    .unwrap();
+                    result.message = Some("the profile's words".into());
+                    if given == "completed" && code == "request_cancelled" && cancel {
+                        result.cancelled = true;
+                    }
+                    if given == "completed" && code == "agent_ready" && !cancel {
+                        result.ready_agent = Some("worker".into());
+                    }
+                    let line = status(&s);
+                    let Some((text, shown)) = outcome(&s) else {
+                        assert!(
+                            matches!(line, "Agent started" | "Safely cancelled"),
+                            "{row}"
+                        );
+                        assert!(s.closed(), "{row}");
+                        continue;
+                    };
+                    assert_eq!(shown, code, "{row}");
+                    // Setup's words only where the app has none of its own.
+                    assert_eq!(
+                        text.starts_with("the profile's words"),
+                        !named.contains(&code)
+                            || matches!(code, "agent_ready" | "request_cancelled"),
+                        "{row}: {text}"
+                    );
+                    let (again, again_cancel) = (
+                        Command::Retry.allowed(Some(&s)),
+                        Command::RetryCancel.allowed(Some(&s)),
+                    );
+                    // Only a final retry closes it; a cancellation's leaves the
+                    // original as it was.
+                    assert_eq!(
+                        s.closed(),
+                        !cancel && matches!(retry, "new_request" | "none"),
+                        "{row}"
+                    );
+                    // The same request or cancellation only where its retry
+                    // says so; the original from a cancellation that didn't
+                    // cancel it.
+                    assert_eq!(
+                        text.contains("same request"),
+                        !cancel && again,
+                        "{row}: {text}"
+                    );
+                    assert_eq!(
+                        !cancel && again,
+                        !cancel && retry == "same_request",
+                        "{row}"
+                    );
+                    assert_eq!(
+                        text.contains("same cancellation"),
+                        again_cancel,
+                        "{row}: {text}"
+                    );
+                    assert_eq!(again_cancel, cancel && retry == "same_request", "{row}");
+                    assert_eq!(
+                        text.contains("send it again"),
+                        cancel && again && !again_cancel,
+                        "{row}: {text}"
+                    );
+                    // A new request only where one may follow, and look first
+                    // wherever what came of it isn't known.
+                    assert_eq!(
+                        text.contains("start again"),
+                        s.closed() && retry == "new_request",
+                        "{row}: {text}"
+                    );
+                    assert_eq!(
+                        text.contains("look at the workspace")
+                            || text.contains("Look at the workspace"),
+                        !again && !again_cancel && !(s.closed() && retry == "new_request"),
+                        "{row}: {text}"
+                    );
+                    // No word that the agent wasn't added, or was.
+                    for claim in [
+                        "not added",
+                        "wasn't added",
+                        "nothing was sent",
+                        "never ran",
+                        "nothing changed",
+                        "was added",
+                    ] {
+                        assert!(!text.contains(claim), "{row}: {text}");
+                    }
+                    // Open or closed, as the status line and buttons say.
+                    if s.closed() {
+                        assert_eq!(line, "Not known whether it was added", "{row}");
+                        assert!(
+                            !again && !again_cancel && !Command::Cancel.allowed(Some(&s)),
+                            "{row}"
+                        );
+                    } else {
+                        assert_eq!(line, "Needs attention", "{row}");
+                        assert_eq!(Command::Cancel.allowed(Some(&s)), !cancel, "{row}");
+                    }
+                }
+            }
+        }
     }
+    // A cancellation's final answer that didn't cancel leaves the original
+    // open, unless it is too old to run now, which closes it.
+    for (code, retry, open) in [
+        ("cancellation_unsafe", "none", true),
+        ("request_conflict", "new_request", true),
+        ("invalid_request", "new_request", true),
+        ("request_expired", "none", false),
+    ] {
+        let s = answered(true, "failed", code, retry);
+        assert_eq!(Command::Retry.allowed(Some(&s)), open, "{code}");
+        assert_eq!(s.closed(), !open, "{code}");
+    }
+    // Setup said nothing: the app says so, never an empty line.
+    let s = answered(false, "failed", "new_code", "none");
+    assert!(
+        outcome(&s)
+            .unwrap()
+            .0
+            .starts_with("Setup said nothing more.")
+    );
     // Started: its terminal is the next step.
     let mut s = answered(false, "completed", "agent_ready", "none");
     s.first_result.as_mut().unwrap().ready_agent = Some("worker".into());

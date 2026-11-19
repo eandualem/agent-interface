@@ -69,11 +69,7 @@ impl Command {
 fn status(s: &Snapshot) -> &'static str {
     if s.cancellation_result.as_ref().is_some_and(|e| e.cancelled) {
         "Safely cancelled"
-    } else if s
-        .first_result
-        .as_ref()
-        .is_some_and(|e| e.ready_agent.is_some())
-    {
+    } else if started(s) {
         "Agent started"
     } else if s.phase == Phase::Prepared {
         "Saved, not submitted"
@@ -81,42 +77,13 @@ fn status(s: &Snapshot) -> &'static str {
         "Cancellation outcome not confirmed"
     } else if s.first_result.is_none() && s.cancellation_result.is_none() {
         "Setup outcome not confirmed"
-    } else if s
-        .first_result
-        .as_ref()
-        .is_some_and(|e| e.code.as_deref() == Some("launch_failed"))
-    {
-        "Agent added, not running"
-    } else if s.closed() && not_added(s) {
-        "Agent not added"
     } else if s.closed() {
+        // Setup's answers to a request sent again may describe only that
+        // send, so none says the agent wasn't added.
         "Not known whether it was added"
     } else {
         "Needs attention"
     }
-}
-/// The latest first-agent result says the agent wasn't added, whatever an
-/// earlier send of the same request came to: refused by its preflight,
-/// which a repeat is answered with again, cancelled before it ran, or its
-/// ID another request's. Any other answer, as to a request sent again, may
-/// describe only that send.
-fn not_added(s: &Snapshot) -> bool {
-    s.first_result.as_ref().is_some_and(|e| {
-        matches!(
-            (e.code.as_deref(), e.retry.as_deref()),
-            (Some("request_cancelled"), Some("new_request"))
-                | (
-                    Some(
-                        "agent_conflict"
-                            | "runtime_missing"
-                            | "starter_conflict"
-                            | "service_unavailable"
-                            | "request_conflict"
-                    ),
-                    Some("new_request")
-                )
-        )
-    })
 }
 /// The agent's CLI runs. Its terminal may still ask for a sign-in, trust or
 /// terms first, so that terminal is the next step.
@@ -125,69 +92,59 @@ fn started(s: &Snapshot) -> bool {
         .as_ref()
         .is_some_and(|event| event.ready_agent.is_some())
 }
-/// What the latest result means for the person: by its code and what may
-/// follow it, for each code setup gives a first agent or its cancellation.
-fn outcome(s: &Snapshot) -> Option<String> {
-    let event = if s.phase == Phase::CancelPending {
+/// What the latest result means for the person, with its code: what came
+/// of it, then what to do next.
+fn outcome(s: &Snapshot) -> Option<(String, String)> {
+    let cancel_view = s.phase == Phase::CancelPending;
+    let event = if cancel_view {
         s.cancellation_result.as_ref()
     } else {
         s.first_result.as_ref()
     }?;
-    let name = &s.agent_name;
+    let code = event.code.clone()?;
+    Some((format!("{} {}", said(event)?, next(s, cancel_view)), code))
+}
+/// What came of a result: the app's own words where it can point to a
+/// remedy, else setup's message; none for the agent started or the
+/// cancellation confirmed.
+fn said(event: &Event) -> Option<String> {
     let cancel = event.action == Action::CancelFirstAgent;
-    Some(match (event.code.as_deref()?, event.retry.as_deref()) {
-        ("agent_ready", _) => return None,
-        ("request_cancelled", _) if event.cancelled => return None,
-        ("request_cancelled", _) if event.status == "failed" => "This request was cancelled, so it never runs. Start again to make a new one.".into(),
-        ("agent_conflict", Some("none")) => format!(
-            "Another agent, terminal or session uses the name {name} or its folder now. Look at the workspace before adding it again."
-        ),
-        ("agent_conflict", Some("new_request")) => format!(
-            "The name {name}, its folder or its terminal isn't free, or the folder is missing. Go back and change it."
-        ),
-        ("runtime_missing", Some("new_request")) => "This tool isn't installed where the profile can use it, or setup doesn't start it. Install it or choose another, then start again.".into(),
-        ("starter_conflict", Some("new_request")) => "The profile's starter isn't as a first agent needs it: a starter policy, skill or the guide's brief is missing or changed. Fix it, then start again.".into(),
-        ("launch_failed", _) => format!(
-            "{name} was added, but its CLI did not start, or exited right after starting, so it isn't running. Run the CLI in a terminal in its folder to see why, then start it again."
-        ),
-        ("service_unavailable", Some("same_request")) => "The profile's service, or the computer the agent runs on, did not answer. Try again: it sends the same request.".into(),
-        ("service_unavailable", Some("new_request")) => "The profile couldn't reach the computer the agent runs on. Start again once it answers.".into(),
-        ("installation_conflict", _) => format!(
-            "This computer is no longer the profile's, or the request is for another profile. It isn't known whether {name} was added: look at the workspace."
-        ),
-        ("request_conflict", _) if cancel => "This request's ID was used for another request, so it isn't cancelled: it stays open. Send it again, or forget it.".into(),
-        ("request_conflict", _) => "Its request ID was used for another request. Start again: that makes a new request.".into(),
-        ("request_expired", _) => format!(
-            "This request is older than the profile keeps requests for, and never runs now. It isn't known whether {name} was added: look at the workspace before adding it again."
-        ),
-        ("outcome_unknown", Some("same_request")) if cancel => "The request may be running now, or the profile's records couldn't be read. Send the cancellation again.".into(),
-        ("outcome_unknown", Some("same_request")) => format!(
-            "What came of it isn't known yet. Try again: it asks about the same request, so {name} isn't added twice."
-        ),
-        ("outcome_unknown", Some("new_request")) => format!(
-            "What came of it isn't known, and only a new request can follow it. Look at the workspace, then start {name} again if it isn't there."
-        ),
-        ("outcome_unknown", Some("none")) => format!(
-            "The profile doesn't know whether {name} was added, and this request never runs again. Look at the workspace before adding it again."
-        ),
-        ("outcome_unknown", retry) => format!(
-            "What came of it isn't known, and what may follow, {}, isn't one this app knows, so it is kept open and not sent again. Look at the workspace before adding {name} again.",
-            retry.unwrap_or("nothing")
-        ),
-        ("cancellation_unsafe", _) => format!(
-            "Setup had already begun to change things, so it wasn't cancelled. Look at {name} in the workspace: a cancellation is not a rollback."
-        ),
-        ("setup_failed", _) => "Setup stopped on an error of its own before this attempt changed anything. Try again: it sends the same request.".into(),
-        ("operator_required", _) => format!(
-            "Setup refused this: only the machine's operator may do it. {name} may have been added: look at the workspace."
-        ),
-        ("invalid_request", _) if cancel => "Setup refused the cancellation as it was sent, so the request isn't cancelled: it stays open. Send it again, or forget it.".into(),
-        ("invalid_request", _) => "Setup refused the request as it was sent: the agent's name, folder, model or instructions. Look at the workspace, then go back and change them.".into(),
-        (code, Some("none")) => format!(
-            "The profile answered: {code}. It isn't known whether {name} was added: look at the workspace before adding it again."
-        ),
-        (code, _) => format!("The profile answered: {code}."),
+    Some(match event.code.as_deref()? {
+        "agent_ready" if event.ready_agent.is_some() => return None,
+        "request_cancelled" if event.cancelled => return None,
+        "cancellation_unsafe" => "Setup had already begun to change things, so it wasn't cancelled: a cancellation is not a rollback.".into(),
+        "agent_conflict" => "The name, its folder or its terminal isn't free, or the folder is missing or could not be made: change the name or folder.".into(),
+        "runtime_missing" => "This tool isn't installed where the profile can use it, or setup doesn't start it: install it or choose another.".into(),
+        "invalid_request" if cancel => "Setup refused the cancellation as it was sent, so the request isn't cancelled.".into(),
+        "invalid_request" => "Setup refused the request as it was sent: change the agent's name, folder, model or instructions.".into(),
+        "service_unavailable" => "The profile's service, or the computer the agent runs on, did not answer. If the service isn't running, start it with backbone up --detach.".into(),
+        _ => event
+            .message
+            .clone()
+            .unwrap_or_else(|| "Setup said nothing more.".into()),
     })
+}
+/// What the person can do next, from the decisions that offer the
+/// buttons and close the request, by what may follow the result.
+fn next(s: &Snapshot, cancel_view: bool) -> &'static str {
+    let event = if cancel_view {
+        s.cancellation_result.as_ref()
+    } else {
+        s.first_result.as_ref()
+    };
+    if cancel_view && Command::RetryCancel.allowed(Some(s)) {
+        "Try again: it sends the same cancellation."
+    } else if cancel_view && Command::Retry.allowed(Some(s)) {
+        "The request isn't cancelled and stays open: send it again to learn what came of it, or forget it."
+    } else if Command::Retry.allowed(Some(s)) {
+        "Try again: it sends the same request."
+    } else if !s.closed() {
+        "What may follow isn't one this app knows, so it is kept open and not sent again. Look at the workspace, or forget it."
+    } else if event.and_then(|e| e.retry.as_deref()) == Some("new_request") {
+        "Only a new request can follow: change what you need and start again."
+    } else {
+        "Not known what came of it: look at the workspace first."
+    }
 }
 /// Whether a saved request that is still open can be sent again; `None`
 /// when it is closed, or none was saved.
@@ -877,6 +834,7 @@ impl Pane {
         snapshot
             .as_deref()
             .and_then(outcome)
+            .map(|(text, code)| format!("{text} ({code})"))
             .or(self.error.map(|error| message(error).to_owned()))
             .or_else(|| Some("It stopped before it was ready. Try again.".to_owned()))
     }
@@ -1119,8 +1077,10 @@ impl Render for Pane {
                             .child(div().text_color(c.text).child(s.agent_name.clone()))
                             .child(div().text_color(c.muted).child(status(s))),
                     );
-                    if let Some(text) = outcome(s) {
-                        body = body.child(ui::group_note(text));
+                    if let Some((text, code)) = outcome(s) {
+                        body = body
+                            .child(ui::group_note(text))
+                            .child(ui::text(div().text_color(c.muted), &t.text.meta).child(code));
                     }
                     if !self.busy && started(s) {
                         body = body.child(ui::group_note(

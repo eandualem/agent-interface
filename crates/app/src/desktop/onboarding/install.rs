@@ -6,7 +6,7 @@
 //! deadline, and a failure explains itself.
 
 use agent_interface_roster::profiles::setup::{
-    EVENT_LIMIT, LINE_LIMIT, OUTPUT_LIMIT, token, unique_keys,
+    EVENT_LIMIT, LINE_LIMIT, OUTPUT_LIMIT, one_line, token, unique_keys,
 };
 use std::{
     io::Read,
@@ -221,19 +221,13 @@ impl Answer {
 
     /// The answer's own words for a person, else its code.
     fn said(&self) -> String {
-        let message: String = self
-            .message
-            .chars()
-            .filter(|c| !c.is_control())
-            .take(400)
-            .collect();
-        let message = message.trim();
+        let message = one_line(&self.message);
         format!(
             "Agent Backbone's setup stopped: {}",
             if message.is_empty() {
                 &self.code
             } else {
-                message
+                &message
             }
         )
     }

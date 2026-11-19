@@ -13,9 +13,10 @@ struct Checkpoint {
 }
 
 impl Prepared {
-    /// Store a validated terminal observation without provider prose or step
-    /// details. The executor must first verify the matching process exit; this
-    /// model validates semantics only and grants no connection or account access.
+    /// Store a validated terminal observation with setup's message as one
+    /// bounded line and without other provider details. The executor must
+    /// first verify the matching process exit; this model validates
+    /// semantics only and grants no connection or account access.
     pub fn outcome_checkpoint(&self, event: &Event) -> Result<Vec<u8>, Error> {
         if event.step.is_some() {
             return Err(Error::Invalid);
@@ -32,7 +33,7 @@ impl Prepared {
             "schema_version":SCHEMA_VERSION,"type":"result",
             "request_id":event.request_id,"action":event.action.name(),
             "seq":event.sequence,"status":event.status,"code":event.code,
-            "message":"","retry":event.retry,"completed_steps":[],"data":data,
+            "message":event.message.as_deref().unwrap_or(""),"retry":event.retry,"completed_steps":[],"data":data,
         }))
         .map_err(|_| Error::Invalid)?;
         let validated = self.decode_outcome(event.action, &result)?;

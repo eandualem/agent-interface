@@ -319,7 +319,31 @@ fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
     T::deserialize(json).map(Some)
 }
 
-/// Validated progress or terminal outcome; provider prose is never retained.
+/// The most characters of setup's message the app keeps.
+const MESSAGE_LIMIT: usize = 300;
+
+/// Setup's `message` as the app keeps it: plain text on one line, with
+/// control and direction-changing characters taken out, at most
+/// [`MESSAGE_LIMIT`] characters.
+pub fn one_line(message: &str) -> String {
+    let plain: String = message
+        .chars()
+        .map(|c| {
+            let hidden = c.is_control()
+                || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}');
+            if hidden { ' ' } else { c }
+        })
+        .collect();
+    let line = plain.split_whitespace().collect::<Vec<_>>().join(" ");
+    line.chars()
+        .take(MESSAGE_LIMIT)
+        .collect::<String>()
+        .trim_end()
+        .to_owned()
+}
+
+/// Validated progress or terminal outcome. Of setup's own words only its
+/// message is kept, as one bounded line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Event {
     /// The profile the request is for, retained for deferred consumers.
@@ -344,6 +368,9 @@ pub struct Event {
     pub ready_agent: Option<String>,
     /// Provider launch identifier, when readiness was confirmed with one.
     pub launch_id: Option<String>,
+    /// A result's message as one line of plain text, absent when it said
+    /// nothing and on progress.
+    pub message: Option<String>,
 }
 
 /// What every line of the setup command's output has. The fields its kind
@@ -372,9 +399,8 @@ struct ResultWire {
     action: String,
     status: String,
     code: String,
-    /// Read only to check its type: provider prose is never kept.
-    #[serde(rename = "message")]
-    _message: String,
+    /// Kept as one bounded line of plain text.
+    message: String,
     retry: String,
     completed_steps: Vec<String>,
     /// An object; what its action defines of it is read on its own.
@@ -502,6 +528,7 @@ impl Stream {
             cancelled: false,
             ready_agent: None,
             launch_id: None,
+            message: None,
         };
         if wire.kind == "step" {
             // A status this app doesn't know is kept as it came.
@@ -524,6 +551,7 @@ impl Stream {
                 return Err(Error::Invalid);
             }
             event.status = wire.status;
+            event.message = Some(one_line(&wire.message)).filter(|line| !line.is_empty());
             let completed = event.status == "completed";
             match self.action {
                 Action::CancelFirstAgent => {
