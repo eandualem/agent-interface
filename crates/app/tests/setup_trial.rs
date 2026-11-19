@@ -1,8 +1,12 @@
 //! Runs the app's own first-agent setup against a real Agent Backbone service.
 //! Ignored by default: run it by name against a private trial whose service is
-//! up and has only its Default profile, with `PATH` (the trial's `backbone`
-//! first), `HOME`, `BACKBONE_DIR` and `TMUX_TMPDIR` all the trial's own under
-//! `/tmp`, and `TMUX` unset.
+//! up and has only its Default profile, in the environment that service was
+//! started in: `PATH` (the trial's `backbone` first), `HOME`, `BACKBONE_DIR`
+//! and `TMUX_TMPDIR` all the trial's own under `/tmp`, `TMUX` unset, and the
+//! database settings it was started with (`PGHOST`, `PGPORT`). The guards
+//! catch a run from an ordinary shell; whoever makes the trial answers for
+//! what its folders and its service hold, the service's own environment
+//! among them.
 //!
 //! The agent comes from the environment: `TRIAL_AGENT_DIR` (its folder under
 //! `/tmp`, created by setup), `TRIAL_RUNTIME` (`codex`, the default, or

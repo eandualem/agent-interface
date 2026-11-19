@@ -780,11 +780,14 @@ mod tests {
     /// request first run builds, sent and read as first run does, and then
     /// the check first run waits on, that the Default profile answers.
     /// Ignored by default. Run it by name against a private trial whose
-    /// service is already up, with `PATH` (the trial's `backbone` first),
-    /// `HOME`, `BACKBONE_DIR` and `TMUX_TMPDIR` all the trial's own under
-    /// `/tmp`, and `TMUX` unset. Only `service` differs from what first run
-    /// sends: the trial's service was started by hand, so no login service
-    /// is installed.
+    /// service is already up, in the environment that service was started
+    /// in: `PATH` (the trial's `backbone` first), `HOME`, `BACKBONE_DIR` and
+    /// `TMUX_TMPDIR` all the trial's own under `/tmp`, `TMUX` unset, and the
+    /// database settings it was started with (`PGHOST`, `PGPORT`). The
+    /// guards below catch a run from an ordinary shell; whoever makes the
+    /// trial answers for what its folders and its service hold. Only
+    /// `service` differs from what first run sends: the trial's service was
+    /// started by hand, so no login service is installed.
     #[test]
     #[ignore = "needs a private trial of a real Agent Backbone service"]
     fn initialize_against_a_real_service() {
@@ -839,19 +842,21 @@ mod tests {
             "initialized" | "existing_preserved"
         ));
 
-        // What first run waits for after that answer, for as long, with the
-        // trial's `backbone` where first run asks the login shell for it.
+        // What first run waits for after that answer, for as long and in the
+        // same order, with the trial's `backbone` where first run asks the
+        // login shell for it.
         let client = crate::profiles::Client::new(backbone, path_env.into()).unwrap();
         let deadline = Instant::now() + super::super::SERVICE_WAIT;
-        let answers = loop {
+        let mut answered = false;
+        while !answered && Instant::now() < deadline {
             let answers = super::super::probe::answers(Some(client.clone()));
-            if answers == super::super::probe::Backbone::Running || Instant::now() >= deadline {
-                break answers;
+            println!("the Default profile: {answers:?}");
+            answered = answers == super::super::probe::Backbone::Running;
+            if !answered {
+                std::thread::sleep(super::super::SERVICE_POLL);
             }
-            std::thread::sleep(super::super::SERVICE_POLL);
-        };
-        println!("the Default profile: {answers:?}");
-        assert_eq!(answers, super::super::probe::Backbone::Running);
+        }
+        assert!(answered, "the Default profile did not answer in time");
     }
 
     #[test]
