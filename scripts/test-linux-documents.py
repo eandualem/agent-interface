@@ -61,10 +61,11 @@ with tempfile.TemporaryDirectory(prefix="document-smoke-") as directory:
                  credential_reference=dict(type="socket"))
     commands = root / ".local/bin"
     commands.mkdir(parents=True)
+    # It answers only the exact commands the app runs.
     (commands / "backbone").write_text(
-        '#!/bin/sh\ncase "$1 $2" in\n'
-        f"    'profiles list') printf '%s' '{json.dumps(dict(profiles=[entry]))}' ;;\n"
-        f"    'profiles show') printf '%s' '{json.dumps(entry)}' ;;\n"
+        '#!/bin/sh\ncase "$*" in\n'
+        f"    'profiles list --json') printf '%s' '{json.dumps(dict(profiles=[entry]))}' ;;\n"
+        f"    'profiles show --json -- {served['profile_id']}') printf '%s' '{json.dumps(entry)}' ;;\n"
         '    *) exit 2 ;;\nesac\n')
     (commands / "backbone").chmod(0o755)
     # The app asks a login shell, then PATH, for `backbone`: this fixture must
