@@ -422,6 +422,9 @@ fn a_read_after_a_refusal_clears_it_and_shows_the_new_roster() {
         Some("second")
     );
     assert!(recovered.snapshot.observed_at > first.snapshot.observed_at);
+    // Drop alone stops the worker, and its wake callback goes with it.
     drop(source);
+    while woken.try_recv() == Ok(()) {}
+    assert_eq!(woken.try_recv(), Err(mpsc::TryRecvError::Disconnected));
     server.join().unwrap();
 }

@@ -417,8 +417,13 @@ fn delayed_workers_cancel_old_generations_and_clear_pending_results() {
     // A Document ignores its short polling interval; B retains its own wait.
     assert!(woken_a.recv_timeout(Duration::from_millis(60)).is_err());
     assert!(woken_b.recv_timeout(Duration::from_millis(60)).is_err());
+    // Drop alone stops each worker, and its wake callback goes with it.
     drop(source_a);
     drop(source_b);
+    for woken in [&woken_a, &woken_b] {
+        while woken.try_recv() == Ok(()) {}
+        assert_eq!(woken.try_recv(), Err(mpsc::TryRecvError::Disconnected));
+    }
     server_a.join().unwrap();
     server_b.join().unwrap();
 }
