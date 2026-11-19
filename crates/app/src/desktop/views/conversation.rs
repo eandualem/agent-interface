@@ -925,6 +925,9 @@ impl Conversation {
 
     /// Load the page before the oldest entry shown.
     fn load_earlier(&mut self, cx: &mut Context<Self>) {
+        let Some(target) = self.target() else {
+            return;
+        };
         let Some(stored) = self.stored.as_mut().filter(|stored| !stored.reading) else {
             return;
         };
@@ -932,9 +935,6 @@ impl Conversation {
             return;
         };
         stored.reading = true;
-        let Some(target) = self.target() else {
-            return;
-        };
         let worker = cx
             .background_executor()
             .spawn(async move { target.show(&stored::Page::Before(cursor)) });
