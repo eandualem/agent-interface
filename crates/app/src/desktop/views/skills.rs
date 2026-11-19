@@ -433,6 +433,6 @@ pub(super) fn text(open: &Open) -> reader::Text<'_> {
     match &open.text {
         None => reader::Text::Loading,
         Some(Err(error)) => reader::Text::Failed(error),
-        Some(Ok((text, cut))) => reader::Text::Ready { text, cut: *cut },
+        Some(Ok(text)) => reader::Text::Ready(text),
     }
 }

@@ -2895,7 +2895,7 @@ impl Render for Browser {
                     Some(connection) => {
                         views::ViewPane::new_bound(view, connection, directory, agents, window, cx)
                     }
-                    None => views::ViewPane::new(view, directory, agents, window, cx),
+                    None => views::ViewPane::new(view, directory, window, cx),
                 });
                 if let Some(section) = self.opening_sections.remove(&id)
                     && reports
@@ -3017,7 +3017,7 @@ impl Render for Browser {
                         new_pane::NewPane::new_bound(pane, connection, agents, window, cx)
                             .expect("matching workspace roster")
                     }
-                    None => new_pane::NewPane::new(pane, socket, agents, window, cx),
+                    None => new_pane::NewPane::new(pane, socket, window, cx),
                 });
                 let events =
                     cx.subscribe_in(&chooser, window, |browser, chooser, event, window, cx| {

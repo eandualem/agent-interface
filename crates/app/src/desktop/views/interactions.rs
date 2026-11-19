@@ -59,25 +59,16 @@ impl Source {
         api::Client::new(self.connection().clone()).read(since, until, agent)
     }
 
-    fn detail(&self, expected: &str, id: &str) -> Result<Interaction, Error> {
-        if self.key() != expected {
-            return Err(Error::Connection(
-                agent_interface_roster::profiles::Error::BindingMismatch,
-            ));
-        }
+    fn detail(&self, id: &str) -> Result<Interaction, Error> {
         api::Client::new(self.connection().clone()).detail(id)
     }
 
     pub fn report(
         &self,
-        expected: &str,
         id: u64,
         response: bool,
     ) -> Result<agent_interface_roster::views::Data, &'static str> {
         use agent_interface_roster::views::{self, content};
-        if self.key() != expected {
-            return Err("Backbone connection changed.");
-        }
         let request = if response {
             content::Request::Response(id)
         } else {
@@ -112,7 +103,6 @@ pub(super) struct Interactions {
     visible: Rc<Cell<bool>>,
     shown: bool,
     snapshot: Option<Snapshot>,
-    provider: Option<String>,
     error: Option<Error>,
     pending: Option<(Snapshot, TimeWindow, usize)>,
     reading: bool,
@@ -157,7 +147,6 @@ pub(super) struct Report {
     pub id: u64,
     pub response: bool,
     pub request: u64,
-    pub provider: String,
     pub anchor: String,
 }
 impl gpui::EventEmitter<Report> for Interactions {}
@@ -262,7 +251,6 @@ impl Interactions {
             visible,
             shown: true,
             snapshot: None,
-            provider: None,
             error: None,
             pending: None,
             reading: false,
@@ -315,7 +303,7 @@ impl Interactions {
     }
 
     fn open_report(&mut self, id: u64, response: bool, cx: &mut Context<Self>) {
-        let (Some(provider), Some(selected)) = (&self.provider, &self.selected) else {
+        let Some(selected) = &self.selected else {
             return;
         };
         self.link_generation += 1;
@@ -324,7 +312,6 @@ impl Interactions {
             id,
             response,
             request: self.link_generation,
-            provider: provider.clone(),
             anchor: selected.id.clone(),
         });
     }
@@ -334,12 +321,8 @@ impl Interactions {
         cx.notify();
     }
 
-    pub fn is_selected(&self, provider: &str, id: &str, request: u64) -> bool {
-        if request != self.link_generation {
-            return false;
-        }
-        self.provider.as_deref() == Some(provider)
-            && self.selected.as_ref().is_some_and(|m| m.id == id)
+    pub fn is_selected(&self, id: &str, request: u64) -> bool {
+        request == self.link_generation && self.selected.as_ref().is_some_and(|m| m.id == id)
     }
 
     fn open_discussion(&mut self, id: String, cx: &mut Context<Self>) {
@@ -418,7 +401,6 @@ impl Interactions {
                                 .as_ref()
                                 .and_then(|previous| previous.states.clone());
                         }
-                        this.provider = Some(this.source.key());
                         let count = this.new_count(&fresh);
                         if this.snapshot.is_some() && count > 0 {
                             this.pending = Some((fresh, requested, count));
@@ -680,16 +662,13 @@ impl Interactions {
             return;
         }
         let generation = self.detail_generation;
-        // The reader remains usable while changed() clears the ledger snapshot.
-        // Its original source and accepted origin survive that refresh.
-        let Some(provider) = self.provider.clone() else {
-            return;
-        };
+        // The reader remains usable while changed() clears the ledger snapshot:
+        // its source survives that refresh.
         self.detail_reading = true;
         let source = self.source.clone();
         let worker = cx
             .background_executor()
-            .spawn(async move { source.detail(&provider, &id) });
+            .spawn(async move { source.detail(&id) });
         cx.spawn(async move |this, cx| {
             let result = worker.await;
             let _ = this.update(cx, |this, cx| {
@@ -739,10 +718,7 @@ impl Interactions {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(provider) = self.provider.clone() else {
-            return;
-        };
-        let key = format!("{}\n{}\n{}", provider, kind.name(), id);
+        let key = format!("{}\n{}\n{}", self.source.key(), kind.name(), id);
         let conversation = if let Some(c) = self.conversations.get(&key) {
             c.clone()
         } else {

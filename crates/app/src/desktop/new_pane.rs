@@ -258,14 +258,20 @@ pub(super) struct NewPane {
 impl EventEmitter<NewPaneEvent> for NewPane {}
 
 impl NewPane {
+    /// The chooser in a workspace without a profile, which has no agents.
     pub fn new(
         pane: String,
         socket: Option<PathBuf>,
-        agents: crate::desktop::agent_status::LiveAgents,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::new_with(pane, Origin::Standalone { socket }, agents, window, cx)
+        Self::new_with(
+            pane,
+            Origin::Standalone { socket },
+            Default::default(),
+            window,
+            cx,
+        )
     }
 
     /// The workspace owner must retain this connection when accepting events.

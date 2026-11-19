@@ -36,7 +36,7 @@ impl Origin {
     /// there opens asking for a profile.
     pub fn allows_view(&self, kind: ViewKind) -> bool {
         self.connection().is_some_and(|connection| {
-            kind != ViewKind::Artifacts || shows_artifacts(Some(connection.kind()))
+            kind != ViewKind::Artifacts || shows_artifacts(connection.kind())
         })
     }
 
@@ -89,8 +89,8 @@ impl Sessions {
 
 /// Artifacts live in the app-wide library, so an isolated profile never shows
 /// them: a demo profile must not reveal the person's own content.
-pub(super) fn shows_artifacts(kind: Option<&Kind>) -> bool {
-    kind.is_none_or(|kind| *kind == Kind::LegacyDefault)
+pub(super) fn shows_artifacts(kind: &Kind) -> bool {
+    *kind == Kind::LegacyDefault
 }
 
 #[cfg(test)]
@@ -124,9 +124,8 @@ mod tests {
         assert!(origin.allows_view(ViewKind::Agent));
         assert!(!origin.allows_view(ViewKind::Artifacts));
         assert!(origin.allows_view(ViewKind::Reports));
-        assert!(super::shows_artifacts(None));
-        assert!(super::shows_artifacts(Some(&Kind::LegacyDefault)));
-        assert!(!super::shows_artifacts(Some(&Kind::Isolated)));
+        assert!(super::shows_artifacts(&Kind::LegacyDefault));
+        assert!(!super::shows_artifacts(&Kind::Isolated));
         let (wake, ready) = mpsc::channel();
         let source = origin
             .sessions(move || {

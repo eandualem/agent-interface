@@ -45,8 +45,8 @@ pub(super) fn body(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -
             ))
             .into_any_element();
     }
-    // A profile card's skill or policy: the card read this agent itself, so
-    // the reader goes back to the card rather than to this view's sections.
+    // A skill or policy opened from the profile's agent card shows in the
+    // reader; going back shows the card.
     let Some(card) = &pane.bound_agent else {
         return ui::empty_state(
             ui::empty_tile("user", c.selected, c.muted),

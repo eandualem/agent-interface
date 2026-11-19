@@ -16,10 +16,7 @@ use crate::desktop::{
 pub(super) enum Text<'a> {
     Loading,
     Failed(&'static str),
-    Ready {
-        text: &'a std::sync::Arc<str>,
-        cut: bool,
-    },
+    Ready(&'a std::sync::Arc<str>),
 }
 
 /// One open document.
@@ -44,20 +41,16 @@ pub(super) fn render(
     cx: &mut Context<ViewPane>,
 ) -> AnyElement {
     let (t, c) = (tokens(), colors());
-    // Copy exactly what was read, clearly labelling a bounded preview.
+    // Copy exactly what was read.
     let source = match page.text {
-        Text::Ready { text, cut } => Some((text.clone(), cut)),
+        Text::Ready(text) => Some(text.clone()),
         _ => None,
     };
-    let copy = source.map(|(source, cut)| {
+    let copy = source.map(|source| {
         ui::button(
             "reader-copy",
-            if pane.copied && cut {
-                "Preview copied"
-            } else if pane.copied {
+            if pane.copied {
                 "Copied"
-            } else if cut {
-                "Copy Markdown preview"
             } else {
                 "Copy Markdown"
             },
@@ -126,17 +119,11 @@ pub(super) fn render(
         Text::Failed(error) => ui::text(div().text_color(c.attention_text), &t.text.body)
             .child(error)
             .into_any_element(),
-        Text::Ready { text, cut } => div()
+        Text::Ready(text) => div()
             .flex()
             .flex_col()
             .gap(px(t.space.s12))
             .child(markdown::render(&markdown::document(text), pane, cx))
-            .when(cut, |el| {
-                el.child(
-                    ui::text(div().text_color(c.muted), &t.text.meta)
-                        .child("The rest of this file is longer than this view reads."),
-                )
-            })
             .into_any_element(),
     };
     let body = div()

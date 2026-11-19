@@ -69,8 +69,6 @@ pub enum Request {
     Reports(ReportQuery, Option<String>),
     /// Refresh an open answer independently of its former list page.
     Response(u64),
-    /// One progress report explicitly linked from recorded history.
-    Report(u64),
     /// One explicitly requested durable HTML revision. Never polled.
     Document(u64),
     /// Every skill an agent can load, team-wide.

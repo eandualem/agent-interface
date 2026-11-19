@@ -84,35 +84,19 @@ fn bound_interaction_navigation_and_discussions_keep_the_snapshot_origin() {
     reading.recv_timeout(Duration::from_secs(5)).unwrap();
     let snapshot_b = source_b.read("start", "end", Some("worker")).unwrap();
     assert!(!source_a.accepts(&snapshot_b));
-    assert!(matches!(
-        source_a.detail(&source_b.key(), id),
-        Err(Error::Connection(
-            agent_interface_roster::profiles::Error::BindingMismatch
-        ))
-    ));
     std::fs::write(a.credential_reference(), "BACKBONE_API_KEY=rotated\n").unwrap();
     release.send(()).unwrap();
     let snapshot_a = worker.join().unwrap().unwrap();
     assert!(source_a.accepts(&snapshot_a));
     assert_ne!(source_a.key(), source_b.key());
-    let accepted_origin = source_a.key();
     // A time-window refresh clears the ledger while its reader stays visible.
     // Detail navigation must keep working without waiting for another snapshot.
     drop(snapshot_a);
     assert_eq!(
-        source_a
-            .detail(&accepted_origin, id)
-            .unwrap()
-            .body
-            .text
-            .as_deref(),
+        source_a.detail(id).unwrap().body.text.as_deref(),
         Some("sentinel-a")
     );
-    assert!(source_a.report(&source_b.key(), 7, true).is_err());
-    assert!(
-        format!("{:?}", source_a.report(&source_a.key(), 7, true).unwrap())
-            .contains("sentinel-a-link")
-    );
+    assert!(format!("{:?}", source_a.report(7, true).unwrap()).contains("sentinel-a-link"));
     for (kind, id) in [(Kind::Interaction, id), (Kind::Document, "7")] {
         let target = super::super::conversation::ReferenceTarget {
             connection: source_a.connection().clone(),

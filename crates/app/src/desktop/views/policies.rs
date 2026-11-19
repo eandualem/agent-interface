@@ -194,7 +194,7 @@ pub(super) fn page<'a>(
         count: sources.len(),
         card,
         text: match &source.text {
-            Some(text) => reader::Text::Ready { text, cut: false },
+            Some(text) => reader::Text::Ready(text),
             None => reader::Text::Failed("Backbone could not read this file."),
         },
     }

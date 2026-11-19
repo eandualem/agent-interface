@@ -152,8 +152,8 @@ pub(super) struct Open {
     pub target: Target,
     bound_skill: Option<bound_skills::Open>,
     bound_policy: Option<bound_policies::Open>,
-    /// A skill's text once read, and whether it was cut.
-    pub text: Option<Result<(std::sync::Arc<str>, bool), &'static str>>,
+    /// The skill or policy text once read.
+    pub text: Option<Result<std::sync::Arc<str>, &'static str>>,
 }
 
 /// One view in one pane, with its newest data and what the person chose in it.
@@ -248,11 +248,10 @@ impl ViewPane {
     pub fn new(
         view: View,
         directory: Option<PathBuf>,
-        agents: crate::desktop::agent_status::LiveAgents,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::new_with(view, directory, agents, None, window, cx)
+        Self::new_with(view, directory, Default::default(), None, window, cx)
     }
 
     /// An explicit bound reader; startup does not enable profile selection yet.
@@ -316,7 +315,7 @@ impl ViewPane {
         }
         if let Some(connection) = &pane.connection
             && (pane.view.kind == ViewKind::Artifacts
-                && !super::chooser_source::shows_artifacts(Some(connection.kind()))
+                && !super::chooser_source::shows_artifacts(connection.kind())
                 || !pane.agents.belongs_to(connection.identity()))
         {
             pane.error = Some("This view is unavailable for the original profile.");
@@ -559,7 +558,6 @@ impl ViewPane {
                         id,
                         response,
                         request,
-                        provider,
                         anchor,
                     } = event;
                     let Some(connection) = &pane.connection else {
@@ -569,19 +567,18 @@ impl ViewPane {
                     let id = *id;
                     let response = *response;
                     let request = *request;
-                    let provider = provider.clone();
-                    let expected = provider.clone();
                     let anchor = anchor.clone();
                     let worker = cx
                         .background_executor()
-                        .spawn(async move { source.report(&expected, id, response) });
+                        .spawn(async move { source.report(id, response) });
                     cx.spawn(async move |this, cx| {
                         let result = worker.await;
                         let _ = this.update(cx, |pane, cx| {
                             if pane.shown != Shown::Interactions
-                                || !pane.interactions.as_ref().is_some_and(|view| {
-                                    view.read(cx).is_selected(&provider, &anchor, request)
-                                })
+                                || !pane
+                                    .interactions
+                                    .as_ref()
+                                    .is_some_and(|view| view.read(cx).is_selected(&anchor, request))
                             {
                                 return;
                             }
@@ -690,11 +687,7 @@ impl ViewPane {
             return;
         };
         let bound = bound_policies::Open::capture(connection, source, candidates);
-        let initial = bound
-            .source
-            .text
-            .as_ref()
-            .map(|text| Ok((text.clone(), false)));
+        let initial = bound.source.text.as_ref().map(|text| Ok(text.clone()));
         let artifact = bound.artifact.clone();
         let ticket = bound.ticket();
         self.open = Some(Open {
@@ -729,7 +722,7 @@ impl ViewPane {
                                 .clone()
                                 .ok_or("This policy's source is unavailable.");
                             bound.snapshot = Some(snapshot);
-                            text.map(|text| (text.into(), false))
+                            text.map(Into::into)
                         }
                         Err(error) => Err(error),
                     });
@@ -814,7 +807,7 @@ impl ViewPane {
                                 .clone()
                                 .ok_or("This skill's source is unavailable.");
                             bound.snapshot = Some(snapshot);
-                            text.map(|text| (text.into(), false))
+                            text.map(Into::into)
                         }
                         Err(error) => Err(error),
                     });

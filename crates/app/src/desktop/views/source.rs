@@ -25,7 +25,6 @@ fn request(request: &views::Request) -> content::Request {
             content::Request::Reports(query.clone(), agent.clone())
         }
         views::Request::Response(id) => content::Request::Response(*id),
-        views::Request::Report(id) => content::Request::Report(*id),
         views::Request::Document(id) => content::Request::Document(*id),
     }
 }
@@ -67,7 +66,8 @@ impl Source {
             content::Request::Activity => views::Request::Activity,
             content::Request::Reports(query, agent) => views::Request::Reports(query, agent),
             content::Request::Response(id) => views::Request::Response(id),
-            content::Request::Report(id) => views::Request::Report(id),
+            // A linked report is read by Interactions directly, never by a pane.
+            content::Request::Report(_) => unreachable!("a pane never asks for a linked report"),
             content::Request::Document(id) => views::Request::Document(id),
         };
         let result = update
