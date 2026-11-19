@@ -610,6 +610,25 @@ fn data_is_all_there_or_none_and_a_string_is_never_null() {
             assert!(decode(Action::FirstAgent, &partial).is_err(), "{field}");
         }
     }
+    // A launch and a greeting may be left out: ready without them.
+    for field in ["launch_id", "greeting_delivery_id"] {
+        let mut left = ready();
+        left["data"].as_object_mut().unwrap().remove(field);
+        let event = decode(Action::FirstAgent, &left).unwrap();
+        assert_eq!(event.ready_agent.as_deref(), Some("guide"), "{field}");
+    }
+    let mut unnamed = ready();
+    unnamed["data"].as_object_mut().unwrap().remove("launch_id");
+    assert!(
+        decode(Action::FirstAgent, &unnamed)
+            .unwrap()
+            .launch_id
+            .is_none()
+    );
+    // But not without the three it always has.
+    let mut launch_only = answer(Action::FirstAgent, "failed", "launch_failed", "none");
+    launch_only["data"] = json!({"launch_id": "019a8f3f2c4d7e5f9a0b1c2d3e4f5a6b"});
+    assert!(decode(Action::FirstAgent, &launch_only).is_err());
     // A cancellation's data: both or neither.
     let mut null = cancelled();
     null["data"]["cancelled_request_id"] = Value::Null;
@@ -622,4 +641,22 @@ fn data_is_all_there_or_none_and_a_string_is_never_null() {
     );
     partial["data"] = json!({"can_start_new_request": true});
     assert!(decode(Action::CancelFirstAgent, &partial).is_err());
+}
+
+#[test]
+fn a_message_is_kept_without_controls_direction_or_zero_width_characters() {
+    for hidden in [
+        '\u{7}', '\u{1b}', '\n', '\u{85}', '\u{061c}', '\u{200b}', '\u{200c}', '\u{200d}',
+        '\u{200e}', '\u{200f}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}',
+        '\u{2060}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}', '\u{feff}',
+    ] {
+        assert_eq!(
+            super::one_line(&format!("a{hidden}b")),
+            "a b",
+            "{:x}",
+            hidden as u32
+        );
+    }
+    assert_eq!(super::one_line("  é  ok\t\tnow "), "é ok now");
+    assert_eq!(super::one_line(&"x".repeat(400)).chars().count(), 300);
 }

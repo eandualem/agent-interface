@@ -323,14 +323,23 @@ fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 const MESSAGE_LIMIT: usize = 300;
 
 /// Setup's `message` as the app keeps it: plain text on one line, with
-/// control and direction-changing characters taken out, at most
-/// [`MESSAGE_LIMIT`] characters.
+/// control characters, Unicode's direction controls and zero-width
+/// characters taken out, at most [`MESSAGE_LIMIT`] characters.
 pub fn one_line(message: &str) -> String {
     let plain: String = message
         .chars()
         .map(|c| {
+            // Unicode's Bidi_Control set, and the zero-width characters.
             let hidden = c.is_control()
-                || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}');
+                || matches!(
+                    c,
+                    '\u{061c}'
+                        | '\u{200b}'..='\u{200f}'
+                        | '\u{202a}'..='\u{202e}'
+                        | '\u{2060}'
+                        | '\u{2066}'..='\u{2069}'
+                        | '\u{feff}'
+                );
             if hidden { ' ' } else { c }
         })
         .collect();
@@ -415,9 +424,9 @@ struct DataWire<T> {
 }
 
 /// What a first agent's result reports, as the setup guide's `data`
-/// table names it: all of it, or, from a result setup made without
-/// reaching the profile, none. `launch_id` and `greeting_delivery_id` may
-/// be null.
+/// table names it: its agent's name, readiness and evidence, or, from a
+/// result setup made without reaching the profile, nothing. `launch_id`
+/// and `greeting_delivery_id` may be left out or null.
 #[derive(Deserialize)]
 struct FirstAgentData {
     #[serde(default, deserialize_with = "present")]
@@ -432,16 +441,17 @@ struct FirstAgentData {
     evidence: Option<String>,
 }
 impl FirstAgentData {
-    /// All of it, or none.
+    /// The three it always has, or nothing at all.
     fn whole(&self) -> bool {
         let said = [
             self.agent_name.is_some(),
             self.ready.is_some(),
-            self.launch_id.is_some(),
-            self.greeting_delivery_id.is_some(),
             self.evidence.is_some(),
         ];
-        said.iter().all(|&said| said) || said.iter().all(|&said| !said)
+        said.iter().all(|&said| said)
+            || (said.iter().all(|&said| !said)
+                && self.launch_id.is_none()
+                && self.greeting_delivery_id.is_none())
     }
 }
 
