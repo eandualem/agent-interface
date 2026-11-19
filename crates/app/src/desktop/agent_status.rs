@@ -421,11 +421,11 @@ struct Origin(Identity);
 /// Windows and their child views own sources. The registry only deduplicates
 /// live owners, so closing the last view releases its poller and cached state.
 #[derive(Default)]
-pub(super) struct Sources(HashMap<(Origin, Option<ConnectionKey>), Weak<Source>>);
+pub(super) struct Sources(HashMap<(Origin, ConnectionKey), Weak<Source>>);
 impl Global for Sources {}
 
 impl Sources {
-    fn get(&mut self, origin: &Origin, key: &Option<ConnectionKey>) -> Option<LiveAgents> {
+    fn get(&mut self, origin: &Origin, key: &ConnectionKey) -> Option<LiveAgents> {
         self.0.retain(|_, source| source.strong_count() > 0);
         self.0
             .get(&(origin.clone(), key.clone()))
@@ -434,11 +434,9 @@ impl Sources {
     }
 
     fn insert(&mut self, agents: &LiveAgents) {
-        if let Some(origin) = &agents.0.origin {
-            self.0.insert(
-                (origin.clone(), agents.0.connection_key.clone()),
-                Rc::downgrade(&agents.0),
-            );
+        if let (Some(origin), Some(key)) = (&agents.0.origin, &agents.0.connection_key) {
+            self.0
+                .insert((origin.clone(), key.clone()), Rc::downgrade(&agents.0));
         }
     }
 }
@@ -459,6 +457,8 @@ impl Drop for Roster {
 #[derive(Default)]
 struct Source {
     origin: Option<Origin>,
+    /// Like `origin`, None only for an empty `LiveAgents::default()`, which no
+    /// registry holds.
     connection_key: Option<ConnectionKey>,
     current: RefCell<Current>,
     roster: Roster,
@@ -523,7 +523,6 @@ fn start(
     if !cx.has_global::<Sources>() {
         cx.set_global(Sources::default());
     }
-    let connection_key = Some(connection_key);
     if let Some(agents) =
         cx.update_global::<Sources, _>(|sources, _| sources.get(&origin, &connection_key))
     {
@@ -536,7 +535,7 @@ fn start(
     .ok()?;
     let agents = LiveAgents(Rc::new(Source {
         origin: Some(origin),
-        connection_key,
+        connection_key: Some(connection_key),
         roster: Roster(Some(roster)),
         ..Source::default()
     }));
@@ -648,21 +647,32 @@ mod tests {
         })
     }
 
+    /// One verified connection's key, for the tests that key sources by origin.
+    fn key() -> ConnectionKey {
+        static KEY: std::sync::LazyLock<ConnectionKey> = std::sync::LazyLock::new(|| {
+            let (_directory, connection, server) =
+                crate::roster::content::tests::provider("a", vec![]);
+            server.join().unwrap();
+            connection.connection_key()
+        });
+        KEY.clone()
+    }
+
     fn acquire(sources: &mut Sources, origin: Origin) -> LiveAgents {
-        acquire_key(sources, origin, None)
+        acquire_key(sources, origin, key())
     }
 
     fn acquire_key(
         sources: &mut Sources,
         origin: Origin,
-        connection_key: Option<ConnectionKey>,
+        connection_key: ConnectionKey,
     ) -> LiveAgents {
         if let Some(agents) = sources.get(&origin, &connection_key) {
             return agents;
         }
         let agents = LiveAgents(Rc::new(Source {
             origin: Some(origin),
-            connection_key,
+            connection_key: Some(connection_key),
             ..Source::default()
         }));
         sources.insert(&agents);
@@ -916,17 +926,17 @@ mod tests {
         let old = acquire_key(
             &mut sources,
             origin.clone(),
-            Some(old_connection.connection_key()),
+            old_connection.connection_key(),
         );
         let retained = acquire_key(
             &mut sources,
             origin.clone(),
-            Some(old_connection.clone().connection_key()),
+            old_connection.clone().connection_key(),
         );
         let new = acquire_key(
             &mut sources,
             origin.clone(),
-            Some(new_connection.connection_key()),
+            new_connection.connection_key(),
         );
         assert!(Rc::ptr_eq(&old.0, &retained.0));
         assert!(!Rc::ptr_eq(&old.0, &new.0));
@@ -942,12 +952,12 @@ mod tests {
         drop(retained);
         assert!(
             sources
-                .get(&origin, &Some(old_connection.connection_key()))
+                .get(&origin, &old_connection.connection_key())
                 .is_none()
         );
         assert!(
             sources
-                .get(&origin, &Some(new_connection.connection_key()))
+                .get(&origin, &new_connection.connection_key())
                 .is_some()
         );
     }
