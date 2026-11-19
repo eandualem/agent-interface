@@ -643,6 +643,21 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // A test thread that forked while this one had the script open
+        // keeps it open for writing until its child execs, and until then
+        // running it fails with ETXTBSY. Wait for one run to start: it exits
+        // 9 at once, on arguments setup never takes.
+        loop {
+            match std::process::Command::new(&script).status() {
+                Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) => {
+                    std::thread::yield_now()
+                }
+                started => {
+                    assert_eq!(started.unwrap().code(), Some(9));
+                    break;
+                }
+            }
+        }
         (directory, script)
     }
     /// The requests the fake was given.
