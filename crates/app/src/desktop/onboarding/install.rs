@@ -554,6 +554,18 @@ mod tests {
             1,
         );
         assert_eq!(answer(&format!("{}\n{twice}\n", fixture("step")), ID), None);
+        let twice = fixture("step")
+            .to_string()
+            .replacen('{', "{\"status\":\"failed\",", 1);
+        assert_eq!(
+            answer(&format!("{twice}\n{}\n", fixture("result")), ID),
+            None
+        );
+        let twice =
+            fixture("result")
+                .to_string()
+                .replacen('{', "{\"code\":\"installation_conflict\",", 1);
+        assert_eq!(answer(&format!("{}\n{twice}\n", fixture("step")), ID), None);
         // Nothing after the result, not even a blank line, and no line,
         // blank or not, over its bound.
         let printed = format!("{}\n{}\n\n", fixture("step"), fixture("result"));

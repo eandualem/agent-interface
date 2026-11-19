@@ -505,4 +505,52 @@ fn a_field_an_event_defines_said_twice_poisons() {
         .replacen('{', "{\"status\":\"completed\",", 1);
     let mut stream = prepared(guide()).stream(Action::FirstAgent);
     assert!(stream.push(format!("{twice}\n").as_bytes()).is_err());
+    let refused = answer(
+        Action::FirstAgent,
+        "failed",
+        "agent_conflict",
+        "new_request",
+    );
+    let twice =
+        serde_json::to_string(&refused)
+            .unwrap()
+            .replacen('{', "{\"code\":\"agent_ready\",", 1);
+    let mut stream = prepared(guide()).stream(Action::FirstAgent);
+    assert!(stream.push(format!("{twice}\n").as_bytes()).is_err());
+}
+
+#[test]
+fn a_field_of_the_data_the_app_reads_said_twice_poisons() {
+    // Another request's ID first and this one's last: the last does not win.
+    let twice = serde_json::to_string(&cancelled()).unwrap().replacen(
+        "\"data\":{",
+        "\"data\":{\"cancelled_request_id\":\"019a8f3f1a2b7c3d8e4f5a6b7c8d9e10\",",
+        1,
+    );
+    let mut stream = prepared(guide()).stream(Action::CancelFirstAgent);
+    assert!(stream.push(format!("{twice}\n").as_bytes()).is_err());
+    let twice = serde_json::to_string(&ready()).unwrap().replacen(
+        "\"data\":{",
+        "\"data\":{\"agent_name\":\"another\",",
+        1,
+    );
+    let mut stream = prepared(guide()).stream(Action::FirstAgent);
+    assert!(stream.push(format!("{twice}\n").as_bytes()).is_err());
+    // Data the app doesn't read, or none, as a result made without reaching
+    // the profile has, still reads.
+    let mut other = ready();
+    other["data"]["evidence_more"] = json!({"any": [1, 2]});
+    assert!(
+        decode(Action::FirstAgent, &other)
+            .unwrap()
+            .ready_agent
+            .is_some()
+    );
+    let empty = answer(
+        Action::FirstAgent,
+        "action_required",
+        "service_unavailable",
+        "same_request",
+    );
+    assert!(decode(Action::FirstAgent, &empty).is_ok());
 }

@@ -314,7 +314,37 @@ struct ResultWire {
     _message: String,
     retry: String,
     completed_steps: Vec<String>,
+    /// An object; what its action defines of it is read on its own.
     data: Value,
+}
+
+/// A result's `data`, read from the line itself as its action defines
+/// it, so a field of it said twice is refused.
+#[derive(Deserialize)]
+struct DataWire<T> {
+    data: T,
+}
+
+/// What a first agent's result reports, as the setup guide's `data`
+/// table names it. A result setup made without reaching the profile has
+/// none of it.
+#[derive(Deserialize)]
+struct FirstAgentData {
+    agent_name: Option<String>,
+    ready: Option<String>,
+    launch_id: Option<String>,
+    #[serde(rename = "greeting_delivery_id")]
+    _greeting: Option<i64>,
+    #[serde(rename = "evidence")]
+    _evidence: Option<String>,
+}
+
+/// What a cancellation's result reports; only the answer that confirms
+/// the cancellation has it.
+#[derive(Deserialize)]
+struct CancelData {
+    cancelled_request_id: Option<String>,
+    can_start_new_request: Option<bool>,
 }
 
 /// A bounded JSON-lines decoder owned by one exact request and action.
@@ -408,35 +438,46 @@ impl Stream {
             {
                 return Err(Error::Invalid);
             }
-            let data = wire.data;
             event.status = wire.status;
             let completed = event.status == "completed";
-            if self.action == Action::CancelFirstAgent && completed && code == "request_cancelled" {
-                // Only this answer confirms the cancellation; naming another
-                // request contradicts it.
-                if data.get("cancelled_request_id").and_then(Value::as_str)
-                    != Some(&self.request_id)
-                    || data.get("can_start_new_request").and_then(Value::as_bool) != Some(true)
-                {
-                    return Err(Error::Invalid);
+            match self.action {
+                Action::CancelFirstAgent => {
+                    let data = serde_json::from_slice::<DataWire<CancelData>>(bytes)
+                        .map_err(|_| Error::Invalid)?
+                        .data;
+                    if completed && code == "request_cancelled" {
+                        // Only this answer confirms the cancellation; naming
+                        // another request contradicts it.
+                        if data.cancelled_request_id.as_deref() != Some(&self.request_id)
+                            || data.can_start_new_request != Some(true)
+                        {
+                            return Err(Error::Invalid);
+                        }
+                        event.cancelled = true;
+                    }
                 }
-                event.cancelled = true;
-            }
-            if self.action == Action::FirstAgent && completed && code == "agent_ready" {
-                // Ready only for this agent, whose CLI still ran after its
-                // launch; a launch is not always named.
-                let launch_id = match data.get("launch_id") {
-                    None | Some(Value::Null) => None,
-                    Some(Value::String(launch)) if token(launch) => Some(launch.clone()),
-                    Some(_) => return Err(Error::Invalid),
-                };
-                if data.get("agent_name").and_then(Value::as_str) != Some(&self.name)
-                    || data.get("ready").and_then(Value::as_str) != Some("ready")
-                {
-                    return Err(Error::Invalid);
+                Action::FirstAgent => {
+                    let data = serde_json::from_slice::<DataWire<FirstAgentData>>(bytes)
+                        .map_err(|_| Error::Invalid)?
+                        .data;
+                    if [&data.ready, &data.launch_id]
+                        .into_iter()
+                        .any(|value| value.as_deref().is_some_and(|value| !token(value)))
+                    {
+                        return Err(Error::Invalid);
+                    }
+                    if completed && code == "agent_ready" {
+                        // Ready only for this agent, whose CLI still ran after
+                        // its launch; a launch is not always named.
+                        if data.agent_name.as_deref() != Some(&self.name)
+                            || data.ready.as_deref() != Some("ready")
+                        {
+                            return Err(Error::Invalid);
+                        }
+                        event.ready_agent = Some(self.name.clone());
+                        event.launch_id = data.launch_id;
+                    }
                 }
-                event.ready_agent = Some(self.name.clone());
-                event.launch_id = launch_id;
             }
             event.code = Some(code);
             event.retry = Some(retry);
