@@ -789,14 +789,28 @@ mod tests {
     #[ignore = "needs a private trial of a real Agent Backbone service"]
     fn initialize_against_a_real_service() {
         // Nothing of a person's own: every place the service is told to use
-        // is a temporary one, and no tmux client is inherited.
-        for name in ["HOME", "BACKBONE_DIR", "TMUX_TMPDIR"] {
-            let place = PathBuf::from(std::env::var_os(name).unwrap_or_else(|| panic!("{name}")))
-                .canonicalize()
-                .unwrap();
+        // is a folder inside the temporary one, never that folder itself,
+        // where tmux keeps its default server; and no tmux client is
+        // inherited. The XDG folders count when they are set.
+        for (name, required) in [
+            ("HOME", true),
+            ("BACKBONE_DIR", true),
+            ("TMUX_TMPDIR", true),
+            ("XDG_CONFIG_HOME", false),
+            ("XDG_DATA_HOME", false),
+            ("XDG_STATE_HOME", false),
+            ("XDG_RUNTIME_DIR", false),
+        ] {
+            let Some(place) = std::env::var_os(name) else {
+                assert!(!required, "{name} must be set");
+                continue;
+            };
+            let place = PathBuf::from(place).canonicalize().unwrap();
             assert!(
-                place.starts_with("/tmp") || place.starts_with("/private/tmp"),
-                "{name} must be a disposable temporary folder"
+                ["/tmp", "/private/tmp"].iter().any(|root| place
+                    .strip_prefix(root)
+                    .is_ok_and(|rest| rest.components().next().is_some())),
+                "{name} must be a disposable folder inside the temporary one"
             );
         }
         assert!(std::env::var_os("TMUX").is_none(), "TMUX must be unset");
@@ -825,15 +839,16 @@ mod tests {
             "initialized" | "existing_preserved"
         ));
 
-        // What first run waits for after that answer.
+        // What first run waits for after that answer, for as long, with the
+        // trial's `backbone` where first run asks the login shell for it.
         let client = crate::profiles::Client::new(backbone, path_env.into()).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + super::super::SERVICE_WAIT;
         let answers = loop {
             let answers = super::super::probe::answers(Some(client.clone()));
             if answers == super::super::probe::Backbone::Running || Instant::now() >= deadline {
                 break answers;
             }
-            std::thread::sleep(Duration::from_millis(500));
+            std::thread::sleep(super::super::SERVICE_POLL);
         };
         println!("the Default profile: {answers:?}");
         assert_eq!(answers, super::super::probe::Backbone::Running);

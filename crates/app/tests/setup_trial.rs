@@ -22,20 +22,35 @@ fn live() -> bool {
     true
 }
 
+/// Whether `path` is inside the temporary folder: never that folder itself,
+/// where tmux keeps its default server.
 fn temporary(path: &Path) -> bool {
-    path.starts_with("/tmp") || path.starts_with("/private/tmp")
+    ["/tmp", "/private/tmp"].iter().any(|root| {
+        path.strip_prefix(root)
+            .is_ok_and(|rest| rest.components().next().is_some())
+    })
 }
 
 /// The trial's client. Nothing of a person's own: every place the service is
-/// told to use is a temporary one, and no tmux client is inherited.
+/// told to use is a folder inside the temporary one, and no tmux client is
+/// inherited. The XDG folders count when they are set.
 fn client() -> Client {
-    for name in ["HOME", "BACKBONE_DIR", "TMUX_TMPDIR"] {
-        let place = PathBuf::from(std::env::var_os(name).unwrap_or_else(|| panic!("{name}")))
-            .canonicalize()
-            .unwrap();
+    for (name, required) in [
+        ("HOME", true),
+        ("BACKBONE_DIR", true),
+        ("TMUX_TMPDIR", true),
+        ("XDG_CONFIG_HOME", false),
+        ("XDG_DATA_HOME", false),
+        ("XDG_STATE_HOME", false),
+        ("XDG_RUNTIME_DIR", false),
+    ] {
+        let Some(place) = std::env::var_os(name) else {
+            assert!(!required, "{name} must be set");
+            continue;
+        };
         assert!(
-            temporary(&place),
-            "{name} must be a disposable temporary folder"
+            temporary(&PathBuf::from(place).canonicalize().unwrap()),
+            "{name} must be a disposable folder inside the temporary one"
         );
     }
     assert!(std::env::var_os("TMUX").is_none(), "TMUX must be unset");
@@ -55,12 +70,19 @@ fn first_agent_on_the_default_profile() {
     let variable = |name: &str| std::env::var(name).ok();
     let name = variable("TRIAL_AGENT_NAME").unwrap_or_else(|| "guide".into());
     let directory = PathBuf::from(variable("TRIAL_AGENT_DIR").expect("TRIAL_AGENT_DIR"));
+    // Setup makes the folder, so what exists of its path is what is checked:
+    // a link on the way must not lead out of the temporary folder.
+    let existing = directory
+        .ancestors()
+        .find(|ancestor| ancestor.exists())
+        .expect("an existing folder above TRIAL_AGENT_DIR");
     assert!(
         temporary(&directory)
+            && temporary(&existing.canonicalize().unwrap())
             && directory
                 .components()
                 .all(|part| part != Component::ParentDir),
-        "TRIAL_AGENT_DIR must be a folder under /tmp"
+        "TRIAL_AGENT_DIR must be a folder inside the trial's own under /tmp"
     );
     let runtime = variable("TRIAL_RUNTIME").unwrap_or_else(|| "codex".into());
     assert!(
