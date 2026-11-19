@@ -201,13 +201,6 @@ fn carriers(
         .child(header)
         .child(bar)
         .child(ui::grouped_page("tag-agents", column))
-        .child(ui::view_footer(
-            if pane.connection.is_some() {
-                &[("esc", "back")]
-            } else {
-                &[("esc", "back"), ("click", "show its terminal")]
-            },
-            "read-only",
-        ))
+        .child(ui::view_footer(&[("esc", "back")], "read-only"))
         .into_any_element()
 }

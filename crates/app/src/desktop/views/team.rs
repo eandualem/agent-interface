@@ -1,6 +1,5 @@
 //! Team: who works where. Agents grouped by repository, tag or swarm, with
-//! their states; a click shows an agent's terminal, ⌥-click opens its card
-//! beside this pane.
+//! their states; ⌥-click opens an agent's card beside this pane.
 
 use std::collections::BTreeMap;
 
@@ -137,14 +136,7 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
         .child(summary)
         .child(ui::grouped_page("team-rows", column))
         .child(ui::view_footer(
-            if pane.connection.is_some() {
-                &[("⌥ click", "agent card beside")]
-            } else {
-                &[
-                    ("click", "show its terminal"),
-                    ("⌥ click", "agent card beside"),
-                ]
-            },
+            &[("⌥ click", "agent card beside")],
             "updates every 3 s",
         ))
         .into_any_element()
