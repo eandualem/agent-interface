@@ -553,22 +553,22 @@ impl ViewPane {
         self.plans_shown(false, cx);
         if self.interactions.is_none() {
             let visible = self.visible.clone();
+            // A linked report is read through the same connection as the history.
+            let reports = source.clone();
             let view = cx.new(|cx| {
                 interactions::Interactions::new(source, visible, self.agents.clone(), window, cx)
             });
             self._search.push(cx.observe(&view, |_, _, cx| cx.notify()));
-            self._search.push(
-                cx.subscribe(&view, |pane, _, event: &interactions::Report, cx| {
+            self._search.push(cx.subscribe(
+                &view,
+                move |_, _, event: &interactions::Report, cx| {
                     let interactions::Report {
                         id,
                         response,
                         request,
                         anchor,
                     } = event;
-                    let Some(connection) = &pane.connection else {
-                        return;
-                    };
-                    let source = interactions::Source(connection.clone());
+                    let source = reports.clone();
                     let id = *id;
                     let response = *response;
                     let request = *request;
@@ -611,8 +611,8 @@ impl ViewPane {
                         });
                     })
                     .detach();
-                }),
-            );
+                },
+            ));
             self.interactions = Some(view);
         } else {
             self.interactions_shown(true, cx);
