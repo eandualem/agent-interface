@@ -175,6 +175,10 @@ impl Environment {
     }
 }
 
+/// Lock files a creator found held, so a test can see a creator waiting.
+#[cfg(test)]
+static LOCKS_FOUND_HELD: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
 /// One eligible ordinary leaf; attachments and empty choosers are excluded by the caller.
 pub struct Request {
     /// Stable twelve-character lowercase hexadecimal leaf identity.
@@ -239,6 +243,11 @@ pub fn ensure(socket: &Path, requests: &[Request], environment: &Environment) ->
         match lock.try_lock() {
             Ok(()) => break,
             Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                #[cfg(test)]
+                LOCKS_FOUND_HELD
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(PathBuf::from(&lock_path));
                 thread::sleep(Duration::from_millis(10))
             }
             Err(TryLockError::WouldBlock) => {

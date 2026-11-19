@@ -387,11 +387,14 @@ fn a_second_creator_waits_for_the_first_creators_lock() {
     }
     // flock conflicts between open file descriptions, so this one stands in
     // for another window that is creating shells.
+    let mut lock_path = socket.clone().into_os_string();
+    lock_path.push(".viewer-lock");
+    let lock_path = PathBuf::from(lock_path);
     let held = OpenOptions::new()
         .append(true)
         .create(true)
         .mode(0o600)
-        .open(format!("{}.viewer-lock", socket.display()))
+        .open(&lock_path)
         .unwrap();
     held.lock().unwrap();
     let creator = thread::spawn({
@@ -402,7 +405,19 @@ fn a_second_creator_waits_for_the_first_creators_lock() {
         };
         move || ensure(&socket, &[request], &environment)
     });
-    thread::sleep(Duration::from_millis(300));
+    // The creator records the lock as found held: it is waiting on it.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !LOCKS_FOUND_HELD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(&lock_path)
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the creator never found the lock held"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
     assert!(!creator.is_finished());
     assert!(
         server
