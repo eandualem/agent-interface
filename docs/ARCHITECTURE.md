@@ -765,10 +765,14 @@ had read by then is kept for the next opening.
   reports them, each counted once, up to 64. Each resolves to its Git top
   level, one per clone (common Git directory), and matches when its `origin`
   URL as stored (not rewritten by `url.*.insteadOf`) is the pointer's GitHub
-  repository, in HTTPS or SSH form, and it has the commits as commit objects.
+  repository in one of these forms only: `https://github.com/…`,
+  `ssh://…github.com/…` (port 22 at most), `git@github.com:…`, or
+  `ssh://…ssh.github.com:443/…`; and it has the commits as commit objects.
   Partial clones (`extensions.partialClone`, or a remote with `promisor` or
   `partialclonefilter`) are left out, since Git fills them in from the network.
-- **Reading Git.** `git`, as found on the app's own PATH, runs without the
+- **Reading Git.** `git`, as found on the app's own PATH, is not run at all
+  when it is macOS's `/usr/bin/git` stub with no developer tools installed
+  (checked once, on the file system). It runs without the
   inherited Git environment, without system or user configuration
   (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`), with
   `GIT_OPTIONAL_LOCKS=0`, no terminal prompt, no pager, literal pathspecs,
@@ -801,12 +805,12 @@ had read by then is kept for the next opening.
   as text, and added and removed lines in the theme's `--ai-diff-*` colours,
   set by `views/reading.rs` for every theme, with each sign readable on its
   row's fill, and styled by
-  `assets/document/theme.css`; long lines scroll inside the view. Text from
-  Git is escaped. No script, bridge or network access is added, and the
+  `assets/document/theme.css`; long lines scroll inside the view. Only UTF-8
+  text is shown, and text from Git is escaped. No script, bridge or network access is added, and the
   content policy is unchanged.
 - **Nothing to show.** A pointer with no matching checkout or commit, a path
   missing at that commit, a diff that touches a submodule, a binary file at a
-  code pointer, a read that is too
+  code pointer, a path or text that is not UTF-8, a read that is too
   large or too slow, or a view past 32 MiB of views on the page stays exactly
   as authored.
 

@@ -52,7 +52,9 @@ pub fn checkouts(folders: &[PathBuf], deadline: Instant) -> Vec<Checkout> {
         ) else {
             continue;
         };
-        let out = String::from_utf8_lossy(&out);
+        let Ok(out) = String::from_utf8(out) else {
+            continue;
+        };
         let mut lines = out.lines();
         let (Some(top), Some(common)) = (lines.next(), lines.next()) else {
             continue;
@@ -122,12 +124,10 @@ impl Checkout {
 /// HTTPS or SSH form, ignoring case, a `.git` suffix and a final `/`.
 pub fn is_remote(url: &str, repo: &str) -> bool {
     let url = url.trim();
-    let scheme = ["https://", "http://", "ssh://", "git://"]
-        .into_iter()
-        .find(|scheme| {
-            url.get(..scheme.len())
-                .is_some_and(|start| start.eq_ignore_ascii_case(scheme))
-        });
+    let scheme = ["https://", "ssh://"].into_iter().find(|scheme| {
+        url.get(..scheme.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(scheme))
+    });
     let (authority, path) = match scheme {
         Some(scheme) => match url[scheme.len()..].split_once('/') {
             Some(parts) => parts,
@@ -142,10 +142,19 @@ pub fn is_remote(url: &str, repo: &str) -> bool {
     let host = authority
         .rsplit_once('@')
         .map_or(authority, |(_, host)| host);
-    let host = host.split_once(':').map_or(host, |(host, _)| host);
+    let (host, port) = match host.split_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (host, None),
+    };
+    // These forms only; GitHub also serves SSH on port 443 at ssh.github.com.
+    let github = match (scheme, port) {
+        (Some("https://") | None, None) | (Some("ssh://"), None | Some("22")) => "github.com",
+        (Some("ssh://"), Some("443")) => "ssh.github.com",
+        _ => return false,
+    };
     let path = path.trim_start_matches('/').trim_end_matches('/');
     let path = path.strip_suffix(".git").unwrap_or(path);
-    host.eq_ignore_ascii_case("github.com") && path.eq_ignore_ascii_case(repo)
+    host.eq_ignore_ascii_case(github) && path.eq_ignore_ascii_case(repo)
 }
 
 #[cfg(test)]
@@ -164,6 +173,7 @@ mod tests {
             "https://user:token@github.com/owner/name.git",
             "ssh://git@github.com/owner/name.git",
             "ssh://git@github.com:22/owner/name",
+            "ssh://git@ssh.github.com:443/owner/name.git",
             "git@github.com:owner/name.git",
             "git@github.com:/owner/name",
             "github.com:owner/name",
@@ -183,6 +193,13 @@ mod tests {
             "file:///github.com/owner/name",
             "github.com",
             "",
+            // No other forms.
+            "http://github.com/owner/name",
+            "git://github.com/owner/name",
+            "https://github.com:8443/owner/name",
+            "ssh://git@github.com:2222/owner/name",
+            "ssh://git@ssh.github.com/owner/name",
+            "git@ssh.github.com:owner/name",
         ] {
             assert!(!is_remote(url, "owner/name"), "{url}");
         }

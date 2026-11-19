@@ -20,7 +20,7 @@ pub const ROW_LIMIT: usize = 20_000;
 /// The standard output of `git -C dir args…`, when it succeeds by `deadline`
 /// (and within 3 s) and writes at most `limit` bytes.
 pub fn run(dir: &Path, args: &[&str], limit: usize, deadline: Instant) -> Option<Vec<u8>> {
-    if Instant::now() >= deadline {
+    if Instant::now() >= deadline || !runs_git() {
         return None;
     }
     let mut child = command(dir, args).spawn().ok()?;
@@ -57,6 +57,42 @@ pub fn run(dir: &Path, args: &[&str], limit: usize, deadline: Instant) -> Option
             }
         }
     }
+}
+
+/// Whether `git` runs Git. On macOS, Apple's `/usr/bin/git` without the
+/// developer tools only offers to install them, so no Git is run then.
+fn runs_git() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        static RUNS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *RUNS.get_or_init(|| {
+            let path = std::env::var_os("PATH").unwrap_or_default();
+            let git = std::env::split_paths(&path)
+                .map(|dir| dir.join("git"))
+                .find(|git| git.is_file());
+            let tools = [
+                std::env::var_os("DEVELOPER_DIR").map(std::path::PathBuf::from),
+                std::fs::read_link("/var/db/xcode_select_link").ok(),
+                Some("/Library/Developer/CommandLineTools".into()),
+            ];
+            shim_runs(git.as_deref(), &tools)
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+/// Whether `git`, found at `git`, runs Git: anything but `/usr/bin/git`
+/// does, and that one only with developer tools in one of `tools`.
+#[cfg(any(target_os = "macos", test))]
+fn shim_runs(git: Option<&Path>, tools: &[Option<std::path::PathBuf>]) -> bool {
+    git != Some(Path::new("/usr/bin/git"))
+        || tools
+            .iter()
+            .flatten()
+            .any(|dir| dir.join("usr/bin/git").is_file())
 }
 
 /// `git -C dir args…` as every read runs it: no inherited Git environment,
@@ -198,7 +234,7 @@ fn entries(raw: &[u8]) -> Option<Vec<Entry>> {
         let mut parts = meta.strip_prefix(':')?.split(' ');
         let submodule = parts.by_ref().take(2).any(|mode| mode == "160000");
         let status = parts.next_back()?.chars().next()?;
-        let mut next = || Some(String::from_utf8_lossy(fields.next()?).into_owned());
+        let mut next = || String::from_utf8(fields.next()?.to_vec()).ok();
         let (from, path) = if matches!(status, 'R' | 'C') {
             (Some(next()?), next()?)
         } else {
@@ -265,9 +301,10 @@ fn rows(section: &[u8], room: usize) -> Option<Vec<Row>> {
         if rows.len() >= room {
             return None;
         }
-        let text = || String::from_utf8_lossy(&line[1.min(line.len())..]).into_owned();
+        // Text that is not UTF-8 is not shown at all.
+        let text = || String::from_utf8(line[1.min(line.len())..].to_vec()).ok();
         if line.starts_with(b"@@ ") {
-            let header = String::from_utf8_lossy(line).into_owned();
+            let header = String::from_utf8(line.to_vec()).ok()?;
             let (from, to) = starts(&header);
             (old, new) = (from, to);
             rows.push(Row::Hunk(header));
@@ -283,7 +320,7 @@ fn rows(section: &[u8], room: usize) -> Option<Vec<Row>> {
                         sign: '+',
                         old: None,
                         new: Some(new),
-                        text: text(),
+                        text: text()?,
                     });
                     new += 1;
                 }
@@ -292,17 +329,17 @@ fn rows(section: &[u8], room: usize) -> Option<Vec<Row>> {
                         sign: '-',
                         old: Some(old),
                         new: None,
-                        text: text(),
+                        text: text()?,
                     });
                     old += 1;
                 }
-                b'\\' => rows.push(Row::Remark(String::from_utf8_lossy(line).into_owned())),
+                b'\\' => rows.push(Row::Remark(String::from_utf8(line.to_vec()).ok()?)),
                 _ => {
                     rows.push(Row::Line {
                         sign: ' ',
                         old: Some(old),
                         new: Some(new),
-                        text: text(),
+                        text: text()?,
                     });
                     old += 1;
                     new += 1;
@@ -338,7 +375,7 @@ fn starts(header: &str) -> (u32, u32) {
     (old.max(1), new.max(1))
 }
 
-/// The text of `path` at `commit`, unless it is missing or binary.
+/// The text of `path` at `commit`, unless it is missing, binary or not UTF-8.
 pub fn file(top: &Path, commit: &str, path: &str, deadline: Instant) -> Option<String> {
     let blob = run(
         top,
@@ -349,7 +386,7 @@ pub fn file(top: &Path, commit: &str, path: &str, deadline: Instant) -> Option<S
     if blob[..blob.len().min(8000)].contains(&0) {
         return None;
     }
-    Some(String::from_utf8_lossy(&blob).into_owned())
+    String::from_utf8(blob).ok()
 }
 
 #[cfg(test)]
@@ -584,6 +621,29 @@ pub(super) mod tests {
         ] {
             assert!(args.contains(&OsStr::new(flag)), "{flag}");
         }
+    }
+
+    #[test]
+    fn text_that_is_not_utf8_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, second) = repository(dir.path(), "git@github.com:owner/name.git");
+        fs::write(dir.path().join("latin.txt"), b"caf\xe9\n").unwrap();
+        git(dir.path(), &["add", "-A"]);
+        git(dir.path(), &["commit", "-qm", "latin"]);
+        let third = git(dir.path(), &["rev-parse", "HEAD"]);
+        assert_eq!(file(dir.path(), &third, "latin.txt", later()), None);
+        assert_eq!(diff(dir.path(), &second, &third, None, later()), None);
+    }
+
+    #[test]
+    fn apples_git_stub_runs_git_only_with_developer_tools() {
+        let tools = tempfile::tempdir().unwrap();
+        let stub = Some(Path::new("/usr/bin/git"));
+        assert!(!shim_runs(stub, &[None, Some("/nonexistent".into())]));
+        assert!(shim_runs(Some(Path::new("/opt/homebrew/bin/git")), &[]));
+        fs::create_dir_all(tools.path().join("usr/bin")).unwrap();
+        fs::write(tools.path().join("usr/bin/git"), "").unwrap();
+        assert!(shim_runs(stub, &[Some(tools.path().to_owned())]));
     }
 
     #[test]
