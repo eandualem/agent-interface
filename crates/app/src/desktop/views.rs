@@ -1042,35 +1042,35 @@ impl Render for ViewPane {
         }
         let (t, c) = (tokens(), colors());
         let previous = self.conversation.take();
-        self.conversation =
-            self.reports
-                .open
-                .as_ref()
-                .zip(self.connection.clone())
-                .map(|(item, connection)| {
-                    let key = format!(
-                        "{}\n{}\n{}",
-                        seen::origin_key(connection.identity()),
-                        item.author_id.as_deref().unwrap_or_default(),
-                        agent_interface_roster::feedback::reference(item)
-                    );
-                    self.conversations
-                        .entry(key)
-                        .or_insert_with(|| {
-                            cx.new(|cx| {
-                                conversation::Conversation::new(
-                                    self.agents.clone(),
-                                    item.clone(),
-                                    connection,
-                                    self.documents.surface.clone(),
-                                    self.visible.clone(),
-                                    window,
-                                    cx,
-                                )
-                            })
+        self.conversation = self
+            .reports
+            .open
+            .as_ref()
+            .zip(self.connection.as_ref())
+            .map(|(item, connection)| {
+                let key = format!(
+                    "{}\n{}\n{}",
+                    seen::origin_key(connection.identity()),
+                    item.author_id.as_deref().unwrap_or_default(),
+                    agent_interface_roster::feedback::reference(item)
+                );
+                self.conversations
+                    .entry(key)
+                    .or_insert_with(|| {
+                        cx.new(|cx| {
+                            conversation::Conversation::new(
+                                self.agents.clone(),
+                                item.clone(),
+                                connection.clone(),
+                                self.documents.surface.clone(),
+                                self.visible.clone(),
+                                window,
+                                cx,
+                            )
                         })
-                        .clone()
-                });
+                    })
+                    .clone()
+            });
         // Bound skill discussions retain the exact displayed artifact revision.
         if self.conversation.is_none()
             && let Some(bound) = self
