@@ -36,7 +36,11 @@ PALETTE = TOKENS["color"]["dark"]
 accent = tuple(bytes.fromhex(PALETTE["accent"][1:]))
 surface = tuple(bytes.fromhex(PALETTE["surface"][1:]))
 DISABLED_ACCENT = "#" + "".join(f"{round((a + s) / 2):02x}" for a, s in zip(accent, surface))
-ACCOUNTS = {"claude": "present", "codex": "missing"}
+# The request bodies setup takes, as the service's fixtures give them.
+SETUP_FIXTURES = ROOT / "crates/roster/src/profiles/setup/fixtures"
+INITIALIZE = json.loads((SETUP_FIXTURES / "setup-initialize.json").read_text())
+FIRST_AGENT = json.loads((SETUP_FIXTURES / "setup-first-agent.json").read_text())
+REQUEST_ID = re.compile(r"[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}")
 
 
 def wait_for(check, description, timeout=40):
@@ -88,8 +92,7 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
     for name in ("claude", "codex"):
         executable(name, "#!/bin/sh\nexit 99\n")  # Found, but no real agent can run.
     executable("backbone", f'#!/bin/sh\nexec "{sys.executable}" -I "{FIXTURE}" "$@"\n')
-    subprocess.run([str(bin_dir / "backbone"), "init", json.dumps(ACCOUNTS)],
-                   env=env, check=True, capture_output=True)
+    subprocess.run([str(bin_dir / "backbone"), "init"], env=env, check=True, capture_output=True)
 
     def command(*args, check=True, timeout=30):
         # OCR's OpenMP workers contend on constrained runners. Keep this limit
@@ -188,7 +191,11 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
             wait_for(lambda: re.search(r"first\s+profile", text(main)), "Name your first profile", timeout=60)
             setups = [entry["request"] for entry in log("setup.jsonl")]
             assert [r["action"] for r in setups] == ["initialize"], setups
-            assert setups[0]["schema_version"] == 3 and setups[0]["starter_profile"] == "core-v1", setups
+            # The whole body, field for field as the service's fixture, but
+            # its own request ID.
+            assert setups[0].keys() == INITIALIZE.keys(), setups
+            assert REQUEST_ID.fullmatch(setups[0]["request_id"]), setups
+            assert {**setups[0], "request_id": INITIALIZE["request_id"]} == INITIALIZE, setups
             value = capture(main, "profile")
             assert "Agent Backbone" not in value, "the service was named on screen"
             assert "Personal" in value, "the suggested name"
@@ -208,6 +215,13 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
             profile_id = created[0]["entry"]["profile_id"]
             commands = [entry["argv"][:2] for entry in log("cli.jsonl")]
             assert ["profiles", "apply"] not in commands, commands
+            # Personal is the machine's second profile, so it keeps its own
+            # accounts, which hold no login yet: both tools ask for a sign-in
+            # when they start.
+            assert created[0]["entry"]["accounts"] == "own", created
+            accounts = {entry["path"].split("runtime=")[1]: entry.get("said") for entry in log("http.jsonl")
+                        if entry["profile"] == profile_id and entry["path"].startswith("/api/profile/accounts/status")}
+            assert accounts == {"claude": "missing", "codex": "missing"}, accounts
             assert stat.S_IMODE(library.stat().st_mode) == 0o700, "the library folder is private"
             capture(main, "guide")
 
@@ -220,12 +234,16 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
             setups = [entry["request"] for entry in log("setup.jsonl")]
             assert [r["action"] for r in setups] == ["initialize", "first_agent"], setups
             request = setups[1]
-            assert request["schema_version"] == 3 and request["profile_id"] == profile_id, request
-            assert request["start_greeting"] is True, request
-            agent = request["agent"]
-            assert agent["name"] == "guide" and agent["runtime"] == "claude"
-            assert agent["directory"] == str(root / "Agents/guide") and agent["create_directory"]
-            assert agent["brief"] == {"template": "orchestrator-v1"} and agent["model"] is None
+            # The whole body: the fixture's fields, with this run's choices.
+            assert request.keys() == FIRST_AGENT.keys(), request
+            assert request["agent"].keys() == FIRST_AGENT["agent"].keys(), request
+            assert REQUEST_ID.fullmatch(request["request_id"]), request
+            assert request["request_id"] != setups[0]["request_id"], request
+            assert {**request, "request_id": None} == {
+                **FIRST_AGENT, "request_id": None, "profile_id": profile_id, "start_greeting": True,
+                "agent": {**FIRST_AGENT["agent"], "directory": str(root / "Agents/guide"),
+                          "runtime": "claude", "model": None, "create_directory": True,
+                          "name": "guide", "brief": {"template": "orchestrator-v1"}}}, request
             assert (root / "Agents/guide").is_dir()
 
             saved = tomllib.loads((settings / "settings.toml").read_text())
@@ -242,7 +260,8 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
                 "nothing asked of a ready computer", "setup's initialize on a fresh machine",
                 "first profile made and served by the service",
                 "private library folder", "one window throughout",
-                "sign-ins on the tool cards", "guide preselected on a signed-in tool",
+                "sign-ins on the tool cards, from the profile's own accounts",
+                "guide on the first tool that can run",
                 "guide's setup request", "setup remembered as done",
                 "one workspace bound to the profile"]), indent=2) + "\n")
             print(f"Linux onboarding regression passed at {SCALE}%")
