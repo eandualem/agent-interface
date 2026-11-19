@@ -125,16 +125,18 @@ fn answer(pointer: &Pointer, checkouts: &[Checkout], deadline: Instant) -> Optio
         .iter()
         .filter(|checkout| checkout.is(pointer.repo()))
     {
-        let key = (checkout.common().to_owned(), pointer.clone());
-        if let Some(read) = cache().0.get(&key).cloned() {
-            return Some(read);
-        }
+        // Even a cached answer needs the commits here now: the folder may
+        // hold another clone since.
         let top = checkout.top();
         if !commits
             .iter()
             .all(|commit| git::has_commit(top, commit, deadline))
         {
             continue;
+        }
+        let key = (checkout.common().to_owned(), pointer.clone());
+        if let Some(read) = cache().0.get(&key).cloned() {
+            return Some(read);
         }
         let read = Arc::new(match pointer {
             Pointer::Diff {
@@ -192,9 +194,22 @@ mod tests {
         assert!(!out.contains("<figcaption>"));
         // No script is added: the page's own is still the only one.
         assert_eq!(out.matches("<script").count(), 1);
-        // An answer is kept, but only a checkout at hand gives it again.
+        // An answer is kept, but only a checkout at hand with the commits
+        // gives it again.
         assert_eq!(transform(&html, &folders, later()).as_ref(), Some(&out));
         assert_eq!(transform(&html, &[], later()), None);
+        std::fs::remove_dir_all(dir.join(".git")).unwrap();
+        git(&dir, &["init", "-q"]);
+        git(
+            &dir,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/Owner/Name.git",
+            ],
+        );
+        assert_eq!(transform(&html, &folders, later()), None);
     }
 
     #[test]

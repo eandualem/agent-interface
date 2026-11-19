@@ -769,7 +769,8 @@ had read by then is kept for the next opening.
   Partial clones (`extensions.partialClone`, or a remote with `promisor` or
   `partialclonefilter`) are left out, since Git fills them in from the network.
 - **Reading Git.** `git`, as found on the app's own PATH, runs without the
-  inherited Git environment, with
+  inherited Git environment, without system or user configuration
+  (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`), with
   `GIT_OPTIONAL_LOCKS=0`, no terminal prompt, no pager, literal pathspecs,
   `GIT_NO_REPLACE_OBJECTS=1` (a commit ID names that commit, never a local
   replacement), and `GIT_NO_LAZY_FETCH=1` with `-c protocol.allow=never` and
@@ -778,14 +779,18 @@ had read by then is kept for the next opening.
   runs: its file list from `--raw -z --ignore-submodules=none`, then its lines
   from the patch, which is not read when the list holds a submodule, since a
   submodule's patch can run Git inside it. Attributes, such as which files
-  are binary, come from the new commit (`--attr-source`), not from whatever
-  the checkout holds; a Git too old for that option answers nothing.
+  are binary, come from the new commit (`--attr-source`), not from the
+  checkout's files or system or user attribute files (`GIT_ATTR_NOSYSTEM=1`,
+  `core.attributesFile=/dev/null`); the clone's own configuration still
+  applies, as it is the person's. A Git too old for `--attr-source` answers
+  nothing.
   A file is read with
   `git cat-file blob`. Each command stops after 3 seconds or 4 MiB of output,
   no command starts after a page's 8 seconds, and a diff or code view holds at
   most 20,000 rows, counted while it is read and drawn. Commits do not change,
   so answers are kept for the session, up to 64 MiB, by the clone that gave
-  them, and used again only while that clone is still a candidate. Nothing is
+  them, and used again only while that clone is still a candidate and still
+  has the commits. Nothing is
   written to a checkout.
 - **The view.** Each pointer becomes `<details open>`, so it collapses and
   expands without a script. For one file or a code reference, its summary is

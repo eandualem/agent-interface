@@ -23,31 +23,7 @@ pub fn run(dir: &Path, args: &[&str], limit: usize, deadline: Instant) -> Option
     if Instant::now() >= deadline {
         return None;
     }
-    let mut command = Command::new("git");
-    // No inherited Git environment chooses another repository or config.
-    for (name, _) in std::env::vars_os() {
-        if name.to_string_lossy().starts_with("GIT_") {
-            command.env_remove(name);
-        }
-    }
-    command
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        // A partial clone would otherwise fetch a missing object; no
-        // transport may run at all.
-        .env("GIT_NO_LAZY_FETCH", "1")
-        .env("GIT_ALLOW_PROTOCOL", "")
-        // A commit ID names that commit, not a local replacement.
-        .env("GIT_NO_REPLACE_OBJECTS", "1")
-        .arg("-C")
-        .arg(dir)
-        .args(["-c", "core.pager=cat", "-c", "protocol.allow=never"])
-        .arg("--literal-pathspecs")
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    let mut child = command.spawn().ok()?;
+    let mut child = command(dir, args).spawn().ok()?;
     let mut stdout = child.stdout.take()?;
     let reader = thread::spawn(move || {
         let mut out = Vec::new();
@@ -81,6 +57,39 @@ pub fn run(dir: &Path, args: &[&str], limit: usize, deadline: Instant) -> Option
             }
         }
     }
+}
+
+/// `git -C dir args…` as every read runs it: no inherited Git environment,
+/// and no system or user configuration or attribute files.
+fn command(dir: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new("git");
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(name);
+        }
+    }
+    command
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_ATTR_NOSYSTEM", "1")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        // A partial clone would otherwise fetch a missing object; no
+        // transport may run at all.
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_ALLOW_PROTOCOL", "")
+        // A commit ID names that commit, not a local replacement.
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "core.pager=cat", "-c", "protocol.allow=never"])
+        .args(["-c", "core.attributesFile=/dev/null"])
+        .arg("--literal-pathspecs")
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    command
 }
 
 /// Whether the checkout at `top` has `commit`, and it is a commit rather
@@ -545,6 +554,36 @@ pub(super) mod tests {
         let read = |count| files(entries(raw).unwrap(), patch(count).as_bytes());
         assert!(read(ROW_LIMIT - 1).is_some());
         assert_eq!(read(ROW_LIMIT), None);
+    }
+
+    #[test]
+    fn every_read_leaves_out_outside_configuration_and_the_network() {
+        use std::ffi::OsStr;
+        let command = command(Path::new("/"), &["status"]);
+        let envs: std::collections::HashMap<_, _> = command.get_envs().collect();
+        for (name, value) in [
+            ("GIT_CONFIG_GLOBAL", "/dev/null"),
+            ("GIT_CONFIG_NOSYSTEM", "1"),
+            ("GIT_ATTR_NOSYSTEM", "1"),
+            ("GIT_NO_LAZY_FETCH", "1"),
+            ("GIT_ALLOW_PROTOCOL", ""),
+            ("GIT_NO_REPLACE_OBJECTS", "1"),
+            ("GIT_OPTIONAL_LOCKS", "0"),
+        ] {
+            assert_eq!(
+                envs.get(OsStr::new(name)),
+                Some(&Some(OsStr::new(value))),
+                "{name}"
+            );
+        }
+        let args: Vec<_> = command.get_args().collect();
+        for flag in [
+            "protocol.allow=never",
+            "core.attributesFile=/dev/null",
+            "--literal-pathspecs",
+        ] {
+            assert!(args.contains(&OsStr::new(flag)), "{flag}");
+        }
     }
 
     #[test]
