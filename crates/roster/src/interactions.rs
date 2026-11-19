@@ -30,7 +30,7 @@ impl Error {
     pub fn message(self) -> &'static str {
         match self {
             Self::Unavailable => {
-                "Backbone stopped answering. The last interaction history is still shown."
+                "Backbone could not provide the interaction history. The last one is still shown."
             }
             Self::Unsupported => {
                 "Interaction history isn’t available. This Backbone does not offer it yet."

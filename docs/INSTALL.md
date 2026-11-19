@@ -225,9 +225,9 @@ by your user with permissions 0700. The app does not send credentials over TCP.
 Quit the app and run the same install command again. The installer stages and
 checks the replacement before updating its own installation. Layouts and
 settings in the app's own folders, `${XDG_DATA_HOME:-~/.local/share}/agent-interface`
-and `${XDG_CONFIG_HOME:-~/.config}/agent-interface`, are preserved. It refuses to
-overwrite an installation it does not recognize; move that installation yourself
-if you want to replace it.
+and `${XDG_CONFIG_HOME:-~/.config}/agent-interface` on macOS and Linux alike, are
+preserved. It refuses to overwrite an installation it does not recognize; move
+that installation yourself if you want to replace it.
 
 The app opens only these folders, unless `--data-dir` or
 `AGENT_INTERFACE_DATA_DIR` names another library folder.
