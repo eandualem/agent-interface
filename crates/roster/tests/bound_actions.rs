@@ -45,11 +45,22 @@ impl Step {
 }
 
 fn provider(label: &str, steps: Vec<Step>) -> (tempfile::TempDir, Connection, JoinHandle<()>) {
+    let (directory, connection, server, _probe) = provider_with_probe(label, steps);
+    (directory, connection, server)
+}
+
+/// Also returns a handle on the provider's socket, to check after the steps
+/// that nothing else connected.
+fn provider_with_probe(
+    label: &str,
+    steps: Vec<Step>,
+) -> (tempfile::TempDir, Connection, JoinHandle<()>, UnixListener) {
     let directory = tempfile::tempdir().unwrap();
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let path = directory.path().join("api.sock");
     let mut listener = UnixListener::bind(&path).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let probe = listener.try_clone().unwrap();
     let credential = directory.path().join("profile.env");
     fs::write(&credential, format!("BACKBONE_API_KEY=fixture-{label}\n")).unwrap();
     fs::set_permissions(&credential, fs::Permissions::from_mode(0o600)).unwrap();
@@ -157,7 +168,7 @@ fn provider(label: &str, steps: Vec<Step>) -> (tempfile::TempDir, Connection, Jo
         }
     });
     let connection = profile.connect().unwrap();
-    (directory, connection, server)
+    (directory, connection, server, probe)
 }
 
 fn entry(label: &str) -> Value {
@@ -326,10 +337,9 @@ fn feedback_reads_an_author_record_up_to_the_limit_and_refuses_one_past_it() {
         feedback::Outcome::Accepted("sentinel-a".into())
     );
     server_a.join().unwrap();
-    // One byte over, it is refused, and no POST follows: the fixture has no
-    // step for one.
-    let (_dir_b, b, server_b) =
-        provider("b", vec![Step::get("/api/responses/7", author(limit + 1))]);
+    // One byte over, it is refused, and no request follows the author read.
+    let (_dir_b, b, server_b, probe) =
+        provider_with_probe("b", vec![Step::get("/api/responses/7", author(limit + 1))]);
     let client_b = feedback::Client::new(b.clone(), b.identity(), item()).unwrap();
     assert_eq!(
         client_b.send("Feedback"),
@@ -338,6 +348,11 @@ fn feedback_reads_an_author_record_up_to_the_limit_and_refuses_one_past_it() {
         )
     );
     server_b.join().unwrap();
+    probe.set_nonblocking(true).unwrap();
+    assert_eq!(
+        probe.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
 }
 
 fn item() -> ReportItem {
