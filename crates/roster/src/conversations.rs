@@ -55,7 +55,7 @@ pub struct Entry {
 pub enum Body {
     /// Something the owner or an agent wrote.
     Message {
-        /// Agent Backbone sets the limit: 4,000 characters in 0.5.1, 64,000 later.
+        /// The text; Agent Backbone sets its length limit.
         text: String,
         /// Owner messages: the agent it was addressed to.
         #[serde(default)]
@@ -285,7 +285,7 @@ pub enum Page {
 pub struct Message {
     /// Client idempotency key; a retry reuses it.
     pub request_id: String,
-    /// Agent Backbone sets the limit: 4,000 characters in 0.5.1, 64,000 later.
+    /// The text; Agent Backbone sets its length limit.
     pub text: String,
     /// Registration ID or name; `None` for the responsible agent.
     pub recipient: Option<String>,
