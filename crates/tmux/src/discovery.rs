@@ -56,15 +56,15 @@ pub fn read_sessions(socket: &Path) -> io::Result<Vec<String>> {
 pub fn read_session_directory(socket: &Path, session: &str) -> io::Result<String> {
     let _span = tracing::trace_span!("tmux_query", operation = "read_directory").entered();
     let unavailable = || io::Error::other("Working directory unavailable");
-    let directory = display(socket, session, "#{pane_current_path}").ok_or_else(unavailable)?;
+    let directory = current_path(socket, session).ok_or_else(unavailable)?;
     if !Path::new(&directory).is_absolute() || directory.contains('\0') {
         return Err(unavailable());
     }
     Ok(directory)
 }
 
-/// One format of a session's active pane, without its closing newline.
-fn display(socket: &Path, session: &str, format: &str) -> Option<String> {
+/// The current path of a session's active pane, without its closing newline.
+fn current_path(socket: &Path, session: &str) -> Option<String> {
     if names(session).as_slice() != [session] {
         return None;
     }
@@ -74,7 +74,7 @@ fn display(socket: &Path, session: &str, format: &str) -> Option<String> {
         "-p",
         "-t",
         &format!("={session}:"),
-        format,
+        "#{pane_current_path}",
     ]);
     let output = capture(command, TIMEOUT).ok()?;
     if !output.status.success() {
