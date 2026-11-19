@@ -170,7 +170,13 @@ menu to close the whole window. Ordinary shells keep running; external sessions
 retain their own tmux lifetime policy.
 
 The agent roster refreshes immediately, then two seconds after each completed
-request, and at once when Agent Backbone reports a changed state. Team and agent views refresh three seconds after each read. A rotating
+request, and at once when Agent Backbone reports a changed state. Team, Activity
+and the report, answer and document lists are read again three seconds after
+each read, Usage after 15 seconds, and Skills, Policies and Tags after 30; an
+open Document is read again only when you refresh it. Current plans and
+Interactions are read every 20 seconds while shown, and Sheets when opened or refreshed.
+An agent's card rereads its overview, permissions and connections every three
+seconds, its usage every 15 and its skills and policies every 30. A rotating
 ring marks working or starting agents; labels distinguish starting, working,
 blocked, needs you, idle and unknown. Failed requests show unavailable or stale
 data, rather than treating the last successful state as current. These are
@@ -309,22 +315,24 @@ read Agent Backbone's authored reports and retained answers. **Recent updates** 
 **Responses** shows questions, answers and their next actions. **Waiting on
 you** shows owner blockers from each agent's latest report. A report's age does
 not resolve its blocker, and an answer's action text is not a pending approval.
-Choose a row to read it; use Back or Escape to return. Previous/Next page browse
-older records, and Refresh returns to the newest page. Authored records cannot be
+Choose a row to read it; use Back or Escape to return. **Show older** and
+**Newer** browse pages, and the refresh button returns to the newest page. Authored records cannot be
 edited in the reader.
 
 **Documents** shows lasting rich documents stored by Agent Backbone. Each row
 is the newest revision of one document. Use the same agent filter, or open a
-document and choose **More from this author** to follow its stable author even
+document and choose **More from** its author to follow that stable author even
 after an agent is renamed or removed. **Back** restores the selected page and
-filter. **Refresh** returns to the newest documents.
+filter. The refresh button returns to the newest documents.
 
 An open report, Response or Document has a conversation with its author: a
 pill at the right end of the reader's toolbar. Choose it, or press **C**, to open it
 as a card beside the record; choose the card's minimize button, or press **C**
 or Esc in the message field, to close it again, keeping the draft. Enter adds a
 paragraph and **⌘↵** sends. The app sets no length limit; Agent Backbone sets
-its own, and a longer message shows **Not sent** with that reason. Each message includes a
+its own. A message Backbone refuses, such as one over that limit, shows **Not
+sent**: with Backbone's reason when it keeps the conversation, otherwise with
+"Backbone refused this feedback. Your text is kept here." Each message includes a
 reference to the exact record being read, and the app checks that the author
 is still registered before sending. A message shows **Sending…** until Agent
 Backbone answers, then the time it was sent; **Not sent** offers **Retry**,
@@ -332,8 +340,8 @@ and **Edit** to move the text back into an empty message field.
 When Agent Backbone keeps conversations, the thread is the record's stored
 conversation: your messages, the author's replies and the record's new
 revisions, in order, with a **new** divider before what arrived since you last
-looked. It is read every few seconds while open, and its pill counts what is
-new while it is closed. **Earlier messages** loads older
+looked. It is read every five seconds while open, and every 25 seconds while
+closed, when its pill counts what is new. **Earlier messages** loads older
 ones. Retrying a message Backbone did not confirm is safe: it is stored once.
 A message whose delivery failed after Backbone stored it offers **Retry**,
 which delivers it again without adding it twice.
@@ -352,7 +360,7 @@ been set; until then, choose who to ask from the agents the skill reaches, the
 conversation's participants or the team. Skills kept in a repository or a CLI's
 own folder have no conversation.
 
-Opening a document loads that exact revision. **Check for update** refreshes its
+Opening a document loads that exact revision. Its refresh button rereads its
 correction information; **Open newer revision** opens the linked correction.
 An update never silently replaces the revision being read. Documents remain
 stored across agent restarts and ordinary report retention. Inline controls
@@ -498,8 +506,10 @@ Each workbook keeps its own conversation. Delivery status
 does not mean the agent has
 answered. **Copy feedback receipt** preserves the identifiers for checking delivery.
 
-**History** opens earlier retained revisions. **Refresh** loads the latest revision.
-**Copy values** copies selected cells as tab-separated text. Text values that could
+The revision control's back arrow opens earlier retained revisions, and its
+forward arrow or the refresh button loads the latest revision. **Copy selected
+values** copies the selected cells as tab-separated text, or **Copy displayed
+values** the shown cells without a selection. Text values that could
 be interpreted as formulas receive a leading apostrophe for pasting into a spreadsheet;
 numeric values are preserved. **Export** saves the displayed revision. JSON/XLSX preserve supported workbook features, while CSV/TSV
 export one tab as values only. Read any export warnings. This is not a claim of full
