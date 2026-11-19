@@ -60,12 +60,11 @@ server.
 - A swarm's coordinator runs Claude Code with `claude-opus-5-5` at `high`
   effort. It designs and directs the work; it writes no implementation code
   and never reviews.
-- Reviews run in rounds at high effort, in a context separate from the
-  implementer's: round 1 on Codex `gpt-6.2-sol`, round 2 on Codex
-  `gpt-6.2-astra` even after a clean round 1, then `gpt-6.2-astra` again
-  while the previous round found issues. From round 2 on, a clean round ends
-  the chain. A swarm's reviewers are its own members and keep their context
-  across rounds; a review outside a swarm starts each round fresh.
+- Reviews run in rounds on Codex `gpt-6.2-sol` at high effort. Each round
+  starts in a fresh context, separate from the implementer's and from
+  earlier rounds. Round 2 runs even after a clean round 1, and valid
+  findings are fixed between rounds. From round 2 on, a clean round ends
+  the chain.
 - Use Codex `gpt-6.2-astra` as much as the work needs for research, analysis,
   benchmarking and verification.
 - Work at the depth the problem needs: progress matters more than token
