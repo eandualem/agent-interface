@@ -429,7 +429,7 @@ pub(super) fn agent_row(
                 String::new()
             }),
         )
-        .on_click(cx.listener(move |pane, event: &gpui::ClickEvent, _, cx| {
+        .on_click(cx.listener(move |_, event: &gpui::ClickEvent, _, cx| {
             if let Some(event) = row_event(&name, registration.as_deref(), event.modifiers().alt) {
                 cx.emit(event);
             }
