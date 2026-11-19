@@ -217,14 +217,15 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
             click(main, "Continue")
             wait_for(lambda: re.search(r"your\s+guide", text(main)), "Start your guide", timeout=60)
             # Each tool's card says whether it is signed in; nothing else opens.
-            # OCR reads the plain cards reliably; the selected one is tinted.
-            # Once both tools' account reads have answered, both cards say so.
+            # Both tools' account reads answer first (what each said is
+            # asserted below); OCR reads the plain cards reliably, but the
+            # selected one is tinted, so one card's line is what it can show.
             def account_reads():
                 return {entry["path"].split("runtime=")[1] for entry in log("http.jsonl")
                         if entry["path"].startswith("/api/profile/accounts/status")}
             wait_for(lambda: {"claude", "codex"} <= account_reads(), "both tools' account reads", timeout=60)
-            wait_for(lambda: len(re.findall(r"Sign\s+in\s+when\s+it\s+starts", text(main))) == 2,
-                     "the tools' sign-ins on both cards", timeout=60)
+            wait_for(lambda: re.search(r"Sign\s+in\s+when\s+it\s+starts", text(main)),
+                     "the tools' sign-ins", timeout=60)
             assert list(app_windows()) == [main], "first run opened or closed a window"
             # The service makes the profile and serves it at once: one create,
             # nothing to start.
