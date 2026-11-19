@@ -576,26 +576,20 @@ impl Form {
 
     /// Whether Start can send what the screen shows.
     fn can_start(&self, cx: &Context<Self>) -> bool {
-        // A start's open request is sent again, or nothing is.
-        if let Some(sendable) = self
+        let saved_open = self
             .start
             .as_ref()
-            .and_then(|(pane, _)| pane.read(cx).saved_open())
-        {
-            return sendable;
-        }
-        // Another open request of this profile is finished, cancelled or
-        // forgotten under Earlier setups first; admission refuses it anyway.
-        if self.guide && matches!(self.state, State::Ready { pending, .. } if pending > 0) {
-            return false;
-        }
-        if self.profile.served() && !self.guide {
-            self.served_start(cx).is_some()
-        } else {
-            // Any request ID of the form setup takes.
-            self.prepare(&uuid::Uuid::now_v7().simple().to_string(), cx)
-                .is_some()
-        }
+            .and_then(|(pane, _)| pane.read(cx).saved_open());
+        let held = self.guide && matches!(self.state, State::Ready { pending, .. } if pending > 0);
+        may_start(saved_open, held, || {
+            if self.profile.served() && !self.guide {
+                self.served_start(cx).is_some()
+            } else {
+                // Any request ID of the form setup takes.
+                self.prepare(&uuid::Uuid::now_v7().simple().to_string(), cx)
+                    .is_some()
+            }
+        })
     }
 
     fn choose_folder(&mut self, cx: &mut Context<Self>) {
@@ -639,7 +633,8 @@ impl Form {
         self.folder_name = Some(name);
     }
     fn submit(&mut self, expected: &Arc<std::sync::atomic::AtomicBool>, cx: &mut Context<Self>) {
-        if !self.ticket.accepts(expected) {
+        // Enter and a click pass the same gate as the button shows.
+        if !self.ticket.accepts(expected) || !self.can_start(cx) {
             return;
         }
         if self.guide {
@@ -1683,6 +1678,17 @@ impl Form {
     }
 }
 
+/// Whether Start may run, for its button and for Enter alike: a start's
+/// open request is sent again, or nothing is; another open request of the
+/// profile, `held`, holds a guide back until it is finished, cancelled or
+/// forgotten under Earlier setups, as admission would refuse it anyway;
+/// else the choices must make a request, which only then is tried.
+fn may_start(saved_open: Option<bool>, held: bool, preparable: impl FnOnce() -> bool) -> bool {
+    match saved_open {
+        Some(sendable) => sendable,
+        None => !held && preparable(),
+    }
+}
 /// The Start button's words, or none: after a start stopped, `again` is
 /// the button its saved request offers, none while it is open with
 /// nothing it may send.

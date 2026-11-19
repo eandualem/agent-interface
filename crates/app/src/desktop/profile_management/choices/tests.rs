@@ -467,3 +467,19 @@ fn the_start_button_after_a_stop_is_the_one_its_request_offers_or_none() {
         Some("Starting guide…")
     );
 }
+
+#[test]
+fn start_and_enter_pass_one_gate_that_an_open_request_closes() {
+    // This repository has no gpui test harness: submit() returns at once
+    // unless can_start(), which is may_start() over what the form holds.
+    // An open saved request for the profile: nothing starts, and no request
+    // is even made, so no ID is drawn.
+    let never = || -> bool { panic!("a request was made") };
+    assert!(!may_start(None, true, never));
+    assert!(!may_start(Some(false), false, never));
+    // Its own open request is sent again, whatever else is held.
+    assert!(may_start(Some(true), true, never));
+    // Nothing open: the choices decide.
+    assert!(may_start(None, false, || true));
+    assert!(!may_start(None, false, || false));
+}
