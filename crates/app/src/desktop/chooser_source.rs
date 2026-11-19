@@ -32,8 +32,12 @@ impl Origin {
         matches!(self, Self::Bound(_))
     }
 
+    /// A workspace without a profile offers no Backbone views; one saved
+    /// there opens asking for a profile.
     pub fn allows_view(&self, kind: ViewKind) -> bool {
-        kind != ViewKind::Artifacts || shows_artifacts(self.connection().map(Connection::kind))
+        self.connection().is_some_and(|connection| {
+            kind != ViewKind::Artifacts || shows_artifacts(Some(connection.kind()))
+        })
     }
 
     /// Bind navigation to the registration in the displayed profile list.
@@ -166,6 +170,13 @@ mod tests {
         let standalone = Origin::Standalone { socket: None };
         assert!(standalone.sessions(|| {}).unwrap().is_none());
         assert!(standalone.team(|| {}).unwrap().is_none());
-        assert!(standalone.allows_view(ViewKind::Agent));
+        for kind in [
+            ViewKind::Agent,
+            ViewKind::Team,
+            ViewKind::Reports,
+            ViewKind::Artifacts,
+        ] {
+            assert!(!standalone.allows_view(kind));
+        }
     }
 }
