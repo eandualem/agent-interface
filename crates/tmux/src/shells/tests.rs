@@ -463,7 +463,8 @@ fn a_shell_created_with_an_invalid_shell_variable_runs_bin_sh() {
             "#{pane_start_command}",
         ])
         .unwrap();
-    assert!(start.contains("/bin/sh -l -i"), "{start}");
+    // Each word of the start command is quoted for the shell.
+    assert!(start.contains("'/bin/sh' '-l' '-i'"), "{start}");
     assert!(!start.contains("missing-shell"), "{start}");
 }
 
