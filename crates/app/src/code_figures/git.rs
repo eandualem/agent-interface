@@ -133,7 +133,12 @@ pub fn diff(
     paths: Option<&[String]>,
     deadline: Instant,
 ) -> Option<Vec<File>> {
+    // Attributes, such as which files are binary, come from the new commit,
+    // not from whatever the checkout has; a Git without this option answers
+    // nothing.
+    let attributes = format!("--attr-source={head}");
     let mut args = vec![
+        &*attributes,
         "diff",
         "--no-color",
         "--no-ext-diff",
@@ -414,6 +419,8 @@ pub(super) mod tests {
     fn a_diff_reads_every_kind_of_change() {
         let dir = tempfile::tempdir().unwrap();
         let (first, second) = repository(dir.path(), "git@github.com:owner/name.git");
+        // The checkout's own attributes do not change the answer.
+        fs::write(dir.path().join(".gitattributes"), "a.txt -diff\n").unwrap();
         let files = diff(dir.path(), &first, &second, None, later()).unwrap();
         let by = |path: &str| files.iter().find(|file| file.path == path).unwrap();
         assert_eq!(files.len(), 7);

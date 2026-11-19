@@ -758,7 +758,8 @@ had read by then is kept for the next opening.
   version, a short or non-hexadecimal commit, a path that is absolute or has
   `..`, empty parts, backslashes or control characters, unreadable JSON, a
   repeated attribute, or content other than whitespace, comments and one
-  caption is not a pointer. A page's first 64 pointers are read.
+  caption, or a caption holding a `details` or `summary` tag, is not a
+  pointer. A page's first 64 pointers are read.
 - **Finding a checkout.** The candidates are the saved folders of the
   window's panes, then the folders of the profile's agents as `/api/agents`
   reports them, each counted once, up to 64. Each resolves to its Git top
@@ -767,7 +768,8 @@ had read by then is kept for the next opening.
   repository, in HTTPS or SSH form, and it has the commits as commit objects.
   Partial clones (`extensions.partialClone`, or a remote with `promisor` or
   `partialclonefilter`) are left out, since Git fills them in from the network.
-- **Reading Git.** `git` runs without the inherited Git environment, with
+- **Reading Git.** `git`, as found on the app's own PATH, runs without the
+  inherited Git environment, with
   `GIT_OPTIONAL_LOCKS=0`, no terminal prompt, no pager, literal pathspecs,
   `GIT_NO_REPLACE_OBJECTS=1` (a commit ID names that commit, never a local
   replacement), and `GIT_NO_LAZY_FETCH=1` with `-c protocol.allow=never` and
@@ -775,7 +777,9 @@ had read by then is kept for the next opening.
   A diff is read with `--no-ext-diff --no-textconv`, so no configured program
   runs: its file list from `--raw -z --ignore-submodules=none`, then its lines
   from the patch, which is not read when the list holds a submodule, since a
-  submodule's patch can run Git inside it.
+  submodule's patch can run Git inside it. Attributes, such as which files
+  are binary, come from the new commit (`--attr-source`), not from whatever
+  the checkout holds; a Git too old for that option answers nothing.
   A file is read with
   `git cat-file blob`. Each command stops after 3 seconds or 4 MiB of output,
   no command starts after a page's 8 seconds, and a diff or code view holds at

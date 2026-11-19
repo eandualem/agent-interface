@@ -272,8 +272,10 @@ impl Scan<'_> {
                 open.caption = Caption::Inside(end);
                 Step::Open(open)
             }
+            // The caption becomes a view's summary, so it may not open or
+            // close a summary or details of its own.
             (Caption::Inside(_), Event::Start(tag, _))
-                if !matches!(&*tag.name, "figure" | "figcaption") =>
+                if !matches!(&*tag.name, "figure" | "figcaption" | "details" | "summary") =>
             {
                 Step::Open(open)
             }
@@ -286,7 +288,11 @@ impl Scan<'_> {
                     None => Step::Rejected,
                 }
             }
-            (Caption::Inside(_), Event::End(name)) if &**name != "figure" => Step::Open(open),
+            (Caption::Inside(_), Event::End(name))
+                if !matches!(&**name, "figure" | "details" | "summary") =>
+            {
+                Step::Open(open)
+            }
             (Caption::Before | Caption::After(_), Event::End(name)) if &**name == "figure" => {
                 let Some(stop) = tag_start(self.html, self.markup_end, end, "</figure") else {
                     return Step::Rejected;
@@ -600,6 +606,8 @@ mod tests {
             "<figcaption>a</figcaption><figcaption>b</figcaption>",
             "<figcaption>a",
             "<figcaption>a<figcaption>b</figcaption></figcaption>",
+            "<figcaption>a</summary></figcaption>",
+            "<figcaption><details>a</figcaption>",
             "<img src=x>",
         ] {
             assert_eq!(pointers(&diff("", content)), vec![], "{content}");
