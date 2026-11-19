@@ -2,9 +2,10 @@
 """Click through first run in a private Linux desktop: a fresh install makes
 its first profile and starts its guide, all in the one workspace window.
 
-Uses the real native app and a stand-in Agent Backbone
-(scripts/tests/fixtures/fake_backbone.py). No agent executable, model, real
-provider, user home or shared tmux server is used. Run under xvfb-run +
+Uses the real native app and a stand-in for the Rust Agent Backbone service
+(scripts/tests/fixtures/fake_backbone.py), whose machine serves no profile
+yet: first run sets it up with setup's `initialize`. No agent executable,
+model, real provider, user home or shared tmux server is used. Run under xvfb-run +
 dbus-run-session, as a normal user. At 100 % the opening scene plays and
 settles into the first question; at 150 % it has already been seen.
 """
@@ -35,7 +36,7 @@ PALETTE = TOKENS["color"]["dark"]
 accent = tuple(bytes.fromhex(PALETTE["accent"][1:]))
 surface = tuple(bytes.fromhex(PALETTE["surface"][1:]))
 DISABLED_ACCENT = "#" + "".join(f"{round((a + s) / 2):02x}" for a, s in zip(accent, surface))
-ACCOUNTS = {"claude": "authenticated", "codex": "not_authenticated"}
+ACCOUNTS = {"claude": "present", "codex": "missing"}
 
 
 def wait_for(check, description, timeout=40):
@@ -58,8 +59,7 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
     env.update(HOME=str(root), XDG_CONFIG_HOME=str(root / "config"),
                XDG_DATA_HOME=str(root / "data"), XDG_STATE_HOME=str(root / "state"),
                XDG_CACHE_HOME=str(root / "cache"), TMUX_TMPDIR=str(root / "tmux"),
-               LIBGL_ALWAYS_SOFTWARE="1", FAKE_BACKBONE_ROOT=str(root),
-               BACKBONE_DATA_DIR=str(root / "provider"))
+               LIBGL_ALWAYS_SOFTWARE="1", FAKE_BACKBONE_ROOT=str(root))
     (root / "tmux").mkdir(mode=0o700)
     settings = root / "config/agent-interface"
     settings.mkdir(parents=True)
@@ -174,7 +174,7 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
         try:
             server = subprocess.Popen([str(bin_dir / "backbone"), "serve"], env=env,
                                       stdout=server_log, stderr=subprocess.STDOUT)
-            wait_for(lambda: (root / "provider/run/api.sock").exists(), "Default profile socket")
+            wait_for(lambda: (root / "fake/serve.pid").exists(), "the service")
             wm = subprocess.Popen(["xfwm4", "--compositor=on", "--sm-client-disable"],
                                   env=env, stdout=wm_log, stderr=subprocess.STDOUT)
             wait_for(lambda: "_GTK_FRAME_EXTENTS" in command("xprop", "-root", "_NET_SUPPORTED"), "window manager")
@@ -182,9 +182,13 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
             main = wait_for(lambda: next(iter(app_windows()), None), "the app's window")
             command("xdotool", "mousemove", "--window", main, "5", "5")
 
-            # This computer has everything, so nothing is asked of it: the scene
-            # (or, once seen, first run itself) goes straight to the first profile.
+            # This computer has everything, so nothing is asked of it: setup's
+            # initialize makes its first profile while the scene (or, once seen,
+            # first run itself) goes straight to naming the first profile.
             wait_for(lambda: re.search(r"first\s+profile", text(main)), "Name your first profile", timeout=60)
+            setups = [entry["request"] for entry in log("setup.jsonl")]
+            assert [r["action"] for r in setups] == ["initialize"], setups
+            assert setups[0]["schema_version"] == 3 and setups[0]["starter_profile"] == "core-v1", setups
             value = capture(main, "profile")
             assert "Agent Backbone" not in value, "the service was named on screen"
             assert "Personal" in value, "the suggested name"
@@ -196,10 +200,14 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
             wait_for(lambda: re.search(r"Sign\s+in\s+when\s+it\s+starts", text(main)),
                      "the tools' sign-ins", timeout=60)
             assert list(app_windows()) == [main], "first run opened or closed a window"
-            lifecycle = [entry["request"] for entry in log("lifecycle.jsonl")]
-            assert [r["action"] for r in lifecycle] == ["create", "start"], lifecycle
-            assert lifecycle[0]["display_name"] == "Personal"
-            profile_id = lifecycle[1]["profile_id"]
+            # The service makes the profile and serves it at once: one create,
+            # nothing to start.
+            created = log("create.jsonl")
+            assert len(created) == 1, created
+            assert created[0]["entry"]["display_name"] == "Personal", created
+            profile_id = created[0]["entry"]["profile_id"]
+            commands = [entry["argv"][:2] for entry in log("cli.jsonl")]
+            assert ["profiles", "apply"] not in commands, commands
             assert stat.S_IMODE(library.stat().st_mode) == 0o700, "the library folder is private"
             capture(main, "guide")
 
@@ -210,14 +218,14 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
             assert list(app_windows()) == [main], "first run opened or closed a window"
 
             setups = [entry["request"] for entry in log("setup.jsonl")]
-            assert len(setups) == 1, setups
-            request = setups[0]
-            assert request["action"] == "first_agent" and request["profile_id"] == profile_id
-            assert request["hooks"] == ["claude"]
+            assert [r["action"] for r in setups] == ["initialize", "first_agent"], setups
+            request = setups[1]
+            assert request["schema_version"] == 3 and request["profile_id"] == profile_id, request
+            assert request["start_greeting"] is True, request
             agent = request["agent"]
             assert agent["name"] == "guide" and agent["runtime"] == "claude"
             assert agent["directory"] == str(root / "Agents/guide") and agent["create_directory"]
-            assert agent["brief"] == {"template": "orchestrator-v1"}
+            assert agent["brief"] == {"template": "orchestrator-v1"} and agent["model"] is None
             assert (root / "Agents/guide").is_dir()
 
             saved = tomllib.loads((settings / "settings.toml").read_text())
@@ -229,9 +237,10 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
             assert len(spaces) == 1, spaces
             assert spaces[0]["name"] == "Personal" and spaces[0]["profile_id"] == profile_id, spaces
 
-            (OUTPUT / "requests.json").write_text(json.dumps(dict(lifecycle=lifecycle, setup=setups), indent=2) + "\n")
+            (OUTPUT / "requests.json").write_text(json.dumps(dict(created=created, setup=setups), indent=2) + "\n")
             (OUTPUT / "result.json").write_text(json.dumps(dict(scale=SCALE, passed=True, checks=[
-                "nothing asked of a ready computer", "first profile on a fresh install",
+                "nothing asked of a ready computer", "setup's initialize on a fresh machine",
+                "first profile made and served by the service",
                 "private library folder", "one window throughout",
                 "sign-ins on the tool cards", "guide preselected on a signed-in tool",
                 "guide's setup request", "setup remembered as done",
