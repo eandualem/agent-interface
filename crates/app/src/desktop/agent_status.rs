@@ -536,8 +536,9 @@ pub(super) fn start_bound(connection: Connection, cx: &mut App) -> Option<LiveAg
                     return;
                 };
                 if let Some(changed) = LiveAgents(source).take_update() {
-                    // Notify discovery observers even on unchanged status.
-                    // Each window rechecks matches against its own handle.
+                    // Notify even on unchanged status: each window's observer
+                    // tries its pending swarm-tab closures again, which may
+                    // have waited for a save or edit to finish.
                     cx.update_global::<Sources, _>(|_, _| {});
                     if changed {
                         cx.refresh_windows();
