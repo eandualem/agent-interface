@@ -1,11 +1,11 @@
-//! General read-only views on one verified connection. The closed request set
-//! excludes agent inspection, local runtime configuration and filesystem reads.
+//! General read-only views on one verified connection. Agent cards and
+//! records are read by `content` instead.
 
 pub use super::content::Error;
 use super::{Api, Data, Range};
 use crate::profiles::{Connection, Identity};
 
-/// GET-only view families that can be read without ambient runtime state.
+/// GET-only view families of the profile's own API.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
     /// The configured agents and running swarms.
@@ -20,19 +20,6 @@ pub enum Request {
     Policies,
     /// Tags and their configured skill and policy associations.
     Tags,
-}
-
-impl Request {
-    fn remote(&self) -> super::Request {
-        match self {
-            Self::Team => super::Request::Team,
-            Self::Usage(range) => super::Request::Usage(*range),
-            Self::Activity => super::Request::Activity,
-            Self::Skills => super::Request::Skills,
-            Self::Policies => super::Request::Policies,
-            Self::Tags => super::Request::Tags,
-        }
-    }
 }
 
 /// One observation labelled with the full origin and original request.
@@ -53,7 +40,7 @@ pub struct Read {
 pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool) -> Read {
     let api = Api::new(connection, live);
     // Every request in this closed set is a read of the profile's own API.
-    let result = super::read_using(&api, &request.remote());
+    let result = super::read_using(&api, request);
     let error = &api.error;
     let result = if let Some(error) = error.get() {
         Err(Error::Connection(error))

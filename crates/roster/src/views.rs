@@ -213,20 +213,16 @@ fn usage_path(range: Range) -> String {
     format!("/api/usage?refresh=false&limit=1000&since={since}")
 }
 
-fn read_using(api: &Api<'_>, request: &Request) -> Result<Data, &'static str> {
+fn read_using(api: &Api<'_>, request: &bound::Request) -> Result<Data, &'static str> {
     match request {
-        Request::Team => Ok(Data::Team(Team::decode(
+        bound::Request::Team => Ok(Data::Team(Team::decode(
             &api.get("/api/agents")?,
             &api.get("/api/swarms")?,
         )?)),
-        Request::Usage(range) => Ok(Data::Usage(Usage::decode(&api.get(&usage_path(*range))?)?)),
-        Request::Reports(query, agent) => {
-            Ok(Data::Reports(reports::read(api, query, agent.as_deref())?))
+        bound::Request::Usage(range) => {
+            Ok(Data::Usage(Usage::decode(&api.get(&usage_path(*range))?)?))
         }
-        Request::Document(id) => Ok(Data::Document(documents::read(api, *id)?)),
-        Request::Response(id) => Ok(Data::Reports(reports::read_response(api, *id)?)),
-        Request::Report(id) => Ok(Data::Reports(reports::read_report(api, *id)?)),
-        Request::Activity => {
+        bound::Request::Activity => {
             // History is an addition: when it cannot be read, the timeline
             // still shows deliveries and states now, and says why.
             let changes = history(api, now().saturating_sub(3_600 + HISTORY_LOOKBACK));
@@ -240,12 +236,12 @@ fn read_using(api: &Api<'_>, request: &Request) -> Result<Data, &'static str> {
                 changes,
             )?))
         }
-        Request::Skills => Ok(Data::Skills(Box::new(SkillLibrary::read(api)?))),
-        Request::Policies => {
+        bound::Request::Skills => Ok(Data::Skills(Box::new(SkillLibrary::read(api)?))),
+        bound::Request::Policies => {
             let agents = library::agents(api)?;
             Ok(Data::Policies(Box::new(PolicyLibrary::read(api, &agents)?)))
         }
-        Request::Tags => Ok(Data::Tags(Box::new(TagLibrary::read(api)?))),
+        bound::Request::Tags => Ok(Data::Tags(Box::new(TagLibrary::read(api)?))),
     }
 }
 
