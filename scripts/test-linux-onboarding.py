@@ -43,6 +43,20 @@ FIRST_AGENT = json.loads((SETUP_FIXTURES / "setup-first-agent.json").read_text()
 REQUEST_ID = re.compile(r"[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}")
 
 
+def same(sent, expected):
+    """Equal as JSON, types included: 1 is not true."""
+    return json.dumps(sent, sort_keys=True) == json.dumps(expected, sort_keys=True)
+
+
+def fresh_request_id(request_id):
+    """A UUIDv7 in simple form, made within the contract's window: at most
+    seven days before now, at most five minutes after."""
+    if not REQUEST_ID.fullmatch(request_id):
+        return False
+    made = int(request_id[:12], 16) / 1000
+    return time.time() - 7 * 24 * 3600 <= made <= time.time() + 5 * 60
+
+
 def wait_for(check, description, timeout=40):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -194,8 +208,8 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
             # The whole body, field for field as the service's fixture, but
             # its own request ID.
             assert setups[0].keys() == INITIALIZE.keys(), setups
-            assert REQUEST_ID.fullmatch(setups[0]["request_id"]), setups
-            assert {**setups[0], "request_id": INITIALIZE["request_id"]} == INITIALIZE, setups
+            assert fresh_request_id(setups[0]["request_id"]), setups
+            assert same({**setups[0], "request_id": INITIALIZE["request_id"]}, INITIALIZE), setups
             value = capture(main, "profile")
             assert "Agent Backbone" not in value, "the service was named on screen"
             assert "Personal" in value, "the suggested name"
@@ -204,8 +218,13 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
             wait_for(lambda: re.search(r"your\s+guide", text(main)), "Start your guide", timeout=60)
             # Each tool's card says whether it is signed in; nothing else opens.
             # OCR reads the plain cards reliably; the selected one is tinted.
-            wait_for(lambda: re.search(r"Sign\s+in\s+when\s+it\s+starts", text(main)),
-                     "the tools' sign-ins", timeout=60)
+            # Once both tools' account reads have answered, both cards say so.
+            def account_reads():
+                return {entry["path"].split("runtime=")[1] for entry in log("http.jsonl")
+                        if entry["path"].startswith("/api/profile/accounts/status")}
+            wait_for(lambda: {"claude", "codex"} <= account_reads(), "both tools' account reads", timeout=60)
+            wait_for(lambda: len(re.findall(r"Sign\s+in\s+when\s+it\s+starts", text(main))) == 2,
+                     "the tools' sign-ins on both cards", timeout=60)
             assert list(app_windows()) == [main], "first run opened or closed a window"
             # The service makes the profile and serves it at once: one create,
             # nothing to start.
@@ -237,13 +256,13 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
             # The whole body: the fixture's fields, with this run's choices.
             assert request.keys() == FIRST_AGENT.keys(), request
             assert request["agent"].keys() == FIRST_AGENT["agent"].keys(), request
-            assert REQUEST_ID.fullmatch(request["request_id"]), request
+            assert fresh_request_id(request["request_id"]), request
             assert request["request_id"] != setups[0]["request_id"], request
-            assert {**request, "request_id": None} == {
+            assert same({**request, "request_id": None}, {
                 **FIRST_AGENT, "request_id": None, "profile_id": profile_id, "start_greeting": True,
                 "agent": {**FIRST_AGENT["agent"], "directory": str(root / "Agents/guide"),
                           "runtime": "claude", "model": None, "create_directory": True,
-                          "name": "guide", "brief": {"template": "orchestrator-v1"}}}, request
+                          "name": "guide", "brief": {"template": "orchestrator-v1"}}}), request
             assert (root / "Agents/guide").is_dir()
 
             saved = tomllib.loads((settings / "settings.toml").read_text())
