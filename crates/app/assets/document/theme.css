@@ -51,7 +51,10 @@ hr { border: 0 !important; height: 1px; background-color: var(--ai-line) !import
   background: var(--ai-background); color: var(--ai-text);
 }
 .ai-git summary { padding: 6px 10px; background: var(--ai-table-head); cursor: pointer; font-weight: 600; }
-.ai-git-file > summary, .ai-git-head { font: 600 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+/* A file's header keeps its spaces: 'a  b.txt' is not 'a b.txt'. */
+.ai-git-file > summary, .ai-git-head {
+  font: 600 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap;
+}
 .ai-git-head { padding: 4px 10px; border-top: 1px solid var(--ai-line); }
 .ai-git .ai-git-file { border-top: 1px solid var(--ai-line); }
 .ai-git-scroll { overflow-x: auto; }

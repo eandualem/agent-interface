@@ -80,16 +80,28 @@ fn diff_colours(c: &crate::desktop::design::Colors) -> [(Rgba, Rgba); 2] {
             white
         };
         (0..=10)
-            .map(|step| mix(ink, far, step as f32 / 10.))
+            .map(|step| byte_exact(mix(ink, far, step as f32 / 10.)))
             .find(|ink| contrast(*ink, fill) >= 4.5)
             .unwrap_or(far)
     };
-    let add = mix(c.surface, c.ok, 0.16);
-    let remove = mix(c.surface, c.attention, 0.16);
+    // Checked as the page gets them: in whole bytes, as `hex` writes them.
+    let add = byte_exact(mix(c.surface, c.ok, 0.16));
+    let remove = byte_exact(mix(c.surface, c.attention, 0.16));
     [
         (add, readable(c.ok, add)),
         (remove, readable(c.attention_text, remove)),
     ]
+}
+
+/// `color` with each channel rounded to the byte `hex` writes.
+fn byte_exact(color: Rgba) -> Rgba {
+    let part = |value: f32| (value.clamp(0., 1.) * 255.).round() / 255.;
+    Rgba {
+        r: part(color.r),
+        g: part(color.g),
+        b: part(color.b),
+        a: color.a,
+    }
 }
 
 /// `color` as CSS.
@@ -234,8 +246,15 @@ mod tests {
             "one-light",
         ] {
             let design = crate::desktop::themes::resolve(id).unwrap();
+            // The colours as the page gets them, read back from their CSS.
+            let emitted = |color: Rgba| {
+                let hex = hex(color);
+                let byte = |at: usize| u8::from_str_radix(&hex[at..at + 2], 16).unwrap();
+                let [r, g, b] = [1, 3, 5].map(|at| f32::from(byte(at)) / 255.);
+                Rgba { r, g, b, a: 1. }
+            };
             for (fill, sign) in diff_colours(&design.colors) {
-                let ratio = crate::desktop::themes::vscode::contrast(sign, fill);
+                let ratio = crate::desktop::themes::vscode::contrast(emitted(sign), emitted(fill));
                 assert!(ratio >= 4.5, "{id}: {ratio}");
             }
         }

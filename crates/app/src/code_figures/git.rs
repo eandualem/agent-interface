@@ -80,10 +80,7 @@ fn runs_git() -> bool {
     {
         static RUNS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *RUNS.get_or_init(|| {
-            let path = std::env::var_os("PATH").unwrap_or_default();
-            let git = std::env::split_paths(&path)
-                .map(|dir| dir.join("git"))
-                .find(|git| git.is_file());
+            let git = found_git(&std::env::var_os("PATH").unwrap_or_default());
             let tools = [
                 std::env::var_os("DEVELOPER_DIR").map(std::path::PathBuf::from),
                 std::fs::read_link("/var/db/xcode_select_link").ok(),
@@ -96,6 +93,19 @@ fn runs_git() -> bool {
     {
         true
     }
+}
+
+/// The `git` a command started with `path` runs: the first executable file
+/// of that name, as the command search finds it.
+#[cfg(any(target_os = "macos", test))]
+fn found_git(path: &std::ffi::OsStr) -> Option<std::path::PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::split_paths(path)
+        .map(|dir| dir.join("git"))
+        .find(|git| {
+            std::fs::metadata(git)
+                .is_ok_and(|file| file.is_file() && file.permissions().mode() & 0o111 != 0)
+        })
 }
 
 /// Whether `git`, found at `git`, runs Git: anything but `/usr/bin/git`
@@ -765,6 +775,15 @@ pub(super) mod tests {
         fs::create_dir_all(tools.path().join("usr/bin")).unwrap();
         fs::write(tools.path().join("usr/bin/git"), "").unwrap();
         assert!(shim_runs(stub, &[Some(tools.path().to_owned())]));
+        // A git that cannot run is passed over, as the command search does.
+        use std::os::unix::fs::PermissionsExt;
+        let (first, second) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        fs::write(first.path().join("git"), "").unwrap();
+        let stand_in = second.path().join("git");
+        fs::write(&stand_in, "").unwrap();
+        fs::set_permissions(&stand_in, fs::Permissions::from_mode(0o755)).unwrap();
+        let path = std::env::join_paths([first.path(), second.path()]).unwrap();
+        assert_eq!(found_git(&path), Some(stand_in));
     }
 
     #[test]
