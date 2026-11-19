@@ -611,11 +611,7 @@ impl NewPane {
                 kind => cx.emit(NewPaneEvent::OpenView(View::of(kind))),
             },
             Row::Section(index) => cx.emit(NewPaneEvent::OpenSection(SECTIONS[index].section)),
-            Row::Pick(view) => {
-                if view.is_valid() && view.registration_id.is_some() {
-                    cx.emit(NewPaneEvent::OpenView(view));
-                }
-            }
+            Row::Pick(view) => cx.emit(NewPaneEvent::OpenView(view)),
         }
     }
 
