@@ -123,7 +123,7 @@ impl Plan {
 /// Why plans could not be read. Fixed text; no response body is shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// No authenticated private local provider is configured.
+    /// Backbone could not provide current plans: it answered with an unexpected status.
     Unavailable,
     /// The provider does not offer current plans yet.
     Unsupported,
@@ -137,7 +137,7 @@ impl Error {
     /// Safe, fixed text for the person.
     pub fn message(self) -> &'static str {
         match self {
-            Self::Unavailable => "Current plans need an authenticated private Backbone connection.",
+            Self::Unavailable => "Backbone could not provide current plans.",
             Self::Unsupported => "This Agent Backbone does not offer current plans yet.",
             Self::Unreadable => "Backbone returned an unreadable plans response.",
             Self::Connection(

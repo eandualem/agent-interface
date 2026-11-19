@@ -49,10 +49,10 @@ pub struct Read {
 /// Read a bounded GET chain using the original binding and credentials.
 /// Optional enrichment can fail ordinarily, but any connection refusal or
 /// cancellation discards the complete observation. Call on an I/O worker.
-/// This does not enable native navigation, local skill previews or actions.
+/// It only reads: nothing here navigates or acts.
 pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool) -> Read {
     let api = Api::new(connection, live);
-    // The closed request set cannot reach legacy agent/runtime file reads.
+    // Every request in this closed set is a read of the profile's own API.
     let result = super::read_using(&api, &request.remote());
     let error = &api.error;
     let result = if let Some(error) = error.get() {

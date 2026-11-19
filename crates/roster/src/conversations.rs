@@ -315,7 +315,7 @@ pub enum Outcome {
 /// Why a conversation could not be read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// No authenticated private local provider is configured.
+    /// Backbone could not provide the conversation: it answered with an unexpected status.
     Unavailable,
     /// Backbone answered but did not let this app read or write it.
     Forbidden,
@@ -333,7 +333,7 @@ impl Error {
     /// Safe, fixed text for the person.
     pub fn message(self) -> &'static str {
         match self {
-            Self::Unavailable => "Conversations need an authenticated private Backbone connection.",
+            Self::Unavailable => "Backbone could not provide this conversation.",
             Self::Forbidden => "Backbone did not let this app open this conversation.",
             Self::Unsupported => "This Agent Backbone does not keep conversations yet.",
             Self::UnknownArtifact => "Backbone has no record of this item.",
