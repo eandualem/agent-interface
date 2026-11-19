@@ -66,11 +66,18 @@ with tempfile.TemporaryDirectory(prefix="document-smoke-") as directory:
     # temporary paths, so each is quoted as one shell word.
     listed = shlex.quote(json.dumps(dict(profiles=[entry])))
     shown = shlex.quote(json.dumps(entry))
+    # Each argument is checked on its own, so one argument holding spaces
+    # does not pass for several.
     (commands / "backbone").write_text(
-        '#!/bin/sh\ncase "$*" in\n'
-        f"    'profiles list --json') printf '%s' {listed} ;;\n"
-        f"    'profiles show --json -- {served['profile_id']}') printf '%s' {shown} ;;\n"
-        '    *) exit 2 ;;\nesac\n')
+        '#!/bin/sh\n'
+        'if [ "$#" -eq 3 ] && [ "$1" = profiles ] && [ "$2" = list ] && [ "$3" = --json ]; then\n'
+        f"    printf '%s' {listed}; exit 0\n"
+        'fi\n'
+        'if [ "$#" -eq 5 ] && [ "$1" = profiles ] && [ "$2" = show ] && [ "$3" = --json ] '
+        f'&& [ "$4" = -- ] && [ "$5" = {served["profile_id"]} ]; then\n'
+        f"    printf '%s' {shown}; exit 0\n"
+        'fi\n'
+        'exit 2\n')
     (commands / "backbone").chmod(0o755)
     # The app asks a login shell, then PATH, for `backbone`: this fixture must
     # come first in both, whatever the runner has installed.
