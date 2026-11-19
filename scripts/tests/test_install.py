@@ -98,7 +98,7 @@ class InstallTests(unittest.TestCase):
 printf '%s\\n' "$*" >> "$TEST_SYSTEM_ACTIONS"
 case "$1" in
     -v) exit 0;;
-    apt-get) exit 0;;
+    apt-get) [ "$2" != update ] || sleep "${TEST_APT_SECONDS:-0}"; exit 0;;
     install)
         if [ "${TEST_FAIL_SHORTCUT:-}" = yes ]; then exit 1; fi
         shift; exec /usr/bin/install "$@";;
@@ -188,6 +188,17 @@ exec "$@"
         self.install(self.package("0.0.1"))
         self.assertNotIn("apt-get", (self.root / "system-actions").read_text())
 
+    def test_slow_package_step_reports_elapsed_time_and_cleans_up_progress(self):
+        self.wsl()
+        self.env["TEST_APT_SECONDS"] = "6"
+        result = self.install(self.package())
+        step = "Refreshing Ubuntu package information"
+        self.assertIn(f"{step}: still running (5s elapsed)", result.stderr)
+        self.assertIn(f"{step}: done.", result.stderr)
+        # install() has a bounded timeout: an orphan heartbeat would otherwise
+        # retain its capture pipe indefinitely. It must emit no later updates.
+        self.assertNotIn(f"{step}: still running", result.stderr.split(f"{step}: done.", 1)[1])
+
     def test_wsl_shortcut_failure_rolls_back_app(self):
         self.install(self.package("0.0.0"))
         before = self.launcher.read_bytes()
@@ -206,9 +217,9 @@ exec "$@"
         self.assertEqual(shortcut.read_text(), "[Desktop Entry]\nName=Another installation\n")
         self.assertFalse((self.root / "system-actions").exists())
 
-    def mock_download(self, archive, prefix="agent-interface", missing_status="404"):
+    def mock_download(self, archive, prefix="agent-interface"):
         self.env.update(TEST_ARCHIVE=str(archive), TEST_PREFIX=prefix,
-                        TEST_DOWNLOADS=str(self.root / "downloads"), TEST_MISSING_STATUS=missing_status)
+                        TEST_DOWNLOADS=str(self.root / "downloads"))
         self.command("curl", '''
 printf '%s\\n' "$*" >> "$TEST_DOWNLOADS.args"
 url= output= write_status=false
@@ -226,7 +237,7 @@ printf '%s\\n' "$name" >> "$TEST_DOWNLOADS"
 case "$name" in
     "$TEST_PREFIX"-*.tar.gz) cp "$TEST_ARCHIVE" "$output";;
     "$TEST_PREFIX"-*.tar.gz.sha256) cp "$TEST_ARCHIVE.sha256" "$output";;
-    *) if [ "$write_status" = true ]; then printf '%s' "$TEST_MISSING_STATUS"; fi; exit 22;;
+    *) if [ "$write_status" = true ]; then printf 404; fi; exit 22;;
 esac
 if [ "$write_status" = true ]; then printf 200; fi
 ''')
@@ -246,7 +257,9 @@ if [ "$write_status" = true ]; then printf 200; fi
 
     def test_checksum_failure_does_not_change_installation(self):
         self.install(self.package("0.1.1"))
-        self.mock_download(self.package("0.1.0"), prefix="missing", missing_status="500")
+        # The release has no checksum: curl fails the fetch, so the archive is
+        # never downloaded and the installed app stays.
+        self.mock_download(self.package("0.1.0"), prefix="missing")
         self.install(None, success=False)
         self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "agent-interface 0.1.1")
         self.assertEqual((self.root / "downloads").read_text().splitlines(), ["agent-interface-x86_64-unknown-linux-gnu.tar.gz.sha256"])
