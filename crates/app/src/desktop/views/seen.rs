@@ -39,10 +39,7 @@ fn load() -> Seen {
     let read = path()
         .and_then(|path| std::fs::read(path).ok())
         .and_then(|bytes| serde_json::from_slice::<Seen>(&bytes).ok());
-    read.unwrap_or_else(|| {
-        save();
-        Seen::default()
-    })
+    read.unwrap_or_default()
 }
 
 /// Write the current records atomically on a background thread. Each write

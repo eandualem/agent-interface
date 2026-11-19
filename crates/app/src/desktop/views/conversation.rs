@@ -610,7 +610,7 @@ impl Conversation {
 
     /// Nothing would be lost by replacing it: no message still sending or
     /// awaiting a retry. A draft moves to the replacement.
-    pub fn disposable(&self) -> bool {
+    fn disposable(&self) -> bool {
         self.messages.iter().all(|message| {
             !matches!(
                 message.delivery,

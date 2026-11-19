@@ -509,20 +509,21 @@ impl LiveAgents {
 /// workspace persistence are not enabled by this ownership primitive.
 pub(super) fn start_bound(connection: Connection, cx: &mut App) -> Option<LiveAgents> {
     let origin = Origin(connection.identity().clone());
-    start(origin, Some(connection.connection_key()), cx, move |wake| {
+    start(origin, connection.connection_key(), cx, move |wake| {
         crate::roster::BoundRosterSource::start(connection, wake).map(Worker)
     })
 }
 
 fn start(
     origin: Origin,
-    connection_key: Option<ConnectionKey>,
+    connection_key: ConnectionKey,
     cx: &mut App,
     worker: impl FnOnce(Box<dyn Fn() + Send>) -> std::io::Result<Worker>,
 ) -> Option<LiveAgents> {
     if !cx.has_global::<Sources>() {
         cx.set_global(Sources::default());
     }
+    let connection_key = Some(connection_key);
     if let Some(agents) =
         cx.update_global::<Sources, _>(|sources, _| sources.get(&origin, &connection_key))
     {
