@@ -92,7 +92,7 @@ impl Browser {
 
     /// Whether `socket` is the selected workspace's profile's tmux server,
     /// where its agents run. A workspace without a profile has none.
-    pub(super) fn is_window_source(&self, socket: Option<&str>) -> bool {
+    pub(super) fn is_profile_server(&self, socket: Option<&str>) -> bool {
         let Some(space) = self
             .layout
             .as_ref()
@@ -117,7 +117,7 @@ impl Browser {
         states: Option<&HashMap<String, AgentState>>,
     ) -> Option<AgentState> {
         let state = states?.get(&attachment.session).copied()?;
-        self.is_window_source(attachment.source_socket.as_deref())
+        self.is_profile_server(attachment.source_socket.as_deref())
             .then_some(state)
     }
 
