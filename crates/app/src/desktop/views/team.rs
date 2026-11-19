@@ -361,7 +361,7 @@ pub(super) fn agent_row(
         .when(!first, |el| {
             el.border_t(px(t.size.hairline)).border_color(c.line)
         })
-        .when(pane.connection.is_none() || registration.is_some(), |el| {
+        .when(registration.is_some(), |el| {
             el.cursor_pointer().hover(|el| el.bg(colors().hover))
         })
         .when(state == AgentState::Offline, |el| el.opacity(0.7))
@@ -430,28 +430,16 @@ pub(super) fn agent_row(
             }),
         )
         .on_click(cx.listener(move |pane, event: &gpui::ClickEvent, _, cx| {
-            if let Some(event) = row_event(
-                pane.connection.as_ref(),
-                &name,
-                registration.as_deref(),
-                event.modifiers().alt,
-            ) {
+            if let Some(event) = row_event(&name, registration.as_deref(), event.modifiers().alt) {
                 cx.emit(event);
             }
         }))
         .into_any_element()
 }
 
-// Bound agent cards capture the observed registration before emitting navigation.
-// Name-only terminal navigation remains unavailable from these rows.
-fn row_event(
-    connection: Option<&agent_interface_roster::profiles::Connection>,
-    name: &str,
-    registration: Option<&str>,
-    card: bool,
-) -> Option<ViewEvent> {
-    // Only a profile's agents open, and only as their registered cards.
-    connection?;
+// ⌥-click opens the agent's card under the registration the row observed; a
+// plain click does nothing.
+fn row_event(name: &str, registration: Option<&str>, card: bool) -> Option<ViewEvent> {
     if !card {
         return None;
     }
@@ -465,21 +453,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rows_open_only_a_profiles_registered_card() {
-        let (_dir, connection, server) = crate::roster::content::tests::provider("a", vec![]);
-        for card in [false, true] {
-            assert!(row_event(Some(&connection), "worker", None, card).is_none());
-            assert!(row_event(None, "worker", None, card).is_none());
-        }
+    fn rows_open_only_a_registered_card_on_alt_click() {
         let registration = "1234567890abcdef1234567890abcdef";
-        assert!(row_event(Some(&connection), "worker", Some("bad"), true).is_none());
-        let Some(ViewEvent::OpenBeside(view)) =
-            row_event(Some(&connection), "worker", Some(registration), true)
+        for card in [false, true] {
+            assert!(row_event("worker", None, card).is_none());
+        }
+        assert!(row_event("worker", Some(registration), false).is_none());
+        assert!(row_event("worker", Some("bad"), true).is_none());
+        let Some(ViewEvent::OpenBeside(view)) = row_event("worker", Some(registration), true)
         else {
             panic!("missing registered card")
         };
         assert_eq!(view.registration_id.as_deref(), Some(registration));
-        server.join().unwrap();
     }
 
     #[test]

@@ -112,7 +112,7 @@ const VIEWS: [ViewChoice; 7] = [
     ViewChoice {
         glyph: "⚿",
         label: "Agent",
-        description: "One agent: permissions, connections, its skills, policies, usage",
+        description: "One agent: overview and runtime permissions",
         scope: "pick an agent",
         kind: ViewKind::Agent,
     },
@@ -611,9 +611,7 @@ impl NewPane {
             },
             Row::Section(index) => cx.emit(NewPaneEvent::OpenSection(SECTIONS[index].section)),
             Row::Pick(view) => {
-                if view.is_valid()
-                    && (self.origin.connection().is_none() || view.registration_id.is_some())
-                {
+                if view.is_valid() && view.registration_id.is_some() {
                     cx.emit(NewPaneEvent::OpenView(view));
                 }
             }
@@ -803,11 +801,7 @@ impl Render for NewPane {
                         id,
                         view.glyph,
                         view.label,
-                        if self.origin.connection().is_some() && view.kind == ViewKind::Agent {
-                            "One agent: overview and runtime permissions"
-                        } else {
-                            view.description
-                        },
+                        view.description,
                         view.scope,
                         key,
                         selected,

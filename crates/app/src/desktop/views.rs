@@ -138,10 +138,10 @@ pub(super) enum Section {
     Sheets,
 }
 
-/// Something a list can open in the reader, by its file or folder.
+/// Something a list can open in the reader, by the provider's path for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Target {
-    /// A skill, by its folder, whose SKILL.md is read when opened.
+    /// A skill, whose SKILL.md snapshot is read when opened.
     Skill(String),
     /// A policy, by its file; its text is already in the view's data.
     Policy(String),
@@ -638,12 +638,9 @@ impl ViewPane {
     fn set_range(&mut self, range: Range, cx: &mut Context<Self>) {
         if self.range != range {
             self.range = range;
-            // The old range's totals must not appear under the new label.
-            let clear = self.view.kind == ViewKind::Usage;
-            if let Some(Data::Agent(agent)) = &mut self.data {
-                agent.usage = None;
-            }
-            self.refetch(clear, cx);
+            // Only a Usage pane has these controls. The old range's totals
+            // must not appear under the new label.
+            self.refetch(true, cx);
         }
     }
 
@@ -657,10 +654,9 @@ impl ViewPane {
         }
     }
 
-    /// Open `target` in the reader, reading a skill's SKILL.md off the UI thread.
+    /// Open `target` in the reader, reading a skill's SKILL.md snapshot off the UI thread.
     fn open(&mut self, target: Target, cx: &mut Context<Self>) {
-        if self.connection.is_some()
-            && let Target::Policy(path) = &target
+        if let Target::Policy(path) = &target
             && let Some(Data::Policies(library)) = &self.data
             && let Some(source) = library
                 .all()
@@ -670,8 +666,7 @@ impl ViewPane {
             self.open_policy(source.clone(), library.members.clone().into(), cx);
             return;
         }
-        if self.connection.is_some()
-            && let Target::Policy(path) = &target
+        if let Target::Policy(path) = &target
             && let Some(Data::Agent(agent)) = &self.data
             && let Some(Ok(brief)) = &agent.brief
             && let Some(source) = brief
@@ -692,7 +687,6 @@ impl ViewPane {
         cx: &mut Context<Self>,
     ) {
         let Some(connection) = &self.connection else {
-            self.open(Target::Policy(source.path.to_string()), cx);
             return;
         };
         let bound = bound_policies::Open::capture(connection, source, candidates);
@@ -995,37 +989,33 @@ impl Render for ViewPane {
         }
         if let Some(plans) = plans {
             let previous = self.conversation.take();
-            self.conversation = plans
-                .read(cx)
-                .conversation()
-                .filter(|_| self.connection.is_some())
-                .map(|target| {
-                    let key = target.key();
-                    self.conversations
-                        .entry(key)
-                        .or_insert_with(|| {
-                            let conversation = cx.new(|cx| {
-                                conversation::Conversation::about_plan(
-                                    &target,
-                                    self.visible.clone(),
-                                    window,
-                                    cx,
-                                )
-                            });
-                            self._search.push(cx.observe(&conversation, |pane, _, cx| {
-                                let held = pane
-                                    .conversations
-                                    .values()
-                                    .any(|conversation| conversation.read(cx).holds_plan(cx));
-                                if let Some(plans) = &pane.plans {
-                                    plans.update(cx, |plans, cx| plans.hold_refresh(held, cx));
-                                }
-                                cx.notify();
-                            }));
-                            conversation
-                        })
-                        .clone()
-                });
+            self.conversation = plans.read(cx).conversation().map(|target| {
+                let key = target.key();
+                self.conversations
+                    .entry(key)
+                    .or_insert_with(|| {
+                        let conversation = cx.new(|cx| {
+                            conversation::Conversation::about_plan(
+                                &target,
+                                self.visible.clone(),
+                                window,
+                                cx,
+                            )
+                        });
+                        self._search.push(cx.observe(&conversation, |pane, _, cx| {
+                            let held = pane
+                                .conversations
+                                .values()
+                                .any(|conversation| conversation.read(cx).holds_plan(cx));
+                            if let Some(plans) = &pane.plans {
+                                plans.update(cx, |plans, cx| plans.hold_refresh(held, cx));
+                            }
+                            cx.notify();
+                        }));
+                        conversation
+                    })
+                    .clone()
+            });
             if previous != self.conversation {
                 for (conversation, active) in [(previous, false), (self.conversation.clone(), true)]
                 {
