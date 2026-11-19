@@ -273,9 +273,16 @@ mod tests {
                     ),
                     "{selector}"
                 );
-                // A reset of a closed details' content would show it.
+                // A reset of a closed details' content would show it, so a
+                // rule for that slot names the state it is for, and the one
+                // for a closed details only hides it.
                 if selector.contains("::details-content") {
-                    assert!(selector.contains("[open]::details-content"), "{selector}");
+                    let closed = selector.contains(":not([open])::details-content");
+                    assert!(
+                        closed || selector.contains("[open]::details-content"),
+                        "{selector}"
+                    );
+                    assert!(!closed || !body.contains("all:"), "{selector}");
                 }
             }
             for declaration in body.split(';').map(str::trim).filter(|d| !d.is_empty()) {

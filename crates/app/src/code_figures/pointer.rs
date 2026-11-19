@@ -166,8 +166,9 @@ enum Event {
     /// A start tag, and whether it is in HTML content rather than SVG or MathML.
     Start(Tag, bool),
     End(LocalName),
-    /// A comment or doctype.
     Comment,
+    /// A doctype, which is no comment: a pointer holds none.
+    Doctype,
     /// Text, and whether it is only whitespace.
     Text(bool),
 }
@@ -220,7 +221,8 @@ impl TokenSink for Sink {
                     }
                 }
             }
-            Token::CommentToken(_) | Token::DoctypeToken(_) => Event::Comment,
+            Token::CommentToken(_) => Event::Comment,
+            Token::DoctypeToken(_) => Event::Doctype,
             Token::CharacterTokens(text) => Event::Text(text.chars().all(is_space)),
             Token::NullCharacterToken => Event::Text(false),
             Token::EOFToken | Token::ParseError(_) => return result,
@@ -365,7 +367,7 @@ impl Scan<'_> {
                     tags.pop();
                     Step::Open(open)
                 }
-                Event::End(_) => Step::Rejected,
+                Event::End(_) | Event::Doctype => Step::Rejected,
             };
         }
         match (&open.caption, event) {
@@ -697,6 +699,8 @@ mod tests {
             "<figcaption>a</summary></figcaption>",
             "<figcaption><details>a</figcaption>",
             "<img src=x>",
+            "<!doctype html>",
+            "<figcaption>a<!doctype html></figcaption>",
         ] {
             assert_eq!(pointers(&diff("", content)), vec![], "{content}");
         }

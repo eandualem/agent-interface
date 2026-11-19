@@ -16,6 +16,9 @@ use super::Until;
 pub const OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
 /// The longest one Git command may run.
 const TIMEOUT: Duration = Duration::from_secs(3);
+/// The `core.bigFileThreshold` every read sets: Git compares two regular
+/// files over it by size alone, but reads any other changed blob whole.
+const BIG: usize = 16 * 1024 * 1024;
 /// The most rows read from one diff, and lines shown from one file.
 pub const ROW_LIMIT: usize = 20_000;
 
@@ -235,6 +238,60 @@ pub fn diff(
     let attributes = format!("--attr-source={head}");
     let mut tail = vec![base, head, "--"];
     tail.extend(paths.unwrap_or_default().iter().map(String::as_str));
+    // Git compares two regular files over its big-file size by size alone,
+    // but reads any other changed blob whole, so a diff that would make it
+    // read one over that size is not read. Finding renames reads blobs too,
+    // so this list has none.
+    let plain = ["--raw", "-z", "--no-renames", "--no-abbrev"];
+    let plain = run(
+        top,
+        &[&DIFF[..], &plain[..], &tail[..]].concat(),
+        OUTPUT_LIMIT,
+        until,
+    )?;
+    let mut changes = Vec::new();
+    for meta in plain
+        .split(|&byte| byte == 0)
+        .step_by(2)
+        .filter(|meta| !meta.is_empty())
+    {
+        let meta = std::str::from_utf8(meta.strip_prefix(b":")?).ok()?;
+        let [old_mode, new_mode, old, new, _] = meta.split(' ').collect::<Vec<_>>()[..] else {
+            return None;
+        };
+        changes.push([(old_mode, old), (new_mode, new)]);
+    }
+    let ids: Vec<&str> = changes
+        .iter()
+        .flatten()
+        .filter(|&&(mode, _)| matches!(mode, "100644" | "100755" | "120000"))
+        .map(|&(_, id)| id)
+        .collect();
+    if !ids.is_empty() {
+        // Git lists each blob of at least the limit as `~` and its ID.
+        let limit = format!("--filter=blob:limit={}", BIG + 1);
+        let list = [
+            "rev-list",
+            "--objects",
+            "--no-walk",
+            &*limit,
+            "--filter-provided-objects",
+        ];
+        let list = [&list[..], &["--filter-print-omitted"][..], &ids[..]].concat();
+        let listed = String::from_utf8(run(top, &list, OUTPUT_LIMIT, until)?).ok()?;
+        let big: Vec<&str> = listed
+            .lines()
+            .filter_map(|line| line.strip_prefix('~'))
+            .collect();
+        let regular = |mode| matches!(mode, "100644" | "100755");
+        for [(old_mode, old), (new_mode, new)] in changes {
+            let (old_big, new_big) = (big.contains(&old), big.contains(&new));
+            let by_size = old_big && new_big && regular(old_mode) && regular(new_mode);
+            if (old_big || new_big) && !by_size {
+                return None;
+            }
+        }
+    }
     // The file list, with exact names, then the patch in the same order.
     let raw = run(
         top,
@@ -417,14 +474,22 @@ fn starts(header: &str) -> (u32, u32) {
     (old.max(1), new.max(1))
 }
 
-/// The text of `path` at `commit`, unless it is missing, binary or not UTF-8.
+/// The text of `path` at `commit`, unless it is missing, binary, not UTF-8
+/// or longer than the output limit.
 pub fn file(top: &Path, commit: &str, path: &str, until: &Until) -> Option<String> {
-    let blob = run(
-        top,
-        &["cat-file", "blob", &format!("{commit}:{path}")],
-        OUTPUT_LIMIT,
-        until,
-    )?;
+    let name = format!("{commit}:{path}");
+    // A blob stored as a delta is built whole before it is written.
+    let size = run(top, &["cat-file", "-s", &name], 64, until)?;
+    if std::str::from_utf8(&size)
+        .ok()?
+        .trim()
+        .parse::<usize>()
+        .ok()?
+        > OUTPUT_LIMIT
+    {
+        return None;
+    }
+    let blob = run(top, &["cat-file", "blob", &name], OUTPUT_LIMIT, until)?;
     if blob.contains(&0) {
         return None;
     }
@@ -600,19 +665,33 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn a_file_over_the_big_file_threshold_is_shown_as_binary() {
+    fn a_file_over_the_big_file_threshold_is_shown_as_binary_unless_git_would_read_it() {
         let dir = tempfile::tempdir().unwrap();
         git(dir.path(), &["init", "-q"]);
-        let big = "x\n".repeat(9 * 1024 * 1024);
+        let big = "x\n".repeat(BIG / 2 + 1);
+        let changed = big.replacen('x', "y", 1);
         let mut commits = Vec::new();
-        for text in [big.clone(), big.replacen('x', "y", 1)] {
-            fs::write(dir.path().join("big.txt"), text).unwrap();
+        for (grown, text) in [("x\n", ""), (&*big, &*big), (&*big, &*changed)] {
+            fs::write(dir.path().join("grown.txt"), grown).unwrap();
+            if !text.is_empty() {
+                fs::write(dir.path().join("big.txt"), text).unwrap();
+            }
+            fs::write(dir.path().join("four.txt"), "x".repeat(OUTPUT_LIMIT + 1)).unwrap();
             git(dir.path(), &["add", "-A"]);
             git(dir.path(), &["commit", "-qm", "big"]);
             commits.push(git(dir.path(), &["rev-parse", "HEAD"]));
         }
-        let files = diff(dir.path(), &commits[0], &commits[1], None, &later()).unwrap();
+        // Two regular files over it are compared by size alone.
+        let files = diff(dir.path(), &commits[1], &commits[2], None, &later()).unwrap();
         assert_eq!(files[0].rows, vec![Row::Binary]);
+        // Git would read one added, or grown past it, whole.
+        for path in ["big.txt", "grown.txt"] {
+            let only = [path.to_owned()];
+            let read = diff(dir.path(), &commits[0], &commits[1], Some(&only), &later());
+            assert_eq!(read, None, "{path}");
+        }
+        // A file over the output limit is not read at all.
+        assert_eq!(file(dir.path(), &commits[0], "four.txt", &later()), None);
     }
 
     #[test]

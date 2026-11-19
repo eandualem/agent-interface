@@ -93,13 +93,19 @@ hr { border: 0 !important; height: 1px; background-color: var(--ai-line) !import
 .ai-git.ai-git summary::marker { all: revert !important; }
 .ai-git.ai-git summary::-webkit-details-marker { all: revert !important; }
 /* What a details shows when open, which its parts inherit from; a WebKit
-   that has no ::details-content drops this rule alone. Only when open: the
-   browser hides a closed details' content on this same slot, and a reset
-   there shows it (measured in WebKit). */
+   that has no ::details-content drops these rules alone. The reset is only
+   for an open details: the browser hides a closed one's content on this
+   same slot, and a reset there shows it (measured in WebKit). A closed one
+   is hidden here too, so a document's rule cannot show it. */
 .ai-git.ai-git[open]::details-content,
 .ai-git.ai-git details[open]::details-content {
   all: revert !important;
   direction: ltr !important;
+}
+.ai-git.ai-git:not([open])::details-content,
+.ai-git.ai-git details:not([open])::details-content {
+  content-visibility: hidden !important;
+  display: block !important;
 }
 /* The theme's selection, whatever the document's. */
 .ai-git.ai-git::selection,

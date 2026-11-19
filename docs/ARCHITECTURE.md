@@ -836,7 +836,10 @@ not be read is never remembered.
   content policy is unchanged.
 - **Nothing to show.** A pointer with no matching checkout or commit, a code
   pointer's path missing at that commit, a diff that touches a submodule, a
-  binary file at a code pointer, a path or text that is not UTF-8 or holds a
+  diff that would make Git read a file over 16 MiB (one added, deleted,
+  grown past that size or changed to or from a link; Git compares two
+  regular files over 16 MiB by size alone and shows them as binary), a
+  code pointer to a file over 4 MiB, a binary file at a code pointer, a path or text that is not UTF-8 or holds a
   NUL byte, a read that is too large or too slow, or a view past 32 MiB of
   views on the page stays exactly as authored. A diff's `data-paths` only
   filter it: a listed path with no change is not shown, and a diff with no
