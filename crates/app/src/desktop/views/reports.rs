@@ -801,35 +801,26 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
     let (t, c) = (tokens(), colors());
     let mut sections = ui::segments();
     for (index, (name, make)) in SECTIONS.into_iter().enumerate() {
-        if index == 1
-            && pane
-                .connection
-                .as_ref()
-                .is_some_and(|connection| pane.agents.belongs_to(connection.identity()))
-        {
-            sections = sections.child(
-                ui::segment(
-                    "reports-Current plans",
-                    "Current plans",
-                    pane.shown == Shown::Plans,
+        if index == 1 {
+            sections = sections
+                .child(
+                    ui::segment(
+                        "reports-Current plans",
+                        "Current plans",
+                        pane.shown == Shown::Plans,
+                    )
+                    .on_click(cx.listener(|pane, _, _, cx| pane.show_plans(cx))),
                 )
-                .on_click(cx.listener(|pane, _, _, cx| pane.show_plans(cx))),
-            );
-        }
-        if index == 1
-            && pane
-                .connection
-                .as_ref()
-                .is_some_and(|connection| pane.agents.belongs_to(connection.identity()))
-        {
-            sections = sections.child(
-                ui::segment(
-                    "reports-Interactions",
-                    "Interactions",
-                    pane.shown == Shown::Interactions,
-                )
-                .on_click(cx.listener(|pane, _, window, cx| pane.show_interactions(window, cx))),
-            );
+                .child(
+                    ui::segment(
+                        "reports-Interactions",
+                        "Interactions",
+                        pane.shown == Shown::Interactions,
+                    )
+                    .on_click(
+                        cx.listener(|pane, _, window, cx| pane.show_interactions(window, cx)),
+                    ),
+                );
         }
         let query = make();
         sections = sections.child(
@@ -843,16 +834,10 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
             .on_click(cx.listener(move |pane, _, _, cx| pane.show_records(make(), cx))),
         );
     }
-    if pane
-        .connection
-        .as_ref()
-        .is_some_and(|connection| pane.agents.belongs_to(connection.identity()))
-    {
-        sections = sections.child(
-            ui::segment("reports-Sheets", "Sheets", pane.shown == Shown::Sheets)
-                .on_click(cx.listener(|pane, _, window, cx| pane.show_sheets(window, cx))),
-        );
-    }
+    sections = sections.child(
+        ui::segment("reports-Sheets", "Sheets", pane.shown == Shown::Sheets)
+            .on_click(cx.listener(|pane, _, window, cx| pane.show_sheets(window, cx))),
+    );
     let agent = pane.reports.agent.as_deref().unwrap_or(
         if matches!(pane.reports.query, ReportQuery::Documents(_, Some(_))) {
             "Selected author"
