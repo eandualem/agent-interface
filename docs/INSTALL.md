@@ -213,7 +213,10 @@ add it: the Agent Backbone service is not distributed yet
 service installed, open Agent Interface to continue onboarding. Onboarding
 creates your first profile, and offers to install Git, tmux or an agent tool
 when one is missing; each agent tool signs in inside its own terminal. Without
-Agent Backbone, Agent Interface works as a native workspace for tmux.
+Agent Backbone, Agent Interface works as a native workspace for tmux: first run
+stops at **Agents can't start yet**, and **Continue with terminals** opens the
+workspace. Running the installer again, which **Details** may suggest, does
+not add the service.
 
 The app finds the profiles Agent Backbone serves through its `backbone` command
 and connects to each over the private Unix socket the service reports. The
