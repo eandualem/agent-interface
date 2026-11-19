@@ -115,7 +115,7 @@ fn said(event: &Event) -> Option<String> {
         "cancellation_unsafe" => "Setup had already begun to change things, so it wasn't cancelled: a cancellation is not a rollback.".into(),
         "agent_conflict" => "The name, its folder or its terminal isn't free, or the folder is missing or could not be made: change the name or folder.".into(),
         "runtime_missing" => "This tool isn't installed where the profile can use it, or setup doesn't start it: install it or choose another.".into(),
-        "invalid_request" if cancel => "Setup refused the cancellation as it was sent, so the request isn't cancelled.".into(),
+        "invalid_request" if cancel => "Setup refused the cancellation as it was sent.".into(),
         "invalid_request" => "Setup refused the request as it was sent: change the agent's name, folder, model or instructions.".into(),
         "service_unavailable" => "The profile's service, or the computer the agent runs on, did not answer. If the service isn't running, start it with backbone up --detach.".into(),
         _ => event
@@ -134,8 +134,15 @@ fn next(s: &Snapshot, cancel_view: bool) -> &'static str {
     };
     if cancel_view && Command::RetryCancel.allowed(Some(s)) {
         "Try again: it sends the same cancellation."
+    } else if cancel_view
+        && Command::Retry.allowed(Some(s))
+        && event.and_then(|e| e.code.as_deref()) == Some("cancellation_unsafe")
+    {
+        "Look at the agent first, then send it again to learn what came of it, or forget it."
     } else if cancel_view && Command::Retry.allowed(Some(s)) {
-        "The request isn't cancelled and stays open: send it again to learn what came of it, or forget it."
+        // Refused, or answered for another request: an earlier send of it
+        // may have cancelled it.
+        "The cancellation isn't confirmed: the request may still run, or may have been cancelled. Look at the agent first, then send it again to learn what came of it, or forget it."
     } else if Command::Retry.allowed(Some(s)) {
         "Try again: it sends the same request."
     } else if !s.closed() {
@@ -144,6 +151,38 @@ fn next(s: &Snapshot, cancel_view: bool) -> &'static str {
         "Only a new request can follow: change what you need and start again."
     } else {
         "Not known what came of it: look at the workspace first."
+    }
+}
+/// What the guide's main button does once a start has stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Then {
+    /// Send the same request again.
+    Replay,
+    /// It is closed: start a new request.
+    Fresh,
+    /// It is open with nothing it may send: neither.
+    Wait,
+}
+impl Then {
+    fn label(self) -> Option<&'static str> {
+        match self {
+            Self::Replay => Some("Try again"),
+            Self::Fresh => Some("Start a new request"),
+            Self::Wait => None,
+        }
+    }
+}
+/// What may follow a stopped start: the same request while it may be sent
+/// again, a new one only once it is closed.
+fn then(served: Option<&Served>, snapshot: Option<&Snapshot>) -> Then {
+    match served {
+        Some(served) if matches!(served.answer, Some(Answer::Unknown(_))) => Then::Replay,
+        Some(_) => Then::Fresh,
+        None => match saved_open(snapshot) {
+            Some(true) => Then::Replay,
+            Some(false) => Then::Wait,
+            None => Then::Fresh,
+        },
     }
 }
 /// Whether a saved request that is still open can be sent again; `None`
@@ -166,7 +205,7 @@ fn message(error: Error) -> &'static str {
         Error::Pending => {
             "An earlier first-agent request in this profile is still open. Open Saved setup requests to finish, cancel or forget it first."
         }
-        Error::RetryRefused => "The retained provider result does not allow this retry.",
+        Error::RetryRefused => "Setup's last answer does not allow sending this again.",
         Error::Storage(journal::Error::Unsafe) => "Setup storage is not private or safe to use.",
         Error::Storage(journal::Error::Busy | journal::Error::Conflict) => {
             "Another update won. Reload the original request."
@@ -849,6 +888,15 @@ impl Pane {
         saved_open(snapshot.as_deref())
     }
 
+    /// What the guide's main button says once a start has stopped: none
+    /// while its request is open with nothing it may send.
+    pub fn again_label(&self) -> Option<&'static str> {
+        let Page::Operation { snapshot, .. } = &self.page else {
+            return then(self.served.as_ref(), None).label();
+        };
+        then(self.served.as_ref(), snapshot.as_deref()).label()
+    }
+
     /// Once a fresh start has stopped without its agent running, the revision
     /// of its saved request, 0 when none was saved: each result changes it.
     pub fn settled(&self) -> Option<u64> {
@@ -916,32 +964,29 @@ impl Pane {
                 self.failure(),
             )
         };
-        let ticket = self.ticket.0.clone();
         let mut actions = div().flex().items_center().gap(px(t.space.s8));
         if !starting {
-            let again = match &self.served {
-                Some(served) => matches!(served.answer, Some(Answer::Unknown(_))),
-                None => snapshot.is_some_and(|s| Command::Retry.allowed(Some(s))),
-            };
-            actions = actions
-                .child(
-                    ui::button("setup-try-again", "Try again", ui::Button::Primary).on_click(
+            // The same request while it may be sent again; a new one only
+            // once it is closed, under the text that says to look first.
+            let after = then(self.served.as_ref(), snapshot);
+            if let Some(label) = after.label() {
+                actions = actions.child(
+                    ui::button("setup-try-again", label, ui::Button::Primary).on_click(
                         cx.listener(move |pane, _, _, cx| {
-                            if again && pane.served.is_some() {
-                                pane.run_served(cx);
-                            } else if again {
-                                pane.invoke(Command::Retry, &ticket, cx);
-                            } else {
+                            if after == Then::Fresh {
                                 pane.finished = true;
                                 cx.emit(Again);
+                            } else {
+                                pane.retry(cx);
                             }
                         }),
                     ),
-                )
-                .child(
-                    ui::button("setup-leave", leave, ui::Button::Secondary)
-                        .on_click(cx.listener(|pane, _, _, cx| pane.back(cx))),
                 );
+            }
+            actions = actions.child(
+                ui::button("setup-leave", leave, ui::Button::Secondary)
+                    .on_click(cx.listener(|pane, _, _, cx| pane.back(cx))),
+            );
         }
         div()
             .size_full()

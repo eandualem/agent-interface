@@ -120,20 +120,32 @@ fn answered(cancel: bool, status: &str, code: &str, retry: &str) -> Snapshot {
 
 #[test]
 fn every_answer_s_words_agree_with_its_status_and_buttons() {
-    // The codes with the app's own words, and one it doesn't know, which
-    // shows setup's message.
-    let named = [
-        "agent_ready",
-        "request_cancelled",
+    // Every code setup gives a first agent or its cancellation, and one it
+    // doesn't know. Those the app has words of its own for show them;
+    // every other shows setup's message.
+    let own = [
         "cancellation_unsafe",
         "agent_conflict",
         "runtime_missing",
         "invalid_request",
         "service_unavailable",
     ];
+    let codes = [
+        "agent_ready",
+        "request_cancelled",
+        "starter_conflict",
+        "launch_failed",
+        "installation_conflict",
+        "request_conflict",
+        "request_expired",
+        "outcome_unknown",
+        "setup_failed",
+        "operator_required",
+        "new_code",
+    ];
     for cancel in [false, true] {
         for given in ["completed", "failed", "action_required", "paused"] {
-            for code in named.into_iter().chain(["new_code"]) {
+            for code in own.into_iter().chain(codes) {
                 for retry in ["same_request", "new_request", "none", "later"] {
                     let row = format!("cancel {cancel}: {given} {code} {retry}");
                     let mut s = answered(cancel, given, code, retry);
@@ -164,8 +176,7 @@ fn every_answer_s_words_agree_with_its_status_and_buttons() {
                     // Setup's words only where the app has none of its own.
                     assert_eq!(
                         text.starts_with("the profile's words"),
-                        !named.contains(&code)
-                            || matches!(code, "agent_ready" | "request_cancelled"),
+                        !own.contains(&code),
                         "{row}: {text}"
                     );
                     let (again, again_cancel) = (
@@ -173,10 +184,11 @@ fn every_answer_s_words_agree_with_its_status_and_buttons() {
                         Command::RetryCancel.allowed(Some(&s)),
                     );
                     // Only a final retry closes it; a cancellation's leaves the
-                    // original as it was.
+                    // original as it was, unless it is too old to run now.
+                    let last = matches!(retry, "new_request" | "none");
                     assert_eq!(
                         s.closed(),
-                        !cancel && matches!(retry, "new_request" | "none"),
+                        last && (!cancel || code == "request_expired"),
                         "{row}"
                     );
                     // The same request or cancellation only where its retry
@@ -200,6 +212,19 @@ fn every_answer_s_words_agree_with_its_status_and_buttons() {
                     assert_eq!(again_cancel, cancel && retry == "same_request", "{row}");
                     assert_eq!(
                         text.contains("send it again"),
+                        cancel && again && !again_cancel,
+                        "{row}: {text}"
+                    );
+                    // A cancellation that didn't confirm says only that, and
+                    // to look at the agent first.
+                    assert!(!text.contains("isn't cancelled"), "{row}: {text}");
+                    assert_eq!(
+                        text.contains("isn't confirmed"),
+                        cancel && again && !again_cancel && code != "cancellation_unsafe",
+                        "{row}: {text}"
+                    );
+                    assert_eq!(
+                        text.contains("Look at the agent first"),
                         cancel && again && !again_cancel,
                         "{row}: {text}"
                     );
@@ -254,6 +279,23 @@ fn every_answer_s_words_agree_with_its_status_and_buttons() {
         assert_eq!(Command::Retry.allowed(Some(&s)), open, "{code}");
         assert_eq!(s.closed(), !open, "{code}");
     }
+    // The guide's button: the same request while it may be sent again, a
+    // new one only once it is closed, and neither while it is open with
+    // nothing it may send.
+    for (retry, after, label) in [
+        ("same_request", Then::Replay, Some("Try again")),
+        ("none", Then::Fresh, Some("Start a new request")),
+        ("new_request", Then::Fresh, Some("Start a new request")),
+        ("later", Then::Wait, None),
+    ] {
+        let s = answered(false, "action_required", "outcome_unknown", retry);
+        assert_eq!(then(None, Some(&s)), after, "{retry}");
+        assert_eq!(after.label(), label, "{retry}");
+    }
+    let mut saved = snapshot();
+    saved.phase = Phase::Prepared;
+    assert_eq!(then(None, Some(&saved)), Then::Replay);
+    assert_eq!(then(None, None), Then::Fresh);
     // Setup said nothing: the app says so, never an empty line.
     let s = answered(false, "failed", "new_code", "none");
     assert!(

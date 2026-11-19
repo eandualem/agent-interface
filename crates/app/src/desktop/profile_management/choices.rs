@@ -1393,7 +1393,13 @@ impl Form {
         let start = if busy {
             format!("Starting {name}…")
         } else if failure.is_some() {
-            "Try again".to_owned()
+            // The same request while it may be sent again; a new one once it
+            // is closed.
+            self.start
+                .as_ref()
+                .and_then(|(pane, _)| pane.read(cx).again_label())
+                .unwrap_or("Try again")
+                .to_owned()
         } else if !tool {
             "Choose a tool".to_owned()
         } else if valid {
