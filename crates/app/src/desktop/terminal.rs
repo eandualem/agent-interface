@@ -367,17 +367,16 @@ impl LiveTerminal {
         let Some(agent) = self.agent.clone().filter(|_| !self.launching) else {
             return;
         };
+        let Some(connection) = self.target.connection.clone() else {
+            return;
+        };
         self.launching = true;
         self.launch_result = None;
         let name = agent.clone();
-        let connection = self.target.connection.clone();
         let defaults = defaults();
-        let work = cx.background_executor().spawn(async move {
-            match connection {
-                Some(connection) => connection.start_agent(&name, resume, Some(defaults)),
-                None => agent_interface_roster::lifecycle::Outcome::Unknown,
-            }
-        });
+        let work = cx
+            .background_executor()
+            .spawn(async move { connection.start_agent(&name, resume, Some(defaults)) });
         cx.spawn(async move |this, cx| {
             let result = work.await;
             let _ = this.update(cx, |terminal, cx| {
