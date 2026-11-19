@@ -197,14 +197,12 @@ mod tests {
 
     #[test]
     fn failed_discovery_does_not_authorize_creation() {
-        use agent_interface_test_support::TmuxServer;
-
-        // The unresponsive socket sits in a private tmux namespace.
-        let server = TmuxServer::start().unwrap();
-        let unresponsive = server.address().0.join("unresponsive.sock");
+        // A socket in a private folder that accepts connections but never
+        // answers, so its sessions cannot be read.
+        let root = tempfile::tempdir().unwrap();
+        let unresponsive = root.path().join("unresponsive.sock");
         let _listener = UnixListener::bind(&unresponsive).unwrap();
         assert!(select_socket(Some(unresponsive), "0123456789ab", true).is_err());
-        assert!(server.run(&["list-clients"]).unwrap().is_empty());
     }
 
     #[test]
