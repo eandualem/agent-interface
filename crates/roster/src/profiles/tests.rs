@@ -541,6 +541,7 @@ fn starting_a_stopped_agent_uses_the_bound_route_and_reports_the_outcome() {
     let (directory, listener, url) = crate::transport::tests::local_listener();
     let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
     let started = |ok: bool, existed: bool, ready: &str| json!({"ok": ok, "session": "worker", "already_existed": existed, "ready": ready});
+    let probe = listener.try_clone().unwrap();
     let server = serve(
         listener,
         vec![
@@ -573,11 +574,88 @@ fn starting_a_stopped_agent_uses_the_bound_route_and_reports_the_outcome() {
         Outcome::Refused(_)
     ));
     let requests = server.join().unwrap();
+    // The handshake, then one request for each start; the invalid name sends
+    // none, and nothing connects again.
+    assert_eq!(requests.len(), 5);
+    assert_eq!(
+        probe.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
     assert!(requests[1].starts_with("post /api/agents/worker/start "));
     assert!(requests[1].contains("x-backbone-lifecycle-id: "));
-    let body = requests[2].rsplit("\r\n\r\n").next().unwrap();
-    let sent: Value = serde_json::from_str(body).unwrap();
-    assert_eq!(sent, json!({"resume": true, "wait": false}));
+    let body = |request: &str| -> Value {
+        serde_json::from_str(request.rsplit("\r\n\r\n").next().unwrap()).unwrap()
+    };
+    assert_eq!(body(&requests[1]), json!({"resume": false, "wait": false}));
+    assert_eq!(body(&requests[2]), json!({"resume": true, "wait": false}));
+}
+
+#[test]
+fn a_reply_of_exactly_the_limit_is_read_and_one_byte_more_is_refused() {
+    use crate::transport::tests::{ok, serve_on, served_connection};
+    let (_directory, connection, listener) = served_connection();
+    let chunk = |data: &str| format!("{:x}\r\n{data}\r\n", data.len());
+    let half = "x".repeat(RESPONSE_LIMIT / 2);
+    let replies = [
+        ok(&"x".repeat(RESPONSE_LIMIT)),
+        ok(&"x".repeat(RESPONSE_LIMIT + 1)),
+        // The same excess in several chunks, with no length declared up front.
+        format!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{}{}0\r\n\r\n",
+            chunk(&half),
+            chunk(&format!("{half}x")),
+        ),
+    ];
+    let mut read = Vec::new();
+    for reply in replies {
+        let server = serve_on(listener.try_clone().unwrap(), None, reply, Duration::ZERO);
+        read.push(
+            connection
+                .response("/api/example", None, RESPONSE_LIMIT)
+                .map(|response| response.body.len()),
+        );
+        server.join().unwrap();
+    }
+    assert_eq!(
+        read,
+        [Ok(RESPONSE_LIMIT), Err(Error::Invalid), Err(Error::Invalid)]
+    );
+}
+
+#[test]
+fn an_unreadable_or_lost_start_reply_is_unknown_after_one_request() {
+    use crate::lifecycle::Outcome;
+    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let probe = listener.try_clone().unwrap();
+    let server = serve(
+        listener.try_clone().unwrap(),
+        vec![(200, identity), (200, json!("not json"))],
+    );
+    let connection = profile.connect().unwrap();
+    assert_eq!(
+        connection.start_agent("worker", false, None),
+        Outcome::Unknown
+    );
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].starts_with("post /api/agents/worker/start "));
+    // The connection closes before any answer.
+    let lost = crate::transport::tests::serve_on(listener, None, String::new(), Duration::ZERO);
+    assert_eq!(
+        connection.start_agent("worker", false, None),
+        Outcome::Unknown
+    );
+    assert!(
+        lost.join()
+            .unwrap()
+            .starts_with("POST /api/agents/worker/start ")
+    );
+    // Neither start was sent again.
+    assert_eq!(
+        probe.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
 }
 
 #[test]

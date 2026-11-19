@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_reply_is_unknown_rather_than_retried() {
+    fn an_unreadable_reply_is_unknown() {
         assert_eq!(
             start_outcome("worker", false, Ok(b"not json".to_vec())),
             Outcome::Unknown

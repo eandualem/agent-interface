@@ -585,5 +585,26 @@ fn interaction_state_binding_refusal_invalidates_the_whole_snapshot() {
     );
     server.join().unwrap();
 }
+
+#[test]
+fn a_detail_read_of_a_record_no_longer_retained_is_missing() {
+    use agent_interface_roster::interactions;
+    let id = "11111111111111111111111111111111";
+    let (_dir, connection, server) = provider(
+        "a",
+        vec![Step {
+            reply: Some((404, json!({}))),
+            ..Step::get(
+                "/api/interactions/11111111111111111111111111111111",
+                json!({}),
+            )
+        }],
+    );
+    assert_eq!(
+        interactions::Client::new(connection).detail(id),
+        Err(interactions::Error::Missing)
+    );
+    server.join().unwrap();
+}
 #[path = "bound_actions/general_views.rs"]
 mod general_views;
