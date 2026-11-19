@@ -98,7 +98,7 @@ class InstallTests(unittest.TestCase):
 printf '%s\\n' "$*" >> "$TEST_SYSTEM_ACTIONS"
 case "$1" in
     -v) exit 0;;
-    apt-get) [ "$2" != update ] || sleep "${TEST_APT_SECONDS:-0}"; exit 0;;
+    apt-get) [ "$2" != update ] || { sleep "${TEST_APT_SECONDS:-0}"; exit "${TEST_APT_STATUS:-0}"; }; exit 0;;
     install)
         if [ "${TEST_FAIL_SHORTCUT:-}" = yes ]; then exit 1; fi
         shift; exec /usr/bin/install "$@";;
@@ -199,6 +199,16 @@ exec "$@"
         # retain its capture pipe indefinitely. It must emit no later updates.
         self.assertNotIn(f"{step}: still running", result.stderr.split(f"{step}: done.", 1)[1])
 
+    def test_failed_package_step_reports_failure_and_cleans_up_progress(self):
+        self.wsl()
+        self.env.update(TEST_APT_SECONDS="6", TEST_APT_STATUS="1")
+        result = self.install(self.package(), success=False)
+        step = "Refreshing Ubuntu package information"
+        self.assertIn(f"{step}: still running (5s elapsed)", result.stderr)
+        self.assertIn(f"{step}: failed.", result.stderr)
+        self.assertIn("Could not refresh Ubuntu package information.", result.stderr)
+        self.assertNotIn(f"{step}: still running", result.stderr.split(f"{step}: failed.", 1)[1])
+
     def test_wsl_shortcut_failure_rolls_back_app(self):
         self.install(self.package("0.0.0"))
         before = self.launcher.read_bytes()
@@ -237,7 +247,7 @@ printf '%s\\n' "$name" >> "$TEST_DOWNLOADS"
 case "$name" in
     "$TEST_PREFIX"-*.tar.gz) cp "$TEST_ARCHIVE" "$output";;
     "$TEST_PREFIX"-*.tar.gz.sha256) cp "$TEST_ARCHIVE.sha256" "$output";;
-    *) if [ "$write_status" = true ]; then printf 404; fi; exit 22;;
+    *) exit 22;;
 esac
 if [ "$write_status" = true ]; then printf 200; fi
 ''')
