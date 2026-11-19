@@ -6,15 +6,14 @@
 //! Team-wide libraries are gathered in the private `library` module.
 
 use std::{
-    collections::{BTreeMap, HashSet},
-    path::Path,
+    collections::BTreeMap,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::value::RawValue;
 
-use crate::{configuration::configured, transport, valid_agent, within_depth};
+use crate::{valid_agent, within_depth};
 
 pub mod bound;
 pub mod content;
@@ -80,8 +79,6 @@ pub enum Request {
     Policies,
     /// What each tag brings.
     Tags,
-    /// One agent's card, with the part its shown section needs.
-    Agent(String, Part),
 }
 
 /// What an agent's view reads besides its card.
@@ -153,28 +150,22 @@ pub enum Data {
     Agent(Box<Agent>),
 }
 
-/// The transport for one read chain. Bound reads record transport failures so
-/// optional roster enrichment cannot hide a rejected connection binding.
-enum Provider<'a> {
-    Legacy {
-        url: String,
-        key: String,
-    },
-    Bound {
-        connection: &'a crate::profiles::Connection,
-        error: std::cell::Cell<Option<crate::profiles::Error>>,
-    },
-}
-
+/// One read chain on a verified connection. It records the first transport
+/// failure, so optional roster enrichment cannot hide a rejected binding.
 pub(crate) struct Api<'a> {
-    provider: Provider<'a>,
+    connection: &'a crate::profiles::Connection,
+    error: std::cell::Cell<Option<crate::profiles::Error>>,
     live: &'a dyn Fn() -> bool,
 }
 
 impl<'a> Api<'a> {
-    pub(crate) fn new(url: String, key: String, live: &'a dyn Fn() -> bool) -> Self {
+    pub(crate) fn new(
+        connection: &'a crate::profiles::Connection,
+        live: &'a dyn Fn() -> bool,
+    ) -> Self {
         Self {
-            provider: Provider::Legacy { url, key },
+            connection,
+            error: Default::default(),
             live,
         }
     }
@@ -184,25 +175,17 @@ impl<'a> Api<'a> {
     }
 
     fn fetch(&self, path: &str, limit: usize) -> Result<Vec<u8>, Option<u16>> {
-        // A read nobody is waiting for any more starts no further request.
-        if !self.live() {
+        // A read nobody is waiting for any more starts no further request,
+        // and once a chain loses its binding, neither does it.
+        if !self.live() || self.error.get().is_some() {
             return Err(None);
         }
-        match &self.provider {
-            Provider::Legacy { url, key } => transport::fetch(url, path, key, limit),
-            Provider::Bound { connection, error } => {
-                // Once a chain loses its binding, never start another request.
-                if error.get().is_some() {
-                    return Err(None);
-                }
-                match connection.response(path, None, limit) {
-                    Ok(response) if (200..300).contains(&response.status) => Ok(response.body),
-                    Ok(response) => Err(Some(response.status)),
-                    Err(failure) => {
-                        error.set(Some(failure));
-                        Err(None)
-                    }
-                }
+        match self.connection.response(path, None, limit) {
+            Ok(response) if (200..300).contains(&response.status) => Ok(response.body),
+            Ok(response) => Err(Some(response.status)),
+            Err(failure) => {
+                self.error.set(Some(failure));
+                Err(None)
             }
         }
     }
@@ -230,40 +213,8 @@ fn usage_path(range: Range) -> String {
     format!("/api/usage?refresh=false&limit=1000&since={since}")
 }
 
-/// Each configured agent with its runtime and reported state, by name; absent
-/// when the roster cannot be read. Blocks like [`read`], so call it on an I/O
-/// worker.
-pub fn members(data_dir: &Path) -> Option<std::collections::BTreeMap<String, Member>> {
-    let (url, key) = configured(data_dir, None)?;
-    let live = || true;
-    let api = Api::new(url, key, &live);
-    library::agents(&api)
-        .map(|agents| {
-            agents
-                .into_iter()
-                .map(|agent| (agent.name.clone(), agent))
-                .collect()
-        })
-        .ok()
-}
-
-/// Read one request from an enabled provider. Blocks for up to three seconds
-/// per GET, so call it on an I/O worker. Configuration is re-read every time.
-/// A library read stops starting per-agent requests once `live` says no one
-/// is waiting for it any more.
-pub fn read(
-    data_dir: &Path,
-    url: Option<&str>,
-    request: &Request,
-    live: &dyn Fn() -> bool,
-) -> Result<Data, &'static str> {
-    let (url, key) = configured(data_dir, url).ok_or(UNAVAILABLE)?;
-    let api = Api::new(url, key, live);
-    read_using(&api, request)
-}
-
 fn read_using(api: &Api<'_>, request: &Request) -> Result<Data, &'static str> {
-    let data: Result<Data, &'static str> = match request {
+    match request {
         Request::Team => Ok(Data::Team(Team::decode(
             &api.get("/api/agents")?,
             &api.get("/api/swarms")?,
@@ -295,29 +246,7 @@ fn read_using(api: &Api<'_>, request: &Request) -> Result<Data, &'static str> {
             Ok(Data::Policies(Box::new(PolicyLibrary::read(api, &agents)?)))
         }
         Request::Tags => Ok(Data::Tags(Box::new(TagLibrary::read(api)?))),
-        Request::Agent(name, part) => {
-            if !valid_agent(name) {
-                return Err(UNREADABLE);
-            }
-            let path = format!("/api/agents/{name}/inspect");
-            let mut agent = Agent::decode(&api.get(&path)?)?;
-            agent.launch = items_of::<Launch>(&api.get("/api/config/agents")?)
-                .into_iter()
-                .find(|launch| &launch.name == name);
-            agent.permissions = read_permissions(&agent.runtime, &agent.dir);
-            read_part(api, name, part, &mut agent);
-            Ok(Data::Agent(Box::new(agent)))
-        }
-    };
-    let mut data = data?;
-    if let Data::Reports(page) = &mut data
-        && let Provider::Legacy { url, .. } = &api.provider
-    {
-        for item in &mut page.items {
-            item.provider_url = url.clone();
-        }
     }
-    Ok(data)
 }
 
 /// A section's own read failing leaves the card; the section says why.
@@ -1000,12 +929,6 @@ pub struct Agent {
     /// Processes it started that still run.
     #[serde(skip)]
     pub processes: Vec<Process>,
-    /// How Backbone launches it, when Backbone configures it.
-    #[serde(skip)]
-    pub launch: Option<Launch>,
-    /// What its CLI lets it do without asking.
-    #[serde(skip)]
-    pub permissions: Permissions,
     /// The skills its next launch links, when its Skills section is shown.
     #[serde(skip)]
     pub skills: Option<Result<Loadout, &'static str>>,
@@ -1027,168 +950,6 @@ pub struct Process {
     /// When it started, in RFC 3339 as the service wrote it.
     #[serde(default, deserialize_with = "crate::lenient")]
     pub started_at: Option<String>,
-}
-
-/// How Backbone launches an agent, from its configuration.
-#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
-#[serde(default)]
-pub struct Launch {
-    /// Agent name.
-    pub name: String,
-    /// Started without permission prompts.
-    pub unattended: bool,
-    /// Kept running.
-    pub always_on: bool,
-    /// Receives messages only through its inbox.
-    pub inbox_only: bool,
-}
-
-/// One settings file a CLI reads its rules from.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct RuleFile {
-    /// Its path.
-    pub path: String,
-    /// Whether it was read completely and parsed successfully.
-    pub read: bool,
-    /// A fixed diagnostic when inspection failed; missing optional files are normal.
-    pub error: Option<&'static str>,
-}
-
-/// What an agent's CLI lets it do without asking, from the CLI's own
-/// settings files. Only the files named here are read.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Permissions {
-    /// The files consulted, in the CLI's order.
-    pub files: Vec<RuleFile>,
-    /// Actions allowed without asking.
-    pub allow: Vec<String>,
-    /// Actions always refused.
-    pub deny: Vec<String>,
-    /// Actions that always ask.
-    pub ask: Vec<String>,
-    /// Other settings that decide approval, as name and value.
-    pub modes: Vec<(String, String)>,
-}
-
-const RULE_FILE_LIMIT: usize = 1024 * 1024;
-
-fn read_bounded(path: &Path) -> Result<Option<String>, &'static str> {
-    use std::io::Read;
-    let file = match crate::configuration::regular_file(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err("Could not read file."),
-    };
-    let mut bytes = Vec::new();
-    file.take((RULE_FILE_LIMIT + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "Could not read file.")?;
-    if bytes.len() > RULE_FILE_LIMIT {
-        return Err("File exceeds 1 MiB.");
-    }
-    String::from_utf8(bytes)
-        .map(Some)
-        .map_err(|_| "File is not UTF-8.")
-}
-
-fn rule_file<T>(
-    path: &Path,
-    permissions: &mut Permissions,
-    parse: impl FnOnce(&str) -> Option<T>,
-) -> Option<T> {
-    let result = read_bounded(path).and_then(|text| {
-        text.map(|text| parse(&text).ok_or("Could not parse file."))
-            .transpose()
-    });
-    permissions.files.push(RuleFile {
-        path: path.display().to_string(),
-        read: matches!(result, Ok(Some(_))),
-        error: result.as_ref().err().copied(),
-    });
-    result.ok().flatten()
-}
-
-/// Read the approval rules of `runtime` for an agent working in `dir`.
-/// Claude Code: `~/.claude/settings.json`, then the directory's
-/// `.claude/settings.json` and `.claude/settings.local.json`. Codex:
-/// `~/.codex/config.toml`. Other CLIs: nothing.
-pub fn read_permissions(runtime: &str, dir: &str) -> Permissions {
-    rules(
-        runtime,
-        dir,
-        std::env::var_os("HOME").map(std::path::PathBuf::from),
-    )
-}
-
-fn rules(runtime: &str, dir: &str, home: Option<std::path::PathBuf>) -> Permissions {
-    let mut permissions = Permissions::default();
-    match runtime {
-        "claude" => {
-            let mut seen = [HashSet::new(), HashSet::new(), HashSet::new()];
-            let mut files = Vec::new();
-            files.extend(home.map(|home| home.join(".claude/settings.json")));
-            if Path::new(dir).is_absolute() {
-                files.push(Path::new(dir).join(".claude/settings.json"));
-                files.push(Path::new(dir).join(".claude/settings.local.json"));
-            }
-            for path in files {
-                #[derive(Deserialize, Default)]
-                #[serde(default, rename_all = "camelCase")]
-                struct Rules {
-                    allow: Vec<String>,
-                    deny: Vec<String>,
-                    ask: Vec<String>,
-                    default_mode: Option<String>,
-                }
-                #[derive(Deserialize, Default)]
-                #[serde(default)]
-                struct Settings {
-                    permissions: Rules,
-                }
-                let Some(settings) = rule_file(&path, &mut permissions, |text| {
-                    serde_json::from_str::<Settings>(text).ok()
-                }) else {
-                    continue;
-                };
-                let rules = settings.permissions;
-                for ((into, from), seen) in [
-                    (&mut permissions.allow, rules.allow),
-                    (&mut permissions.deny, rules.deny),
-                    (&mut permissions.ask, rules.ask),
-                ]
-                .into_iter()
-                .zip(&mut seen)
-                {
-                    for rule in from {
-                        if seen.insert(rule.clone()) {
-                            into.push(rule);
-                        }
-                    }
-                }
-                if let Some(mode) = rules.default_mode {
-                    permissions.modes.retain(|(name, _)| name != "defaultMode");
-                    permissions.modes.push(("defaultMode".into(), mode));
-                }
-            }
-        }
-        "codex" => {
-            if let Some(home) = home
-                && let Some(table) =
-                    rule_file(&home.join(".codex/config.toml"), &mut permissions, |text| {
-                        text.parse::<toml::Table>().ok()
-                    })
-            {
-                // Only the top-level approval settings.
-                for name in ["approval_policy", "sandbox_mode"] {
-                    if let Some(value) = table.get(name).and_then(toml::Value::as_str) {
-                        permissions.modes.push((name.into(), value.into()));
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
-    permissions
 }
 
 /// One source of an agent's startup instructions.
@@ -1313,41 +1074,6 @@ pub struct Subscription {
     pub priority: String,
 }
 
-/// The largest part of a SKILL.md that is read.
-pub const SKILL_LIMIT: usize = 256 * 1024;
-
-/// Read the SKILL.md in a skill folder Backbone reported, up to
-/// [`SKILL_LIMIT`] bytes ending at a whole character. Returns the text and
-/// whether it was cut. Nothing outside that one file is read. Blocking.
-pub fn read_skill(folder: &str) -> Result<(String, bool), &'static str> {
-    use std::io::Read;
-    const MISSING: &str = "This skill's SKILL.md cannot be read.";
-    let path = Path::new(folder);
-    if !path.is_absolute() {
-        return Err(MISSING);
-    }
-    let file = crate::configuration::regular_file(&path.join("SKILL.md")).map_err(|_| MISSING)?;
-    let mut bytes = Vec::new();
-    file.take(SKILL_LIMIT as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| MISSING)?;
-    let cut = bytes.len() > SKILL_LIMIT;
-    bytes.truncate(SKILL_LIMIT);
-    let text = match String::from_utf8(bytes) {
-        Ok(text) => text,
-        Err(error) => {
-            let valid = error.utf8_error().valid_up_to();
-            if !cut || error.utf8_error().error_len().is_some() {
-                return Err(MISSING);
-            }
-            let mut bytes = error.into_bytes();
-            bytes.truncate(valid);
-            String::from_utf8(bytes).map_err(|_| MISSING)?
-        }
-    };
-    Ok((text, cut))
-}
-
 impl Agent {
     pub(crate) fn decode(body: &[u8]) -> Result<Self, &'static str> {
         let document = document(body)?;
@@ -1397,18 +1123,6 @@ fn document(body: &[u8]) -> Result<Document<'_>, &'static str> {
         return Err(UNREADABLE);
     }
     serde_json::from_slice(body).map_err(|_| UNREADABLE)
-}
-
-// A top-level array, skipping entries that do not decode.
-fn items_of<T: DeserializeOwned>(body: &[u8]) -> Vec<T> {
-    if body.len() > VIEW_LIMIT || !within_depth(body) {
-        return Vec::new();
-    }
-    serde_json::from_slice::<Vec<&RawValue>>(body)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|item| serde_json::from_str(item.get()).ok())
-        .collect()
 }
 
 // The required `items` array, skipping entries that do not decode.
@@ -1577,130 +1291,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn permission_inspection_distinguishes_missing_invalid_and_incomplete_files() {
-        let home = tempfile::tempdir().unwrap();
-        std::fs::create_dir(home.path().join(".codex")).unwrap();
-        let path = home.path().join(".codex/config.toml");
-        let inspect = || rules("codex", "/", Some(home.path().to_owned()));
-        assert_eq!(inspect().files[0].error, None);
-        assert!(!inspect().files[0].read);
-        let prefix = "approval_policy = 'never'\n#";
-        for length in [RULE_FILE_LIMIT - 1, RULE_FILE_LIMIT, RULE_FILE_LIMIT + 1] {
-            std::fs::write(
-                &path,
-                format!("{prefix}{}", " ".repeat(length - prefix.len())),
-            )
-            .unwrap();
-            let rules = inspect();
-            assert_eq!(rules.files[0].read, length <= RULE_FILE_LIMIT);
-            assert_eq!(rules.files[0].error.is_some(), length > RULE_FILE_LIMIT);
-            assert_eq!(rules.modes.is_empty(), length > RULE_FILE_LIMIT);
-        }
-        std::fs::write(&path, "invalid = [").unwrap();
-        assert_eq!(inspect().files[0].error, Some("Could not parse file."));
-        std::fs::write(&path, "").unwrap();
-        assert!(inspect().files[0].read);
-        assert!(inspect().modes.is_empty());
-        std::fs::remove_file(&path).unwrap();
-        std::fs::create_dir(&path).unwrap();
-        assert_eq!(inspect().files[0].error, Some("Could not read file."));
-
-        std::fs::create_dir(home.path().join(".claude")).unwrap();
-        let path = home.path().join(".claude/settings.json");
-        std::fs::write(&path, "{").unwrap();
-        assert_eq!(
-            rules("claude", "", Some(home.path().to_owned())).files[0].error,
-            Some("Could not parse file.")
-        );
-        let entries: Vec<_> = (0..4096).map(|i| format!("rule-{i}")).collect();
-        let duplicated = [entries.clone(), entries.clone()].concat();
-        std::fs::write(
-            &path,
-            serde_json::json!({"permissions":{"allow":duplicated}}).to_string(),
-        )
-        .unwrap();
-        assert_eq!(
-            rules("claude", "", Some(home.path().to_owned())).allow,
-            entries
-        );
-    }
-
-    #[test]
-    fn document_reads_reject_special_files_and_keep_regular_symlinks() {
-        let directory = tempfile::tempdir().unwrap();
-        let target = directory.path().join("source");
-        let path = directory.path().join("SKILL.md");
-        std::os::unix::fs::symlink(&target, &path).unwrap();
-        assert!(
-            std::process::Command::new("mkfifo")
-                .arg(&target)
-                .status()
-                .unwrap()
-                .success()
-        );
-        assert!(read_bounded(&path).is_err());
-        assert!(read_skill(directory.path().to_str().unwrap()).is_err());
-        std::fs::remove_file(&target).unwrap();
-        std::fs::write(&target, "# Document\n").unwrap();
-        assert_eq!(
-            read_bounded(&path).unwrap().as_deref(),
-            Some("# Document\n")
-        );
-        assert_eq!(
-            read_skill(directory.path().to_str().unwrap()),
-            Ok(("# Document\n".into(), false))
-        );
-    }
-
-    #[test]
-    fn skill_text_is_bounded_at_a_whole_character() {
-        let folder = tempfile::tempdir().unwrap();
-        let path = folder.path().to_str().unwrap();
-        std::fs::write(folder.path().join("SKILL.md"), "# Check\n").unwrap();
-        assert_eq!(read_skill(path), Ok(("# Check\n".into(), false)));
-        let long = format!("{}é", "a".repeat(SKILL_LIMIT - 1));
-        std::fs::write(folder.path().join("SKILL.md"), long).unwrap();
-        let (text, cut) = read_skill(path).unwrap();
-        assert!(cut && text.len() == SKILL_LIMIT - 1);
-        assert!(read_skill("relative").is_err());
-    }
-
-    #[test]
-    fn claude_rules_merge_across_files_and_policies_decode() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join(".claude")).unwrap();
-        std::fs::write(
-            dir.path().join(".claude/settings.json"),
-            r#"{"permissions":{"allow":["Bash(git *)"],"deny":["Read(.env)"],"defaultMode":"acceptEdits"}}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join(".claude/settings.local.json"),
-            r#"{"permissions":{"allow":["Bash(git *)","Bash(make *)"]}}"#,
-        )
-        .unwrap();
-        let rules = rules("claude", dir.path().to_str().unwrap(), None);
-        assert_eq!(rules.allow, ["Bash(git *)", "Bash(make *)"]);
-        assert_eq!(rules.deny, ["Read(.env)"]);
-        assert_eq!(
-            rules.modes,
-            [("defaultMode".to_owned(), "acceptEdits".to_owned())]
-        );
-        assert_eq!(rules.files.iter().filter(|file| file.read).count(), 2);
-        assert_eq!(read_permissions("other", "/").files.len(), 0);
-        let home = tempfile::tempdir().unwrap();
-        std::fs::create_dir(home.path().join(".codex")).unwrap();
-        std::fs::write(
-            home.path().join(".codex/config.toml"),
-            "approval_policy = 'never' # quiet\n[profiles.x]\nsandbox_mode = \"read-only\"\n",
-        )
-        .unwrap();
-        let codex = super::rules("codex", "/", Some(home.path().to_owned()));
-        assert_eq!(
-            codex.modes,
-            [("approval_policy".to_owned(), "never".to_owned())]
-        );
-
+    fn policies_decode() {
         let brief = Instructions::decode(
             br##"{"name":"worker","runtime":"claude","mode":"system","enabled":true,
             "sources":[{"name":"base","path":"/t/base.md","scope":"base","applied":true,"text":"# Base"},

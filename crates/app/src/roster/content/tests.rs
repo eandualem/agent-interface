@@ -264,7 +264,6 @@ fn same_ids_keep_content_pagination_details_and_credentials_on_each_origin() {
             let content::Data::Reports(page) = first.result.unwrap() else {
                 panic!()
             };
-            assert!(page.items[0].provider_url.is_empty());
             assert_eq!(
                 page.runtimes.get("worker").map(String::as_str),
                 (!matches!(query, ReportQuery::Documents(..)))

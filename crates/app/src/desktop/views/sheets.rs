@@ -74,29 +74,19 @@ impl Selection {
 
 /// A pane has one immutable source; refreshing never consults another profile.
 #[derive(Clone)]
-pub(super) enum Source {
-    Legacy(PathBuf),
-    Bound(Connection),
-}
+pub(super) struct Source(pub Connection);
 
 impl Source {
     pub fn belongs_to(&self, agents: &crate::desktop::agent_status::LiveAgents) -> bool {
-        self.identity()
-            .is_none_or(|identity| agents.belongs_to(identity))
+        agents.belongs_to(self.identity())
     }
 
     fn connect(&self) -> Result<Client, api::Error> {
-        match self {
-            Self::Legacy(directory) => Client::connect(directory),
-            Self::Bound(connection) => Ok(Client::bound(connection.clone())),
-        }
+        Ok(Client::bound(self.0.clone()))
     }
 
-    fn identity(&self) -> Option<&Identity> {
-        match self {
-            Self::Legacy(_) => None,
-            Self::Bound(connection) => Some(connection.identity()),
-        }
+    fn identity(&self) -> &Identity {
+        self.0.identity()
     }
 }
 
@@ -527,10 +517,8 @@ fn selection_label(tab: &str, rows: &[usize], columns: &[usize]) -> Option<Strin
 }
 
 /// Keys for a workbook revision, then for the workbook across revisions.
-fn seen_keys(record: &Record, origin: Option<&Identity>) -> [String; 2] {
-    let prefix = origin
-        .map(|origin| format!("{}|", super::seen::origin_key(Some(origin), "")))
-        .unwrap_or_default();
+fn seen_keys(record: &Record, origin: &Identity) -> [String; 2] {
+    let prefix = format!("{}|", super::seen::origin_key(origin));
     [
         format!("{prefix}sheet|{}", record.revision_id),
         format!("{prefix}sheet-thing|{}", record.sheet_id),
@@ -687,8 +675,8 @@ mod tests {
             vec![Reply::ok("/api/sheets?limit=50", fixture_page("b"))],
         );
         let origin_a = a.identity().clone();
-        let source_a = Source::Bound(a.clone());
-        let source_b = Source::Bound(b);
+        let source_a = Source(a.clone());
+        let source_b = Source(b);
         assert!(!source_a.belongs_to(&crate::desktop::agent_status::LiveAgents::default()));
         let worker = std::thread::spawn({
             let source_a = source_a.clone();
@@ -702,23 +690,18 @@ mod tests {
         assert_eq!(records_a[0].title, "a");
         assert_eq!(records_b[0].title, "b");
         assert_eq!(records_a[0].sheet_id, records_b[0].sheet_id);
-        assert_eq!(source_a.connect().unwrap().identity(), Some(&origin_a));
+        assert_eq!(source_a.connect().unwrap().identity(), &origin_a);
         assert_eq!(
             source_a.connect().unwrap().list_all().unwrap()[0].title,
             "a-refresh"
         );
         let keys_a = seen_keys(&records_a[0], source_a.identity());
         assert_ne!(keys_a, seen_keys(&records_b[0], source_b.identity()));
-        assert_ne!(keys_a, seen_keys(&records_a[0], None));
         let restored = Identity {
             lifecycle_id: "replacement".into(),
             ..origin_a
         };
-        assert_ne!(keys_a, seen_keys(&records_a[0], Some(&restored)));
-        assert_eq!(
-            seen_keys(&records_a[0], None)[0],
-            format!("sheet|{}", records_a[0].revision_id)
-        );
+        assert_ne!(keys_a, seen_keys(&records_a[0], &restored));
         server_a.join().unwrap();
         server_b.join().unwrap();
     }

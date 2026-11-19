@@ -1,10 +1,7 @@
 //! The navigation panel: workspace block, jump field, tabs, agents and the
 //! workspace switcher. Layout and colours come from the design tokens.
 
-use std::{
-    collections::{HashMap, HashSet},
-    path::PathBuf,
-};
+use std::collections::HashMap;
 
 use gpui::{AnyElement, Context, EntityId, SharedString, Window, div, prelude::*, px};
 
@@ -58,31 +55,6 @@ fn reorder_tab_proposal(
     Some((base, proposed))
 }
 
-/// Socket identities resolved by a background worker, never while drawing.
-#[derive(Default, PartialEq, Eq)]
-pub(super) struct SourceMatches {
-    inherited: bool,
-    explicit: HashSet<String>,
-}
-
-impl SourceMatches {
-    fn resolve(source: Option<PathBuf>, sockets: HashSet<String>) -> Self {
-        let resolve = |path: &std::path::Path| crate::library::location::resolve_path(path).ok();
-        let source = source.as_deref().and_then(resolve);
-        Self {
-            inherited: source.is_some(),
-            explicit: sockets
-                .into_iter()
-                .filter(|socket| source.is_some() && resolve(socket.as_ref()) == source)
-                .collect(),
-        }
-    }
-
-    pub(super) fn contains(&self, socket: Option<&str>) -> bool {
-        socket.map_or(self.inherited, |socket| self.explicit.contains(socket))
-    }
-}
-
 impl Browser {
     fn drop_tab(&mut self, dragged: &TabDrag, destination: &str, cx: &mut Context<Self>) {
         if dragged.browser != cx.entity_id() || self.saving || self.save_failed {
@@ -117,57 +89,22 @@ impl Browser {
         self.active_agents()?.active()
     }
 
-    /// Refresh identities after library or roster updates. Keep at most one
-    /// lookup running; a later roster poll picks up changes made while it ran.
-    pub(super) fn refresh_source_matches(&mut self, cx: &mut Context<Self>) {
-        if self.roster.is_none() || self.source_match_updates.is_some() {
-            return;
-        }
-        let source = self
-            .source
-            .as_ref()
-            .and_then(|source| source.as_ref().ok())
-            .cloned();
-        let sockets = self
-            .layout
-            .iter()
-            .flat_map(|layout| &layout.model().workspaces)
-            .filter(|space| space.profile_id.is_none())
-            .flat_map(|space| &space.tabs)
-            .flat_map(|tab| tab.tree.leaves())
-            .filter_map(|leaf| leaf.attachment.as_ref()?.source_socket.clone())
-            .collect();
-        let work = cx
-            .background_executor()
-            .spawn(async move { SourceMatches::resolve(source, sockets) });
-        self.source_match_updates = Some(cx.spawn(async move |this, cx| {
-            let matches = work.await;
-            let _ = this.update(cx, |browser, cx| {
-                browser.source_match_updates = None;
-                if browser.source_matches != matches {
-                    browser.source_matches = matches;
-                    cx.notify();
-                }
-            });
-        }));
-    }
-
-    /// Both sockets must have resolved successfully to the same path.
+    /// Whether `socket` is the selected workspace's profile's tmux server,
+    /// where its agents run. A workspace without a profile has none.
     pub(super) fn is_window_source(&self, socket: Option<&str>) -> bool {
-        if let Some(space) = self
+        let Some(space) = self
             .layout
             .as_ref()
             .and_then(|layout| layout.model().workspace())
-            && space.profile_id.is_some()
-        {
-            return match self.workspace_profiles.route(space) {
-                super::workspace_profiles::Route::Bound(connection) => {
-                    socket.is_none_or(|path| std::path::Path::new(path) == connection.tmux_socket())
-                }
-                _ => false,
-            };
+        else {
+            return false;
+        };
+        match self.workspace_profiles.route(space) {
+            super::workspace_profiles::Route::Bound(connection) => {
+                socket.is_none_or(|path| std::path::Path::new(path) == connection.tmux_socket())
+            }
+            _ => false,
         }
-        self.source_matches.contains(socket)
     }
 
     /// The state of the agent an attachment shows. Agent Backbone's agents
@@ -190,14 +127,12 @@ impl Browser {
     ) -> Option<AgentState> {
         let states = self.workspace_agents(space)?.active()?;
         let matches = match self.workspace_profiles.route(space) {
-            super::workspace_profiles::Route::Legacy => self
-                .source_matches
-                .contains(attachment.source_socket.as_deref()),
             super::workspace_profiles::Route::Bound(connection) => attachment
                 .source_socket
                 .as_deref()
                 .is_none_or(|path| std::path::Path::new(path) == connection.tmux_socket()),
-            super::workspace_profiles::Route::Unavailable => false,
+            super::workspace_profiles::Route::Standalone
+            | super::workspace_profiles::Route::Unavailable => false,
         };
         matches
             .then(|| states.get(&attachment.session).copied())
@@ -1078,7 +1013,7 @@ impl Browser {
 
 #[cfg(test)]
 mod tests {
-    use super::{SourceMatches, reorder_tab_proposal};
+    use super::reorder_tab_proposal;
 
     #[test]
     fn dragging_tabs_reorders_in_both_directions_without_changing_selection() {
@@ -1114,34 +1049,5 @@ mod tests {
         assert!(reorder_tab_proposal(&layout, &space.id, "removed", second).is_none());
         assert!(reorder_tab_proposal(&layout, "other-workspace", first, third).is_none());
         assert!(reorder_tab_proposal(&layout, &space.id, first, "removed").is_none());
-    }
-
-    #[test]
-    fn socket_matches_cache_aliases_and_never_match_failed_resolutions() {
-        let root = tempfile::tempdir().unwrap();
-        let socket = root.path().join("source");
-        let alias = root.path().join("alias");
-        std::os::unix::fs::symlink(&socket, &alias).unwrap();
-        let alias = alias.to_str().unwrap().to_owned();
-        let invalid = "invalid\0socket".to_owned();
-        let paths = [alias.clone(), invalid.clone(), "/other/socket".into()].into();
-        let matches = SourceMatches::resolve(Some(socket.clone()), paths);
-        assert!(
-            matches
-                == SourceMatches::resolve(
-                    Some(socket.clone()),
-                    [alias.clone(), invalid.clone(), "/other/socket".into()].into(),
-                )
-        );
-        // Rendering needs only the snapshot, even if the alias is gone later.
-        std::fs::remove_file(&alias).unwrap();
-        assert!(matches != SourceMatches::resolve(Some(socket), [alias.clone()].into()));
-        assert!(matches.contains(None));
-        assert!(matches.contains(Some(&alias)));
-        assert!(!matches.contains(Some(&invalid)));
-        assert!(!matches.contains(Some("/other/socket")));
-        let failed = SourceMatches::resolve(Some(invalid.clone().into()), [invalid.clone()].into());
-        assert!(!failed.contains(None));
-        assert!(!failed.contains(Some(&invalid)));
     }
 }

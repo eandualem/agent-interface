@@ -7,7 +7,7 @@ use std::{
     time::Instant,
 };
 
-fn connection(
+pub(super) fn connection(
     label: &str,
     script: impl FnOnce(UnixListener, serde_json::Value) + Send + 'static,
 ) -> (

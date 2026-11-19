@@ -19,15 +19,9 @@ fn tags(label: &str) -> Vec<Reply> {
 }
 fn start(connection: &Connection, request: views::Request) -> (Source, mpsc::Receiver<()>) {
     let (wake, ready) = mpsc::channel();
-    let source = Source::start(
-        None,
-        Some(connection),
-        request,
-        Duration::from_secs(3600),
-        move || {
-            let _ = wake.send(());
-        },
-    )
+    let source = Source::start(connection, request, Duration::from_secs(3600), move || {
+        let _ = wake.send(());
+    })
     .unwrap();
     (source, ready)
 }

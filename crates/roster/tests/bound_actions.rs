@@ -301,7 +301,6 @@ fn item() -> ReportItem {
         author: "worker".into(),
         author_id: Some("b".repeat(32)),
         registered: true,
-        provider_url: String::new(),
         created_at: "2026-11-02T10:00:00Z".into(),
         conversation_id: Some("7".into()),
         content: ReportContent::Response {
@@ -315,8 +314,10 @@ fn item() -> ReportItem {
 
 #[test]
 fn feedback_pins_author_verification_and_submission_and_preserves_unknown_delivery() {
-    let author = json!({"id":7,"author_id":"b".repeat(32),"agent_name":"worker"});
-    let body = json!({"target_session":"worker","from_entity":"agent-interface-app",
+    // The record shows "worker"; the author is registered as "current-worker"
+    // now, and feedback goes to the current name.
+    let author = json!({"id":7,"author_id":"b".repeat(32),"agent_name":"current-worker"});
+    let body = json!({"target_session":"current-worker","from_entity":"agent-interface-app",
         "message":"Feedback on response #7 (source=/api/responses/7).\n\nFeedback","priority":false});
     let (_dir_a, a, server_a) = provider(
         "a",
@@ -514,7 +515,7 @@ fn interactions_retain_snapshot_credentials_for_delayed_history_and_detail_pages
     let worker = thread::spawn(move || a.read("start", "end", Some("worker")));
     reading.recv_timeout(Duration::from_secs(5)).unwrap();
     let b = b.read("start", "end", Some("worker")).unwrap();
-    assert_ne!(b.identity(), Some(&origin));
+    assert_ne!(b.identity(), &origin);
     assert_ne!(
         b.detail("11111111111111111111111111111111")
             .unwrap()
@@ -530,8 +531,7 @@ fn interactions_retain_snapshot_credentials_for_delayed_history_and_detail_pages
     .unwrap();
     release.send(()).unwrap();
     let a = worker.join().unwrap().unwrap();
-    assert_eq!(a.identity(), Some(&origin));
-    assert!(a.provider.is_empty());
+    assert_eq!(a.identity(), &origin);
     assert_eq!(
         a.history.as_ref().unwrap().items[0].body.text.as_deref(),
         Some("sentinel-a")

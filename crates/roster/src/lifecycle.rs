@@ -1,10 +1,6 @@
 //! Starting or resuming a registered agent through Backbone, on request only.
 
-use std::{path::Path, time::Duration};
-
 use serde::{Deserialize, Serialize};
-
-use crate::{configuration::configured, transport, valid_agent};
 
 /// Default colours supplied before a new CLI can query its terminal.
 /// Kept in saved setup requests so retries use exactly the original palette.
@@ -63,50 +59,6 @@ impl Outcome {
             }
         }
     }
-}
-
-/// Start with the current appearance when the saved runtime advertises support.
-/// Older or unavailable capability endpoints retain the legacy launch request.
-pub fn start_with_defaults(
-    data_dir: &Path,
-    name: &str,
-    resume: bool,
-    defaults: TerminalDefaults,
-) -> Outcome {
-    let Some((url, key)) = configured(data_dir, None) else {
-        return Outcome::Refused("Backbone is unavailable. No launch was requested.".into());
-    };
-    start_at(&url, &key, name, resume, Some(defaults))
-}
-
-fn start_at(
-    url: &str,
-    key: &str,
-    name: &str,
-    resume: bool,
-    defaults: Option<TerminalDefaults>,
-) -> Outcome {
-    let refused = |message: &str| Outcome::Refused(message.into());
-    if !valid_agent(name) || name.len() > 200 {
-        return refused("This session is not a registered Backbone agent.");
-    }
-    // Lifecycle operations are authenticated local requests only, never anonymous TCP.
-    let Some(socket) = url.strip_prefix("unix:").filter(|_| !key.is_empty()) else {
-        return refused("Starting agents requires Backbone's authenticated local connection.");
-    };
-    let mut body = serde_json::json!({ "resume": resume, "wait": false });
-    let read = |path: &str| transport::get(url, path, key, 1024 * 1024);
-    if let Some(defaults) = defaults.filter(|_| supports_defaults(read, name)) {
-        body["terminal_defaults"] = serde_json::to_value(defaults).expect("terminal colours JSON");
-    }
-    let reply = transport::post_local(
-        socket,
-        &format!("/api/agents/{name}/start"),
-        key,
-        serde_json::to_vec(&body).expect("launch JSON"),
-        Duration::from_secs(30),
-    );
-    start_outcome(name, resume, reply)
 }
 
 /// What a start reply means. `reply` is the body, or the refusing status if known.
@@ -200,72 +152,6 @@ pub(crate) fn supports_defaults(read: impl Fn(&str) -> Option<Vec<u8>>, name: &s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        io::{Read, Write},
-        os::unix::net::UnixStream,
-        thread,
-    };
-
-    fn request(socket: &mut UnixStream) -> (String, serde_json::Value) {
-        socket
-            .set_read_timeout(Some(Duration::from_secs(3)))
-            .unwrap();
-        let mut header = Vec::new();
-        while !header.ends_with(b"\r\n\r\n") {
-            let mut byte = [0];
-            socket.read_exact(&mut byte).unwrap();
-            header.push(byte[0]);
-            assert!(header.len() < 8192);
-        }
-        let header = String::from_utf8(header).unwrap();
-        let length = header
-            .lines()
-            .find_map(|line| {
-                line.to_lowercase()
-                    .strip_prefix("content-length:")
-                    .map(|n| n.trim().parse::<usize>().unwrap())
-            })
-            .unwrap_or(0);
-        let mut body = vec![0; length];
-        socket.read_exact(&mut body).unwrap();
-        (
-            header,
-            if body.is_empty() {
-                serde_json::Value::Null
-            } else {
-                serde_json::from_slice(&body).unwrap()
-            },
-        )
-    }
-
-    /// Serve one start request with `status` and `body`, and return what was sent.
-    fn launch(resume: bool, status: &str, body: &'static str) -> (Outcome, serde_json::Value) {
-        let (_directory, listener, url) = crate::transport::tests::local_listener();
-        let status = status.to_owned();
-        let server = thread::spawn(move || {
-            let (mut socket, _) = listener.accept().unwrap();
-            let (header, sent) = request(&mut socket);
-            assert!(header.starts_with("POST /api/agents/worker/start "));
-            // A refusal lets the client close as soon as it reads the status.
-            // Coalesce the small response instead of write!'s separate writes,
-            // which can race that close between the headers and body.
-            let response = format!(
-                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            socket.write_all(response.as_bytes()).unwrap();
-            drop(socket);
-            // Nothing is retried.
-            listener.set_nonblocking(true).unwrap();
-            assert_eq!(
-                listener.accept().unwrap_err().kind(),
-                std::io::ErrorKind::WouldBlock
-            );
-            sent
-        });
-        let outcome = start_at(&url, "fixture-token", "worker", resume, None);
-        (outcome, server.join().unwrap())
-    }
 
     #[test]
     fn defaults_are_sent_only_for_the_saved_runtime_capability() {
@@ -288,54 +174,16 @@ mod tests {
             ),
             ("not a catalog", None, false),
         ] {
-            let (_directory, listener, url) = crate::transport::tests::local_listener();
-            let server = thread::spawn(move || {
-                let mut replies = vec![("GET /api/runtimes ".to_owned(), catalog.to_owned())];
-                if let Some(runtime) = runtime {
-                    replies.push((
-                        "GET /api/agents/worker/inspect ".into(),
-                        serde_json::json!({"runtime":runtime}).to_string(),
-                    ));
-                }
-                replies.push(("POST /api/agents/worker/start ".into(), r#"{"ok":true,"session":"worker","already_existed":false,"ready":"not_waited"}"#.into()));
-                let mut sent = serde_json::Value::Null;
-                for (path, body) in replies {
-                    let (mut socket, _) = listener.accept().unwrap();
-                    let (header, value) = request(&mut socket);
-                    assert!(header.starts_with(&path), "{header}");
-                    assert!(
-                        header
-                            .to_lowercase()
-                            .contains("authorization: bearer fixture-token")
-                    );
-                    socket
-                        .write_all(crate::transport::tests::ok(&body).as_bytes())
-                        .unwrap();
-                    sent = value;
-                }
-                sent
-            });
-            let defaults = TerminalDefaults::new([255; 3], [24, 25, 29]);
-            assert!(matches!(
-                start_at(
-                    &url,
-                    "fixture-token",
-                    "worker",
-                    true,
-                    Some(defaults.clone())
-                ),
-                Outcome::Accepted(_)
-            ));
-            let sent = server.join().unwrap();
-            assert_eq!(sent["resume"], true);
-            if expected {
-                assert_eq!(
-                    sent["terminal_defaults"],
-                    serde_json::to_value(defaults).unwrap()
-                );
-            } else {
-                assert!(sent.get("terminal_defaults").is_none());
-            }
+            let read = |path: &str| match path {
+                "/api/runtimes" => Some(catalog.as_bytes().to_vec()),
+                "/api/agents/worker/inspect" => runtime.map(|runtime| {
+                    serde_json::json!({ "runtime": runtime })
+                        .to_string()
+                        .into_bytes()
+                }),
+                _ => None,
+            };
+            assert_eq!(supports_defaults(read, "worker"), expected, "{catalog}");
         }
     }
 
@@ -348,36 +196,37 @@ mod tests {
     }
 
     #[test]
-    fn resume_asks_once_for_the_saved_conversation_and_never_starts_fresh_instead() {
-        let (outcome, sent) = launch(
-            true,
-            "400 Bad Request",
-            r#"{"detail":"no saved conversation"}"#,
-        );
-        assert_eq!(sent, serde_json::json!({"resume": true, "wait": false}));
-        assert!(matches!(outcome, Outcome::Refused(_)));
+    fn a_refused_resume_never_reads_as_a_fresh_start() {
+        assert!(matches!(
+            start_outcome("worker", true, Err(Some(400))),
+            Outcome::Refused(reason) if reason.contains("could not resume")
+        ));
     }
 
     #[test]
     fn start_new_reports_acceptance_and_an_already_running_agent() {
-        let (outcome, sent) = launch(
-            false,
-            "200 OK",
-            r#"{"ok":true,"session":"worker","already_existed":false,"ready":"not_waited"}"#,
+        let reply = |existed: bool| {
+            Ok(serde_json::json!({
+                "ok": true, "session": "worker", "already_existed": existed, "ready": "not_waited"
+            })
+            .to_string()
+            .into_bytes())
+        };
+        assert!(matches!(
+            start_outcome("worker", false, reply(false)),
+            Outcome::Accepted(_)
+        ));
+        assert_eq!(
+            start_outcome("worker", false, reply(true)),
+            Outcome::AlreadyRunning
         );
-        assert_eq!(sent, serde_json::json!({"resume": false, "wait": false}));
-        assert!(matches!(outcome, Outcome::Accepted(_)));
-        let (outcome, _) = launch(
-            false,
-            "200 OK",
-            r#"{"ok":true,"session":"worker","already_existed":true,"ready":"ready"}"#,
-        );
-        assert_eq!(outcome, Outcome::AlreadyRunning);
     }
 
     #[test]
     fn an_unreadable_reply_is_unknown_rather_than_retried() {
-        let (outcome, _) = launch(false, "200 OK", "not json");
-        assert_eq!(outcome, Outcome::Unknown);
+        assert_eq!(
+            start_outcome("worker", false, Ok(b"not json".to_vec())),
+            Outcome::Unknown
+        );
     }
 }

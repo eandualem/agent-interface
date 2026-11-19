@@ -812,11 +812,10 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
     let mut sections = ui::segments();
     for (index, (name, make)) in SECTIONS.into_iter().enumerate() {
         if index == 1
-            && (pane.backbone.is_some()
-                || pane
-                    .connection
-                    .as_ref()
-                    .is_some_and(|connection| pane.agents.belongs_to(connection.identity())))
+            && pane
+                .connection
+                .as_ref()
+                .is_some_and(|connection| pane.agents.belongs_to(connection.identity()))
         {
             sections = sections.child(
                 ui::segment(
@@ -828,11 +827,10 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
             );
         }
         if index == 1
-            && (pane.backbone.is_some()
-                || pane
-                    .connection
-                    .as_ref()
-                    .is_some_and(|connection| pane.agents.belongs_to(connection.identity())))
+            && pane
+                .connection
+                .as_ref()
+                .is_some_and(|connection| pane.agents.belongs_to(connection.identity()))
         {
             sections = sections.child(
                 ui::segment(
@@ -855,11 +853,10 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
             .on_click(cx.listener(move |pane, _, _, cx| pane.show_records(make(), cx))),
         );
     }
-    if pane.backbone.is_some()
-        || pane
-            .connection
-            .as_ref()
-            .is_some_and(|connection| pane.agents.belongs_to(connection.identity()))
+    if pane
+        .connection
+        .as_ref()
+        .is_some_and(|connection| pane.agents.belongs_to(connection.identity()))
     {
         sections = sections.child(
             ui::segment("reports-Sheets", "Sheets", pane.shown == Shown::Sheets)
@@ -985,7 +982,6 @@ mod tests {
             author: "worker".into(),
             author_id: None,
             registered: true,
-            provider_url: String::new(),
             created_at: String::new(),
             conversation_id: None,
             content: ReportContent::Progress {
@@ -1020,7 +1016,6 @@ mod tests {
             author: "worker".into(),
             author_id: None,
             registered: false,
-            provider_url: String::new(),
             created_at: "2026-10-24T10:00:00Z".into(),
             conversation_id: None,
             content: ReportContent::Response {
@@ -1060,7 +1055,6 @@ mod tests {
             author: "worker".into(),
             author_id: None,
             registered: false,
-            provider_url: String::new(),
             created_at: "2026-10-24T10:00:00Z".into(),
             conversation_id: None,
             content: ReportContent::Response {
@@ -1098,7 +1092,6 @@ mod tests {
             author: "worker".into(),
             author_id: None,
             registered: true,
-            provider_url: String::new(),
             created_at: String::new(),
             conversation_id: None,
             content: ReportContent::Response {
@@ -1127,7 +1120,6 @@ mod tests {
             author: "worker".into(),
             author_id: None,
             registered: true,
-            provider_url: String::new(),
             created_at: String::new(),
             conversation_id: None,
             content: ReportContent::Response {
@@ -1164,7 +1156,7 @@ mod tests {
     #[test]
     fn a_link_names_its_site_and_where_on_it() {
         assert_eq!(
-            place("https://github.com/eandualem/agent-backbone/issues/516"),
+            place("https://github.com/example/project/issues/516"),
             "github.com · issues/516"
         );
         assert_eq!(place("https://www.example.com/"), "example.com");

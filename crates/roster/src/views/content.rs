@@ -1,6 +1,6 @@
 //! Content read through one verified connection. No desktop actions or local files.
 
-use super::{Api, DocumentRevision, Provider, ReportPage, ReportQuery, documents, reports};
+use super::{Api, DocumentRevision, ReportPage, ReportQuery, documents, reports};
 use crate::profiles::{Connection, Identity};
 
 /// Retained content and explicitly supported read-only observation views.
@@ -110,13 +110,7 @@ pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool)
             }),
         };
     }
-    let api = Api {
-        provider: Provider::Bound {
-            connection,
-            error: Default::default(),
-        },
-        live,
-    };
+    let api = Api::new(connection, live);
     let result = match request {
         Request::Team
         | Request::Tags
@@ -133,9 +127,7 @@ pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool)
         Request::Report(id) => reports::read_report(&api, *id).map(Data::Reports),
         Request::Document(id) => documents::read(&api, *id).map(Data::Document),
     };
-    let Provider::Bound { error, .. } = &api.provider else {
-        unreachable!()
-    };
+    let error = &api.error;
     // Enrichment is optional for ordinary HTTP refusals or unreadable metadata,
     // but a failed bound transport invalidates the whole chain, even if the
     // content decoder otherwise succeeded. Cancellation also discards results.
@@ -164,18 +156,10 @@ pub fn agent_part(
     if !crate::valid_agent(&agent.name) {
         return Err(Error::Content(super::UNREADABLE));
     }
-    let api = Api {
-        provider: Provider::Bound {
-            connection,
-            error: Default::default(),
-        },
-        live,
-    };
+    let api = Api::new(connection, live);
     let name = agent.name.clone();
     super::read_part(&api, &name, part, agent);
-    let Provider::Bound { error, .. } = &api.provider else {
-        unreachable!()
-    };
+    let error = &api.error;
     if let Some(error) = error.get() {
         Err(Error::Connection(error))
     } else if !live() {
@@ -190,22 +174,14 @@ pub fn agent_part(
 pub fn members(
     connection: &Connection,
 ) -> Result<std::collections::BTreeMap<String, super::Member>, Error> {
-    let api = Api {
-        provider: Provider::Bound {
-            connection,
-            error: Default::default(),
-        },
-        live: &|| true,
-    };
+    let api = Api::new(connection, &|| true);
     let result = super::library::agents(&api).map(|agents| {
         agents
             .into_iter()
             .map(|agent| (agent.name.clone(), agent))
             .collect()
     });
-    let Provider::Bound { error, .. } = &api.provider else {
-        unreachable!()
-    };
+    let error = &api.error;
     match error.get() {
         Some(error) => Err(Error::Connection(error)),
         None => result.map_err(Error::Content),

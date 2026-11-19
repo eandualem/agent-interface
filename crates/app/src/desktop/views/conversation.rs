@@ -16,7 +16,6 @@
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
-    path::PathBuf,
     rc::Rc,
     time::Duration,
 };
@@ -25,7 +24,6 @@ use agent_interface_roster::{
     conversations::{self as stored, Author, Body, Kind},
     feedback::{self, Outcome},
     profiles::Connection,
-    views,
     views::{ReportContent, ReportItem},
 };
 use gpui::{
@@ -106,7 +104,7 @@ pub(super) struct Conversation {
     agents: crate::desktop::agent_status::LiveAgents,
     /// The record messages are about and where to send them; `None` when the
     /// owning view delivers them itself.
-    record: Option<(ReportItem, FeedbackTarget)>,
+    record: Option<(ReportItem, Box<feedback::Client>)>,
     agent: String,
     about: &'static str,
     anchor: Option<String>,
@@ -133,13 +131,6 @@ pub(super) struct Conversation {
     candidates: Vec<String>,
     /// Message participants: captured registration ID and their role.
     interaction_roles: HashMap<String, (String, String)>,
-    /// The team's names as last read, for a skill's or policy's chooser,
-    /// and whether to read them again.
-    team: Vec<String>,
-    team_read: bool,
-    /// A skill's or policy's conversation found the connection changed; the
-    /// view replaces it with a new one rather than retarget its messages.
-    stale: bool,
     /// Why the latest read failed, shown while nothing has been read.
     read_error: Option<stored::Error>,
     /// Whether the pane holding it is visible.
@@ -159,64 +150,11 @@ pub(super) struct Conversation {
     _input: Subscription,
 }
 
-#[derive(Clone)]
-enum FeedbackTarget {
-    Legacy(PathBuf),
-    Bound(Box<feedback::Client>),
-}
-
-#[derive(Clone)]
-enum Target {
-    Legacy(PathBuf, String, Kind, String),
-    Bound(stored::Client),
-}
-
-impl Target {
-    fn show(&self, page: &stored::Page) -> Result<stored::Conversation, stored::Error> {
-        match self {
-            Self::Legacy(directory, provider, kind, id) => {
-                stored::show(directory, provider, *kind, id, page)
-            }
-            Self::Bound(client) => client.show(page),
-        }
-    }
-    fn send(&self, message: &stored::Message) -> stored::Outcome {
-        match self {
-            Self::Legacy(directory, provider, kind, id) => {
-                stored::send(directory, provider, *kind, id, message)
-            }
-            Self::Bound(client) => client.send(message),
-        }
-    }
-    fn read(&self, through: u64) -> Result<stored::Counts, stored::Error> {
-        match self {
-            Self::Legacy(directory, provider, kind, id) => {
-                stored::read(directory, provider, *kind, id, through)
-            }
-            Self::Bound(client) => client.read(through),
-        }
-    }
-    fn redeliver(&self, entry: u64, request: &str) -> stored::Outcome {
-        match self {
-            Self::Legacy(directory, provider, kind, id) => {
-                stored::redeliver(directory, provider, *kind, id, entry, request)
-            }
-            Self::Bound(client) => client.redeliver(entry, request),
-        }
-    }
-}
-
 /// A conversation as Backbone keeps it.
 struct Stored {
+    /// The profile the record came from; requests go nowhere else.
     bound: Option<stored::Client>,
-    directory: PathBuf,
-    /// The provider the record came from; requests go nowhere else. Empty
-    /// until the first read for a skill or policy, which has no record.
-    provider: String,
     kind: Kind,
-    /// A skill's or policy's source path; its `id` is found from it first.
-    source: Option<String>,
-    id: String,
     /// `None` until Backbone first answers; `Some(false)` when it keeps none.
     supported: Option<bool>,
     /// The newest page, read again on each poll, plus entries a send returned.
@@ -394,7 +332,6 @@ const CLOSED_POLL: Duration = Duration::from_secs(25);
 
 /// A recorded artifact link, already bound to the provider which supplied it.
 pub(super) struct ReferenceTarget {
-    pub provider: String,
     pub connection: Option<Connection>,
     pub kind: Kind,
     pub id: String,
@@ -422,8 +359,7 @@ impl Conversation {
     pub fn new(
         agents: crate::desktop::agent_status::LiveAgents,
         item: ReportItem,
-        directory: Option<PathBuf>,
-        connection: Option<Connection>,
+        connection: Connection,
         surface: Rc<RefCell<super::artifact_web::Surface>>,
         visible: Rc<Cell<bool>>,
         window: &mut Window,
@@ -434,20 +370,14 @@ impl Conversation {
         conversation.visible = visible;
         conversation.agent = item.author.clone();
         conversation.anchor = Some(format!("#{}", item.id));
-        let feedback = match &connection {
-            Some(connection) => FeedbackTarget::Bound(Box::new(
-                feedback::Client::new(connection.clone(), connection.identity(), item.clone())
-                    .expect("original record binding"),
-            )),
-            None => FeedbackTarget::Legacy(directory.clone().expect("legacy reader directory")),
-        };
+        let feedback = Box::new(
+            feedback::Client::new(connection.clone(), connection.identity(), item.clone())
+                .expect("original record binding"),
+        );
         if let Some((kind, id)) = item.conversation() {
-            let bound = connection.map(|connection| {
-                let origin = connection.identity().clone();
-                stored::Client::new(connection, &origin, kind, id.clone())
-            });
-            let bound = match bound.transpose() {
-                Ok(client) => client,
+            let origin = connection.identity().clone();
+            let bound = match stored::Client::new(connection, &origin, kind, id) {
+                Ok(client) => Some(client),
                 Err(error) => {
                     conversation.read_error = Some(error);
                     conversation.blocked = true;
@@ -456,11 +386,7 @@ impl Conversation {
             };
             conversation.stored = Some(Stored {
                 bound,
-                directory: directory.unwrap_or_default(),
-                provider: item.provider_url.clone(),
                 kind,
-                source: None,
-                id,
                 supported: None,
                 page: None,
                 fetched: Vec::new(),
@@ -484,7 +410,6 @@ impl Conversation {
     /// A plan conversation retains the provider, author and observed step.
     pub fn about_plan(
         target: &super::plans::ConversationTarget,
-        directory: Option<PathBuf>,
         visible: Rc<Cell<bool>>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -505,11 +430,7 @@ impl Conversation {
         };
         conversation.stored = Some(Stored {
             bound,
-            directory: directory.unwrap_or_default(),
-            provider: target.provider.clone(),
             kind: Kind::Plan,
-            source: None,
-            id: target.author.clone(),
             supported: None,
             page: None,
             fetched: Vec::new(),
@@ -531,7 +452,6 @@ impl Conversation {
     /// guessed source path, responsible agent or one-way feedback fallback.
     pub fn about_reference(
         target: ReferenceTarget,
-        directory: Option<PathBuf>,
         visible: Rc<Cell<bool>>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -560,11 +480,7 @@ impl Conversation {
         };
         conversation.stored = Some(Stored {
             bound,
-            directory: directory.unwrap_or_default(),
-            provider: target.provider,
             kind: target.kind,
-            source: None,
-            id: target.id,
             supported: None,
             page: None,
             fetched: vec![],
@@ -595,12 +511,11 @@ impl Conversation {
             agent_interface_roster::library_snapshots::Kind::Policy => Kind::Policy,
         };
         let target = ReferenceTarget {
-            provider: String::new(),
             connection: Some(snapshot.artifact.connection().clone()),
             kind,
             id: snapshot.artifact.id().to_owned(),
         };
-        let mut conversation = Self::about_reference(target, None, visible, window, cx);
+        let mut conversation = Self::about_reference(target, visible, window, cx);
         conversation.open = false;
         conversation.candidates = candidates;
         conversation.plan_anchor = Some(stored::Anchor {
@@ -617,7 +532,6 @@ impl Conversation {
         item: &agent_interface_roster::interactions::Interaction,
         focus: &str,
         target: ReferenceTarget,
-        directory: Option<PathBuf>,
         visible: Rc<Cell<bool>>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -665,52 +579,7 @@ impl Conversation {
         };
         conversation.stored = Some(Stored {
             bound,
-            directory: directory.unwrap_or_default(),
-            provider: target.provider,
             kind: Kind::Interaction,
-            source: None,
-            id: item.id.clone(),
-            supported: None,
-            page: None,
-            fetched: Vec::new(),
-            earlier: Vec::new(),
-            earlier_cursor: None,
-            divider: None,
-            reading: false,
-            read_at: None,
-            marking: None,
-            mark_at: None,
-            redelivery: HashMap::new(),
-            turn: 0,
-        });
-        conversation.start_polling(cx);
-        conversation
-    }
-
-    /// The conversation about a skill or policy, by its source path. Who
-    /// answers is the maintainer Backbone names, else an agent the person
-    /// chooses from `candidates` or the conversation's participants.
-    #[allow(clippy::too_many_arguments)]
-    pub fn about_source(
-        kind: Kind,
-        path: String,
-        about: &'static str,
-        candidates: Vec<String>,
-        directory: PathBuf,
-        visible: Rc<Cell<bool>>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let mut conversation = Self::create(about, window, cx);
-        conversation.visible = visible;
-        conversation.candidates = candidates;
-        conversation.stored = Some(Stored {
-            bound: None,
-            directory,
-            provider: String::new(),
-            kind,
-            source: Some(path),
-            id: String::new(),
             supported: None,
             page: None,
             fetched: Vec::new(),
@@ -738,21 +607,6 @@ impl Conversation {
                 cx.background_executor().timer(wait).await;
             }
         }));
-    }
-
-    /// The agents the view offers now, such as those a skill reaches.
-    pub fn set_candidates(&mut self, candidates: Vec<String>) {
-        self.candidates = candidates;
-    }
-
-    /// The connection changed under this skill's or policy's conversation,
-    /// or Backbone had none for it; reopening it asks again.
-    pub fn stale(&self) -> bool {
-        self.stale
-            || self
-                .stored
-                .as_ref()
-                .is_some_and(|stored| stored.source.is_some() && stored.supported == Some(false))
     }
 
     /// Keep the observed plans reachable while a draft or delivery needs work.
@@ -813,7 +667,7 @@ impl Conversation {
                     .collect()
             })
             .unwrap_or_default();
-        for name in self.candidates.iter().chain(&self.team) {
+        for name in &self.candidates {
             if !names.contains(name) {
                 names.push(name.clone());
             }
@@ -861,9 +715,6 @@ impl Conversation {
             recipient: None,
             candidates: Vec::new(),
             interaction_roles: HashMap::new(),
-            team: Vec::new(),
-            team_read: false,
-            stale: false,
             read_error: None,
             visible: Rc::new(Cell::new(true)),
             bounds: Rc::new(Cell::new(None)),
@@ -898,13 +749,6 @@ impl Conversation {
         self.field
             .update(cx, |field, _| field.set_read_only(blocked));
         cx.notify();
-    }
-
-    /// Carry over a draft from the conversation this one replaces.
-    pub fn restore_draft(&mut self, text: &str, cx: &mut Context<Self>) {
-        if !text.is_empty() {
-            self.field.update(cx, |field, cx| field.set_value(text, cx));
-        }
     }
 
     /// The unsent draft.
@@ -972,22 +816,16 @@ impl Conversation {
         self.stored.as_ref().is_some_and(Stored::live)
     }
 
-    /// The request's target: data directory, provider, kind and identity.
-    fn target(&self) -> Option<Target> {
-        let stored = self.stored.as_ref()?;
-        Some(match &stored.bound {
-            Some(client) => Target::Bound(client.clone()),
-            None => Target::Legacy(
-                stored.directory.clone(),
-                stored.provider.clone(),
-                stored.kind,
-                stored.id.clone(),
-            ),
-        })
+    /// The request's target: the record's profile, kind and identity.
+    fn target(&self) -> Option<stored::Client> {
+        self.stored.as_ref()?.bound.clone()
     }
 
     /// Read the newest page on an I/O worker.
     fn refresh(&mut self, cx: &mut Context<Self>) {
+        let Some(target) = self.target() else {
+            return;
+        };
         let Some(stored) = self.stored.as_mut().filter(|stored| !stored.reading) else {
             return;
         };
@@ -998,81 +836,23 @@ impl Conversation {
         let started = std::time::Instant::now();
         stored.read_at = Some(started);
         let unsettled = stored.unsettled();
-        let source = stored.source.clone();
-        let need_team = source.is_some() && !self.team_read;
-        let target = self.target().expect("stored conversation");
         let worker = cx.background_executor().spawn(async move {
-            let Target::Legacy(directory, provider, kind, id) = target else {
-                let mut newest = target.show(&stored::Page::Newest);
-                let older = (!unsettled.is_empty() && newest.is_ok())
-                    .then(|| target.show(&stored::Page::Entries(unsettled)));
-                if let Some(Err(error @ stored::Error::Connection(_))) = older.as_ref() {
-                    newest = Err(*error);
-                }
-                return (String::new(), String::new(), None, newest, older);
-            };
-            // A skill or policy learns its provider and identity on its first read.
-            let provider = if provider.is_empty() {
-                stored::provider(&directory).unwrap_or_default()
-            } else {
-                provider
-            };
-            let id = match (&source, id.is_empty()) {
-                (Some(path), true) => match stored::resolve(&directory, &provider, kind, path) {
-                    Ok(id) => id,
-                    Err(error) => return (provider, String::new(), None, Err(error), None),
-                },
-                _ => id,
-            };
-            // With nobody responsible, the person chooses from the team; asked
-            // again until it has answered.
-            let team = if need_team {
-                match views::read(&directory, None, &views::Request::Team, &|| true) {
-                    Ok(views::Data::Team(found)) => Some(
-                        found
-                            .members
-                            .into_iter()
-                            .map(|member| member.name)
-                            .collect::<Vec<_>>(),
-                    ),
-                    _ => None,
-                }
-            } else {
-                None
-            };
-            let newest = stored::show(&directory, &provider, kind, &id, &stored::Page::Newest);
-            let older = (!unsettled.is_empty() && newest.is_ok()).then(|| {
-                stored::show(
-                    &directory,
-                    &provider,
-                    kind,
-                    &id,
-                    &stored::Page::Entries(unsettled),
-                )
-            });
-            (provider, id, team, newest, older)
+            let mut newest = target.show(&stored::Page::Newest);
+            let older = (!unsettled.is_empty() && newest.is_ok())
+                .then(|| target.show(&stored::Page::Entries(unsettled)));
+            if let Some(Err(error @ stored::Error::Connection(_))) = older.as_ref() {
+                newest = Err(*error);
+            }
+            (newest, older)
         });
         cx.spawn(async move |this, cx| {
-            let (provider, id, team, result, older) = worker.await;
+            let (result, older) = worker.await;
             let _ = this.update(cx, |conversation, cx| {
                 let seen = conversation.open && conversation.shown();
                 let Some(stored) = conversation.stored.as_mut() else {
                     return;
                 };
                 stored.reading = false;
-                if let Some(team) = team {
-                    conversation.team_read = true;
-                    conversation.team = team;
-                }
-                let Some(stored) = conversation.stored.as_mut() else {
-                    return;
-                };
-                if stored.provider.is_empty() {
-                    stored.provider = provider;
-                }
-                if stored.id.is_empty() {
-                    stored.id = id;
-                }
                 let mut failure = None;
                 conversation.read_error = result.as_ref().err().copied();
                 let Some(stored) = conversation.stored.as_mut() else {
@@ -1103,10 +883,6 @@ impl Conversation {
                     // know this record, keeps the one-way messages.
                     Err(stored::Error::Unsupported | stored::Error::UnknownArtifact) => {
                         stored.supported = Some(false);
-                    }
-                    Err(stored::Error::Moved) if stored.source.is_some() => {
-                        conversation.stale = true;
-                        failure = Some(stored::Error::Moved);
                     }
                     // Keep the last page while Backbone is briefly unavailable.
                     Err(error) => failure = Some(error),
@@ -1156,7 +932,9 @@ impl Conversation {
             return;
         };
         stored.reading = true;
-        let target = self.target().expect("stored conversation");
+        let Some(target) = self.target() else {
+            return;
+        };
         let worker = cx
             .background_executor()
             .spawn(async move { target.show(&stored::Page::Before(cursor)) });
@@ -1372,8 +1150,6 @@ impl Conversation {
         } else {
             self.return_focus = window.focused(cx);
             self.open = true;
-            // The team may have changed since it was last read.
-            self.team_read = false;
             if let Some(stored) = &mut self.stored {
                 stored.divider = stored
                     .page
@@ -1407,9 +1183,7 @@ impl Conversation {
         let field = self.field.read(cx);
         // A skill or policy sends only once Backbone has its conversation.
         let ready = self.stored.as_ref().is_none_or(|stored| {
-            (self.record.is_some()
-                && stored.source.is_none()
-                && !matches!(stored.kind, Kind::Plan | Kind::Interaction))
+            (self.record.is_some() && !matches!(stored.kind, Kind::Plan | Kind::Interaction))
                 || stored.live()
         });
         ready
@@ -1519,7 +1293,7 @@ impl Conversation {
 
     /// Send message `index` once, on an I/O worker.
     fn deliver(&mut self, index: usize, cx: &mut Context<Self>) {
-        let Some((item, target)) = self.record.clone() else {
+        let Some((_, target)) = self.record.clone() else {
             return;
         };
         let message = &mut self.messages[index];
@@ -1528,10 +1302,7 @@ impl Conversation {
         let text = message.text.clone();
         let worker = cx.background_executor().spawn(async move {
             let started = std::time::Instant::now();
-            let outcome = match target {
-                FeedbackTarget::Legacy(directory) => feedback::send(&directory, &item, &text),
-                FeedbackTarget::Bound(client) => client.send(&text),
-            };
+            let outcome = target.send(&text);
             let result = match &outcome {
                 Outcome::Accepted(_) => "accepted",
                 Outcome::Refused(_) => "refused",
@@ -1703,21 +1474,11 @@ impl Conversation {
         .into_any_element()
     }
 
-    /// A skill or policy Backbone keeps no conversation for shows none.
-    fn hidden(&self) -> bool {
-        self.record.is_none()
-            && self
-                .stored
-                .as_ref()
-                .is_some_and(|stored| stored.source.is_some() && stored.supported == Some(false))
-            && self.disposable()
-    }
-
     /// The closed conversation's pill, which its reader places at the end of
     /// its toolbar or header: floating over the reader would cover the
     /// reader's own controls, or a document's system view.
     pub fn collapsed(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        (!self.open && !self.hidden()).then(|| self.pill(cx))
+        (!self.open).then(|| self.pill(cx))
     }
 
     /// With nobody responsible, the agents the person can ask, one chosen.
@@ -2405,9 +2166,6 @@ impl Conversation {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if self.hidden() {
-            return div().into_any_element();
-        }
         if std::mem::take(&mut self.toggle_requested) {
             self.toggle(window, cx);
         }
@@ -2654,11 +2412,7 @@ mod tests {
     fn polling_keeps_the_thread_continuous() {
         let mut stored = Stored {
             bound: None,
-            directory: PathBuf::new(),
-            provider: String::new(),
             kind: Kind::Report,
-            source: None,
-            id: "1".into(),
             supported: Some(true),
             page: None,
             fetched: Vec::new(),

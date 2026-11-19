@@ -161,7 +161,6 @@ fn decode_list(body: &[u8], author_id: Option<&str>) -> Result<ReportPage, &'sta
             author: metadata.author().to_owned(),
             author_id: Some(metadata.author_id.clone()),
             registered: false,
-            provider_url: String::new(),
             created_at: metadata.created_at.clone(),
             conversation_id: None,
             content: ReportContent::Document(metadata),
@@ -258,11 +257,14 @@ mod tests {
     #[test]
     fn missing_documents_endpoint_is_an_upgrade_state_not_an_empty_catalog() {
         for (detail, expected) in [(false, NOT_SERVED), (true, NOT_FOUND)] {
-            let (url, server) = crate::transport::tests::server(
+            let (_directory, connection, listener) = crate::transport::tests::served_connection();
+            let server = crate::transport::tests::serve_on(
+                listener,
+                None,
                 "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into(),
                 std::time::Duration::ZERO,
             );
-            let api = Api::new(url, "fixture".into(), &|| true);
+            let api = Api::new(&connection, &|| true);
             assert_eq!(
                 fetch(&api, "/api/documents", 1024, detail).unwrap_err(),
                 expected

@@ -291,7 +291,8 @@ fn moved_view_refreshes_events_and_survives_source_workspace_deletion() {
     model.choose_workspace(&source);
     assert!(model.delete_workspace());
     assert!(events.accepts(&fresh, browser.pane_navigation_origin(&pane).as_ref()));
-    assert!(browser.select_agent_target(&AgentTarget {
+    // A workspace without a profile has no agents to go to.
+    assert!(!browser.select_agent_target(&AgentTarget {
         origin: fresh.as_ref().clone(),
         name: "worker".into()
     }));
@@ -392,7 +393,7 @@ fn retired_icon_events_cannot_change_a_closed_or_replaced_picker() {
 }
 
 #[test]
-fn pane_opening_origins_refuse_binding_removal_before_legacy_fallback() {
+fn pane_opening_origins_refuse_binding_removal() {
     let (_a, a, a_server) = provider("a", vec![]);
     let (_b, b, b_server) = provider("b", vec![]);
     a_server.join().unwrap();
@@ -418,7 +419,7 @@ fn pane_opening_origins_refuse_binding_removal_before_legacy_fallback() {
         ),
         error: None,
     });
-    // Without a pre-refresh capture the consumer would now discover Legacy.
+    // Without a pre-refresh capture the consumer would now find a standalone workspace.
     assert!(matches!(browser.pane_connection(&pane), Ok(None)));
     assert!(!browser.pane_origin_is_current(&pane, Some(&origin)));
     assert!(!browser.pane_origin_is_current(&pane, None));

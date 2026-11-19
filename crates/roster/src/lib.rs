@@ -232,7 +232,7 @@ fn decode(response: &[u8]) -> Option<Decoded> {
             .get("state")
             .and_then(|v| serde_json::from_str::<String>(v.get()).ok())
             .unwrap_or_else(|| "unknown".into());
-        // Last valid occurrence wins, matching the Python provider's map.
+        // The last valid occurrence of an agent wins.
         let field = |key: &str| item.get(key).map(|value| value.get());
         details.insert(
             name.clone(),
@@ -367,8 +367,8 @@ pub fn valid_agent(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
 }
 
-// The Python provider treats all false-like configured values as disabled,
-// while an absent configured field defaults to true.
+// Every false-like configured value means disabled, while an absent
+// configured field defaults to true.
 fn truthy(value: &RawValue) -> bool {
     let text = value.get().trim_ascii();
     match text.as_bytes()[0] {

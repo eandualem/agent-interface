@@ -261,21 +261,11 @@ impl NewPane {
     pub fn new(
         pane: String,
         socket: Option<PathBuf>,
-        backbone: Option<PathBuf>,
         agents: crate::desktop::agent_status::LiveAgents,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::new_with(
-            pane,
-            Origin::Legacy {
-                socket,
-                directory: backbone,
-            },
-            agents,
-            window,
-            cx,
-        )
+        Self::new_with(pane, Origin::Standalone { socket }, agents, window, cx)
     }
 
     /// The workspace owner must retain this connection when accepting events.
@@ -1096,15 +1086,9 @@ mod tests {
         assert!(origin.agent_view(&member).is_none());
         member.registration_id = Some("invalid".into());
         assert!(origin.agent_view(&member).is_none());
-        let legacy = Origin::Legacy {
-            socket: None,
-            directory: None,
-        };
         assert!(
-            legacy
+            Origin::Standalone { socket: None }
                 .agent_view(&member)
-                .unwrap()
-                .registration_id
                 .is_none()
         );
         server.join().unwrap();

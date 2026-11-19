@@ -2,7 +2,7 @@
 //!
 //! A [`ViewPane`] exists while its pane is shown, and a hidden saved pane
 //! keeps it while it holds conversations or Sheets. It polls its data on an
-//! I/O worker only while visible (`crate::roster::ViewSource`). Each view draws its
+//! I/O worker only while visible (`source::Source`). Each view draws its
 //! data in its own module from the shared pieces in `components`, following
 //! the design boards. Every view stays inside its pane: choosing a skill or a
 //! policy opens it in the same pane through `reader`, with a way back. Backbone
@@ -20,10 +20,7 @@ use std::{
 mod bound_agent;
 
 use agent_interface_core::{AgentSection, View, ViewKind};
-use agent_interface_roster::{
-    conversations::Kind,
-    views::{self, Data, Part, Range, Request},
-};
+use agent_interface_roster::views::{self, Data, Range, Request};
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
     Context, Entity, EventEmitter, SharedString, Subscription, Task, Window, div, prelude::*, px,
@@ -87,8 +84,6 @@ pub(super) fn about(kind: ViewKind) -> About {
 
 /// What a view asks its owner to do.
 pub(super) enum ViewEvent {
-    /// Show the tab holding this agent's terminal.
-    ShowAgent(String),
     /// Open this view in a new pane beside this one.
     OpenBeside(View),
     /// An embedded document received a pointer press; select its owning pane.
@@ -190,7 +185,6 @@ pub(super) struct ViewPane {
     selection: RefCell<selection::Selection>,
     reports: reports::State,
     additions: additions::State,
-    backbone: Option<PathBuf>,
     /// Conversations by provider, author and record, kept while the pane exists.
     conversations: HashMap<String, Entity<conversation::Conversation>>,
     /// The open record's conversation, for its reader to place.
@@ -249,16 +243,16 @@ impl ViewPane {
         }
     }
 
-    /// Start the local artifact catalog or a read-only Backbone view worker.
+    /// A view in a workspace without a profile: only the local artifact
+    /// catalog has anything to show there.
     pub fn new(
         view: View,
-        backbone: Option<PathBuf>,
         directory: Option<PathBuf>,
         agents: crate::desktop::agent_status::LiveAgents,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::new_with(view, backbone, directory, agents, None, window, cx)
+        Self::new_with(view, directory, agents, None, window, cx)
     }
 
     /// An explicit bound reader; startup does not enable profile selection yet.
@@ -270,13 +264,11 @@ impl ViewPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::new_with(view, None, directory, agents, Some(connection), window, cx)
+        Self::new_with(view, directory, agents, Some(connection), window, cx)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn new_with(
         view: View,
-        backbone: Option<PathBuf>,
         directory: Option<PathBuf>,
         agents: crate::desktop::agent_status::LiveAgents,
         connection: Option<Connection>,
@@ -304,7 +296,6 @@ impl ViewPane {
             selection: RefCell::default(),
             reports: reports::State::default(),
             additions: additions::State::default(),
-            backbone: backbone.clone(),
             conversations: HashMap::new(),
             conversation: None,
             visible: Rc::new(Cell::new(true)),
@@ -375,10 +366,10 @@ impl ViewPane {
                 }));
             pane.search = Some(field);
         }
-        if backbone.is_none() && pane.connection.is_none() {
-            pane.error = Some("Agent Backbone is not set up on this computer.");
+        let Some(connection) = pane.connection.clone() else {
+            pane.error = Some("Choose a profile for this workspace to show this view.");
             return pane;
-        }
+        };
         // Backbone collects usage about once a minute, and a library gathers
         // many agents' previews and changes rarely; everything else is live.
         let every = Duration::from_secs(match pane.view.kind {
@@ -387,15 +378,9 @@ impl ViewPane {
             _ => 3,
         });
         let (wake, mut woken) = mpsc::unbounded();
-        match Source::start(
-            backbone,
-            pane.connection.as_ref(),
-            pane.request(),
-            every,
-            move || {
-                let _ = wake.unbounded_send(());
-            },
-        ) {
+        match Source::start(&connection, pane.request(), every, move || {
+            let _ = wake.unbounded_send(());
+        }) {
             Ok(source) => pane.source = Some(source),
             Err(_) => pane.error = Some(views::UNAVAILABLE),
         }
@@ -458,15 +443,8 @@ impl ViewPane {
                 _ => Request::Reports(self.reports.query.clone(), self.reports.agent.clone()),
             },
             ViewKind::Artifacts => unreachable!("artifacts have no Backbone source"),
-            ViewKind::Agent => Request::Agent(
-                self.view.agent.clone().unwrap_or_default(),
-                match self.section {
-                    AgentSection::Skills => Part::Skills,
-                    AgentSection::Policies => Part::Policies,
-                    AgentSection::Usage => Part::Usage(self.range),
-                    _ => Part::Card,
-                },
-            ),
+            // A profile's agent card reads through its own connection.
+            ViewKind::Agent => unreachable!("agent cards have no view source"),
         }
     }
 
@@ -510,11 +488,10 @@ impl ViewPane {
 
     fn show_plans(&mut self, cx: &mut Context<Self>) {
         self.interactions_shown(false, cx);
-        let source = match (&self.connection, &self.backbone) {
-            (Some(connection), _) => plans::Source::Bound(connection.clone()),
-            (None, Some(directory)) => plans::Source::Legacy(directory.clone()),
-            (None, None) => return,
+        let Some(connection) = &self.connection else {
+            return;
         };
+        let source = plans::Source(connection.clone());
         if !source.belongs_to(&self.agents) {
             return;
         }
@@ -535,11 +512,10 @@ impl ViewPane {
     }
 
     fn show_sheets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let source = match (&self.connection, &self.backbone) {
-            (Some(connection), _) => sheets::Source::Bound(connection.clone()),
-            (None, Some(directory)) => sheets::Source::Legacy(directory.clone()),
-            (None, None) => return,
+        let Some(connection) = &self.connection else {
+            return;
         };
+        let source = sheets::Source(connection.clone());
         if !source.belongs_to(&self.agents) {
             return;
         }
@@ -564,11 +540,10 @@ impl ViewPane {
     }
 
     fn show_interactions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let source = match (&self.connection, &self.backbone) {
-            (Some(connection), _) => interactions::Source::Bound(connection.clone()),
-            (None, Some(directory)) => interactions::Source::Legacy(directory.clone()),
-            (None, None) => return,
+        let Some(connection) = &self.connection else {
+            return;
         };
+        let source = interactions::Source(connection.clone());
         if !source.belongs_to(&self.agents) {
             return;
         }
@@ -580,74 +555,64 @@ impl ViewPane {
                 interactions::Interactions::new(source, visible, self.agents.clone(), window, cx)
             });
             self._search.push(cx.observe(&view, |_, _, cx| cx.notify()));
-            self._search
-                .push(cx.subscribe(&view, |pane, _, event, cx| match event {
-                    interactions::Event::Activity => {
-                        if pane.connection.is_none() {
-                            cx.emit(ViewEvent::OpenBeside(View::of(ViewKind::Activity)));
-                        }
-                    }
-                    interactions::Event::Report {
+            self._search.push(
+                cx.subscribe(&view, |pane, _, event: &interactions::Report, cx| {
+                    let interactions::Report {
                         id,
                         response,
                         request,
                         provider,
                         anchor,
-                    } => {
-                        let source = match (&pane.connection, &pane.backbone) {
-                            (Some(connection), _) => {
-                                interactions::Source::Bound(connection.clone())
+                    } = event;
+                    let Some(connection) = &pane.connection else {
+                        return;
+                    };
+                    let source = interactions::Source(connection.clone());
+                    let id = *id;
+                    let response = *response;
+                    let request = *request;
+                    let provider = provider.clone();
+                    let expected = provider.clone();
+                    let anchor = anchor.clone();
+                    let worker = cx
+                        .background_executor()
+                        .spawn(async move { source.report(&expected, id, response) });
+                    cx.spawn(async move |this, cx| {
+                        let result = worker.await;
+                        let _ = this.update(cx, |pane, cx| {
+                            if pane.shown != Shown::Interactions
+                                || !pane.interactions.as_ref().is_some_and(|view| {
+                                    view.read(cx).is_selected(&provider, &anchor, request)
+                                })
+                            {
+                                return;
                             }
-                            (None, Some(directory)) => {
-                                interactions::Source::Legacy(directory.clone())
+                            let link_error = result.as_ref().err().copied();
+                            if let Ok(Data::Reports(page)) = result
+                                && let Some(item) = page.items.first()
+                            {
+                                pane.show_records(
+                                    if response {
+                                        views::ReportQuery::Responses(None)
+                                    } else {
+                                        views::ReportQuery::Recent(None)
+                                    },
+                                    cx,
+                                );
+                                pane.reports.open = Some(item.clone());
+                                pane.data = Some(Data::Reports(page));
+                                // Follow the opened record so its updates are kept.
+                                pane.refetch(false, cx);
+                            } else if let Some(error) = link_error
+                                && let Some(view) = &pane.interactions
+                            {
+                                view.update(cx, |view, cx| view.link_failed(error, cx));
                             }
-                            (None, None) => return,
-                        };
-                        let id = *id;
-                        let response = *response;
-                        let request = *request;
-                        let provider = provider.clone();
-                        let expected = provider.clone();
-                        let anchor = anchor.clone();
-                        let worker = cx
-                            .background_executor()
-                            .spawn(async move { source.report(&expected, id, response) });
-                        cx.spawn(async move |this, cx| {
-                            let result = worker.await;
-                            let _ = this.update(cx, |pane, cx| {
-                                if pane.shown != Shown::Interactions
-                                    || !pane.interactions.as_ref().is_some_and(|view| {
-                                        view.read(cx).is_selected(&provider, &anchor, request)
-                                    })
-                                {
-                                    return;
-                                }
-                                let link_error = result.as_ref().err().copied();
-                                if let Ok(Data::Reports(page)) = result
-                                    && let Some(item) = page.items.first()
-                                {
-                                    pane.show_records(
-                                        if response {
-                                            views::ReportQuery::Responses(None)
-                                        } else {
-                                            views::ReportQuery::Recent(None)
-                                        },
-                                        cx,
-                                    );
-                                    pane.reports.open = Some(item.clone());
-                                    pane.data = Some(Data::Reports(page));
-                                    // Follow the opened record so its updates are kept.
-                                    pane.refetch(false, cx);
-                                } else if let Some(error) = link_error
-                                    && let Some(view) = &pane.interactions
-                                {
-                                    view.update(cx, |view, cx| view.link_failed(error, cx));
-                                }
-                            });
-                        })
-                        .detach();
-                    }
-                }));
+                        });
+                    })
+                    .detach();
+                }),
+            );
             self.interactions = Some(view);
         } else {
             self.interactions_shown(true, cx);
@@ -681,16 +646,6 @@ impl ViewPane {
                 agent.usage = None;
             }
             self.refetch(clear, cx);
-        }
-    }
-
-    /// Show another section of an agent's view. The card stays while the
-    /// section's own data is read.
-    fn set_section(&mut self, section: AgentSection, cx: &mut Context<Self>) {
-        if self.section != section {
-            self.section = section;
-            self.open = None;
-            self.refetch(false, cx);
         }
     }
 
@@ -833,71 +788,50 @@ impl ViewPane {
             Some(bound_skills::Open::capture(connection, record, &team))
         });
         self.open = Some(Open {
-            target: target.clone(),
+            target,
             bound_skill,
             bound_policy: None,
             text: None,
         });
-        if self.connection.is_some() {
-            let Some(bound) = self
-                .open
-                .as_ref()
-                .and_then(|open| open.bound_skill.as_ref())
-            else {
-                return;
-            };
-            let ticket = bound.ticket();
-            let artifact = bound.artifact.clone();
-            let read_ticket = ticket.clone();
-            let read = cx
-                .background_executor()
-                .spawn(async move { bound_skills::read(artifact, &read_ticket) });
-            cx.spawn(async move |this, cx| {
-                let result = read.await;
-                let _ = this.update(cx, |pane, cx| {
-                    if let Some(open) = &mut pane.open
-                        && let Some(bound) = &mut open.bound_skill
-                        && bound.accepts(&ticket)
-                    {
-                        open.text = Some(match result {
-                            Ok(snapshot) => {
-                                let text = snapshot
-                                    .content
-                                    .clone()
-                                    .ok_or("This skill's source is unavailable.");
-                                bound.snapshot = Some(snapshot);
-                                text.map(|text| (text.into(), false))
-                            }
-                            Err(error) => Err(error),
-                        });
-                        cx.notify();
-                    }
-                });
-            })
-            .detach();
+        // Only a profile's skill has a source to read.
+        let Some(bound) = self
+            .open
+            .as_ref()
+            .and_then(|open| open.bound_skill.as_ref())
+        else {
             cx.notify();
             return;
-        }
-        cx.notify();
-        let Target::Skill(folder) = target else {
-            return;
         };
-        let read = cx.background_executor().spawn({
-            let folder = folder.clone();
-            async move { views::read_skill(&folder) }
-        });
+        let ticket = bound.ticket();
+        let artifact = bound.artifact.clone();
+        let read_ticket = ticket.clone();
+        let read = cx
+            .background_executor()
+            .spawn(async move { bound_skills::read(artifact, &read_ticket) });
         cx.spawn(async move |this, cx| {
-            let text = read.await;
+            let result = read.await;
             let _ = this.update(cx, |pane, cx| {
                 if let Some(open) = &mut pane.open
-                    && open.target == Target::Skill(folder)
+                    && let Some(bound) = &mut open.bound_skill
+                    && bound.accepts(&ticket)
                 {
-                    open.text = Some(text.map(|(text, cut)| (text.into(), cut)));
+                    open.text = Some(match result {
+                        Ok(snapshot) => {
+                            let text = snapshot
+                                .content
+                                .clone()
+                                .ok_or("This skill's source is unavailable.");
+                            bound.snapshot = Some(snapshot);
+                            text.map(|text| (text.into(), false))
+                        }
+                        Err(error) => Err(error),
+                    });
                     cx.notify();
                 }
             });
         })
         .detach();
+        cx.notify();
     }
 
     /// Back from the reader, or from a tag's agents, to the list.
@@ -1066,7 +1000,7 @@ impl Render for ViewPane {
             self.conversation = plans
                 .read(cx)
                 .conversation()
-                .filter(|_| self.connection.is_some() || self.backbone.is_some())
+                .filter(|_| self.connection.is_some())
                 .map(|target| {
                     let key = target.key();
                     self.conversations
@@ -1075,7 +1009,6 @@ impl Render for ViewPane {
                             let conversation = cx.new(|cx| {
                                 conversation::Conversation::about_plan(
                                     &target,
-                                    self.backbone.clone(),
                                     self.visible.clone(),
                                     window,
                                     cx,
@@ -1121,39 +1054,35 @@ impl Render for ViewPane {
         }
         let (t, c) = (tokens(), colors());
         let previous = self.conversation.take();
-        self.conversation = self
-            .reports
-            .open
-            .as_ref()
-            .filter(|_| self.connection.is_some() || self.backbone.is_some())
-            .map(|item| {
-                let key = format!(
-                    "{}\n{}\n{}",
-                    seen::origin_key(
-                        self.connection.as_ref().map(Connection::identity),
-                        &item.provider_url
-                    ),
-                    item.author_id.as_deref().unwrap_or_default(),
-                    agent_interface_roster::feedback::reference(item)
-                );
-                self.conversations
-                    .entry(key)
-                    .or_insert_with(|| {
-                        cx.new(|cx| {
-                            conversation::Conversation::new(
-                                self.agents.clone(),
-                                item.clone(),
-                                self.backbone.clone(),
-                                self.connection.clone(),
-                                self.documents.surface.clone(),
-                                self.visible.clone(),
-                                window,
-                                cx,
-                            )
+        self.conversation =
+            self.reports
+                .open
+                .as_ref()
+                .zip(self.connection.clone())
+                .map(|(item, connection)| {
+                    let key = format!(
+                        "{}\n{}\n{}",
+                        seen::origin_key(connection.identity()),
+                        item.author_id.as_deref().unwrap_or_default(),
+                        agent_interface_roster::feedback::reference(item)
+                    );
+                    self.conversations
+                        .entry(key)
+                        .or_insert_with(|| {
+                            cx.new(|cx| {
+                                conversation::Conversation::new(
+                                    self.agents.clone(),
+                                    item.clone(),
+                                    connection,
+                                    self.documents.surface.clone(),
+                                    self.visible.clone(),
+                                    window,
+                                    cx,
+                                )
+                            })
                         })
-                    })
-                    .clone()
-            });
+                        .clone()
+                });
         // Bound skill discussions retain the exact displayed artifact revision.
         if self.conversation.is_none()
             && let Some(bound) = self
@@ -1205,61 +1134,6 @@ impl Render for ViewPane {
                     })
                     .clone(),
             );
-        }
-        // An open skill or policy has its own conversation.
-        if self.conversation.is_none()
-            && let (Some(open), Some(directory)) = (&self.open, &self.backbone)
-        {
-            let (kind, path, about) = match &open.target {
-                Target::Skill(path) => (Kind::Skill, path, "about this skill"),
-                Target::Policy(path) => (Kind::Policy, path, "about this policy"),
-            };
-            // A skill is offered to the agents it reaches.
-            let candidates = match (&open.target, &self.data) {
-                (Target::Skill(path), Some(Data::Skills(library))) => library
-                    .store
-                    .items
-                    .iter()
-                    .find(|skill| &skill.path == path)
-                    .map(|skill| skill.reaches.clone())
-                    .unwrap_or_default(),
-                _ => Vec::new(),
-            };
-            let key = format!("{}\n{path}", kind.name());
-            let (path, directory, visible) =
-                (path.clone(), directory.clone(), self.visible.clone());
-            let mut draft = String::new();
-            // Reopened after the connection changed, or where Backbone had no
-            // conversation: a new one asks again; messages are never retargeted.
-            if let Some(cached) = self.conversations.get(&key)
-                && previous.as_ref() != Some(cached)
-                && cached.read(cx).stale()
-                && cached.read(cx).disposable()
-            {
-                draft = cached.read(cx).draft(cx).to_owned();
-                self.conversations.remove(&key);
-            }
-            let conversation = match self.conversations.get(&key) {
-                Some(conversation) => {
-                    let conversation = conversation.clone();
-                    conversation.update(cx, |conversation, _| {
-                        conversation.set_candidates(candidates)
-                    });
-                    conversation
-                }
-                None => {
-                    let conversation = cx.new(|cx| {
-                        let mut conversation = conversation::Conversation::about_source(
-                            kind, path, about, candidates, directory, visible, window, cx,
-                        );
-                        conversation.restore_draft(&draft, cx);
-                        conversation
-                    });
-                    self.conversations.insert(key, conversation.clone());
-                    conversation
-                }
-            };
-            self.conversation = Some(conversation);
         }
         // Only the shown conversation reads Backbone.
         if previous != self.conversation {

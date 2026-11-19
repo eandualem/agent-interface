@@ -4,8 +4,6 @@
 //! Reads never publish, approve or change a plan. Transport and parsing run
 //! on I/O workers, never the UI thread.
 
-use std::{path::Path, time::Duration};
-
 use serde::Deserialize;
 
 /// The most a list page may hold, as the provider bounds plans.
@@ -172,44 +170,23 @@ impl Client {
 
     /// Read all bounded pages on the original connection, or fail the whole read.
     pub fn list_all(&self) -> Result<PlansPage, Error> {
-        list_all_using(&Api::Bound(&self.connection))
+        list_all_using(&self.connection)
     }
 
     /// Read one page on the captured connection.
     pub fn list(&self, after: Option<&str>) -> Result<PlansPage, Error> {
-        list_using(&Api::Bound(&self.connection), after)
+        list_using(&self.connection, after)
     }
 }
 
-enum Api<'a> {
-    Legacy(String, String),
-    Bound(&'a crate::profiles::Connection),
-}
-
-impl Api<'_> {
-    fn legacy(directory: &Path) -> Result<Self, Error> {
-        let (provider, key) =
-            crate::configuration::configured(directory, None).ok_or(Error::Unavailable)?;
-        if !provider.starts_with("unix:") || key.is_empty() {
-            return Err(Error::Unavailable);
-        }
-        Ok(Self::Legacy(provider, key))
-    }
-}
-
-/// Read every active agent's current plan, following the page cursor. Runs on
-/// an I/O worker and captures the legacy connection once for the complete read.
-pub fn list_all(directory: &Path) -> Result<PlansPage, Error> {
-    list_all_using(&Api::legacy(directory)?)
-}
-
-fn list_all_using(api: &Api<'_>) -> Result<PlansPage, Error> {
-    let mut all = list_using(api, None)?;
+/// Read every page, following the cursor, or fail the whole read.
+fn list_all_using(connection: &crate::profiles::Connection) -> Result<PlansPage, Error> {
+    let mut all = list_using(connection, None)?;
     for _ in 1..PAGES {
         let Some(after) = all.next_after_author_id.take() else {
             return Ok(all);
         };
-        let mut page = list_using(api, Some(&after))?;
+        let mut page = list_using(connection, Some(&after))?;
         all.items.append(&mut page.items);
         all.next_after_author_id = page.next_after_author_id;
     }
@@ -219,7 +196,10 @@ fn list_all_using(api: &Api<'_>) -> Result<PlansPage, Error> {
     }
 }
 
-fn list_using(api: &Api<'_>, after: Option<&str>) -> Result<PlansPage, Error> {
+fn list_using(
+    connection: &crate::profiles::Connection,
+    after: Option<&str>,
+) -> Result<PlansPage, Error> {
     let mut path = "/api/current-plans?limit=50".to_owned();
     if let Some(after) = after {
         if !crate::is_uuid(after) {
@@ -228,20 +208,9 @@ fn list_using(api: &Api<'_>, after: Option<&str>) -> Result<PlansPage, Error> {
         path.push_str("&after_author_id=");
         path.push_str(after);
     }
-    let response = match api {
-        Api::Legacy(provider, key) => crate::transport::local::response(
-            &provider[5..],
-            &path,
-            key,
-            None,
-            LIST_LIMIT,
-            Duration::from_secs(15),
-        )
-        .map_err(|_| Error::Unavailable)?,
-        Api::Bound(connection) => connection
-            .response(&path, None, LIST_LIMIT)
-            .map_err(Error::Connection)?,
-    };
+    let response = connection
+        .response(&path, None, LIST_LIMIT)
+        .map_err(Error::Connection)?;
     match response.status {
         200 => parse(&response.body),
         404 => Err(Error::Unsupported),

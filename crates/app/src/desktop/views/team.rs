@@ -458,19 +458,14 @@ fn row_event(
     registration: Option<&str>,
     card: bool,
 ) -> Option<ViewEvent> {
-    if connection.is_some() {
-        if !card {
-            return None;
-        }
-        let mut view = View::agent(name.to_owned(), None);
-        view.registration_id = Some(registration?.to_owned());
-        return view.is_valid().then_some(ViewEvent::OpenBeside(view));
+    // Only a profile's agents open, and only as their registered cards.
+    connection?;
+    if !card {
+        return None;
     }
-    Some(if card {
-        ViewEvent::OpenBeside(View::agent(name.to_owned(), None))
-    } else {
-        ViewEvent::ShowAgent(name.to_owned())
-    })
+    let mut view = View::agent(name.to_owned(), None);
+    view.registration_id = Some(registration?.to_owned());
+    view.is_valid().then_some(ViewEvent::OpenBeside(view))
 }
 
 #[cfg(test)]
@@ -478,11 +473,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bound_rows_cannot_route_same_name_to_legacy_terminal_or_card() {
+    fn rows_open_only_a_profiles_registered_card() {
         let (_dir, connection, server) = crate::roster::content::tests::provider("a", vec![]);
         for card in [false, true] {
             assert!(row_event(Some(&connection), "worker", None, card).is_none());
-            assert!(row_event(None, "worker", None, card).is_some());
+            assert!(row_event(None, "worker", None, card).is_none());
         }
         let registration = "1234567890abcdef1234567890abcdef";
         assert!(row_event(Some(&connection), "worker", Some("bad"), true).is_none());

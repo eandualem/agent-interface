@@ -15,7 +15,6 @@ use gpui::{Context, Entity, ScrollHandle, Subscription, Task, Window, prelude::*
 use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
-    path::PathBuf,
     rc::Rc,
     time::Duration,
 };
@@ -36,58 +35,37 @@ enum Direction {
 }
 
 #[derive(Clone)]
-pub(super) enum Source {
-    Legacy(PathBuf),
-    Bound(Connection),
-}
+pub(super) struct Source(pub Connection);
 
 impl Source {
     pub fn belongs_to(&self, agents: &crate::desktop::agent_status::LiveAgents) -> bool {
-        self.connection()
-            .is_none_or(|connection| agents.belongs_to(connection.identity()))
+        agents.belongs_to(self.connection().identity())
     }
 
-    fn connection(&self) -> Option<&Connection> {
-        match self {
-            Self::Bound(connection) => Some(connection),
-            Self::Legacy(_) => None,
-        }
+    fn connection(&self) -> &Connection {
+        &self.0
     }
 
-    fn directory(&self) -> Option<PathBuf> {
-        match self {
-            Self::Legacy(directory) => Some(directory.clone()),
-            Self::Bound(_) => None,
-        }
-    }
-
-    fn key(&self, legacy: &str) -> String {
-        super::seen::origin_key(self.connection().map(Connection::identity), legacy)
+    /// The key of the profile this history comes from.
+    fn key(&self) -> String {
+        super::seen::origin_key(self.connection().identity())
     }
 
     fn accepts(&self, snapshot: &Snapshot) -> bool {
-        self.connection().map(Connection::identity) == snapshot.identity()
+        self.connection().identity() == snapshot.identity()
     }
 
     fn read(&self, since: &str, until: &str, agent: Option<&str>) -> Result<Snapshot, Error> {
-        match self {
-            Self::Legacy(directory) => api::read(directory, since, until, agent),
-            Self::Bound(connection) => {
-                api::Client::new(connection.clone()).read(since, until, agent)
-            }
-        }
+        api::Client::new(self.connection().clone()).read(since, until, agent)
     }
 
     fn detail(&self, expected: &str, id: &str) -> Result<Interaction, Error> {
-        if self.connection().is_some() && self.key("") != expected {
+        if self.key() != expected {
             return Err(Error::Connection(
                 agent_interface_roster::profiles::Error::BindingMismatch,
             ));
         }
-        match self {
-            Self::Legacy(directory) => api::detail(directory, expected, id),
-            Self::Bound(connection) => api::Client::new(connection.clone()).detail(id),
-        }
+        api::Client::new(self.connection().clone()).detail(id)
     }
 
     pub fn report(
@@ -97,59 +75,34 @@ impl Source {
         response: bool,
     ) -> Result<agent_interface_roster::views::Data, &'static str> {
         use agent_interface_roster::views::{self, content};
-        match self {
-            Self::Bound(connection) => {
-                if self.key("") != expected {
-                    return Err("Backbone connection changed.");
-                }
-                let request = if response {
-                    content::Request::Response(id)
-                } else {
-                    content::Request::Report(id)
-                };
-                content::read(connection, &request, &|| true)
-                    .result
-                    .and_then(|data| match data {
-                        content::Data::Reports(page) => Ok(views::Data::Reports(page)),
-                        content::Data::Document(document) => Ok(views::Data::Document(document)),
-                        content::Data::Team(_)
-                        | content::Data::Tags(_)
-                        | content::Data::Policies(_)
-                        | content::Data::Skills(_)
-                        | content::Data::Usage(_)
-                        | content::Data::Activity(_) => {
-                            Err(content::Error::Content(views::UNREADABLE))
-                        }
-                    })
-                    .map_err(|error| match error {
-                        content::Error::Content(message) => message,
-                        content::Error::Connection(
-                            agent_interface_roster::profiles::Error::BindingRequired
-                            | agent_interface_roster::profiles::Error::BindingMismatch,
-                        ) => "The original profile binding was refused.",
-                        _ => views::UNAVAILABLE,
-                    })
-            }
-            Self::Legacy(directory) => {
-                let matches = || {
-                    agent_interface_roster::conversations::provider(directory).as_deref()
-                        == Some(expected)
-                };
-                if !matches() {
-                    return Err("Backbone connection changed.");
-                }
-                let request = if response {
-                    views::Request::Response(id)
-                } else {
-                    views::Request::Report(id)
-                };
-                let result = views::read(directory, None, &request, &|| true);
-                if !matches() {
-                    return Err("Backbone connection changed.");
-                }
-                result
-            }
+        if self.key() != expected {
+            return Err("Backbone connection changed.");
         }
+        let request = if response {
+            content::Request::Response(id)
+        } else {
+            content::Request::Report(id)
+        };
+        content::read(self.connection(), &request, &|| true)
+            .result
+            .and_then(|data| match data {
+                content::Data::Reports(page) => Ok(views::Data::Reports(page)),
+                content::Data::Document(document) => Ok(views::Data::Document(document)),
+                content::Data::Team(_)
+                | content::Data::Tags(_)
+                | content::Data::Policies(_)
+                | content::Data::Skills(_)
+                | content::Data::Usage(_)
+                | content::Data::Activity(_) => Err(content::Error::Content(views::UNREADABLE)),
+            })
+            .map_err(|error| match error {
+                content::Error::Content(message) => message,
+                content::Error::Connection(
+                    agent_interface_roster::profiles::Error::BindingRequired
+                    | agent_interface_roster::profiles::Error::BindingMismatch,
+                ) => "The original profile binding was refused.",
+                _ => views::UNAVAILABLE,
+            })
     }
 }
 
@@ -199,17 +152,15 @@ pub(super) struct Interactions {
     subscriptions: Vec<Subscription>,
 }
 
-pub(super) enum Event {
-    Activity,
-    Report {
-        id: u64,
-        response: bool,
-        request: u64,
-        provider: String,
-        anchor: String,
-    },
+/// A report or answer the selected message links to, asked to be opened.
+pub(super) struct Report {
+    pub id: u64,
+    pub response: bool,
+    pub request: u64,
+    pub provider: String,
+    pub anchor: String,
 }
-impl gpui::EventEmitter<Event> for Interactions {}
+impl gpui::EventEmitter<Report> for Interactions {}
 
 impl Selectable for Interactions {
     fn selection(&self) -> &RefCell<Selection> {
@@ -369,7 +320,7 @@ impl Interactions {
         };
         self.link_generation += 1;
         self.link_error = None;
-        cx.emit(Event::Report {
+        cx.emit(Report {
             id,
             response,
             request: self.link_generation,
@@ -456,11 +407,7 @@ impl Interactions {
                 }
                 match result {
                     Ok((mut fresh, requested)) => {
-                        if !this.source.accepts(&fresh)
-                            || this.provider.as_ref().is_some_and(|provider| {
-                                *provider != this.source.key(&fresh.provider)
-                            })
-                        {
+                        if !this.source.accepts(&fresh) {
                             this.error = Some(Error::Unavailable);
                             cx.notify();
                             return;
@@ -471,7 +418,7 @@ impl Interactions {
                                 .as_ref()
                                 .and_then(|previous| previous.states.clone());
                         }
-                        this.provider = Some(this.source.key(&fresh.provider));
+                        this.provider = Some(this.source.key());
                         let count = this.new_count(&fresh);
                         if this.snapshot.is_some() && count > 0 {
                             this.pending = Some((fresh, requested, count));
@@ -512,7 +459,7 @@ impl Interactions {
         let Some(old) = &self.snapshot else {
             return 0;
         };
-        if old.identity() != fresh.identity() || old.provider != fresh.provider {
+        if old.identity() != fresh.identity() {
             return 0;
         }
         let ids = message_ids(old);
@@ -800,20 +747,12 @@ impl Interactions {
             c.clone()
         } else {
             let target = super::conversation::ReferenceTarget {
-                provider,
                 kind,
                 id,
-                connection: self.source.connection().cloned(),
+                connection: Some(self.source.connection().clone()),
             };
-            let c = cx.new(|cx| {
-                Conversation::about_reference(
-                    target,
-                    self.source.directory(),
-                    self.visible.clone(),
-                    window,
-                    cx,
-                )
-            });
+            let c = cx
+                .new(|cx| Conversation::about_reference(target, self.visible.clone(), window, cx));
             self.subscriptions
                 .push(cx.observe(&c, |_, _, cx| cx.notify()));
             self.conversations.insert(key, c.clone());
@@ -829,19 +768,17 @@ impl Interactions {
     }
 
     fn ask(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some(item), Some(snapshot)) = (self.selected.clone(), &self.snapshot) else {
+        let Some(item) = self.selected.clone().filter(|_| self.snapshot.is_some()) else {
             return;
         };
         if !item.conversation.supported {
             return;
         }
-        let key = format!("{}\n{}", self.source.key(&snapshot.provider), item.id);
-        let directory = self.source.directory();
+        let key = format!("{}\n{}", self.source.key(), item.id);
         let target = super::conversation::ReferenceTarget {
-            provider: snapshot.provider.clone(),
             kind: agent_interface_roster::conversations::Kind::Interaction,
             id: item.id.clone(),
-            connection: self.source.connection().cloned(),
+            connection: Some(self.source.connection().clone()),
         };
         let visible = self.visible.clone();
         let focus = self.agent.clone().unwrap_or_default();
@@ -849,9 +786,7 @@ impl Interactions {
             c.clone()
         } else {
             let c = cx.new(|cx| {
-                Conversation::about_interaction(
-                    &item, &focus, target, directory, visible, window, cx,
-                )
+                Conversation::about_interaction(&item, &focus, target, visible, window, cx)
             });
             self.subscriptions
                 .push(cx.observe(&c, |_, _, cx| cx.notify()));

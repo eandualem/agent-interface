@@ -129,11 +129,7 @@ impl Sheets {
             .map(|record| {
                 let [revision, _] = super::seen_keys(record, self.source.identity());
                 let order = shelf_order(
-                    super::super::seen::is_seen_key(
-                        &revision,
-                        &record.updated_at,
-                        self.source.identity().is_none(),
-                    ),
+                    super::super::seen::is_seen_key(&revision),
                     &record.updated_at,
                     &record.sheet_id.to_string(),
                 );
@@ -144,11 +140,7 @@ impl Sheets {
         for (_, record) in records {
             let [revision, thing] = super::seen_keys(record, self.source.identity());
             let mut tags = Vec::new();
-            if !super::super::seen::is_seen_key(
-                &revision,
-                &record.updated_at,
-                self.source.identity().is_none(),
-            ) {
+            if !super::super::seen::is_seen_key(&revision) {
                 let label = if super::super::seen::known(&thing) {
                     "updated"
                 } else {

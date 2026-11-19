@@ -4,7 +4,6 @@
 use std::{
     cell::RefCell,
     collections::HashMap,
-    path::PathBuf,
     rc::{Rc, Weak},
 };
 
@@ -418,7 +417,6 @@ impl LiveAgents {
 /// Keys describe origin, never the selected view or an agent's name.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Origin {
-    Legacy(PathBuf),
     Bound(Identity),
 }
 
@@ -448,7 +446,6 @@ impl Sources {
 }
 
 enum Worker {
-    Legacy(crate::roster::RosterSource),
     Bound(crate::roster::BoundRosterSource),
 }
 
@@ -507,18 +504,9 @@ impl LiveAgents {
     }
 
     fn take_update(&self) -> Option<bool> {
-        match self.0.roster.0.as_ref()? {
-            Worker::Legacy(source) => source.take_update().map(|snapshot| self.update(snapshot)),
-            Worker::Bound(source) => source.take_update().map(|update| self.update_bound(update)),
-        }
+        let Worker::Bound(source) = self.0.roster.0.as_ref()?;
+        source.take_update().map(|update| self.update_bound(update))
     }
-}
-
-pub(super) fn start_legacy(directory: PathBuf, cx: &mut App) -> Option<LiveAgents> {
-    let origin = Origin::Legacy(directory.clone());
-    start(origin, None, cx, move |wake| {
-        crate::roster::RosterSource::start(directory, None, wake).map(Worker::Legacy)
-    })
 }
 
 /// Only an already-verified connection can start a bound source. Selection and
@@ -685,9 +673,7 @@ mod tests {
     }
 
     fn observation(origin: &Origin, state: &str) -> crate::roster::BoundRosterUpdate {
-        let Origin::Bound(identity) = origin else {
-            panic!("expected bound origin")
-        };
+        let Origin::Bound(identity) = origin;
         let mut snapshot = Snapshot::default();
         snapshot.update(
             &serde_json::to_vec(&serde_json::json!({
@@ -967,20 +953,5 @@ mod tests {
                 .get(&origin, &Some(new_connection.connection_key()))
                 .is_some()
         );
-    }
-
-    #[test]
-    fn legacy_directories_and_standalone_observations_are_explicit() {
-        let mut sources = Sources::default();
-        let first = acquire(&mut sources, Origin::Legacy("/fixture/a".into()));
-        let same = acquire(&mut sources, Origin::Legacy("/fixture/a".into()));
-        let other = acquire(&mut sources, Origin::Legacy("/fixture/b".into()));
-        let standalone = LiveAgents::default();
-        let mut snapshot = Snapshot::default();
-        snapshot.update(br#"{"items":[{"name":"worker","state":"busy"}]}"#);
-        first.update(snapshot);
-        assert_eq!(same.get("worker").state, AgentState::Working);
-        assert_eq!(other.get("worker").state, AgentState::Unknown);
-        assert_eq!(standalone.get("worker").state, AgentState::Unknown);
     }
 }

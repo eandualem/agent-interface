@@ -49,7 +49,6 @@ fn retained_runtime_context_uses_canonical_permissions_and_original_registration
         card.target.registration_id(),
         registration.as_str().unwrap()
     );
-    assert!(card.agent.permissions.files.is_empty());
     assert_eq!(card.agent.received.len(), 1);
     assert_eq!(card.agent.received[0].preview, "fixture");
     fs::write(
@@ -616,6 +615,41 @@ fn a_bound_start_sends_terminal_colours_when_the_runtime_supports_them() {
         sent["terminal_defaults"],
         serde_json::to_value(defaults).unwrap()
     );
+}
+
+#[test]
+fn a_bound_start_sends_no_terminal_colours_unless_the_saved_runtime_supports_them() {
+    use crate::lifecycle::{Outcome, TerminalDefaults};
+    let started =
+        json!({"ok": true, "session": "worker", "already_existed": false, "ready": "not_waited"});
+    for replies in [
+        // The catalog supports colours, but not for the agent's saved runtime.
+        vec![
+            json!([{"id": "codex", "terminal_defaults_supported": true}]),
+            json!({"runtime": "shell"}),
+        ],
+        // No runtime advertises colour support.
+        vec![json!([{"id": "codex"}])],
+    ] {
+        let (directory, listener, url) = crate::transport::tests::local_listener();
+        let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+        let mut steps = vec![(200, identity)];
+        steps.extend(replies.into_iter().map(|reply| (200, reply)));
+        steps.push((200, started.clone()));
+        let server = serve(listener, steps);
+        let connection = profile.connect().unwrap();
+        let defaults = TerminalDefaults::new([255; 3], [24, 25, 29]);
+        assert!(matches!(
+            connection.start_agent("worker", false, Some(defaults)),
+            Outcome::Accepted(_)
+        ));
+        let requests = server.join().unwrap();
+        let start = requests.last().unwrap();
+        assert!(start.starts_with("post /api/agents/worker/start "));
+        let body = start.rsplit("\r\n\r\n").next().unwrap();
+        let sent: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(sent, json!({"resume": false, "wait": false}));
+    }
 }
 
 #[test]

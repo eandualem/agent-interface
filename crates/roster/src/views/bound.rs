@@ -2,7 +2,7 @@
 //! excludes agent inspection, local runtime configuration and filesystem reads.
 
 pub use super::content::Error;
-use super::{Api, Data, Provider, Range};
+use super::{Api, Data, Range};
 use crate::profiles::{Connection, Identity};
 
 /// GET-only view families that can be read without ambient runtime state.
@@ -51,18 +51,10 @@ pub struct Read {
 /// cancellation discards the complete observation. Call on an I/O worker.
 /// This does not enable native navigation, local skill previews or actions.
 pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool) -> Read {
-    let api = Api {
-        provider: Provider::Bound {
-            connection,
-            error: Default::default(),
-        },
-        live,
-    };
+    let api = Api::new(connection, live);
     // The closed request set cannot reach legacy agent/runtime file reads.
     let result = super::read_using(&api, &request.remote());
-    let Provider::Bound { error, .. } = &api.provider else {
-        unreachable!()
-    };
+    let error = &api.error;
     let result = if let Some(error) = error.get() {
         Err(Error::Connection(error))
     } else if !live() {

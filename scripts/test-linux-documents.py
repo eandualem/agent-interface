@@ -49,11 +49,24 @@ with tempfile.TemporaryDirectory(prefix="document-smoke-") as directory:
     settings = root / "config/agent-interface"
     settings.mkdir(parents=True)
     (settings / "settings.toml").write_text(f'interface_size = {SCALE}\n[setup]\nintro_seen = true\ndone = true\n')
+    # A stand-in for the Rust service: a `backbone` command that lists one
+    # served profile, whose private socket below answers the reads.
     provider = root / "provider"
     provider.mkdir(mode=0o700)
-    (provider / "backbone.db").touch()
     (provider / "run").mkdir(mode=0o700)
-    env.update(BACKBONE_DATA_DIR=str(provider), BACKBONE_API_KEY="test-only")
+    served = dict(protocol_version=1, profile_id="0a1b2c3d4e5f",
+                  instance_id="0190c3a2c1107a3b8c9d0e1f2a3b4c5d", machine=dict(id="5f2c9e0d1b7a4e38"))
+    entry = dict(served, state="serving", display_name="Work", home=True,
+                 socket=str(provider / "run/api.sock"), tmux_socket=str(root / "tmux/profile.sock"),
+                 credential_reference=dict(type="socket"))
+    commands = root / ".local/bin"
+    commands.mkdir(parents=True)
+    (commands / "backbone").write_text(
+        '#!/bin/sh\ncase "$1 $2" in\n'
+        f"    'profiles list') printf '%s' '{json.dumps(dict(profiles=[entry]))}' ;;\n"
+        f"    'profiles show') printf '%s' '{json.dumps(entry)}' ;;\n"
+        '    *) exit 2 ;;\nesac\n')
+    (commands / "backbone").chmod(0o755)
     leaks = []
 
     class Trap(http.server.BaseHTTPRequestHandler):
@@ -97,7 +110,9 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             requests.append(self.path)
             path = self.path.split('?', 1)[0]
             status = 200
-            if path == '/api/documents/1':
+            if path == '/api/profile':
+                body = served
+            elif path == '/api/documents/1':
                 body = dict(metadata, html=html)
             elif path == '/api/documents':
                 body = dict(items=[metadata], has_more=False, next_before_id=None)
@@ -124,11 +139,11 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
     library.mkdir()
     leaf = dict(id="000000000003", agent=None, view="reports")
     model = dict(version=2, focus=False, selected="000000000001", workspaces=[
-        dict(id="000000000001", name="Fixture", selected="000000000002", tabs=[
+        dict(id="000000000001", name="Fixture", profile_id=served["profile_id"], selected="000000000002", tabs=[
             dict(id="000000000002", name="Fixture tab", focus=leaf['id'], tree=leaf),
             dict(id="000000000004", name="Other tab", focus="000000000005",
                  tree=dict(id="000000000005", agent=None, view="reports"))]),
-        dict(id="000000000006", name="Other workspace", selected="000000000007", tabs=[
+        dict(id="000000000006", name="Other workspace", profile_id=served["profile_id"], selected="000000000007", tabs=[
             dict(id="000000000007", name="Other workspace tab", focus="000000000008",
                  tree=dict(id="000000000008", agent=None, view="reports"))])])
     with sqlite3.connect(library / 'layouts.db') as db:

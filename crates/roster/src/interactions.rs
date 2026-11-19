@@ -3,7 +3,7 @@
 //! are separate. The client never reads the claiming inbox as history.
 
 use serde::Deserialize;
-use std::{collections::HashSet, path::Path, time::Duration};
+use std::collections::HashSet;
 
 const LIMIT: usize = 4 * 1024 * 1024;
 const PAGES: usize = 20;
@@ -49,8 +49,6 @@ impl Error {
 /// One provider-bound read, keeping summary and ledger on the same snapshot.
 #[derive(Clone, Debug)]
 pub struct Snapshot {
-    /// Legacy provider URL; empty for bound snapshots. Use `identity` for bound origin.
-    pub provider: String,
     /// Every agent's retained message counts and activity marks.
     pub summary: Summary,
     /// The selected agent's messages; absent on the agent list.
@@ -59,19 +57,18 @@ pub struct Snapshot {
     pub states: Option<StateSpanPage>,
     /// Why state context is missing on this read.
     pub state_error: Option<Error>,
-    client: Option<Client>,
+    client: Client,
 }
 
 impl Snapshot {
-    /// Full origin of a bound read; legacy snapshots have no profile identity.
-    pub fn identity(&self) -> Option<&crate::profiles::Identity> {
-        self.client.as_ref().map(Client::identity)
+    /// Full origin of the read.
+    pub fn identity(&self) -> &crate::profiles::Identity {
+        self.client.identity()
     }
 
-    /// Read retained detail with this bound snapshot's original credentials.
-    /// Legacy snapshots continue to use the explicit legacy `detail` function.
+    /// Read retained detail with this snapshot's original connection.
     pub fn detail(&self, id: &str) -> Result<Interaction, Error> {
-        self.client.as_ref().ok_or(Error::Unavailable)?.detail(id)
+        self.client.detail(id)
     }
 }
 
@@ -102,65 +99,43 @@ impl Client {
 
     /// Read bounded history and retain this connection on the returned snapshot.
     pub fn read(&self, since: &str, until: &str, agent: Option<&str>) -> Result<Snapshot, Error> {
-        let mut snapshot = read_using(&Api::Bound(&self.connection), since, until, agent)?;
-        snapshot.client = Some(self.clone());
-        Ok(snapshot)
+        read_using(self, since, until, agent)
     }
 
     /// Read one record and its evidence pages on the same captured connection.
     pub fn detail(&self, id: &str) -> Result<Interaction, Error> {
-        detail_using(&Api::Bound(&self.connection), id)
+        detail_using(&Api(&self.connection), id)
     }
 }
 
-enum Api<'a> {
-    Legacy { provider: String, key: String },
-    Bound(&'a crate::profiles::Connection),
-}
+struct Api<'a>(&'a crate::profiles::Connection);
 
 impl Api<'_> {
-    fn new(directory: &Path) -> Result<Self, Error> {
-        let (provider, key) =
-            crate::configuration::configured(directory, None).ok_or(Error::Unavailable)?;
-        if !provider.starts_with("unix:") || key.is_empty() {
-            return Err(Error::Unavailable);
-        }
-        Ok(Self::Legacy { provider, key })
-    }
-
-    fn provider(&self) -> &str {
-        match self {
-            Self::Legacy { provider, .. } => provider,
-            Self::Bound(_) => "",
-        }
-    }
-
     fn get<T: serde::de::DeserializeOwned>(&self, path: &str, detail: bool) -> Result<T, Error> {
-        let response = match self {
-            Self::Legacy { provider, key } => crate::transport::local::response(
-                &provider[5..],
-                path,
-                key,
-                None,
-                LIMIT,
-                Duration::from_secs(15),
-            )
-            .map_err(|_| Error::Unavailable)?,
-            Self::Bound(connection) => connection
-                .response(path, None, LIMIT)
-                .map_err(Error::Connection)?,
-        };
-        match response.status {
-            200 => parse(&response.body),
-            404 => Err(if detail {
-                Error::Missing
-            } else {
-                Error::Unsupported
-            }),
-            401 | 403 => Err(Error::Forbidden),
-            422 => Err(Error::Unreadable),
-            _ => Err(Error::Unavailable),
-        }
+        let response = self
+            .0
+            .response(path, None, LIMIT)
+            .map_err(Error::Connection)?;
+        decoded(response.status, &response.body, detail)
+    }
+}
+
+/// An absent route and an absent record are told apart by `detail`.
+fn decoded<T: serde::de::DeserializeOwned>(
+    status: u16,
+    body: &[u8],
+    detail: bool,
+) -> Result<T, Error> {
+    match status {
+        200 => parse(body),
+        404 => Err(if detail {
+            Error::Missing
+        } else {
+            Error::Unsupported
+        }),
+        401 | 403 => Err(Error::Forbidden),
+        422 => Err(Error::Unreadable),
+        _ => Err(Error::Unavailable),
     }
 }
 
@@ -208,26 +183,13 @@ fn id_path(id: &str) -> Result<String, Error> {
 }
 
 /// Read a summary and, when selected, a bounded complete ledger. Runs off the UI thread.
-pub fn read(
-    directory: &Path,
-    since: &str,
-    until: &str,
-    agent: Option<&str>,
-) -> Result<Snapshot, Error> {
-    let api = Api::new(directory)?;
-    let snapshot = read_using(&api, since, until, agent)?;
-    if crate::conversations::provider(directory).as_deref() != Some(api.provider()) {
-        return Err(Error::Unavailable);
-    }
-    Ok(snapshot)
-}
-
 fn read_using(
-    api: &Api<'_>,
+    client: &Client,
     since: &str,
     until: &str,
     agent: Option<&str>,
 ) -> Result<Snapshot, Error> {
+    let api = &Api(&client.connection);
     let bounds = format!("since={}&until={}", quote(since)?, quote(until)?);
     let summary: Summary = api.get(&format!("/api/interactions/summary?{bounds}"), false)?;
     validate_coverage(&summary.coverage)?;
@@ -295,12 +257,11 @@ fn read_using(
         Err(error) => (None, Some(error)),
     };
     Ok(Snapshot {
-        provider: api.provider().to_owned(),
         summary,
         history,
         states,
         state_error,
-        client: None,
+        client: client.clone(),
     })
 }
 
@@ -356,19 +317,6 @@ fn validate_states(page: &StateSpanPage) -> Result<(), Error> {
         }
     }
     Ok(())
-}
-
-/// Read an immutable message outside the current window and its bounded evidence pages.
-pub fn detail(directory: &Path, provider: &str, id: &str) -> Result<Interaction, Error> {
-    let api = Api::new(directory)?;
-    if api.provider() != provider {
-        return Err(Error::Unavailable);
-    }
-    let item = detail_using(&api, id)?;
-    if crate::conversations::provider(directory).as_deref() != Some(provider) {
-        return Err(Error::Unavailable);
-    }
-    Ok(item)
 }
 
 fn detail_using(api: &Api<'_>, id: &str) -> Result<Interaction, Error> {
@@ -1035,40 +983,14 @@ mod tests {
     }
 
     #[test]
-    fn absent_routes_and_absent_records_are_different_and_never_claim_inbox() {
-        use std::{
-            io::{Read, Write},
-            os::unix::{fs::PermissionsExt, net::UnixListener},
-        };
-        let directory = tempfile::tempdir().unwrap();
-        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        let socket = directory.path().join("history.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
-        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let worker = std::thread::spawn(move || {
-            for expected in [
-                "GET /api/interactions?limit=1 ",
-                "GET /api/interactions/missing ",
-            ] {
-                let (mut stream, _) = listener.accept().unwrap();
-                let mut bytes = [0; 4096];
-                let size = stream.read(&mut bytes).unwrap();
-                assert!(String::from_utf8_lossy(&bytes[..size]).starts_with(expected));
-                stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
-            }
-        });
-        let api = Api::Legacy {
-            provider: format!("unix:{}", socket.display()),
-            key: "fixture-key".into(),
-        };
+    fn absent_routes_and_absent_records_are_different() {
         assert_eq!(
-            api.get::<InteractionPage>("/api/interactions?limit=1", false),
+            decoded::<InteractionPage>(404, b"{}", false),
             Err(Error::Unsupported)
         );
         assert_eq!(
-            api.get::<Interaction>("/api/interactions/missing", true),
+            decoded::<Interaction>(404, b"{}", true),
             Err(Error::Missing)
         );
-        worker.join().unwrap();
     }
 }

@@ -1,4 +1,4 @@
-//! Per-workspace lookup ownership. A stored ID never authorizes legacy I/O.
+//! Per-workspace lookup ownership. A stored ID never authorizes I/O by itself.
 
 #[cfg(test)]
 mod restoration_tests;
@@ -17,7 +17,7 @@ use gpui::{Context, Entity, Window, prelude::*};
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum Owner {
-    Legacy,
+    Standalone,
     Bound(agent_interface_roster::profiles::ConnectionKey),
 }
 
@@ -35,7 +35,8 @@ struct Entry {
 }
 
 pub(super) enum Route<'a> {
-    Legacy,
+    /// A workspace without a profile: tmux only, no Agent Backbone.
+    Standalone,
     Bound(&'a Connection),
     Unavailable,
 }
@@ -221,7 +222,7 @@ impl Registry {
 
     pub fn route(&self, space: &Workspace) -> Route<'_> {
         let Some(profile_id) = &space.profile_id else {
-            return Route::Legacy;
+            return Route::Standalone;
         };
         match self
             .entries
@@ -237,7 +238,7 @@ impl Registry {
     /// Moving a retained tab may not change its authenticated authority.
     pub fn can_transfer(&self, source: &Workspace, destination: &Workspace) -> bool {
         match (self.route(source), self.route(destination)) {
-            (Route::Legacy, Route::Legacy) => true,
+            (Route::Standalone, Route::Standalone) => true,
             (Route::Bound(a), Route::Bound(b)) => a.connection_key() == b.connection_key(),
             _ => false,
         }
@@ -298,7 +299,7 @@ impl Browser {
             .and_then(|layout| layout.model().workspace_for_pane(pane))
             .ok_or(())?;
         match self.workspace_profiles.route(space) {
-            Route::Legacy => Ok(None),
+            Route::Standalone => Ok(None),
             Route::Bound(connection) => Ok(Some(connection.clone())),
             Route::Unavailable => Err(()),
         }
@@ -306,13 +307,13 @@ impl Browser {
 
     pub(super) fn pane_owner(&self, pane: &str) -> Option<Owner> {
         self.pane_connection(pane).ok().map(|connection| {
-            connection.map_or(Owner::Legacy, |c| Owner::Bound(c.connection_key()))
+            connection.map_or(Owner::Standalone, |c| Owner::Bound(c.connection_key()))
         })
     }
 
     pub(super) fn workspace_agents(&self, space: &Workspace) -> Option<&agent_status::LiveAgents> {
         match self.workspace_profiles.route(space) {
-            Route::Legacy => self.roster.as_ref(),
+            Route::Standalone => None,
             Route::Bound(connection) => self
                 .workspace_rosters
                 .get(&space.id)
@@ -680,7 +681,6 @@ impl Browser {
         if self.roster_updates.is_none() && cx.has_global::<agent_status::Sources>() {
             self.roster_updates =
                 Some(cx.observe_global::<agent_status::Sources>(|browser, cx| {
-                    browser.refresh_source_matches(cx);
                     browser.close_finished_swarm_tabs(cx);
                     cx.notify();
                 }));
@@ -1305,7 +1305,6 @@ mod tests {
         let pane_b = model.pane().unwrap().id.clone();
         let mut browser = Browser {
             layout: Some(WindowLayout::new(base.with_model(&model, path).unwrap())),
-            roster: Some(agent_status::LiveAgents::default()),
             ..Browser::default()
         };
         assert!(browser.pane_connection(&pane_a).is_err());
@@ -1508,7 +1507,7 @@ mod tests {
         registry.reconcile(&layout, None);
         assert!(matches!(
             registry.route(&layout.workspaces[0]),
-            Route::Legacy
+            Route::Standalone
         ));
         assert!(registry.entries.is_empty());
     }
