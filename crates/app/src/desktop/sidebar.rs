@@ -84,7 +84,8 @@ impl Browser {
         self.save(cx);
     }
 
-    /// Each agent's state, or none while Agent Backbone is unreachable.
+    /// Each agent's state, or none in a workspace without a profile or while
+    /// its profile's roster is unavailable.
     pub(super) fn agent_states(&self) -> Option<std::rc::Rc<HashMap<String, AgentState>>> {
         self.active_agents()?.active()
     }

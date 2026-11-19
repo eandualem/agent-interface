@@ -143,7 +143,7 @@ pub(super) enum Section {
 pub(super) enum Target {
     /// A skill, whose SKILL.md snapshot is read when opened.
     Skill(String),
-    /// A policy, by its file; its text is already in the view's data.
+    /// A policy, by its listed path; the listed text shows while its snapshot is read.
     Policy(String),
 }
 
@@ -652,7 +652,8 @@ impl ViewPane {
         }
     }
 
-    /// Open `target` in the reader, reading a skill's SKILL.md snapshot off the UI thread.
+    /// Open `target` in the reader, reading its snapshot off the UI thread: a
+    /// skill's SKILL.md, or a policy's text, whose listed copy shows meanwhile.
     fn open(&mut self, target: Target, cx: &mut Context<Self>) {
         if let Target::Policy(path) = &target
             && let Some(Data::Policies(library)) = &self.data

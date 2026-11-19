@@ -1,8 +1,8 @@
 //! Read-only data for the Backbone views a pane can show.
 //!
-//! Each [`Request`] is a few GETs of fixed local API paths, with the same
-//! address, credential, proxy and redirect rules as the roster. Decoding keeps
-//! only the fields a view draws; an item that does not decode is skipped.
+//! Each [`Request`] is a few GETs of fixed paths of the profile's API, on its
+//! verified connection, as the roster's reads are. Decoding keeps only the
+//! fields a view draws; an item that does not decode is skipped.
 //! Team-wide libraries are gathered in the private `library` module.
 
 use std::{
