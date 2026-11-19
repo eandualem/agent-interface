@@ -75,12 +75,12 @@ pub(super) struct Plans {
 }
 
 /// What the section shows, copied for each frame it draws.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct Frame {
     agents: crate::desktop::agent_status::LiveAgents,
     /// The plans last read, kept when a later read fails.
     page: Option<PlansPage>,
-    connection: Option<Connection>,
+    connection: Connection,
     /// Drafts and unresolved deliveries keep their observed plans accessible.
     held: bool,
     /// Each agent's runtime metadata from the plan read; live state is shared.
@@ -111,14 +111,10 @@ impl Plans {
                 cx.background_executor().timer(REFRESH).await;
             }
         });
-        let connection = Some(source.0.clone());
+        let frame = Frame::new(agents, source.0.clone());
         Self {
             source,
-            frame: Frame {
-                agents,
-                connection,
-                ..Frame::default()
-            },
+            frame,
             asked: 0,
             applied: 0,
             reading: false,
@@ -306,6 +302,21 @@ impl ConversationTarget {
 }
 
 impl Frame {
+    fn new(agents: crate::desktop::agent_status::LiveAgents, connection: Connection) -> Self {
+        Self {
+            agents,
+            page: None,
+            connection,
+            held: false,
+            members: BTreeMap::new(),
+            error: None,
+            selected: None,
+            open: None,
+            step: None,
+            card_step: None,
+        }
+    }
+
     fn open(&mut self, author: String) -> bool {
         let Some(entry) = self
             .page
@@ -340,7 +351,7 @@ impl Frame {
             .as_ref()
             .and_then(|id| record.plan.items.iter().find(|item| &item.item_id == id));
         Some(ConversationTarget {
-            connection: self.connection.clone()?,
+            connection: self.connection.clone(),
             author: entry.author_id.clone(),
             agent: entry.agent_name.clone(),
             anchor: conversations::Anchor {
@@ -1267,14 +1278,13 @@ mod tests {
         read_a.origin = origin;
         let mut frame = Frame {
             page: Some(read_a.page),
-            connection: Some(a.clone()),
             open: Some("11111111111111111111111111111111".into()),
             step: Some("step".into()),
-            ..Default::default()
+            ..Frame::new(Default::default(), a.clone())
         };
         let target = frame.conversation().unwrap();
         let original_key = target.key();
-        frame.connection = Some(b);
+        frame.connection = b;
         assert_ne!(original_key, frame.conversation().unwrap().key());
         frame.page.as_mut().unwrap().items[0]
             .record
@@ -1304,11 +1314,12 @@ mod tests {
 
     #[test]
     fn held_plan_frame_observes_live_status_without_refreshing_its_page() {
+        let (_directory, connection, server) = crate::roster::content::tests::provider("a", vec![]);
+        server.join().unwrap();
         let agents = crate::desktop::agent_status::LiveAgents::default();
         let frame = Frame {
-            agents: agents.clone(),
             held: true,
-            ..Default::default()
+            ..Frame::new(agents.clone(), connection)
         };
         let mut snapshot = agent_interface_roster::Snapshot::default();
         snapshot.update(br#"{"items":[{"name":"worker","state":"busy"}]}"#);
@@ -1339,9 +1350,8 @@ mod tests {
         server.join().unwrap();
         let mut frame = Frame {
             page: Some(page),
-            connection: Some(connection),
             card_step: Some(("author".into(), "old".into())),
-            ..Default::default()
+            ..Frame::new(Default::default(), connection)
         };
         assert!(frame.open("author".into()));
         assert_eq!(frame.step.as_deref(), Some("old"));
@@ -1379,10 +1389,9 @@ mod tests {
         server.join().unwrap();
         let mut frame = Frame {
             page: Some(page),
-            connection: Some(connection),
             open: Some("author".into()),
             step: Some("step".into()),
-            ..Default::default()
+            ..Frame::new(Default::default(), connection)
         };
         let observed = frame.conversation().unwrap();
         assert_eq!(observed.author, "author");
