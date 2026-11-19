@@ -3,7 +3,8 @@
 Start with the [installation guide](INSTALL.md), which covers source builds
 and native packages. Terminal sessions require tmux 3.4 or newer. Agents and
 their views belong to a workspace with a profile, served by a running Agent
-Backbone; a workspace without a profile holds terminals only.
+Backbone; a workspace without a profile holds terminals and existing
+**Artifacts** panes.
 
 If no library exists, the first launch creates one empty workspace. Add a tab
 with **+**, Command-T on macOS, or Ctrl+Shift+T on Linux, then choose **Open

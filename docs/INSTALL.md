@@ -207,8 +207,10 @@ and the app's [diagnostic logging](GUIDE.md#find-work-and-change-appearance).
 
 ## Connect Agent Backbone
 
-The installer does not install Agent Backbone yet. Install the Agent Backbone
-service on its own, then open Agent Interface to continue onboarding. Onboarding
+The installer does not install Agent Backbone, and running it again does not
+add it: the Agent Backbone service is not distributed yet
+([#268](https://github.com/eandualem/agent-interface/issues/268)). With the
+service installed, open Agent Interface to continue onboarding. Onboarding
 creates your first profile, and offers to install Git, tmux or an agent tool
 when one is missing; each agent tool signs in inside its own terminal. Without
 Agent Backbone, Agent Interface works as a native workspace for tmux.
