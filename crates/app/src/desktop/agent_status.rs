@@ -414,18 +414,16 @@ impl LiveAgents {
     }
 }
 
-/// Keys describe origin, never the selected view or an agent's name.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct Origin(Identity);
-
 /// Windows and their child views own sources. The registry only deduplicates
 /// live owners, so closing the last view releases its poller and cached state.
+/// Keys are the provider's identity and the connection, never the selected view
+/// or an agent's name.
 #[derive(Default)]
-pub(super) struct Sources(HashMap<(Origin, ConnectionKey), Weak<Source>>);
+pub(super) struct Sources(HashMap<(Identity, ConnectionKey), Weak<Source>>);
 impl Global for Sources {}
 
 impl Sources {
-    fn get(&mut self, origin: &Origin, key: &ConnectionKey) -> Option<LiveAgents> {
+    fn get(&mut self, origin: &Identity, key: &ConnectionKey) -> Option<LiveAgents> {
         self.0.retain(|_, source| source.strong_count() > 0);
         self.0
             .get(&(origin.clone(), key.clone()))
@@ -441,11 +439,9 @@ impl Sources {
     }
 }
 
-struct Worker(crate::roster::BoundRosterSource);
-
 /// Joining a bounded in-flight request must never block the UI thread.
 #[derive(Default)]
-struct Roster(Option<Worker>);
+struct Roster(Option<crate::roster::BoundRosterSource>);
 impl Drop for Roster {
     fn drop(&mut self) {
         if let Some(worker) = self.0.take() {
@@ -456,7 +452,7 @@ impl Drop for Roster {
 
 #[derive(Default)]
 struct Source {
-    origin: Option<Origin>,
+    origin: Option<Identity>,
     /// Like `origin`, None only for an empty `LiveAgents::default()`, which no
     /// registry holds.
     connection_key: Option<ConnectionKey>,
@@ -467,11 +463,11 @@ struct Source {
 
 impl LiveAgents {
     pub fn belongs_to(&self, identity: &Identity) -> bool {
-        self.0.origin.as_ref() == Some(&Origin(identity.clone()))
+        self.0.origin.as_ref() == Some(identity)
     }
 
     fn update_bound(&self, mut update: crate::roster::BoundRosterUpdate) -> bool {
-        if self.0.origin.as_ref() != Some(&Origin(update.identity)) {
+        if self.0.origin.as_ref() != Some(&update.identity) {
             return false;
         }
         let runs = {
@@ -500,7 +496,7 @@ impl LiveAgents {
     }
 
     fn take_update(&self) -> Option<bool> {
-        let Worker(source) = self.0.roster.0.as_ref()?;
+        let source = self.0.roster.0.as_ref()?;
         source.take_update().map(|update| self.update_bound(update))
     }
 }
@@ -508,18 +504,8 @@ impl LiveAgents {
 /// Only an already-verified connection can start a bound source. Selection and
 /// workspace persistence are not enabled by this ownership primitive.
 pub(super) fn start_bound(connection: Connection, cx: &mut App) -> Option<LiveAgents> {
-    let origin = Origin(connection.identity().clone());
-    start(origin, connection.connection_key(), cx, move |wake| {
-        crate::roster::BoundRosterSource::start(connection, wake).map(Worker)
-    })
-}
-
-fn start(
-    origin: Origin,
-    connection_key: ConnectionKey,
-    cx: &mut App,
-    worker: impl FnOnce(Box<dyn Fn() + Send>) -> std::io::Result<Worker>,
-) -> Option<LiveAgents> {
+    let origin = connection.identity().clone();
+    let connection_key = connection.connection_key();
     if !cx.has_global::<Sources>() {
         cx.set_global(Sources::default());
     }
@@ -529,9 +515,9 @@ fn start(
         return Some(agents);
     }
     let (wake, mut woken) = mpsc::unbounded();
-    let roster = worker(Box::new(move || {
+    let roster = crate::roster::BoundRosterSource::start(connection, move || {
         let _ = wake.unbounded_send(());
-    }))
+    })
     .ok()?;
     let agents = LiveAgents(Rc::new(Source {
         origin: Some(origin),
@@ -639,12 +625,12 @@ mod tests {
         assert!(agents.get("future").online);
     }
 
-    fn origin(profile: &str, lifecycle: &str) -> Origin {
-        Origin(Identity {
+    fn origin(profile: &str, lifecycle: &str) -> Identity {
+        Identity {
             profile_id: profile.into(),
             installation_id: "installation".into(),
             lifecycle_id: lifecycle.into(),
-        })
+        }
     }
 
     /// One verified connection's key, for the tests that key sources by origin
@@ -659,13 +645,13 @@ mod tests {
         KEY.clone()
     }
 
-    fn acquire(sources: &mut Sources, origin: Origin) -> LiveAgents {
+    fn acquire(sources: &mut Sources, origin: Identity) -> LiveAgents {
         acquire_key(sources, origin, key())
     }
 
     fn acquire_key(
         sources: &mut Sources,
-        origin: Origin,
+        origin: Identity,
         connection_key: ConnectionKey,
     ) -> LiveAgents {
         if let Some(agents) = sources.get(&origin, &connection_key) {
@@ -680,8 +666,7 @@ mod tests {
         agents
     }
 
-    fn observation(origin: &Origin, state: &str) -> crate::roster::BoundRosterUpdate {
-        let Origin(identity) = origin;
+    fn observation(identity: &Identity, state: &str) -> crate::roster::BoundRosterUpdate {
         let mut snapshot = Snapshot::default();
         snapshot.update(
             &serde_json::to_vec(&serde_json::json!({
@@ -922,7 +907,7 @@ mod tests {
         old_server.join().unwrap();
         new_server.join().unwrap();
         assert_eq!(old_connection.identity(), new_connection.identity());
-        let origin = Origin(old_connection.identity().clone());
+        let origin = old_connection.identity().clone();
         let mut sources = Sources::default();
         let old = acquire_key(
             &mut sources,
