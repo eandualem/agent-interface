@@ -161,9 +161,14 @@ pub(super) struct Open {
     pub text: Option<Result<(std::sync::Arc<str>, bool), &'static str>>,
 }
 
+/// The folders of a window's workspaces, read when a Document is opened.
+pub(super) type Folders = Rc<dyn Fn(&gpui::App) -> Vec<PathBuf>>;
+
 /// One view in one pane, with its newest data and what the person chose in it.
 pub(super) struct ViewPane {
     agents: crate::desktop::agent_status::LiveAgents,
+    /// Where a Document's code may be checked out, with the agents' folders.
+    folders: Folders,
     pub view: View,
     source: Option<Source>,
     /// Immutable origin for retained content and every operation it opens.
@@ -255,10 +260,11 @@ impl ViewPane {
         backbone: Option<PathBuf>,
         directory: Option<PathBuf>,
         agents: crate::desktop::agent_status::LiveAgents,
+        folders: Folders,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::new_with(view, backbone, directory, agents, None, window, cx)
+        Self::new_with(view, backbone, directory, agents, folders, None, window, cx)
     }
 
     /// An explicit bound reader; startup does not enable profile selection yet.
@@ -267,10 +273,20 @@ impl ViewPane {
         connection: Connection,
         directory: Option<PathBuf>,
         agents: crate::desktop::agent_status::LiveAgents,
+        folders: Folders,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::new_with(view, None, directory, agents, Some(connection), window, cx)
+        Self::new_with(
+            view,
+            None,
+            directory,
+            agents,
+            folders,
+            Some(connection),
+            window,
+            cx,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -279,12 +295,14 @@ impl ViewPane {
         backbone: Option<PathBuf>,
         directory: Option<PathBuf>,
         agents: crate::desktop::agent_status::LiveAgents,
+        folders: Folders,
         connection: Option<Connection>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut pane = Self {
             agents,
+            folders,
             source: None,
             connection,
             data: None,
@@ -415,6 +433,7 @@ impl ViewPane {
                                 if let Data::Document(document) = &data {
                                     pane.documents.loaded = Some(document.clone());
                                     pane.documents.error = None;
+                                    documents::serve(pane, document.html.clone(), cx);
                                 }
                                 if let Data::Reports(page) = &data {
                                     pane.reports.observe(page);

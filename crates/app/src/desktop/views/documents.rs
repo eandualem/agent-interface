@@ -1,11 +1,16 @@
 //! Native navigation around an isolated, explicitly loaded document revision.
 
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use agent_interface_roster::views::{
     DocumentMetadata, DocumentRevision, ReportContent, ReportItem, ReportQuery,
 };
-use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
+use gpui::{AnyElement, Context, SharedString, Task, div, prelude::*, px};
 
 use super::{ViewEvent, ViewPane, artifact_web::Surface};
 use crate::desktop::{
@@ -16,6 +21,10 @@ use crate::desktop::{
 #[derive(Default)]
 pub(super) struct State {
     pub loaded: Option<DocumentRevision>,
+    /// The loaded revision as the page is served: with views of Git diffs
+    /// and code in place of its pointers, once Git has been read.
+    served: Option<Arc<str>>,
+    serving: Option<Task<()>>,
     pub surface: Rc<RefCell<Surface>>,
     pub error: Option<String>,
 }
@@ -24,8 +33,46 @@ impl State {
     pub fn clear(&mut self) {
         self.surface.borrow_mut().clear();
         self.loaded = None;
+        self.served = None;
+        self.serving = None;
         self.error = None;
     }
+}
+
+/// How long a Document waits for Git before it is served as stored.
+const GIT_WAIT: Duration = Duration::from_secs(8);
+
+/// Serve the loaded revision's `html` once Git has been read for its
+/// pointers on a thread of its own, or as stored after [`GIT_WAIT`].
+pub(super) fn serve(pane: &mut ViewPane, html: Arc<str>, cx: &mut Context<ViewPane>) {
+    // Workspace folders first, so many agents cannot use up the folders read.
+    let mut folders = (pane.folders)(cx);
+    folders.extend(pane.agents.folders());
+    let (done, served) = futures::channel::oneshot::channel();
+    let stored = html.clone();
+    let deadline = Instant::now() + GIT_WAIT;
+    // Without the thread the sender is dropped, and the page is served as stored.
+    let _ = std::thread::Builder::new()
+        .name("document code".into())
+        .spawn(move || {
+            let _ = done.send(crate::code_figures::transform(&stored, &folders, deadline));
+        });
+    pane.documents.serving = Some(cx.spawn(async move |pane, cx| {
+        let wait = std::pin::pin!(cx.background_executor().timer(GIT_WAIT));
+        // A late answer is dropped; what it read stays cached for next time.
+        let served: Arc<str> = match futures::future::select(served, wait).await {
+            futures::future::Either::Left((Ok(Some(page)), _)) => page.into(),
+            _ => html,
+        };
+        let _ = pane.update(cx, |pane, cx| {
+            if pane.documents.served.as_ref() != Some(&served) {
+                // A refreshed page whose views changed is built again.
+                pane.documents.surface.borrow_mut().clear();
+                pane.documents.served = Some(served);
+                cx.notify();
+            }
+        });
+    }));
 }
 
 pub(super) fn selected(pane: &ViewPane) -> Option<&DocumentMetadata> {
@@ -194,9 +241,9 @@ pub(super) fn reader(pane: &ViewPane, cx: &mut Context<ViewPane>) -> AnyElement 
             .text_color(c.attention_text)
             .child(error.clone())
             .into_any_element()
-    } else if let Some(document) = &pane.documents.loaded {
+    } else if let (Some(_), Some(html)) = (&pane.documents.loaded, &pane.documents.served) {
         let surface = pane.documents.surface.clone();
-        let html = document.html.clone();
+        let html = html.clone();
         let theme = super::reading::document_script();
         let entity = cx.entity().downgrade();
         let focus_entity = entity.clone();

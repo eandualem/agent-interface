@@ -61,6 +61,37 @@ pub(super) fn look() -> Reading {
     }
 }
 
+/// A diff's added and removed lines: each one's fill, and a colour for its
+/// sign that reads on that fill at 4.5:1, darkened or lightened if needed.
+fn diff_colours(c: &crate::desktop::design::Colors) -> [(Rgba, Rgba); 2] {
+    use crate::desktop::themes::vscode::contrast;
+    let readable = |ink: Rgba, fill: Rgba| {
+        // Black or white, whichever reads better, reads at 4.5:1 or more on
+        // any fill.
+        let [black, white] = [0., 1.].map(|v| Rgba {
+            r: v,
+            g: v,
+            b: v,
+            a: 1.,
+        });
+        let far = if contrast(black, fill) > contrast(white, fill) {
+            black
+        } else {
+            white
+        };
+        (0..=10)
+            .map(|step| mix(ink, far, step as f32 / 10.))
+            .find(|ink| contrast(*ink, fill) >= 4.5)
+            .unwrap_or(far)
+    };
+    let add = mix(c.surface, c.ok, 0.16);
+    let remove = mix(c.surface, c.attention, 0.16);
+    [
+        (add, readable(c.ok, add)),
+        (remove, readable(c.attention_text, remove)),
+    ]
+}
+
 /// `color` as CSS.
 fn hex(color: Rgba) -> String {
     let part = |value: f32| (value.clamp(0., 1.) * 255.).round() as u8;
@@ -96,6 +127,7 @@ pub(super) fn document_script() -> std::rc::Rc<str> {
 
 fn script(c: &crate::desktop::design::Colors, light: bool) -> String {
     let look = look();
+    let [(add, add_sign), (remove, remove_sign)] = diff_colours(c);
     let palette = serde_json::json!({
         "scheme": if light { "light" } else { "dark" },
         // What a document may use as `var(--ai-…)`.
@@ -117,6 +149,11 @@ fn script(c: &crate::desktop::design::Colors, light: bool) -> String {
             "block": hex(look.block_fill),
             "table-head": hex(look.table_head),
             "selection": hex(look.selection),
+            // A diff's added and removed lines: their fill and their sign.
+            "diff-add": hex(add),
+            "diff-add-sign": hex(add_sign),
+            "diff-remove": hex(remove),
+            "diff-remove-sign": hex(remove_sign),
         },
         // Neutrals, from the page to its text.
         "ramp": {
@@ -165,6 +202,7 @@ mod tests {
                     .as_str()
                     .is_some_and(|css| css.contains("--ai-table-head"))
             );
+            assert!(palette["variables"]["diff-add"].is_string());
         }
         assert_eq!(
             hex(Rgba {
@@ -175,5 +213,31 @@ mod tests {
             }),
             "rgba(255, 128, 0, 0.350)"
         );
+    }
+
+    #[test]
+    fn diff_signs_read_on_their_fill_in_every_shipped_theme() {
+        for id in [
+            "dark",
+            "light",
+            "dracula",
+            "one-dark",
+            "tokyo-night",
+            "catppuccin-mocha",
+            "nord",
+            "gruvbox-dark",
+            "solarized-dark",
+            "github-dark",
+            "catppuccin-latte",
+            "solarized-light",
+            "github-light",
+            "one-light",
+        ] {
+            let design = crate::desktop::themes::resolve(id).unwrap();
+            for (fill, sign) in diff_colours(&design.colors) {
+                let ratio = crate::desktop::themes::vscode::contrast(sign, fill);
+                assert!(ratio >= 4.5, "{id}: {ratio}");
+            }
+        }
     }
 }

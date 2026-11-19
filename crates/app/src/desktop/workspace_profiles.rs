@@ -322,6 +322,28 @@ impl Browser {
         }
     }
 
+    /// The saved folders of this window's panes, where a Document's code may
+    /// be checked out.
+    pub(super) fn workspace_folders(&self) -> Vec<std::path::PathBuf> {
+        let Some(layout) = &self.layout else {
+            return Vec::new();
+        };
+        let mut folders: Vec<std::path::PathBuf> = Vec::new();
+        let leaves = layout
+            .model()
+            .workspaces
+            .iter()
+            .flat_map(|space| &space.tabs)
+            .flat_map(|tab| tab.tree.leaves());
+        for cwd in leaves.filter_map(|leaf| leaf.cwd.as_deref()) {
+            let folder = std::path::PathBuf::from(cwd);
+            if cwd != "/" && !folders.contains(&folder) {
+                folders.push(folder);
+            }
+        }
+        folders
+    }
+
     pub(super) fn active_agents(&self) -> Option<&agent_status::LiveAgents> {
         self.workspace_agents(self.layout.as_ref()?.model().workspace()?)
     }

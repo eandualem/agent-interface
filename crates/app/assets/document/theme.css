@@ -44,3 +44,28 @@ hr { border: 0 !important; height: 1px; background-color: var(--ai-line) !import
   background-color: var(--ai-field); color: var(--ai-text); border-color: var(--ai-line);
 }
 :where(input, textarea)::placeholder { color: var(--ai-muted); }
+/* Git diffs and code the app shows in place of a document's pointers. Each
+   opens and closes as <details>; long lines scroll inside it. */
+.ai-git {
+  margin: 12px 0; border: 1px solid var(--ai-line); border-radius: 6px; overflow: hidden;
+  background: var(--ai-background); color: var(--ai-text);
+}
+.ai-git summary { padding: 6px 10px; background: var(--ai-table-head); cursor: pointer; font-weight: 600; }
+.ai-git-file > summary { font: 600 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.ai-git .ai-git-file { border-top: 1px solid var(--ai-line); }
+.ai-git-scroll { overflow-x: auto; }
+table.ai-git-lines {
+  border: 0 !important; border-radius: 0; border-collapse: collapse !important;
+  margin: 0; width: 100%; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.ai-git-lines td {
+  border: 0 !important; padding: 0 8px; white-space: pre; tab-size: 4; vertical-align: top;
+}
+.ai-git-lines td.ai-git-t { width: 100%; }
+.ai-git-lines td:is(.ai-git-n, .ai-git-s) { color: var(--ai-muted); text-align: right; }
+.ai-git-lines td.ai-git-s { padding: 0 2px; }
+.ai-git-lines tr.ai-git-add { background: var(--ai-diff-add); }
+.ai-git-lines tr.ai-git-add td.ai-git-s { color: var(--ai-diff-add-sign); }
+.ai-git-lines tr.ai-git-remove { background: var(--ai-diff-remove); }
+.ai-git-lines tr.ai-git-remove td.ai-git-s { color: var(--ai-diff-remove-sign); }
+.ai-git-lines tr:is(.ai-git-hunk, .ai-git-remark) td { color: var(--ai-muted); background: var(--ai-surface); }

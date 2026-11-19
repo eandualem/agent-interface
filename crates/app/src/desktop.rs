@@ -2938,11 +2938,20 @@ impl Render for Browser {
                 let backbone = self.backbone.clone();
                 let directory = self.directory.clone();
                 let reports = view.kind == agent_interface_core::ViewKind::Reports;
+                let browser = cx.entity().downgrade();
+                let folders: views::Folders = Rc::new(move |cx: &gpui::App| {
+                    browser
+                        .upgrade()
+                        .map(|browser| browser.read(cx).workspace_folders())
+                        .unwrap_or_default()
+                });
                 let pane = cx.new(|cx| match connection {
-                    Some(connection) => {
-                        views::ViewPane::new_bound(view, connection, directory, agents, window, cx)
+                    Some(connection) => views::ViewPane::new_bound(
+                        view, connection, directory, agents, folders, window, cx,
+                    ),
+                    None => {
+                        views::ViewPane::new(view, backbone, directory, agents, folders, window, cx)
                     }
-                    None => views::ViewPane::new(view, backbone, directory, agents, window, cx),
                 });
                 if let Some(section) = self.opening_sections.remove(&id)
                     && reports
