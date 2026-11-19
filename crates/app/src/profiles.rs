@@ -112,7 +112,7 @@ impl Client {
 
     /// The one profile the Rust service's list serves with its home here, if
     /// it names exactly one; see [`profiles::home`]. Workspace routing does not
-    /// use it: a workspace without a profile stays tmux only.
+    /// use it.
     pub fn home(&self, live: &dyn Fn() -> bool) -> Result<Option<Item>, Error> {
         let bytes = self.read(&["profiles", "list", "--json"], live, TIMEOUT)?;
         // A list the app would refuse names no home either.

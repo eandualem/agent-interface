@@ -35,7 +35,8 @@ struct Entry {
 }
 
 pub(super) enum Route<'a> {
-    /// A workspace without a profile: tmux only, no Agent Backbone.
+    /// A workspace without a profile: no Agent Backbone; it holds terminals and
+    /// any existing Artifacts panes.
     Standalone,
     Bound(&'a Connection),
     Unavailable,

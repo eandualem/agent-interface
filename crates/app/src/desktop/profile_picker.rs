@@ -32,7 +32,7 @@ pub(super) enum Choice {
     NewProfile {
         name: String,
     },
-    /// Profiles are unavailable: a workspace that runs terminals only.
+    /// Profiles are unavailable: the workspace is made without a profile.
     Plain {
         name: String,
     },
