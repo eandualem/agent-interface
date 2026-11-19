@@ -602,9 +602,6 @@ impl NewPane {
     }
 
     fn choose(&mut self, row: Row, cx: &mut Context<Self>) {
-        if matches!(&row, Row::View(_)) && !self.origin.has_provider() {
-            return;
-        }
         match row {
             Row::Heading(..) => {}
             Row::Agent(member) => cx.emit(NewPaneEvent::Attach(member.name)),
