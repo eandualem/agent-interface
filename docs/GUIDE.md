@@ -196,9 +196,12 @@ profile cannot be reached has **Change profile…**, in its menu and on its
 **Workspace profile unavailable** screen. Pick a ready profile; the workspace
 keeps its tabs and panes, and panes attached to that profile's agents show
 them. In a workspace that had no profile, panes attached to your own tmux
-sessions keep their server and say so. Ordinary shells become shells of the
-profile; the shells they showed keep running, and the app says how to list
-them when their panes close.
+sessions keep their server, which the profile's panes do not connect to, even
+when a session has the name of one of the profile's agents. Such a pane says
+its session belongs to a different profile socket; choose **Detach** to return
+it to its chooser. The session keeps running in tmux. Ordinary shells become
+shells of the profile; the shells they showed keep running, and the app says
+how to list them when their panes close.
 
 Click **+** beside TABS or press Command-T to add an empty tab. Command-D splits
 right; Command-Shift-D splits below. Both split actions are also in tab options.
