@@ -15,23 +15,11 @@ fn profile() -> Profile {
     Profile::parse(&serde_json::to_vec(&fixture()["discovery"]["show_ready"]).unwrap()).unwrap()
 }
 fn prepared_setup() -> setup::Prepared {
-    setup::Prepared::first_agent(
-        "setup-a1",
-        &profile(),
-        vec!["codex".into()],
-        setup::Agent {
-            name: "worker".into(),
-            directory: "/example/project".into(),
-            create_directory: false,
-            runtime: "codex".into(),
-            model: None,
-            brief: setup::Brief::Text {
-                text: "Project work".into(),
-            },
-        },
-        false,
+    crate::profiles::tests::first_agent(
+        &crate::profiles::tests::request(1),
+        "0a1b2c3d4e5f",
+        "guide",
     )
-    .unwrap()
 }
 fn client() -> (tempfile::TempDir, Client) {
     let dir = tempfile::tempdir().unwrap();
@@ -142,7 +130,7 @@ fn discovery_and_restored_executors_use_the_captured_working_directory() {
     let fixture = fixture();
     let list = &fixture["discovery"]["list"];
     let receipt = &fixture["lifecycle"]["succeeded"];
-    let result = &fixture["setup"]["result"];
+    let result = crate::profiles::tests::ready(&crate::profiles::tests::request(1));
     fs::write(&client.executable,format!(r#"#!/bin/sh
 test "$(/bin/pwd)" = "$EXPECTED_CWD" || exit 8
 printf '%s\n' "$*" >> "$CALLS"

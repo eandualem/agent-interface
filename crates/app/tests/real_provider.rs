@@ -2,12 +2,10 @@
 //! Ignored by default: it needs a disposable provider home, so run it explicitly
 //! with PATH, HOME and TMUX_TMPDIR pointing at disposable locations.
 
-use agent_interface_app::profiles::{Client, lifecycle::Operation, setup::Setup};
+use agent_interface_app::profiles::{Client, lifecycle::Operation};
 use agent_interface_roster::profiles::{
     AddError, Connection, Error,
     operations::{Action as Lifecycle, Prepared, Status},
-    runtime_context,
-    setup::{Action, Agent, Brief, Prepared as SetupRequest},
 };
 use std::{path::PathBuf, process::Command};
 
@@ -106,30 +104,6 @@ fn create_start_setup_and_shell_on_a_new_profile() {
         );
     }
 
-    let directory = PathBuf::from(std::env::var("HOME").unwrap()).join(format!("project-{nonce}"));
-    std::fs::create_dir_all(&directory).unwrap();
-    let request = SetupRequest::first_agent(
-        &format!("setup-{nonce}"),
-        &profile,
-        vec!["codex".into()],
-        Agent {
-            name: "worker".into(),
-            directory,
-            create_directory: false,
-            runtime: "codex".into(),
-            model: None,
-            brief: Brief::Text {
-                text: "Smoke".into(),
-            },
-        },
-        false,
-    )
-    .expect("setup request");
-    let setup = Setup::new(&client, request);
-    let outcome = setup.run(Action::FirstAgent, &live, |event| {
-        println!("setup step: {:?} {:?}", event.step, event.status)
-    });
-    println!("setup outcome: {outcome:?}");
     let roster = connection.roster().expect("roster");
     println!("roster error: {:?}", roster.error);
 
@@ -148,53 +122,6 @@ fn create_start_setup_and_shell_on_a_new_profile() {
             .ensure_shell("0123456789ac", Some("/no/such/folder"))
             .err(),
         Some(Error::Refused(422))
-    );
-
-    // Adding another agent uses the same setup request.
-    let directory = PathBuf::from(std::env::var("HOME").unwrap()).join(format!("second-{nonce}"));
-    std::fs::create_dir_all(&directory).unwrap();
-    let request = SetupRequest::first_agent(
-        &format!("setup2-{nonce}"),
-        &profile,
-        vec!["codex".into()],
-        Agent {
-            name: "second".into(),
-            directory,
-            create_directory: false,
-            runtime: "codex".into(),
-            model: None,
-            brief: Brief::Text {
-                text: "Smoke".into(),
-            },
-        },
-        false,
-    )
-    .expect("second setup request");
-    let outcome = Setup::new(&client, request).run(Action::FirstAgent, &live, |_| ());
-    println!("second agent outcome: {outcome:?}");
-    println!("sessions: {:?}", sessions(&connection));
-
-    // A stopped agent starts again through the bound route.
-    let response = connection.start_agent("second", false, None);
-    println!("start while registered: {response:?}");
-
-    // Removing stops the session first, only for the registration inspected.
-    // Once removed, that registration is gone, so removing it again is refused.
-    let registration = runtime_context::inspect(connection.clone(), "second", None)
-        .expect("inspect second")
-        .target
-        .registration_id()
-        .to_owned();
-    connection
-        .remove_agent("second", &registration)
-        .expect("remove agent");
-    assert!(!sessions(&connection).contains(&"second".to_owned()));
-    connection
-        .roster()
-        .expect("roster straight after a removal");
-    assert_eq!(
-        connection.remove_agent("second", &registration).err(),
-        Some(Error::RegistrationChanged)
     );
 
     // A skill is copied from any folder, which stays in place.

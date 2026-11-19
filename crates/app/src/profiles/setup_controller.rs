@@ -1,10 +1,7 @@
 //! Durable first-agent setup and exact cancellation recovery.
 
 use super::{Client, journal, setup::Setup};
-use agent_interface_roster::profiles::{
-    Identity,
-    setup::{Action, Event, Prepared},
-};
+use agent_interface_roster::profiles::setup::{Action, Event, Prepared};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -25,6 +22,9 @@ pub enum Phase {
 pub enum Error {
     /// Invalid or unsupported stored envelope.
     Invalid,
+    /// Saved under an earlier setup schema, which no service takes now. It
+    /// holds back no other request and can be forgotten.
+    Earlier,
     /// No record exists under this key.
     Missing,
     /// This action does not match the durable submission state.
@@ -33,7 +33,7 @@ pub enum Error {
     Completed,
     /// The validated provider result does not permit a same-request retry.
     RetryRefused,
-    /// An original request for this profile instance still needs recovery.
+    /// An open first-agent request of this profile still needs recovery.
     Pending,
     /// Storage failed or another revision won; reread the original key.
     Storage(journal::Error),
@@ -60,8 +60,8 @@ pub struct Snapshot {
     pub revision: u64,
     /// Last action that may have been submitted.
     pub phase: Phase,
-    /// Original full expected origin.
-    pub identity: Identity,
+    /// The profile the request is for.
+    pub profile_id: String,
     /// Original request ID shared with cancellation.
     pub request_id: String,
     /// The agent this request adds.
@@ -86,11 +86,18 @@ impl Snapshot {
 
 /// Readiness and safe cancellation end a request, and so does a result the
 /// provider says this same request cannot go further from: a new request or
-/// nothing is what follows it. An unknown outcome stays open.
+/// nothing is what follows it. An unknown outcome stays open, and so does a
+/// retry this app doesn't know.
 fn closed(phase: Phase, first: Option<&Event>, cancel: Option<&Event>) -> bool {
-    let final_result = |event: &Event| event.retry.as_deref() != Some("same_request");
+    let final_result =
+        |event: &Event| matches!(event.retry.as_deref(), Some("new_request" | "none"));
     first.is_some_and(|event| event.ready_agent.is_some())
         || cancel.is_some_and(|event| event.cancelled)
+        // Too old for the profile to keep: it never runs now, whatever came
+        // of it before.
+        || cancel.is_some_and(|event| {
+            event.code.as_deref() == Some("request_expired") && final_result(event)
+        })
         || match phase {
             Phase::Prepared => false,
             Phase::Submitted => first.is_some_and(final_result),
@@ -134,7 +141,7 @@ impl Stored {
             key: self.record.id().into(),
             revision: self.record.revision(),
             phase: self.phase,
-            identity: self.setup.identity().clone(),
+            profile_id: self.setup.profile_id().into(),
             request_id: self.setup.request_id().into(),
             agent_name: self.setup.agent_name().into(),
             runtime: self.setup.runtime(),
@@ -174,8 +181,9 @@ impl Controller {
     }
 
     /// Persist exact setup and cancellation intent before any invocation. A
-    /// journal-wide admission check refuses a different open request for the same
-    /// agent name in the same full profile instance; other names stay free.
+    /// journal-wide admission check refuses a new request while one for the
+    /// same profile is open, whatever agent it adds: a profile has one first
+    /// agent, and an open request may still make it.
     /// Invalid records fail closed.
     /// The scan has a bounded record count and an eight-second read budget.
     pub fn enqueue(&self, prepared: Prepared) -> Result<Snapshot, Error> {
@@ -187,14 +195,15 @@ impl Controller {
             if std::time::Instant::now() >= deadline {
                 return Err(Error::Client(super::Error::TimedOut));
             }
-            let (_, existing) = inspect(&record)?;
+            let existing = match inspect(&record) {
+                Ok((_, existing)) => existing,
+                Err(Error::Earlier) => return Ok(()),
+                Err(error) => return Err(error),
+            };
             if std::time::Instant::now() >= deadline {
                 return Err(Error::Client(super::Error::TimedOut));
             }
-            if &existing.identity == setup.identity()
-                && existing.agent_name.eq_ignore_ascii_case(setup.agent_name())
-                && !existing.closed()
-            {
+            if existing.profile_id == setup.profile_id() && !existing.closed() {
                 return Err(Error::Pending);
             }
             Ok(())
@@ -220,12 +229,12 @@ impl Controller {
         self.journal.ids().map_err(Error::Storage)
     }
 
-    /// Read open requests for one full instance, to point at them from new choices.
+    /// Read open requests for one profile, to point at them from new choices.
     /// Any unreadable record or interrupted scan fails closed. This is only an
     /// observation; `enqueue` repeats admission under the journal lock.
     pub fn pending(
         &self,
-        identity: &Identity,
+        profile_id: &str,
         live: &dyn Fn() -> bool,
     ) -> Result<Vec<Snapshot>, Error> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
@@ -238,8 +247,12 @@ impl Controller {
                 return Err(Error::Client(super::Error::TimedOut));
             }
             let record = self.journal.read_durable(&key)?.ok_or(Error::Missing)?;
-            let (_, snapshot) = inspect(&record)?;
-            if &snapshot.identity == identity && !snapshot.closed() {
+            let snapshot = match inspect(&record) {
+                Ok((_, snapshot)) => snapshot,
+                Err(Error::Earlier) => continue,
+                Err(error) => return Err(error),
+            };
+            if snapshot.profile_id == profile_id && !snapshot.closed() {
                 pending.push(snapshot);
             }
         }
@@ -346,10 +359,7 @@ impl Controller {
                     return Err(Error::WrongPhase);
                 }
                 if stored.phase == Phase::CancelPending
-                    && !stored.cancel.as_ref().is_some_and(|event| {
-                        event.status == "action_required"
-                            && event.code.as_deref() == Some("cancellation_unsafe")
-                    })
+                    && !stored.cancel.as_ref().is_some_and(left_open)
                 {
                     return Err(Error::WrongPhase);
                 }
@@ -417,7 +427,9 @@ impl Controller {
 }
 
 // Validate the existing format-1 capsule and outcomes without constructing an
-// executor. Admission uses only this durable metadata.
+// executor. Admission uses only this durable metadata. A request or outcome
+// the model refuses cannot be validated, and so can be forgotten; one saved
+// under an earlier schema is told apart, as it holds back nothing.
 fn inspect(record: &journal::Record) -> Result<(Envelope, Snapshot), Error> {
     let envelope: Envelope =
         serde_json::from_slice(record.payload()).map_err(|_| Error::Invalid)?;
@@ -431,23 +443,29 @@ fn inspect(record: &journal::Record) -> Result<(Envelope, Snapshot), Error> {
         super::recovery::Kind::Setup,
         envelope.capsule.as_bytes(),
     )?;
-    let prepared = Prepared::restore(&state).map_err(super::Error::Profile)?;
+    let refused = |error| match error {
+        agent_interface_roster::profiles::Error::Unsupported => Error::Earlier,
+        _ => Error::Invalid,
+    };
+    let prepared = Prepared::restore(&state).map_err(refused)?;
     if Controller::key(prepared.request_id()) != record.id()
         || (envelope.phase == Phase::Prepared
             && (envelope.first.is_some() || envelope.cancel.is_some()))
     {
         return Err(Error::Invalid);
     }
+    // Only the request's own schema says it is an earlier one's; an outcome
+    // this request can't have is not.
     let outcome = |action, bytes: &String| {
         prepared
             .restore_outcome(action, bytes.as_bytes())
-            .map_err(super::Error::Profile)
+            .map_err(|_| Error::Invalid)
     };
     let snapshot = Snapshot {
         key: record.id().into(),
         revision: record.revision(),
         phase: envelope.phase,
-        identity: prepared.identity().clone(),
+        profile_id: prepared.profile_id().into(),
         request_id: prepared.request_id().into(),
         agent_name: prepared.agent_name().into(),
         runtime: prepared.runtime(),
@@ -470,6 +488,16 @@ enum Invocation {
     Retry,
     Cancel,
     RetryCancel,
+}
+/// Whether a cancellation's answer leaves the original request open to be
+/// sent again: it says the request had begun, so it isn't cancelled, or it
+/// is final and didn't cancel it, so the original is as it was, unless the
+/// original is too old to run now.
+pub fn left_open(cancel: &Event) -> bool {
+    !cancel.cancelled
+        && (cancel.code.as_deref() == Some("cancellation_unsafe")
+            || (matches!(cancel.retry.as_deref(), Some("new_request" | "none"))
+                && cancel.code.as_deref() != Some("request_expired")))
 }
 fn retry_allowed(event: Option<&Event>) -> Result<(), Error> {
     if event.is_some_and(|event| event.retry.as_deref() != Some("same_request")) {

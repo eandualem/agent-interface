@@ -1,25 +1,46 @@
-//! Immutable schema-2 first-agent setup and cancellation, without execution.
-//! Every event is checked against the original tuple, action and request ID.
+//! Immutable schema-3 first-agent setup and cancellation, without execution.
+//! Every event is checked against the request ID, and the result also
+//! against the action: events carry no other identity.
 
 mod outcome;
 mod recovery;
 pub mod start;
 
-use super::{Error, Identity, Profile, valid_id};
+use super::{Error, Profile, valid_id};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-const REQUEST_LIMIT: usize = 32 * 1024;
-const LINE_LIMIT: usize = 64 * 1024;
-const OUTPUT_LIMIT: usize = 1024 * 1024;
-const EVENT_LIMIT: u64 = 1024;
+/// The setup schema the Rust service takes; it refuses 1 and 2.
+const SCHEMA_VERSION: u32 = 3;
+const REQUEST_LIMIT: usize = 32_768;
+/// A request of the most bytes, with its action changed to the longer one.
+const CANCEL_LIMIT: usize = 32_775;
+/// The most bytes one line of setup's output may have.
+pub const LINE_LIMIT: usize = 64 * 1024;
+/// The most bytes setup's output may have.
+pub const OUTPUT_LIMIT: usize = 1024 * 1024;
+/// The highest sequence number an event of one run may have.
+pub const EVENT_LIMIT: u64 = 1024;
+/// The most characters a written brief may have.
+const BRIEF_LIMIT: usize = 16_000;
+/// The most characters an agent's folder may have.
+const DIRECTORY_LIMIT: usize = 4096;
+/// The only template the core starter has.
+const TEMPLATE: &str = "orchestrator-v1";
+/// What setup counts as white space when it asks whether a brief is blank:
+/// Unicode's White_Space and ECMAScript's together.
+const WHITE_SPACE: &[char] = &[
+    '\t', '\n', '\u{b}', '\u{c}', '\r', ' ', '\u{85}', '\u{a0}', '\u{1680}', '\u{2000}',
+    '\u{2001}', '\u{2002}', '\u{2003}', '\u{2004}', '\u{2005}', '\u{2006}', '\u{2007}', '\u{2008}',
+    '\u{2009}', '\u{200a}', '\u{2028}', '\u{2029}', '\u{202f}', '\u{205f}', '\u{3000}', '\u{feff}',
+];
 
 /// Brief input selected before an immutable setup request is prepared.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Brief {
-    /// Provider-known template ID; never a consumer filesystem path.
+    /// The starter's brief, `orchestrator-v1`; never a consumer filesystem path.
     Template {
         /// Stable template identifier supplied by the provider.
         template: String,
@@ -58,80 +79,65 @@ pub enum Action {
     CancelFirstAgent,
 }
 
-/// Prepared request bytes and expected origin. Neither submission, cancellation,
-/// nor an uncertain outcome can allocate a replacement request or retarget it.
+impl Action {
+    /// The action as requests and results name it.
+    fn name(self) -> &'static str {
+        match self {
+            Action::FirstAgent => "first_agent",
+            Action::CancelFirstAgent => "cancel_first_agent",
+        }
+    }
+}
+
+/// Prepared request bytes and the profile they are for. Neither submission,
+/// cancellation, nor an uncertain outcome can allocate a replacement request
+/// or retarget it.
 pub struct Prepared {
     request_id: String,
-    identity: Identity,
+    profile_id: String,
     name: String,
     first: Vec<u8>,
     cancel: Vec<u8>,
 }
 
 impl Prepared {
-    /// Capture one atomic ready registry record and explicit setup choices.
-    /// Registry metadata supplies expectations; it does not authorize content.
+    /// Capture a profile the Rust service serves and explicit setup choices.
+    /// Only that service takes setup schema 3, so any other profile is
+    /// `Unsupported`.
     pub fn first_agent(
         request_id: &str,
         profile: &Profile,
-        hooks: Vec<String>,
         agent: Agent,
         start_greeting: bool,
     ) -> Result<Self, Error> {
-        let binding = profile.binding.as_ref().ok_or(Error::NotReady)?;
-        let identity = Identity {
-            profile_id: profile.item.profile_id.clone(),
-            installation_id: binding.installation_id.clone(),
-            lifecycle_id: binding.lifecycle_id.clone(),
-        };
-        Self::prepare(request_id, identity, hooks, agent, start_greeting)
+        if !profile.served() {
+            return Err(Error::Unsupported);
+        }
+        Self::prepare(request_id, &profile.item.profile_id, agent, start_greeting)
     }
 
+    /// Check every field as the contract words it, so the service never has
+    /// to refuse a request the app could have refused.
     fn prepare(
         request_id: &str,
-        identity: Identity,
-        hooks: Vec<String>,
+        profile_id: &str,
         agent: Agent,
         start_greeting: bool,
     ) -> Result<Self, Error> {
-        let brief_ok = match &agent.brief {
-            Brief::Template { template } => valid_id(template),
-            Brief::Text { text } => !text.trim().is_empty() && !text.contains('\0'),
-        };
-        if !valid_id(request_id)
-            || [
-                &identity.profile_id,
-                &identity.installation_id,
-                &identity.lifecycle_id,
-            ]
-            .iter()
-            .any(|id| !valid_id(id))
-            || !crate::valid_agent(&agent.name)
-            || !agent.directory.is_absolute()
-            || !agent
-                .directory
-                .to_str()
-                .is_some_and(|s| !s.chars().any(char::is_control))
-            || !valid_id(&agent.runtime)
-            || agent.runtime == "shell"
-            || agent.model.as_ref().is_some_and(|model| !valid_id(model))
-            || !brief_ok
-            || hooks.iter().any(|hook| !valid_id(hook))
-            || hooks.iter().collect::<std::collections::HashSet<_>>().len() != hooks.len()
-        {
+        if !request_id_form(request_id) || !hex(profile_id, 12) || !choices(&agent) {
             return Err(Error::Invalid);
         }
         let name = agent.name.clone();
-        let mut body = json!({"schema_version":2,"request_id":request_id,"action":"first_agent","profile_id":identity.profile_id,"expected_installation_id":identity.installation_id,"expected_lifecycle_id":identity.lifecycle_id,"hooks":hooks,"agent":agent,"start_greeting":start_greeting});
+        let mut body = json!({"schema_version":SCHEMA_VERSION,"request_id":request_id,"action":"first_agent","profile_id":profile_id,"agent":agent,"start_greeting":start_greeting});
         let first = serde_json::to_vec(&body).map_err(|_| Error::Invalid)?;
         body["action"] = json!("cancel_first_agent");
         let cancel = serde_json::to_vec(&body).map_err(|_| Error::Invalid)?;
-        if first.len() > REQUEST_LIMIT || cancel.len() > REQUEST_LIMIT {
+        if first.len() > REQUEST_LIMIT || cancel.len() > CANCEL_LIMIT {
             return Err(Error::Invalid);
         }
         Ok(Self {
             request_id: request_id.into(),
-            identity,
+            profile_id: profile_id.into(),
             name,
             first,
             cancel,
@@ -144,9 +150,9 @@ impl Prepared {
             Action::CancelFirstAgent => &self.cancel,
         }
     }
-    /// Retained full expected origin; no connection authority is implied.
-    pub fn identity(&self) -> &Identity {
-        &self.identity
+    /// The profile the request is for; no connection authority is implied.
+    pub fn profile_id(&self) -> &str {
+        &self.profile_id
     }
     /// The agent this request adds.
     pub fn agent_name(&self) -> &str {
@@ -165,7 +171,7 @@ impl Prepared {
     pub fn stream(&self, action: Action) -> Stream {
         Stream {
             request_id: self.request_id.clone(),
-            identity: self.identity.clone(),
+            profile_id: self.profile_id.clone(),
             name: self.name.clone(),
             action,
             sequence: 0,
@@ -177,11 +183,180 @@ impl Prepared {
     }
 }
 
-/// Validated progress or terminal outcome; provider prose is never retained.
+/// A UUIDv7 in its simple form, as the contract's pattern says.
+fn request_id_form(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    hex(id, 32) && bytes[12] == b'7' && matches!(bytes[16], b'8' | b'9' | b'a' | b'b')
+}
+
+/// `length` lowercase hexadecimal digits.
+fn hex(text: &str, length: usize) -> bool {
+    text.len() == length
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Whether every choice is one the contract takes.
+fn choices(agent: &Agent) -> bool {
+    let directory = agent.directory.to_str().is_some_and(|directory| {
+        directory.starts_with('/')
+            && directory.chars().count() <= DIRECTORY_LIMIT
+            && !directory.split('/').any(|part| part == "..")
+            && !directory.chars().any(char::is_control)
+    });
+    let mut runtime = agent.runtime.chars();
+    let runtime = agent.runtime.len() <= 40
+        && runtime.next().is_some_and(|c| c.is_ascii_lowercase())
+        && runtime.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && agent.runtime != "shell";
+    let model = agent.model.as_ref().is_none_or(|model| {
+        model.len() <= 500
+            && model.starts_with(|c: char| c.is_ascii_alphanumeric())
+            && model
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '/' | '-'))
+    });
+    let brief = match &agent.brief {
+        Brief::Template { template } => template == TEMPLATE,
+        Brief::Text { text } => {
+            !text.chars().all(|c| WHITE_SPACE.contains(&c))
+                && text.chars().count() <= BRIEF_LIMIT
+                && !text.contains('\0')
+        }
+    };
+    crate::valid_agent(&agent.name)
+        && agent.name.len() <= 128
+        && directory
+        && runtime
+        && model
+        && brief
+}
+
+/// The schema a saved body says it was written for, read before the body.
+#[derive(Deserialize)]
+struct Version {
+    schema_version: u32,
+}
+
+/// Why a body saved under schema `version` is refused: `Unsupported` for
+/// the earlier schemas 1 and 2, which the service no longer takes; any
+/// other is not one this app wrote, and `Invalid`.
+fn refused(version: u32) -> Error {
+    if matches!(version, 1 | 2) {
+        Error::Unsupported
+    } else {
+        Error::Invalid
+    }
+}
+
+/// A value setup's events may carry that the app keeps as it came: a step's
+/// status, a result's status, code and retry, and a launch, bounded.
+pub fn token(text: &str) -> bool {
+    valid_id(text) && text.len() <= 128
+}
+
+/// Whether the JSON text `bytes` says no key twice in any object, at any
+/// depth, read or not: a key said twice is refused before any field is
+/// read, so no reading of it can take the last one.
+pub fn unique_keys(bytes: &[u8]) -> bool {
+    use serde::de::{Error as _, MapAccess, SeqAccess, Visitor};
+    use std::{collections::HashSet, fmt};
+    struct Unique;
+    impl<'de> Deserialize<'de> for Unique {
+        fn deserialize<D: serde::Deserializer<'de>>(json: D) -> Result<Unique, D::Error> {
+            json.deserialize_any(Unique)
+        }
+    }
+    impl<'de> Visitor<'de> for Unique {
+        type Value = Unique;
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a JSON value")
+        }
+        fn visit_bool<E>(self, _: bool) -> Result<Unique, E> {
+            Ok(Unique)
+        }
+        fn visit_i64<E>(self, _: i64) -> Result<Unique, E> {
+            Ok(Unique)
+        }
+        fn visit_u64<E>(self, _: u64) -> Result<Unique, E> {
+            Ok(Unique)
+        }
+        fn visit_f64<E>(self, _: f64) -> Result<Unique, E> {
+            Ok(Unique)
+        }
+        fn visit_str<E>(self, _: &str) -> Result<Unique, E> {
+            Ok(Unique)
+        }
+        fn visit_unit<E>(self) -> Result<Unique, E> {
+            Ok(Unique)
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut items: A) -> Result<Unique, A::Error> {
+            while items.next_element::<Unique>()?.is_some() {}
+            Ok(Unique)
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut fields: A) -> Result<Unique, A::Error> {
+            let mut keys = HashSet::new();
+            while let Some(key) = fields.next_key::<String>()? {
+                if !keys.insert(key) {
+                    return Err(A::Error::custom("a key said twice"));
+                }
+                fields.next_value::<Unique>()?;
+            }
+            Ok(Unique)
+        }
+    }
+    let mut json = serde_json::Deserializer::from_slice(bytes);
+    Unique::deserialize(&mut json).is_ok() && json.end().is_ok()
+}
+
+/// A field that may be left out, but when it is there is of its type: a
+/// string said as null is refused; a field that may be null says so in
+/// its type.
+fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    json: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(json).map(Some)
+}
+
+/// The most characters of setup's message the app keeps.
+const MESSAGE_LIMIT: usize = 300;
+
+/// Setup's `message` as the app keeps it: plain text on one line, with
+/// control characters, Unicode's direction controls and zero-width
+/// characters taken out, at most 300 characters.
+pub fn one_line(message: &str) -> String {
+    let plain: String = message
+        .chars()
+        .map(|c| {
+            // Unicode's Bidi_Control set, and the zero-width characters.
+            let hidden = c.is_control()
+                || matches!(
+                    c,
+                    '\u{061c}'
+                        | '\u{200b}'..='\u{200f}'
+                        | '\u{202a}'..='\u{202e}'
+                        | '\u{2060}'
+                        | '\u{2066}'..='\u{2069}'
+                        | '\u{feff}'
+                );
+            if hidden { ' ' } else { c }
+        })
+        .collect();
+    let line = plain.split_whitespace().collect::<Vec<_>>().join(" ");
+    line.chars()
+        .take(MESSAGE_LIMIT)
+        .collect::<String>()
+        .trim_end()
+        .to_owned()
+}
+
+/// Validated progress or terminal outcome. Of setup's own words only its
+/// message is kept, as one bounded line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Event {
-    /// Full captured origin, retained for deferred consumers.
-    pub identity: Identity,
+    /// The profile the request is for, retained for deferred consumers.
+    pub profile_id: String,
     /// Original operation ID, retained for deferred consumers.
     pub request_id: String,
     /// Original setup or cancellation action.
@@ -190,48 +365,111 @@ pub struct Event {
     pub sequence: u64,
     /// Step name, absent on final results.
     pub step: Option<String>,
-    /// Bounded protocol status.
+    /// Status as it came, including one this app doesn't know.
     pub status: String,
     /// Bounded result code, absent on progress.
     pub code: Option<String>,
-    /// Retry policy supplied by a validated terminal result.
+    /// Retry policy as the result gave it, including one this app doesn't know.
     pub retry: Option<String>,
     /// Provider-confirmed safe cancellation of precisely the original request.
     pub cancelled: bool,
     /// Agent name only when readiness was explicitly confirmed for the requested agent.
     pub ready_agent: Option<String>,
-    /// Original provider launch identifier, retained only with confirmed readiness.
+    /// Provider launch identifier, when readiness was confirmed with one.
     pub launch_id: Option<String>,
+    /// A result's message as one line of plain text, absent when it said
+    /// nothing and on progress.
+    pub message: Option<String>,
 }
 
+/// What every line of the setup command's output has. The fields its kind
+/// defines are read after it, and only those: anything else, a field of the
+/// other kind among them, is ignored. Each is read from the line itself, so
+/// a field it defines said twice is refused.
 #[derive(Deserialize)]
 struct Wire {
     schema_version: u32,
     request_id: String,
-    #[serde(flatten)]
-    identity: Identity,
-    action: Action,
     seq: u64,
     #[serde(rename = "type")]
     kind: String,
+}
+
+/// What a step event defines. It carries no action.
+#[derive(Deserialize)]
+struct StepWire {
+    step: String,
     status: String,
-    #[serde(default)]
-    step: Option<String>,
-    #[serde(default)]
-    code: Option<String>,
-    #[serde(default)]
-    retry: Option<String>,
-    #[serde(default)]
-    completed_steps: Option<Vec<String>>,
-    #[serde(default)]
-    data: Option<Value>,
+}
+
+/// What a result event defines.
+#[derive(Deserialize)]
+struct ResultWire {
+    action: String,
+    status: String,
+    code: String,
+    /// Kept as one bounded line of plain text.
+    message: String,
+    retry: String,
+    completed_steps: Vec<String>,
+    /// An object; what its action defines of it is read on its own.
+    data: Value,
+}
+
+/// A result's `data`, read from the line itself as its action defines
+/// it, so a field of it said twice is refused.
+#[derive(Deserialize)]
+struct DataWire<T> {
+    data: T,
+}
+
+/// What a first agent's result reports, as the setup guide's `data`
+/// table names it: its agent's name, readiness and evidence, or, from a
+/// result setup made without reaching the profile, nothing. `launch_id`
+/// and `greeting_delivery_id` may be left out or null.
+#[derive(Deserialize)]
+struct FirstAgentData {
+    #[serde(default, deserialize_with = "present")]
+    agent_name: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    ready: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    launch_id: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    greeting_delivery_id: Option<Option<i64>>,
+    #[serde(default, deserialize_with = "present")]
+    evidence: Option<String>,
+}
+impl FirstAgentData {
+    /// The three it always has, or nothing at all.
+    fn whole(&self) -> bool {
+        let said = [
+            self.agent_name.is_some(),
+            self.ready.is_some(),
+            self.evidence.is_some(),
+        ];
+        said.iter().all(|&said| said)
+            || (said.iter().all(|&said| !said)
+                && self.launch_id.is_none()
+                && self.greeting_delivery_id.is_none())
+    }
+}
+
+/// What a cancellation's result reports: all of it from the one answer
+/// that confirms the cancellation, none from any other.
+#[derive(Deserialize)]
+struct CancelData {
+    #[serde(default, deserialize_with = "present")]
+    cancelled_request_id: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    can_start_new_request: Option<bool>,
 }
 
 /// A bounded JSON-lines decoder owned by one exact request and action.
 /// Any malformed, foreign or contradictory event poisons this invocation.
 pub struct Stream {
     request_id: String,
-    identity: Identity,
+    profile_id: String,
     name: String,
     action: Action,
     sequence: u64,
@@ -273,15 +511,14 @@ impl Stream {
         Ok(events)
     }
     fn line(&mut self, bytes: &[u8]) -> Result<Event, Error> {
+        if !unique_keys(bytes) {
+            return Err(Error::Invalid);
+        }
         let wire: Wire = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
-        if wire.schema_version != 2 {
+        if wire.schema_version != SCHEMA_VERSION {
             return Err(Error::Unsupported);
         }
-        if wire.identity != self.identity {
-            return Err(Error::BindingMismatch);
-        }
         if wire.request_id != self.request_id
-            || wire.action != self.action
             || wire.seq <= self.sequence
             || wire.seq > EVENT_LIMIT
             || self.result.is_some()
@@ -290,79 +527,85 @@ impl Stream {
         }
         let result = wire.kind == "result";
         let mut event = Event {
-            identity: self.identity.clone(),
+            profile_id: self.profile_id.clone(),
             request_id: self.request_id.clone(),
-            action: wire.action,
+            action: self.action,
             sequence: wire.seq,
             step: None,
-            status: wire.status.clone(),
+            status: String::new(),
             code: None,
             retry: None,
             cancelled: false,
             ready_agent: None,
             launch_id: None,
+            message: None,
         };
-        if wire.kind == "step"
-            && matches!(
-                wire.status.as_str(),
-                "running" | "completed" | "skipped" | "failed"
-            )
-        {
-            let step = wire
-                .step
-                .filter(|step| valid_id(step))
-                .ok_or(Error::Invalid)?;
-            event.step = Some(step);
-        } else if result
-            && matches!(
-                wire.status.as_str(),
-                "completed" | "action_required" | "failed"
-            )
-        {
-            let code = wire
-                .code
-                .filter(|code| valid_id(code) && code.len() <= 128)
-                .ok_or(Error::Invalid)?;
-            let retry = wire
-                .retry
-                .filter(|retry| matches!(retry.as_str(), "same_request" | "new_request" | "none"))
-                .ok_or(Error::Invalid)?;
-            let completed = wire.completed_steps.ok_or(Error::Invalid)?;
-            if completed.iter().any(|step| !valid_id(step)) {
+        if wire.kind == "step" {
+            // A status this app doesn't know is kept as it came.
+            let step: StepWire = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
+            if !valid_id(&step.step) || !token(&step.status) {
                 return Err(Error::Invalid);
             }
-            let data = wire.data.filter(Value::is_object).ok_or(Error::Invalid)?;
-            event.cancelled = self.action == Action::CancelFirstAgent
-                && wire.status == "completed"
-                && code == "request_cancelled"
-                && retry == "new_request"
-                && completed.is_empty()
-                && data.get("cancelled_request_id").and_then(Value::as_str)
-                    == Some(&self.request_id)
-                && data.get("can_start_new_request").and_then(Value::as_bool) == Some(true);
-            if self.action == Action::CancelFirstAgent
-                && wire.status == "completed"
-                && !event.cancelled
+            event.step = Some(step.step);
+            event.status = step.status;
+        } else if result {
+            let wire: ResultWire = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
+            let (code, retry) = (wire.code, wire.retry);
+            if wire.action != self.action.name()
+                || !token(&wire.status)
+                || !token(&code)
+                || !token(&retry)
+                || wire.completed_steps.iter().any(|step| !valid_id(step))
+                || !wire.data.is_object()
             {
                 return Err(Error::Invalid);
             }
-            if self.action == Action::FirstAgent && wire.status == "completed" {
-                if code != "agent_ready"
-                    || retry != "none"
-                    || data.get("agent_name").and_then(Value::as_str) != Some(&self.name)
-                    || data.get("ready").and_then(Value::as_str) != Some("ready")
-                    || !data
-                        .get("launch_id")
-                        .and_then(Value::as_str)
-                        .is_some_and(valid_id)
-                {
-                    return Err(Error::Invalid);
+            event.status = wire.status;
+            event.message = Some(one_line(&wire.message)).filter(|line| !line.is_empty());
+            let completed = event.status == "completed";
+            match self.action {
+                Action::CancelFirstAgent => {
+                    let data = serde_json::from_slice::<DataWire<CancelData>>(bytes)
+                        .map_err(|_| Error::Invalid)?
+                        .data;
+                    if data.cancelled_request_id.is_some() != data.can_start_new_request.is_some() {
+                        return Err(Error::Invalid);
+                    }
+                    if completed && code == "request_cancelled" {
+                        // Only this answer confirms the cancellation; naming
+                        // another request contradicts it.
+                        if data.cancelled_request_id.as_deref() != Some(&self.request_id)
+                            || data.can_start_new_request != Some(true)
+                        {
+                            return Err(Error::Invalid);
+                        }
+                        event.cancelled = true;
+                    }
                 }
-                event.ready_agent = Some(self.name.clone());
-                event.launch_id = data
-                    .get("launch_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
+                Action::FirstAgent => {
+                    let data = serde_json::from_slice::<DataWire<FirstAgentData>>(bytes)
+                        .map_err(|_| Error::Invalid)?
+                        .data;
+                    let launch_id = data.launch_id.clone().flatten();
+                    if !data.whole()
+                        || [&data.ready, &launch_id]
+                            .into_iter()
+                            .any(|value| value.as_deref().is_some_and(|value| !token(value)))
+                    {
+                        return Err(Error::Invalid);
+                    }
+                    if completed && code == "agent_ready" {
+                        // Ready only for this agent, whose CLI still ran after
+                        // its launch; a launch is not always named.
+                        if data.agent_name.as_deref() != Some(&self.name)
+                            || data.ready.as_deref() != Some("ready")
+                        {
+                            return Err(Error::Invalid);
+                        }
+                        event.ready_agent = Some(self.name.clone());
+                        event.launch_id = launch_id;
+                    }
+                }
             }
             event.code = Some(code);
             event.retry = Some(retry);

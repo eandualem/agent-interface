@@ -10,7 +10,7 @@ use crate::{
 use agent_interface_roster::profiles::{
     AddError, Connection, Profile,
     setup::{
-        Event, Prepared,
+        Action, Event, Prepared,
         start::{Start, Started},
     },
 };
@@ -54,10 +54,9 @@ impl Command {
                 s.phase != Phase::Prepared
                     && retry(s.first_result.as_ref())
                     && (s.phase != Phase::CancelPending
-                        || s.cancellation_result.as_ref().is_some_and(|e| {
-                            e.status == "action_required"
-                                && e.code.as_deref() == Some("cancellation_unsafe")
-                        }))
+                        || s.cancellation_result
+                            .as_ref()
+                            .is_some_and(crate::profiles::setup_controller::left_open))
             }
             Self::RetryCancel => {
                 s.phase != Phase::Prepared
@@ -70,12 +69,8 @@ impl Command {
 fn status(s: &Snapshot) -> &'static str {
     if s.cancellation_result.as_ref().is_some_and(|e| e.cancelled) {
         "Safely cancelled"
-    } else if s
-        .first_result
-        .as_ref()
-        .is_some_and(|e| e.ready_agent.is_some())
-    {
-        "Agent readiness confirmed"
+    } else if started(s) {
+        "Agent started"
     } else if s.phase == Phase::Prepared {
         "Saved, not submitted"
     } else if s.phase == Phase::CancelPending && s.cancellation_result.is_none() {
@@ -83,66 +78,146 @@ fn status(s: &Snapshot) -> &'static str {
     } else if s.first_result.is_none() && s.cancellation_result.is_none() {
         "Setup outcome not confirmed"
     } else if s.closed() {
-        "Agent not added"
+        // Setup's answers to a request sent again may describe only that
+        // send, so none says the agent wasn't added.
+        "Not known whether it was added"
     } else {
         "Needs attention"
     }
 }
-/// The agent exists but needs the person, so its terminal is the next step.
-fn agent_waiting(s: &Snapshot) -> bool {
-    !s.closed()
-        && s.phase == Phase::Submitted
-        && s.first_result.as_ref().is_some_and(|event| {
-            matches!(
-                event.code.as_deref(),
-                Some("launch_timeout" | "runtime_permission")
-            )
-        })
+/// The agent's CLI runs. Its terminal may still ask for a sign-in, trust or
+/// terms first, so that terminal is the next step.
+fn started(s: &Snapshot) -> bool {
+    s.first_result
+        .as_ref()
+        .is_some_and(|event| event.ready_agent.is_some())
 }
-/// What the latest result means for the person, for each code the provider sends.
-fn outcome(s: &Snapshot) -> Option<String> {
-    let event = if s.phase == Phase::CancelPending {
+/// What the latest result means for the person, with its code: what came
+/// of it, then what to do next.
+fn outcome(s: &Snapshot) -> Option<(String, String)> {
+    let cancel_view = s.phase == Phase::CancelPending;
+    let event = if cancel_view {
         s.cancellation_result.as_ref()
     } else {
         s.first_result.as_ref()
     }?;
+    let code = event.code.clone()?;
+    Some((format!("{} {}", said(event)?, next(s, cancel_view)), code))
+}
+/// What came of a result: the app's own words where it can point to a
+/// remedy, else setup's message; none for the agent started or the
+/// cancellation confirmed.
+fn said(event: &Event) -> Option<String> {
+    let cancel = event.action == Action::CancelFirstAgent;
     Some(match event.code.as_deref()? {
-        "agent_ready" | "request_cancelled" => return None,
-        "agent_conflict" => format!(
-            "An agent or terminal in this profile already uses the name {} or its folder. Go back and choose another.",
-            s.agent_name
-        ),
-        "invalid_request" => "The agent name, folder or model was refused. Go back and change it.".into(),
-        "launch_timeout" => format!(
-            "{} was added but has not reported ready. Open it, or sign in if it asks, then retry.",
-            s.agent_name
-        ),
-        "runtime_permission" => format!(
-            "{} is waiting for you, often for a sign-in or a permission. Open it to continue, then retry.",
-            s.agent_name
-        ),
-        "runtime_missing" => "This CLI is not installed where the profile can use it. Install it, then retry.".into(),
-        "starter_conflict" => "The profile's starter files or this brief need attention. Fix them, then retry.".into(),
-        "launch_failed" => "The CLI exited right after starting, so the agent is not running. Run the CLI in a terminal in the agent's folder to see why, then start the agent again.".into(),
-        "outcome_unknown" => format!(
-            "The result is not known. Check whether {} is in the workspace before adding it again.",
-            s.agent_name
-        ),
-        "cancellation_unsafe" => "Setup may already have made changes, so it could not be cancelled. The request and any agent were kept.".into(),
-        code => format!("The profile answered: {code}."),
+        "agent_ready" if event.ready_agent.is_some() => return None,
+        "request_cancelled" if event.cancelled => return None,
+        "cancellation_unsafe" => "Setup had already begun to change things, so it wasn't cancelled: a cancellation is not a rollback. Look at the agent first.".into(),
+        "agent_conflict" => "The name, its folder or its terminal isn't free, or the folder is missing or could not be made: change the name or folder.".into(),
+        "runtime_missing" => "This tool isn't installed where the profile can use it, or setup doesn't start it: install it or choose another.".into(),
+        "invalid_request" if cancel => "Setup refused the cancellation as it was sent.".into(),
+        "invalid_request" => "Setup refused the request as it was sent: change the agent's name, folder, model or instructions.".into(),
+        "service_unavailable" => "The profile's service, or the computer the agent runs on, did not answer. If the service isn't running, start it with backbone up --detach.".into(),
+        _ => event
+            .message
+            .clone()
+            .unwrap_or_else(|| "Setup said nothing more.".into()),
     })
+}
+/// What the person can do next, from the decisions that offer the
+/// buttons and close the request, by what may follow the result.
+fn next(s: &Snapshot, cancel_view: bool) -> &'static str {
+    let event = if cancel_view {
+        s.cancellation_result.as_ref()
+    } else {
+        s.first_result.as_ref()
+    };
+    if cancel_view && Command::RetryCancel.allowed(Some(s)) {
+        "Try again: it sends the same cancellation."
+    } else if cancel_view
+        && Command::Retry.allowed(Some(s))
+        && event.and_then(|e| e.code.as_deref()) == Some("cancellation_unsafe")
+    {
+        "Then send it again to learn what came of it, or forget it."
+    } else if cancel_view && Command::Retry.allowed(Some(s)) {
+        // Refused, or answered for another request: an earlier send of it
+        // may have cancelled it.
+        "The cancellation isn't confirmed: the request may still run, or may have been cancelled. Look at the agent first, then send it again to learn what came of it, or forget it."
+    } else if Command::Retry.allowed(Some(s)) {
+        "Try again: it sends the same request."
+    } else if !s.closed() {
+        "What may follow isn't one this app knows, so it is kept open and not sent again. Look at the workspace, or forget it."
+    } else if event.and_then(|e| e.retry.as_deref()) == Some("new_request") {
+        "Only a new request can follow: change what you need and start again."
+    } else {
+        "Not known what came of it: look at the workspace first."
+    }
+}
+/// What the guide's main button does once a start has stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Then {
+    /// Send the same request again.
+    Replay,
+    /// It is closed: start a new request.
+    Fresh,
+    /// It is open with nothing it may send: neither.
+    Wait,
+}
+impl Then {
+    fn label(self) -> Option<&'static str> {
+        match self {
+            Self::Replay => Some("Try again"),
+            Self::Fresh => Some("Start a new request"),
+            Self::Wait => None,
+        }
+    }
+}
+/// What may follow a guide's stopped start: the same request while it may
+/// be sent again, a new one only once it is closed.
+fn then(snapshot: Option<&Snapshot>) -> Then {
+    match saved_open(snapshot) {
+        Some(true) => Then::Replay,
+        Some(false) => Then::Wait,
+        None => Then::Fresh,
+    }
+}
+/// The main button a stopped start shows, if any, and what pressing it
+/// does. Add agent's is as it always was: Try again, the same start while
+/// what came of it isn't known, else a new one.
+fn main_button(
+    served: Option<&Option<Answer>>,
+    snapshot: Option<&Snapshot>,
+) -> Option<(&'static str, Then)> {
+    match served {
+        Some(Some(Answer::Unknown(_))) => Some(("Try again", Then::Replay)),
+        Some(_) => Some(("Try again", Then::Fresh)),
+        None => {
+            let after = then(snapshot);
+            after.label().map(|label| (label, after))
+        }
+    }
+}
+/// Whether a saved request that is still open can be sent again; `None`
+/// when it is closed, or none was saved.
+fn saved_open(snapshot: Option<&Snapshot>) -> Option<bool> {
+    snapshot
+        .filter(|s| !s.closed())
+        .map(|s| Command::Submit.allowed(Some(s)) || Command::Retry.allowed(Some(s)))
 }
 fn message(error: Error) -> &'static str {
     match error {
         Error::Missing => "The original saved request is missing. No replacement was created.",
         Error::Invalid => "This saved setup request could not be validated.",
+        Error::Earlier => {
+            "This setup request was saved by an earlier version, and no service takes it now. Forget it."
+        }
         Error::WrongPhase | Error::Completed => {
             "The saved request changed. Reload its original state."
         }
         Error::Pending => {
-            "A saved request for this agent name is still open. Open Saved setup requests to finish or forget it, or use another name."
+            "An earlier first-agent request in this profile is still open. Open Saved setup requests to finish, cancel or forget it first."
         }
-        Error::RetryRefused => "The retained provider result does not allow this retry.",
+        Error::RetryRefused => "Setup's last answer does not allow sending this again.",
         Error::Storage(journal::Error::Unsafe) => "Setup storage is not private or safe to use.",
         Error::Storage(journal::Error::Busy | journal::Error::Conflict) => {
             "Another update won. Reload the original request."
@@ -236,10 +311,6 @@ fn attempt(request: &Request, unresolved: bool) -> Answer {
         );
     }
     answer(connection.start_first_agent(&request.start, &request.request_id))
-}
-/// Whether `request` is what `start` and `create` would send.
-fn same(request: &Request, start: &Start, create: Option<&PathBuf>) -> bool {
-    request.start == *start && request.create.as_ref() == create
 }
 /// The heading once a start is over without running: a result that isn't
 /// known is not called a failure.
@@ -694,7 +765,7 @@ fn progress_matches(
         return false;
     };
     next.key == key
-        && next.event.identity == snapshot.identity
+        && next.event.profile_id == snapshot.profile_id
         && next.event.request_id == snapshot.request_id
         && next.revision > snapshot.revision
         && previous.is_none_or(|old| {
@@ -718,7 +789,7 @@ fn history(
                 // A record that can't be read may be any profile's, and only
                 // forgetting it unblocks setup, so every profile lists it.
                 profile.is_none_or(|id| match controller.read(key) {
-                    Ok(s) => s.identity.profile_id == id,
+                    Ok(s) => s.profile_id == id,
                     Err(_) => true,
                 })
             })
@@ -753,7 +824,7 @@ impl Pane {
             snapshot: Some(s), ..
         } = &self.page
         {
-            let (profile_id, name) = (s.identity.profile_id.clone(), s.agent_name.clone());
+            let (profile_id, name) = (s.profile_id.clone(), s.agent_name.clone());
             cx.emit(Open::Agent { profile_id, name });
         }
         self.back(cx);
@@ -767,12 +838,7 @@ impl Pane {
         let Page::Operation { snapshot, .. } = &self.page else {
             return false;
         };
-        snapshot.as_deref().is_some_and(|s| {
-            agent_waiting(s)
-                || s.first_result
-                    .as_ref()
-                    .is_some_and(|e| e.ready_agent.is_some())
-        })
+        snapshot.as_deref().is_some_and(started)
     }
 
     /// A fresh start is still under way.
@@ -819,23 +885,39 @@ impl Pane {
         snapshot
             .as_deref()
             .and_then(outcome)
+            .map(|(text, code)| format!("{text} ({code})"))
             .or(self.error.map(|error| message(error).to_owned()))
             .or_else(|| Some("It stopped before it was ready. Try again.".to_owned()))
     }
 
-    /// Ask about this unresolved served start again when `start` and `create`
-    /// are what it holds. Returns false when they differ or nothing is
-    /// unresolved, so only a new request can go on.
-    pub fn retry_same(
-        &mut self,
-        start: &Start,
-        create: Option<&PathBuf>,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        self.served
-            .as_ref()
-            .is_some_and(|served| same(&served.request, start, create))
-            && self.retry(cx)
+    /// The saved request this start made, while it is open: whether it can
+    /// be sent again. `None` when none is open, so new choices may make a
+    /// new request.
+    pub fn saved_open(&self) -> Option<bool> {
+        let Page::Operation { snapshot, .. } = &self.page else {
+            return None;
+        };
+        saved_open(snapshot.as_deref())
+    }
+
+    /// What the guide's main button says once a start has stopped: none
+    /// while its request is open with nothing it may send.
+    pub fn again_label(&self) -> Option<&'static str> {
+        let snapshot = match &self.page {
+            Page::Operation { snapshot, .. } => snapshot.as_deref(),
+            _ => None,
+        };
+        main_button(self.served.as_ref().map(|s| &s.answer), snapshot).map(|(label, _)| label)
+    }
+
+    /// Once a fresh start has stopped without its agent running, the revision
+    /// of its saved request, 0 when none was saved: each result changes it.
+    pub fn settled(&self) -> Option<u64> {
+        self.failure()?;
+        let Page::Operation { snapshot, .. } = &self.page else {
+            return None;
+        };
+        Some(snapshot.as_ref().map_or(0, |s| s.revision))
     }
 
     /// Try the same request again, when the provider allows it. Returns false
@@ -851,11 +933,15 @@ impl Pane {
         let Page::Operation { snapshot, .. } = &self.page else {
             return false;
         };
-        if !Command::Retry.allowed(snapshot.as_deref()) {
+        // Saved but never sent: send it now.
+        let command = [Command::Submit, Command::Retry]
+            .into_iter()
+            .find(|command| command.allowed(snapshot.as_deref()));
+        let Some(command) = command else {
             return false;
-        }
+        };
         let ticket = self.ticket.0.clone();
-        self.invoke(Command::Retry, &ticket, cx);
+        self.invoke(command, &ticket, cx);
         true
     }
 
@@ -891,32 +977,32 @@ impl Pane {
                 self.failure(),
             )
         };
-        let ticket = self.ticket.0.clone();
         let mut actions = div().flex().items_center().gap(px(t.space.s8));
         if !starting {
-            let again = match &self.served {
-                Some(served) => matches!(served.answer, Some(Answer::Unknown(_))),
-                None => snapshot.is_some_and(|s| Command::Retry.allowed(Some(s))),
-            };
-            actions = actions
-                .child(
-                    ui::button("setup-try-again", "Try again", ui::Button::Primary).on_click(
+            // The same request while it may be sent again; a new one only
+            // once it is closed, under the text that says to look first.
+            if let Some((label, after)) =
+                main_button(self.served.as_ref().map(|s| &s.answer), snapshot)
+            {
+                actions = actions.child(
+                    ui::button("setup-try-again", label, ui::Button::Primary).on_click(
                         cx.listener(move |pane, _, _, cx| {
-                            if again && pane.served.is_some() {
-                                pane.run_served(cx);
-                            } else if again {
-                                pane.invoke(Command::Retry, &ticket, cx);
-                            } else {
+                            if after == Then::Fresh {
                                 pane.finished = true;
                                 cx.emit(Again);
+                            } else if pane.served.is_some() {
+                                pane.run_served(cx);
+                            } else {
+                                pane.retry(cx);
                             }
                         }),
                     ),
-                )
-                .child(
-                    ui::button("setup-leave", leave, ui::Button::Secondary)
-                        .on_click(cx.listener(|pane, _, _, cx| pane.back(cx))),
                 );
+            }
+            actions = actions.child(
+                ui::button("setup-leave", leave, ui::Button::Secondary)
+                    .on_click(cx.listener(|pane, _, _, cx| pane.back(cx))),
+            );
         }
         div()
             .size_full()
@@ -947,7 +1033,6 @@ impl Pane {
 /// What a start is doing, from the step the provider last reported.
 pub(super) fn stage(step: Option<&str>, name: &str) -> String {
     match step {
-        Some("hooks") => "Adding its hooks…".to_owned(),
         Some("agent") => format!("Creating {name}…"),
         Some("launch" | "ready") => "Opening its terminal…".to_owned(),
         _ => "Checking the tool…".to_owned(),
@@ -1043,31 +1128,32 @@ impl Render for Pane {
                             .flex()
                             .items_center()
                             .gap(px(t.space.s8))
-                            .child(if s.closed() || agent_waiting(s) || outcome(s).is_some() {
-                                ui::step_dot(ui::Step::Waits)
-                            } else if s
-                                .first_result
-                                .as_ref()
-                                .is_some_and(|e| e.ready_agent.is_some())
-                            {
+                            .child(if started(s) {
                                 ui::step_dot(ui::Step::Done)
+                            } else if s.closed() || outcome(s).is_some() {
+                                ui::step_dot(ui::Step::Waits)
                             } else {
                                 ui::step_dot(ui::Step::Now)
                             })
                             .child(div().text_color(c.text).child(s.agent_name.clone()))
                             .child(div().text_color(c.muted).child(status(s))),
                     );
-                    if let Some(text) = outcome(s) {
-                        body = body.child(ui::group_note(text));
+                    if let Some((text, code)) = outcome(s) {
+                        body = body
+                            .child(ui::group_note(text))
+                            .child(ui::text(div().text_color(c.muted), &t.text.meta).child(code));
                     }
-                    if !self.busy && agent_waiting(s) {
+                    if !self.busy && started(s) {
+                        body = body.child(ui::group_note(
+                            "Its terminal may ask you to sign in, trust the folder or accept terms first.",
+                        ));
                         let (agent, sign_in) = (
                             Open::Agent {
-                                profile_id: s.identity.profile_id.clone(),
+                                profile_id: s.profile_id.clone(),
                                 name: s.agent_name.clone(),
                             },
                             s.runtime.clone().map(|runtime| Open::SignIn {
-                                profile_id: s.identity.profile_id.clone(),
+                                profile_id: s.profile_id.clone(),
                                 runtime,
                             }),
                         );
@@ -1128,7 +1214,9 @@ impl Render for Pane {
                             );
                         }
                     }
-                    if snapshot.is_some() || self.error == Some(Error::Invalid) {
+                    if snapshot.is_some()
+                        || matches!(self.error, Some(Error::Invalid | Error::Earlier))
+                    {
                         let ticket = ticket.clone();
                         body = body
                             .child(ui::group_note("Forgetting removes this saved request from the app. It does not stop or remove an agent."))

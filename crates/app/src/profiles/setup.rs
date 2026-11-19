@@ -1,4 +1,4 @@
-//! Explicit schema-2 setup execution in the captured operator context.
+//! Explicit schema-3 setup execution in the captured operator context.
 
 use super::{Client, Error, OUTPUT_LIMIT};
 use agent_interface_roster::profiles::setup::{Action, Event, Prepared, Stream};
@@ -56,9 +56,9 @@ impl Setup {
         self.prepared.runtime()
     }
 
-    /// Original expected tuple; readiness never substitutes for a handshake.
-    pub fn identity(&self) -> &agent_interface_roster::profiles::Identity {
-        self.prepared.identity()
+    /// The profile the request is for; readiness never substitutes for a handshake.
+    pub fn profile_id(&self) -> &str {
+        self.prepared.profile_id()
     }
 
     /// Encode an outcome returned after this executor verified process exit.
@@ -141,11 +141,17 @@ impl Setup {
                     return Err(Error::TimedOut);
                 }
                 let event = stream.finish().map_err(Error::Profile)?;
+                // As setup exits: 2 for an invalid request, else by status.
+                let invalid = event.code.as_deref() == Some("invalid_request");
                 let consistent = match event.status.as_str() {
+                    "completed" | "failed" | "action_required" if invalid => {
+                        status.code() == Some(2)
+                    }
                     "completed" => status.code() == Some(0),
+                    "failed" => status.code() == Some(1),
                     "action_required" => status.code() == Some(3),
-                    "failed" => matches!(status.code(), Some(1 | 2)),
-                    _ => false,
+                    // A status this app doesn't know has no exit code to match.
+                    _ => true,
                 };
                 return if consistent {
                     Ok(event)

@@ -245,13 +245,21 @@ handoff until the check has answered, and the tagline then reads "Getting
 things ready…".
 
 The agent service is started without asking and is never named on screen
-unless the person opens Details. One that is installed but not answering is
-restarted once, the way the installer starts it (`launchctl` on macOS, the
-systemd user unit on Linux and WSL), and given 30 seconds to answer. One that
-was never set up is set up with the installer's own request,
-`backbone setup --file REQUEST --jsonl` with `action: initialize`,
-`service: user` and the `core-v1` starter profile, which keeps any existing
-data. If it still does not answer, "Agents can't start yet" offers Try again
+unless the person opens Details. When it doesn't answer, first run runs Agent
+Backbone's own setup, `backbone setup --file REQUEST --jsonl` with a schema-3
+`initialize` request (`profile_name: Default`, `service: user` and the
+`core-v1` starter), which decides what the computer is: it keeps a profile the
+computer has (`existing_preserved`), or makes the first one and the login
+service (`initialized`), starting this installation's own login service. The
+app restarts no service itself: it can't tell safely whose a login service is,
+and setup starts this installation's. The request lives in memory for the run:
+after lost output, an answer its exit code contradicts, or `outcome_unknown` or
+`setup_failed` with `same_request`, the same request is sent again under the
+same ID, up to three sends. Any other answer is shown in setup's own words,
+such as how to start the service (`service_unavailable`, which names
+`backbone up --detach`) or PostgreSQL; when setup says the same request may
+follow, Try again sends it again, else a new one. The service is then given
+30 seconds to answer. If it still does not answer, "Agents can't start yet" offers Try again
 and Continue with terminals; Details holds the technical reason and where the
 service's log is. tmux and Git, when missing, are one screen with one Install
 button. They install through the system's own installer: Apple's command line
@@ -283,21 +291,26 @@ name, the tool it runs in and Start. Each tool card says whether that tool is
 signed in in the profile, will ask to sign in when it starts, isn't installed
 (Install, with the tool's official installer and the login shell's PATH) or
 needs an update. The first choice is a signed-in tool, else an installed one.
-Folder, instructions, model, hooks and greeting sit under More options. The
+Folder, instructions, model and greeting sit under More options. The
 guide starts as `guide`, working in `~/Agents/guide`, which setup creates
 (`create_directory`); a folder the person chooses must already exist. Its brief
 is the coordinating `orchestrator-v1` template or the person's own
-instructions. While it starts, the provider's steps show as one status line
-under the button, and as soon as the guide is running, or waiting for a sign-in
-or permission, its pane opens: a tool that needs signing in asks in that
-terminal. The layer then fades over `reveal_ms` while the panel eases in. Use a
-terminal instead leaves the workspace on a terminal. A start that fails keeps
-the choices, and Try again repeats the same request when nothing changed and
-the provider allows it. Under the Rust service, the guide and Add agent start the
+instructions. The guide starts through setup's schema-3 `first_agent`
+request, saved in the profile's setup journal before it runs and retried or
+cancelled as that saved request. While it starts, setup's steps show as one
+status line under the button, and as soon as setup says its CLI runs
+(`agent_ready`), its pane opens: a sign-in, trust or terms screen may still
+wait in that terminal. The layer then fades over `reveal_ms` while the panel
+eases in. Use a terminal instead leaves the workspace on a terminal. A start
+that fails keeps the choices. While its saved request is open, Try again sends
+that request again when setup allows it, whatever was changed since; a new one
+follows only once it is closed, cancelled or forgotten under Earlier setups.
+Add agent under the Rust service starts the
 agent with `POST /api/agents/start` on the profile socket, carrying
 `x-backbone-request-id` (a UUIDv7) so a repeat after a lost reply gets the first
-result, and the tool list comes from `backbone runtimes --json`. The earlier
-provider keeps its schema-2 setup requests and their saved recovery.
+result, and the tool list comes from `backbone runtimes --json`. A profile of
+the earlier provider gets no first-agent setup from the app: its Add agent form
+says so.
 
 The layer offers the same persistent interface-size setting as the workspace,
 including during the opening scene. Progress is saved as `[setup]` in
@@ -323,10 +336,10 @@ Default, with the person's own CLI sign-ins.
   so the GitHub CLI sign-in and SSH keys of the person's own account are not
   visible to its agents. Running `gh auth login` and `gh auth setup-git` in a
   shell in that profile is the supported way today.
-- The service repair restarts and sets up the Default profile's login service
-  only. Under WSL it needs systemd enabled in `/etc/wsl.conf`; without it the
-  restart fails and first run offers Continue with terminals. WSL has not been
-  verified with this flow.
+- First run's setup sets up the Default profile and its login service only,
+  and restarts no service. Under WSL it needs systemd enabled in
+  `/etc/wsl.conf`; without it setup can't start the login service and first run
+  offers Continue with terminals. WSL has not been verified with this flow.
 
 ## Appearance and integrations
 
@@ -534,11 +547,10 @@ clipboard JavaScript bridge.
 
 For new agent launches, the app captures its foreground and background and sends
 `terminal_defaults` only when the saved runtime advertises support through
-Backbone's runtime catalog. First-agent setup saves these values with the request;
-retries keep the original colours, and legacy requests still omit the field.
-Backbone seeds the new pane before executing the CLI. This closes the interval
-before Interface attaches, including on tmux versions without control-client
-colour reporting. Attached clients continue reporting their current defaults.
+Backbone's runtime catalog. Backbone seeds the new pane before executing the CLI.
+This closes the interval before Interface attaches, including on tmux versions
+without control-client colour reporting. Attached clients continue reporting
+their current defaults.
 A CLI that caches colours at startup may need a user-requested restart to adapt
 to a later appearance change; Interface does not restart it or reinterpret its
 explicit RGB output.
@@ -1482,14 +1494,19 @@ cannot inherit a previously rendered number key or click target. The chooser
 exposes only the supported bound overview and permission card; it never builds a
 name-only bound Agent view.
 
-Profile first-agent setup uses an independent schema-2 request model. Preparation
-captures the full expected profile tuple and immutable agent/hook choices; the
-cancellation body changes only the action and keeps the original request ID.
-Bounded JSON-lines decoding checks every progress and final event against that
-origin and action, enforces monotonic sequence numbers and refuses incomplete or
-contradictory streams. Only a precise provider cancellation acknowledgement allows
-new choices; unsafe cancellation preserves the original operation. These models
-invoke no process and do not activate the legacy setup UI for a bound workspace.
+Profile first-agent setup uses setup schema 3's request model. Preparation
+captures a served profile's ID and immutable agent choices, each checked as the
+setup contract words it: a UUIDv7 request ID, the name, folder, runtime, model
+and brief, and at most 32,768 bytes, or 32,775 for the cancellation, whose body
+changes only the action and keeps the original request ID. Events carry no
+identity: bounded JSON-lines decoding checks each event's schema version and
+request ID, the result's action, rising sequence numbers and one final result,
+and keeps a status, code or retry it doesn't know as it came. Only `agent_ready`
+naming this agent with its CLI running is readiness, and only
+`request_cancelled` naming this request allows new choices; unsafe cancellation
+preserves the original operation. The service's setup fixtures are copied byte
+for byte into `crates/roster/src/profiles/setup/fixtures/`. These models invoke
+no process and do not activate the legacy setup UI for a bound workspace.
 
 Profile runtime catalogs use the captured discovery executable and caller context,
 with all three expected identity fields sent explicitly. Only successful schema-2
@@ -1514,10 +1531,10 @@ not receive SIGPIPE when the consumer finishes or exits. Receipt reads reject an
 observed file above the output limit during invocation; the provider owns the
 logging destination and lifetime of any service that inherits the descriptor.
 
-Profile setup execution owns immutable schema-2 requests and the captured provider
+Profile setup execution owns immutable schema-3 requests and the captured provider
 client. It emits only validated progress steps before exit; terminal readiness or
-cancellation is returned only when the full-origin result matches the process exit
-contract. Timeouts and loss of observation terminate and reap only the direct
+cancellation is returned only when the result matches the process exit contract;
+a status the app doesn't know has no exit code to match. Timeouts and loss of observation terminate and reap only the direct
 command, leaving the same request with an unknown outcome for explicit recovery.
 Neither cleanup nor closing confirms provider cancellation or rollback. The
 consumer does not detach a setup command and allow a concurrent retry.
@@ -1535,8 +1552,10 @@ prose is discarded. A restored record supplies expectations only. Durable storag
 and verification of the original operator/registry context are required before
 any restored request may execute; these model APIs do not activate lifecycle UI.
 
-Setup request checkpoints retain both generated schema-2 bodies byte for byte,
-including cancellation's original ID, profile tuple, hooks, project and brief.
+Setup request checkpoints retain both generated schema-3 bodies byte for byte,
+including cancellation's original ID, profile ID, project and brief. One saved
+under schema 2 is refused as unsupported; the app lists it as a request that
+cannot be validated, which can be forgotten.
 Restoration validates all choices and rejects changed or noncanonical bodies
 without discovery or allocation. The private format records request intent only:
 interrupted output streams and successful readiness/cancellation are not inferred
@@ -1593,10 +1612,12 @@ completion after an earlier post-rename sync failure. The journal's ordinary
 read remains a storage inspection; `read_durable` provides this recovery barrier.
 
 Setup terminal observations have a separate private checkpoint from request
-intent. They retain the original tuple, request, action, sequence and bounded
-outcome/retry fields, including the actual launch ID for confirmed readiness.
-Normalization removes provider prose and unneeded result details; restoration
-revalidates the result through the existing schema-2 stream rules and requires
+intent. They retain the request, action, sequence and bounded outcome/retry
+fields, including the launch ID, when one was named, for confirmed readiness.
+Normalization keeps setup's message as one line of plain text, at most 300
+characters, with control and direction-changing characters removed, and drops
+other provider prose and unneeded result details; restoration
+revalidates the result through the schema-3 stream rules and requires
 canonical encoding for the original prepared request and explicit action.
 Progress is never reconstructed as terminal authority. The executor must still
 verify the matching process exit before a controller durably saves an outcome;
@@ -1650,31 +1671,40 @@ the field is omitted, keeping the request's bytes unchanged, and recovery restor
 whichever request was saved. The guide screen reads the profile's runtime catalog
 and asks `GET /api/profile/accounts/status` once for each installed CLI, so each
 tool card can say whether it is signed in; signed in means a stored sign-in, not a
-working account. Its Start submits the same setup request as Add agent. Setup is
-complete once the CLI has started, or is waiting for a sign-in or permission,
-whatever it shows: its pane opens then, so a sign-in happens in its terminal and
-focus lands there. A CLI that exits right away is a failed setup with the
-provider's explanation, shown under the button; recovery of its saved request
-stays under Earlier setups and in the profile's Settings page.
+working account. Its Start saves and sends setup's `first_agent` request; Add
+agent under the Rust service uses the service's own start instead. Setup is
+complete once setup says the CLI runs (`agent_ready`), whatever its terminal
+shows: its pane opens then, so a sign-in happens in its terminal and focus lands
+there. A CLI that exits right away is a failed setup, worded by its code under
+the button; recovery of its saved request stays under Earlier setups and in the
+profile's Settings page.
 
 Native profile management exposes saved first-agent setup separately from the
 current runtime catalog. It opens a private setup journal from the already
 resolved library directory and renders validated records in bounded pages.
-Retries and cancellation retain the original profile tuple and request bytes. Progress is checked against its journal key, request, tuple and
+Retries and cancellation retain the original profile ID and request bytes. Progress is checked against its journal key, request, profile and
 revision; superseded pane tasks cannot publish results. Stopping observation
 reloads the same record and never reports safe cancellation. Confirmed setup
 readiness does not authorize account access or open an ambient terminal.
 
 Fresh setup admission validates existing durable setup records and inserts the
-new intent under one journal lock. An open request blocks only the same agent name
-in the same full profile instance, so a second agent can be added while another
-needs attention. A request closes on confirmed readiness, safe cancellation, or a
-result whose retry policy says this same request can go no further (a name already
-in use answers `new_request`, for example). A result the provider says can be retried
-(`launch_timeout`, `runtime_permission`) stays open, and the recovery view shows fixed
-text for its code. Forgetting a request removes only the app's saved record; it runs
-no command and keeps any agent the request created. Malformed records fail closed
-until they are forgotten; unsafe storage always fails closed. A directory durability barrier precedes the
+new intent under one journal lock. An open request blocks every other first-agent
+request of the same profile, whatever agent it adds, since it may still make the
+profile's first agent; a guide's Start waits while one is open. A request closes
+on confirmed readiness, safe cancellation, a cancellation answered
+`request_expired` (the request never runs now; what came of it before stays
+unknown and listed), or a result whose retry policy says this same request can
+go no further (`new_request` or `none`). One setup says can be
+sent again (`outcome_unknown` or `setup_failed` with `same_request`), or whose
+retry the app doesn't know, stays open. The recovery view shows the result's code
+with the app's own words where it can point to a remedy (`cancellation_unsafe`,
+`agent_conflict`, `runtime_missing`, `invalid_request`, `service_unavailable`),
+else setup's kept message, then a next step taken from the same retry and open
+or closed state that offers its buttons. It never says the agent wasn't added:
+the answer to a request sent again may describe only that send. Forgetting a request removes only the app's saved record; it
+runs no command and keeps any agent the request created. A request saved under
+schema 1 or 2 holds nothing back and stays listed to be forgotten. Other malformed
+records fail closed until they are forgotten; unsafe storage always fails closed. A directory durability barrier precedes the
 check, and the bounded scan has a read budget. Catalog-facing pending reads are
 observations only: actual admission repeats the check atomically. This local
 journal rule does not replace the provider's own request serialization.
@@ -1693,14 +1723,15 @@ A failed roster read loses status, not access: tmux keeps the sessions and panes
 attached, with a status note, while the read retries.
 
 Native first-agent setup captures one atomic registry profile and the operator
-client before loading choices. It checks the independent private setup journal
-for open requests, which it points to without blocking other agent names, and then
-reads that instance's schema-2 runtime catalog.
+client before loading choices. A guide checks the independent private setup
+journal for open requests of the profile, which hold back a new one, and then
+reads the Rust service's runtime catalog (`backbone runtimes --json`); setup
+starts Claude Code, Codex and Antigravity only. Add agent opens no journal.
 An explicit project folder, name, brief, runtime and optional catalog model are
-frozen with hook and greeting choices into one original request. Gemini CLI and
-Antigravity CLI can't take a brief silently, so Agent Backbone sends it as their
-first turn; with the default brief, which asks the agent to greet, the request
-asks for no separate greeting. Compatibility
+frozen with the greeting choice into one original request. Antigravity CLI can't
+take a brief silently, so Agent Backbone sends it as its first turn; with the
+default brief, which asks the agent to greet, the request asks for no separate
+greeting. Compatibility
 and authentication observations remain separate; neither opens a terminal or
 connects a workspace. Confirmation hands the retained controller and prepared
 request to recovery with its original key established before admission or I/O.
