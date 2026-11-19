@@ -707,3 +707,68 @@ fn close_actions_expire_on_selection_reconnect_and_library_replacement() {
     assert!(browser.close_pane_for(&fresh, &tab, &pane).is_none());
     assert_eq!(browser.layout.as_ref().unwrap().model().pane(), Some(&pane));
 }
+
+#[test]
+fn an_agent_goes_to_the_current_tab_showing_it_else_the_first() {
+    let (_a_dir, a, a_server) = provider("a", vec![]);
+    a_server.join().unwrap();
+    let path = std::path::Path::new("layouts.db");
+    let base = Document::parse(
+        r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[],"selected":""}],"selected":"000000000001","focus":false}"#.into(),
+        path,
+    )
+    .unwrap();
+    let mut model = Layout::initial("/".into());
+    model.workspaces[0].profile_id = Some(a.identity().profile_id.clone());
+    let session = |socket: Option<&str>| {
+        Some(Attachment {
+            session: "reviewer".into(),
+            source_socket: socket.map(Into::into),
+        })
+    };
+    assert!(model.attach(session(None)));
+    let first = model.tab().unwrap().id.clone();
+    assert!(model.add_tab(None, "/".into(), false));
+    // The same name on another server is not the profile's agent.
+    assert!(model.attach(session(Some("/elsewhere"))));
+    let other_server = model.tab().unwrap().id.clone();
+    assert!(model.add_tab(None, "/".into(), false));
+    assert!(model.attach(session(None)));
+    let current = model.tab().unwrap().id.clone();
+    let mut browser = Browser {
+        layout: Some(WindowLayout::new(base.with_model(&model, path).unwrap())),
+        ..Browser::default()
+    };
+    browser
+        .workspace_profiles
+        .bind(&model.workspaces[0], a.clone());
+    let origin = browser.navigation_origin(&model.workspaces[0].id).unwrap();
+    let target = |name: &str| AgentTarget {
+        origin: origin.clone(),
+        name: name.into(),
+    };
+    let tab = |browser: &Browser| {
+        browser
+            .layout
+            .as_ref()
+            .unwrap()
+            .model()
+            .tab()
+            .unwrap()
+            .id
+            .clone()
+    };
+    assert!(browser.select_agent_target(&target("reviewer")));
+    assert_eq!(tab(&browser), current);
+    assert!(
+        browser
+            .layout
+            .as_mut()
+            .unwrap()
+            .model_mut()
+            .choose_tab(&other_server)
+    );
+    assert!(browser.select_agent_target(&target("reviewer")));
+    assert_eq!(tab(&browser), first);
+    assert!(!browser.select_agent_target(&target("absent")));
+}
