@@ -422,3 +422,72 @@ fn a_second_creator_waits_for_the_first_creators_lock() {
         1
     );
 }
+
+#[test]
+fn a_missing_shell_falls_back_to_bin_sh() {
+    let mut variables = BTreeMap::new();
+    assert_eq!(login_shell(&variables), Path::new("/bin/sh"));
+    variables.insert("SHELL".into(), "/nonexistent/shell".into());
+    assert_eq!(login_shell(&variables), Path::new("/bin/sh"));
+    let present = std::env::current_exe().unwrap();
+    variables.insert("SHELL".into(), present.clone().into_os_string());
+    assert_eq!(login_shell(&variables), present);
+}
+
+#[test]
+fn an_exited_ordinary_shell_is_kept_rather_than_restarted() {
+    let server = TmuxServer::start().unwrap();
+    let socket = server
+        .run(&["display-message", "-p", "#{socket_path}"])
+        .unwrap();
+    let socket = PathBuf::from(socket.trim());
+    let root = server.address().0;
+    // It outlives the remain-on-exit setting, then exits.
+    let shell = root.join("exiting-shell");
+    std::fs::write(&shell, "#!/bin/sh\nsleep 1\n").unwrap();
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut environment = Environment::capture().unwrap();
+    environment.shell = shell;
+    environment.home = root.to_owned();
+    environment.cwd = root.to_owned();
+    for name in CONTEXT {
+        environment.variables.remove(OsStr::new(name));
+    }
+    let request = || {
+        [Request {
+            id: "000000000001".into(),
+            cwd: None,
+        }]
+    };
+    ensure(&socket, &request(), &environment).unwrap();
+    let dead = || {
+        server
+            .run(&[
+                "display-message",
+                "-p",
+                "-t",
+                "=terminal-000000000001:",
+                "#{pane_dead}",
+            ])
+            .unwrap()
+            .trim()
+            .to_owned()
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while dead() != "1" {
+        assert!(Instant::now() < deadline, "the shell did not exit");
+        thread::sleep(Duration::from_millis(20));
+    }
+    ensure(&socket, &request(), &environment).unwrap();
+    assert_eq!(dead(), "1");
+    let sessions = server
+        .run(&["list-sessions", "-F", "#{session_name}"])
+        .unwrap();
+    assert_eq!(
+        sessions
+            .lines()
+            .filter(|name| *name == "terminal-000000000001")
+            .count(),
+        1
+    );
+}

@@ -53,7 +53,7 @@ pub struct Environment {
 
 impl Environment {
     /// Capture the creating window's context without changing the process environment.
-    /// This follows the reference SHELL and working-directory policy, not PATH discovery.
+    /// SHELL and the working directory fall back as below; PATH is not searched.
     pub fn capture() -> io::Result<Self> {
         let variables: BTreeMap<_, _> = std::env::vars_os()
             .filter(|(name, _)| {
@@ -71,11 +71,7 @@ impl Environment {
                 .map(|user| user.home_dir().to_owned())
                 .ok_or_else(|| io::Error::other("Home directory unavailable"))?,
         };
-        let shell = variables
-            .get(OsStr::new("SHELL"))
-            .map(PathBuf::from)
-            .filter(|shell| shell.is_file())
-            .unwrap_or_else(|| "/bin/sh".into());
+        let shell = login_shell(&variables);
         Ok(Self {
             variables,
             // An app opened from the Dock or Finder runs in "/"; use home instead.
@@ -325,6 +321,15 @@ pub fn ensure(socket: &Path, requests: &[Request], environment: &Environment) ->
     }
     // File drop releases flock; the append-open lock file remains for other windows.
     Ok(())
+}
+
+/// The shell a new ordinary terminal runs: SHELL when it names a file, else `/bin/sh`.
+fn login_shell(variables: &BTreeMap<OsString, OsString>) -> PathBuf {
+    variables
+        .get(OsStr::new("SHELL"))
+        .map(PathBuf::from)
+        .filter(|shell| shell.is_file())
+        .unwrap_or_else(|| "/bin/sh".into())
 }
 
 fn require_success(output: std::process::Output) -> io::Result<()> {
