@@ -75,7 +75,7 @@ with tempfile.TemporaryDirectory(prefix="document-smoke-") as directory:
     # The app asks a login shell, then PATH, for `backbone`: this fixture must
     # come first in both, whatever the runner has installed.
     env.update(SHELL="/bin/sh", PATH=f"{commands}:{env.get('PATH', '')}")
-    (root / ".profile").write_text(f'PATH="{commands}:$PATH"\nexport PATH\n')
+    (root / ".profile").write_text(f'PATH={shlex.quote(str(commands))}:"$PATH"\nexport PATH\n')
     leaks = []
 
     class Trap(http.server.BaseHTTPRequestHandler):
