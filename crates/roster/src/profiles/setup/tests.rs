@@ -489,3 +489,20 @@ fn an_event_ignores_what_only_the_other_kind_defines() {
     stream.push(&line(&result)).unwrap();
     assert!(stream.finish().unwrap().ready_agent.is_some());
 }
+
+#[test]
+fn a_field_an_event_defines_said_twice_poisons() {
+    // Another request's ID first and this one's last: the last does not win.
+    let twice = serde_json::to_string(&ready()).unwrap().replacen(
+        '{',
+        "{\"request_id\":\"019a8f3f1a2b7c3d8e4f5a6b7c8d9e10\",",
+        1,
+    );
+    let mut stream = prepared(guide()).stream(Action::FirstAgent);
+    assert!(stream.push(format!("{twice}\n").as_bytes()).is_err());
+    let twice = serde_json::to_string(&step(1, "preflight", "running"))
+        .unwrap()
+        .replacen('{', "{\"status\":\"completed\",", 1);
+    let mut stream = prepared(guide()).stream(Action::FirstAgent);
+    assert!(stream.push(format!("{twice}\n").as_bytes()).is_err());
+}

@@ -285,7 +285,8 @@ pub struct Event {
 
 /// What every line of the setup command's output has. The fields its kind
 /// defines are read after it, and only those: anything else, a field of the
-/// other kind among them, is ignored.
+/// other kind among them, is ignored. Each is read from the line itself, so
+/// a field it defines said twice is refused.
 #[derive(Deserialize)]
 struct Wire {
     schema_version: u32,
@@ -362,8 +363,7 @@ impl Stream {
         Ok(events)
     }
     fn line(&mut self, bytes: &[u8]) -> Result<Event, Error> {
-        let value: Value = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
-        let wire = Wire::deserialize(&value).map_err(|_| Error::Invalid)?;
+        let wire: Wire = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
         if wire.schema_version != SCHEMA_VERSION {
             return Err(Error::Unsupported);
         }
@@ -390,14 +390,14 @@ impl Stream {
         };
         if wire.kind == "step" {
             // A status this app doesn't know is kept as it came.
-            let step = StepWire::deserialize(&value).map_err(|_| Error::Invalid)?;
+            let step: StepWire = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
             if !valid_id(&step.step) || !token(&step.status) {
                 return Err(Error::Invalid);
             }
             event.step = Some(step.step);
             event.status = step.status;
         } else if result {
-            let wire = ResultWire::deserialize(&value).map_err(|_| Error::Invalid)?;
+            let wire: ResultWire = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
             let (code, retry) = (wire.code, wire.retry);
             if wire.action != self.action.name()
                 || !token(&wire.status)

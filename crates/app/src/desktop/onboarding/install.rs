@@ -297,7 +297,8 @@ fn answer(printed: &str, request_id: &str) -> Option<Answer> {
     use serde::Deserialize;
     use serde_json::Value;
     // What every line has; then only the fields its own kind defines, so a
-    // field of the other kind, of any type, is ignored.
+    // field of the other kind, of any type, is ignored. Each is read from
+    // the line itself, so a field it defines said twice is refused.
     #[derive(Deserialize)]
     struct Line {
         schema_version: u32,
@@ -323,16 +324,17 @@ fn answer(printed: &str, request_id: &str) -> Option<Answer> {
     }
     let mut seq = 0;
     let mut result = None;
-    for text in printed.lines().filter(|text| !text.trim().is_empty()) {
-        // Bounded as a first agent's events are, and every value kept as it
-        // came a bounded token.
-        if text.len() > LINE_LIMIT {
+    for text in printed.lines() {
+        // Bounded as a first agent's events are, nothing after the result,
+        // and every value kept as it came a bounded token.
+        if text.len() > LINE_LIMIT || result.is_some() {
             return None;
         }
-        let value: Value = serde_json::from_str(text).ok()?;
-        let line = Line::deserialize(&value).ok()?;
-        if result.is_some()
-            || line.schema_version != 3
+        if text.trim().is_empty() {
+            continue;
+        }
+        let line: Line = serde_json::from_str(text).ok()?;
+        if line.schema_version != 3
             || line.request_id != request_id
             || line.seq <= seq
             || line.seq > EVENT_LIMIT
@@ -342,13 +344,13 @@ fn answer(printed: &str, request_id: &str) -> Option<Answer> {
         seq = line.seq;
         match line.kind.as_str() {
             "step" => {
-                let step = Step::deserialize(&value).ok()?;
+                let step: Step = serde_json::from_str(text).ok()?;
                 if !token(&step.step) || !token(&step.status) {
                     return None;
                 }
             }
             "result" => {
-                let done = Done::deserialize(&value).ok()?;
+                let done: Done = serde_json::from_str(text).ok()?;
                 if done.action != "initialize"
                     || !done.data.is_object()
                     || ![&done.status, &done.code, &done.retry]
@@ -545,6 +547,20 @@ mod tests {
         for printed in [format!("{padded}\n{}\n", fixture("result")), late] {
             assert_eq!(answer(&printed, ID), None);
         }
+        // A field said twice, the right one last, is refused.
+        let twice = fixture("result").to_string().replacen(
+            '{',
+            "{\"request_id\":\"019a8f3e7c2b7d4e9a1f2b3c4d5e6f71\",",
+            1,
+        );
+        assert_eq!(answer(&format!("{}\n{twice}\n", fixture("step")), ID), None);
+        // Nothing after the result, not even a blank line, and no line,
+        // blank or not, over its bound.
+        let printed = format!("{}\n{}\n\n", fixture("step"), fixture("result"));
+        assert_eq!(answer(&printed, ID), None);
+        let blank = " ".repeat(LINE_LIMIT + 1);
+        let printed = format!("{}\n{blank}\n{}\n", fixture("step"), fixture("result"));
+        assert_eq!(answer(&printed, ID), None);
         // A step with a result's fields, of any type, is read as a step.
         let mut step = fixture("step");
         step["retry"] = serde_json::json!({"not": "a token"});
