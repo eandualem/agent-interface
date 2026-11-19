@@ -869,8 +869,8 @@ impl Browser {
     }
 
     /// Bind workspace `id`, which had `previous` as its profile, to a verified
-    /// profile, keeping its tabs and panes. A workspace without a profile is
-    /// bound as `bind-home-profile` binds it. A missing profile's panes stay as
+    /// profile, keeping its tabs and panes. A workspace without a profile keeps
+    /// each attached session on its server. A missing profile's panes stay as
     /// they are: an attachment without a server follows the new profile.
     fn change_profile(
         &mut self,
@@ -910,7 +910,7 @@ impl Browser {
         let source = self.source.clone().and_then(Result::ok);
         let generation = self.library_generation;
         self.workspace_profiles.remember_name(selected.item());
-        // Reading the profile's agents and the library's shells is I/O.
+        // Reading the library's shells is I/O.
         let work = cx.background_executor().spawn(async move {
             let profile_id = &connection.identity().profile_id;
             let space = rebind(&mut proposed, &id, previous.as_deref(), profile_id)
@@ -920,8 +920,8 @@ impl Browser {
                 let directory = crate::library::library_directory(directory.as_deref())
                     .map_err(|error| error.to_string())?;
                 let source = source.ok_or("This window's tmux server could not be found.")?;
-                let binding = crate::adoption::Binding::read(&connection, &source)?;
-                shells = binding.apply(space, &directory)?.shells;
+                let binding = crate::adoption::Binding::new(profile_id, &source)?;
+                shells = binding.apply(space, &directory)?;
             }
             Ok::<_, String>((base, proposed, shells))
         });

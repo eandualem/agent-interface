@@ -188,9 +188,10 @@ A workspace without a profile has **Choose profile…** in its menu. One whose
 profile cannot be reached has **Change profile…**, in its menu and on its
 **Workspace profile unavailable** screen. Pick a ready profile; the workspace
 keeps its tabs and panes, and panes attached to that profile's agents show
-them. For a workspace that had no profile, the panes change as
-[Move a library to the Rust Backbone service](#move-a-library-to-the-rust-backbone-service)
-describes.
+them. In a workspace that had no profile, panes attached to your own tmux
+sessions keep their server and say so. Ordinary shells become shells of the
+profile; the shells they showed keep running, and the app says how to list
+them when their panes close.
 
 Click **+** beside TABS or press Command-T to add an empty tab. Command-D splits
 right; Command-Shift-D splits below. Both split actions are also in tab options.
@@ -429,28 +430,6 @@ initialization or repair. An unreadable or invalid library shows an error and
 can be replaced through **Open Library…**. Keep its database and journal files
 for recovery; the app never overwrites them with an empty arrangement.
 `--help` and `--version` work without a display or tmux.
-
-## Move a library to the Rust Backbone service
-
-Workspaces saved without a profile showed the agents of the Python Backbone
-service. Once the Rust service has taken its place, bind them to this
-computer's profile with one command:
-
-```sh
-agent-interface bind-home-profile
-```
-
-To bind one workspace instead, choose **Choose profile…** in its menu.
-Add `--data-dir PATH` for another library. Run it in the environment the app
-runs in: like tmux, it finds the default tmux server through `TMUX_TMPDIR`,
-and it prints the server it used. The command needs the service to
-list exactly one profile with its home on this computer, and it changes
-nothing when a workspace already has a profile. Panes attached to the
-profile's agents follow it. Panes attached to your own tmux sessions keep
-their server and say so. Saved agent views stay, and the command names any
-whose agent the profile does not have, to reopen from the Team view. Ordinary shells become shells of the profile; the
-shells they showed keep running, and the command prints the `tmux` command
-that attaches to each one.
 
 ## Linux keyboard shortcuts
 

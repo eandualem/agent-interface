@@ -63,13 +63,6 @@ pub fn read_session_directory(socket: &Path, session: &str) -> io::Result<String
     Ok(directory)
 }
 
-/// The command running in a session's active pane, read the same bounded,
-/// read-only way as its directory. None when it cannot be read.
-pub fn read_session_command(socket: &Path, session: &str) -> Option<String> {
-    let _span = tracing::trace_span!("tmux_query", operation = "read_command").entered();
-    display(socket, session, "#{pane_current_command}")
-}
-
 /// One format of a session's active pane, without its closing newline.
 fn display(socket: &Path, session: &str, format: &str) -> Option<String> {
     if names(session).as_slice() != [session] {
