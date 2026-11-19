@@ -14,13 +14,13 @@ fn snapshot(text: &str) -> Value {
 
 #[test]
 fn retained_artifacts_keep_delayed_reads_credentials_and_same_id_origins_separate() {
-    let (a_dir, a_listener, a_url) = crate::transport::tests::local_listener();
-    let (a_profile, a_identity) = profile_at(a_dir.path(), a_url.strip_prefix("unix:").unwrap());
-    let (b_dir, b_listener, b_url) = crate::transport::tests::local_listener();
-    let (_, mut b_identity) = profile_at(b_dir.path(), b_url.strip_prefix("unix:").unwrap());
+    let (a_dir, a_listener, a_socket) = crate::transport::tests::local_listener();
+    let (a_profile, a_identity) = profile_at(a_dir.path(), &a_socket);
+    let (b_dir, b_listener, b_socket) = crate::transport::tests::local_listener();
+    let (_, mut b_identity) = profile_at(b_dir.path(), &b_socket);
     let mut b_record = fixture()["discovery"]["show_ready"].clone();
     b_record["profile_id"] = json!("profile-b");
-    b_record["binding"]["endpoint"]["path"] = json!(b_url.strip_prefix("unix:").unwrap());
+    b_record["binding"]["endpoint"]["path"] = json!(&b_socket);
     b_record["binding"]["credential_reference"]["path"] = json!(b_dir.path().join("profile.env"));
     b_record["binding"]["tmux"] = b_identity["tmux"].clone();
     b_identity["profile_id"] = json!("profile-b");
@@ -114,8 +114,8 @@ fn malformed_snapshots_cannot_be_returned_as_selected_content() {
     bad.push(wrong);
     bad.push(json!(["7", "label", "date", null, null]));
     for body in bad {
-        let (dir, listener, url) = crate::transport::tests::local_listener();
-        let (profile, identity) = profile_at(dir.path(), url.strip_prefix("unix:").unwrap());
+        let (dir, listener, socket) = crate::transport::tests::local_listener();
+        let (profile, identity) = profile_at(dir.path(), &socket);
         let server = serve(
             listener,
             vec![
@@ -138,8 +138,8 @@ fn malformed_snapshots_cannot_be_returned_as_selected_content() {
 
 #[test]
 fn cancellation_after_version_selection_stops_before_snapshot_read() {
-    let (dir, listener, url) = crate::transport::tests::local_listener();
-    let (profile, identity) = profile_at(dir.path(), url.strip_prefix("unix:").unwrap());
+    let (dir, listener, socket) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(dir.path(), &socket);
     let live = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let stop = live.clone();
     let server = serve_with_hook(
@@ -180,8 +180,8 @@ fn catalogs_reject_ambiguous_or_unsafe_targets_and_missing_snapshots_remain_miss
         traversal,
         json!({"items":[["name","path","id"]]}),
     ] {
-        let (dir, listener, url) = crate::transport::tests::local_listener();
-        let (profile, identity) = profile_at(dir.path(), url.strip_prefix("unix:").unwrap());
+        let (dir, listener, socket) = crate::transport::tests::local_listener();
+        let (profile, identity) = profile_at(dir.path(), &socket);
         let server = serve(listener, vec![(200, identity), (200, body)]);
         let connection = profile.connect().unwrap();
         assert_eq!(
@@ -190,8 +190,8 @@ fn catalogs_reject_ambiguous_or_unsafe_targets_and_missing_snapshots_remain_miss
         );
         assert_eq!(server.join().unwrap().len(), 2);
     }
-    let (dir, listener, url) = crate::transport::tests::local_listener();
-    let (profile, identity) = profile_at(dir.path(), url.strip_prefix("unix:").unwrap());
+    let (dir, listener, socket) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(dir.path(), &socket);
     let mut missing = snapshot("unused");
     missing["content"] = Value::Null;
     missing["sha256"] = Value::Null;

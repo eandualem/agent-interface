@@ -14,8 +14,8 @@ pub(super) mod tests {
         let path = directory.path().join("api.sock");
         let listener = UnixListener::bind(&path).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let url = format!("unix:{}", path.display());
-        (directory, listener, url)
+        let socket = path.to_str().unwrap().to_owned();
+        (directory, listener, socket)
     }
 
     /// A Rust-service profile connected through a private fixture socket. The
@@ -23,13 +23,13 @@ pub(super) mod tests {
     /// own replies.
     pub(crate) fn served_connection()
     -> (tempfile::TempDir, crate::profiles::Connection, UnixListener) {
-        let (directory, listener, url) = local_listener();
+        let (directory, listener, socket) = local_listener();
         let mut entry = serde_json::json!({
             "state": "serving", "protocol_version": 1,
             "profile_id": "0a1b2c3d4e5f", "display_name": "Work",
             "instance_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d",
             "machine": {"id": "5f2c9e0d1b7a4e38", "name": "laptop"}, "home": true,
-            "socket": url.strip_prefix("unix:").unwrap(),
+            "socket": &socket,
             "tmux_socket": directory.path().join("tmux.sock"),
             "credential_reference": {"type": "socket"}
         });
@@ -105,8 +105,7 @@ pub(super) mod tests {
 
     #[test]
     fn a_socket_or_folder_open_to_others_gets_no_connection() {
-        let (directory, listener, url) = local_listener();
-        let socket = url.strip_prefix("unix:").unwrap();
+        let (directory, listener, socket) = local_listener();
         listener.set_nonblocking(true).unwrap();
         for (path, mode, private) in [
             (directory.path().join("api.sock"), 0o666, 0o600),
@@ -114,7 +113,7 @@ pub(super) mod tests {
         ] {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
             let response = super::local::profile_response(
-                socket,
+                &socket,
                 "/api/profile",
                 ("", &identity()),
                 None,
@@ -132,7 +131,7 @@ pub(super) mod tests {
 
     #[test]
     fn an_unfinished_body_fails_within_the_request_time() {
-        let (directory, listener, url) = local_listener();
+        let (directory, listener, socket) = local_listener();
         let worker = serve_on(
             listener,
             Some(directory),
@@ -141,7 +140,7 @@ pub(super) mod tests {
         );
         let started = Instant::now();
         let response = super::local::profile_response(
-            url.strip_prefix("unix:").unwrap(),
+            &socket,
             "/api/agents",
             ("", &identity()),
             None,
