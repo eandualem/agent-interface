@@ -8,6 +8,7 @@
 
 pub mod adoption;
 pub mod artifacts;
+pub mod code_figures;
 mod compat;
 pub mod desktop;
 pub mod diagnostics;

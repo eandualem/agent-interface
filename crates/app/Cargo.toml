@@ -37,6 +37,8 @@ tracing-appender.workspace = true
 unicode-segmentation.workspace = true
 pulldown-cmark.workspace = true
 unicode-properties.workspace = true
+# Find Git pointers in Documents as a browser tokenizes HTML (MIT OR Apache-2.0).
+html5ever = "=0.39.0"
 agent-interface-core = { path = "../core" }
 agent-interface-store = { path = "../store" }
 agent-interface-roster = { path = "../roster" }
