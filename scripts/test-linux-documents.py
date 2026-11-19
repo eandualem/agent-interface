@@ -12,6 +12,7 @@ import json
 import os
 import re
 from pathlib import Path
+import shlex
 import socketserver
 import sqlite3
 import subprocess
@@ -61,11 +62,14 @@ with tempfile.TemporaryDirectory(prefix="document-smoke-") as directory:
                  credential_reference=dict(type="socket"))
     commands = root / ".local/bin"
     commands.mkdir(parents=True)
-    # It answers only the exact commands the app runs.
+    # It answers only the exact commands the app runs. The replies hold
+    # temporary paths, so each is quoted as one shell word.
+    listed = shlex.quote(json.dumps(dict(profiles=[entry])))
+    shown = shlex.quote(json.dumps(entry))
     (commands / "backbone").write_text(
         '#!/bin/sh\ncase "$*" in\n'
-        f"    'profiles list --json') printf '%s' '{json.dumps(dict(profiles=[entry]))}' ;;\n"
-        f"    'profiles show --json -- {served['profile_id']}') printf '%s' '{json.dumps(entry)}' ;;\n"
+        f"    'profiles list --json') printf '%s' {listed} ;;\n"
+        f"    'profiles show --json -- {served['profile_id']}') printf '%s' {shown} ;;\n"
         '    *) exit 2 ;;\nesac\n')
     (commands / "backbone").chmod(0o755)
     # The app asks a login shell, then PATH, for `backbone`: this fixture must
