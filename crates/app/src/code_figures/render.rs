@@ -8,8 +8,9 @@ use super::git::{File, ROW_LIMIT, Row};
 
 /// A diff's view, or `None` if it would be longer than `limit` bytes. One
 /// file is one `<details open>`, its summary the caption, given as authored
-/// HTML, or else the file's header. Several files are one `<details open>`
-/// per file inside another, whose summary is the caption or their count.
+/// HTML, with the file's header under it, or else the header. Several files
+/// are one `<details open>` per file inside another, whose summary is the
+/// caption or their count.
 pub fn diff(files: &[File], caption: Option<&str>, limit: usize) -> Option<String> {
     let header = |file: &File| {
         let mut header = String::new();
@@ -18,6 +19,16 @@ pub fn diff(files: &[File], caption: Option<&str>, limit: usize) -> Option<Strin
             header.push_str(" → ");
         }
         escape(&file.path, &mut header);
+        // A file with no lines to show says what changed.
+        if file.rows.is_empty() {
+            header.push_str(match file.status {
+                'A' => " (added)",
+                'D' => " (deleted)",
+                'R' => " (renamed)",
+                'M' => " (mode changed)",
+                _ => "",
+            });
+        }
         header
     };
     let mut out = String::new();
@@ -39,8 +50,8 @@ pub fn diff(files: &[File], caption: Option<&str>, limit: usize) -> Option<Strin
 
 /// A code view of `text`, numbered from its first line, or `None` when the
 /// file has none of `lines`, or more than [`ROW_LIMIT`] of them, or the view
-/// would be longer than `limit` bytes. Its summary is the caption or the
-/// file's header.
+/// would be longer than `limit` bytes. Its summary is the caption, with the
+/// file's header under it, or else the header.
 pub fn code(
     path: &str,
     text: &str,
@@ -88,7 +99,10 @@ pub fn code(
 /// Open a view of one file, summarised by the caption or its header.
 fn open(out: &mut String, caption: Option<&str>, header: &str) {
     match caption {
-        Some(caption) => details(out, "ai-git", caption),
+        Some(caption) => {
+            details(out, "ai-git", caption);
+            let _ = write!(out, r#"<div class="ai-git-head">{header}</div>"#);
+        }
         None => details(out, "ai-git ai-git-file", header),
     }
 }
@@ -227,12 +241,12 @@ mod tests {
         let mut renamed = file("new.rs", vec![Row::Binary]);
         renamed.from = Some("old.rs".into());
         let html = diff(&[file("a.rs", vec![]), renamed.clone()], None, ANY).unwrap();
-        assert!(html.starts_with(r#"<details open class="ai-git"><summary>2 files changed</summary><details open class="ai-git-file"><summary>a.rs</summary></details>"#));
+        assert!(html.starts_with(r#"<details open class="ai-git"><summary>2 files changed</summary><details open class="ai-git-file"><summary>a.rs (mode changed)</summary></details>"#));
         assert!(html.contains("<summary>old.rs → new.rs</summary>"));
         assert!(html.contains("Binary file"));
         let html = diff(&[renamed], Some("The <em>move</em>"), ANY).unwrap();
         assert!(html.starts_with(
-            r#"<details open class="ai-git"><summary>The <em>move</em></summary><div"#
+            r#"<details open class="ai-git"><summary>The <em>move</em></summary><div class="ai-git-head">old.rs → new.rs</div><div"#
         ));
         assert_eq!(html.matches("<details").count(), 1);
         assert!(html.ends_with("</details>"));
@@ -247,7 +261,9 @@ mod tests {
         assert!(html.contains(r#"<td class="ai-git-n">3</td><td class="ai-git-t">three</td>"#));
         assert!(!html.contains(">one<"));
         let whole = code("a.rs", text, None, Some("cap"), ANY).unwrap();
-        assert!(whole.starts_with(r#"<details open class="ai-git"><summary>cap</summary>"#));
+        assert!(whole.starts_with(
+            r#"<details open class="ai-git"><summary>cap</summary><div class="ai-git-head">a.rs</div>"#
+        ));
         assert_eq!(whole.matches("<details").count(), 1);
         assert_eq!(whole.matches("<tr>").count(), 3);
         assert_eq!(code("a.rs", text, Some((4, 4)), None, ANY), None);

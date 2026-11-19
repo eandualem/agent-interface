@@ -54,6 +54,27 @@ impl Read {
     }
 }
 
+/// The memory a pointer's strings hold.
+fn held(pointer: &Pointer) -> usize {
+    match pointer {
+        Pointer::Diff {
+            repo,
+            base,
+            head,
+            paths,
+        } => {
+            let paths = paths.as_ref().map_or(0, |paths| {
+                paths.capacity() * size_of::<String>()
+                    + paths.iter().map(String::capacity).sum::<usize>()
+            });
+            repo.capacity() + base.capacity() + head.capacity() + paths
+        }
+        Pointer::Code {
+            repo, commit, path, ..
+        } => repo.capacity() + commit.capacity() + path.capacity(),
+    }
+}
+
 /// Answers by the clone (its common Git directory) that gave them.
 type Answers = HashMap<(PathBuf, Pointer), Arc<Read>>;
 
@@ -123,7 +144,7 @@ fn answer(pointer: &Pointer, checkouts: &[Checkout], deadline: Instant) -> Optio
                 Read::Code(git::file(top, commit, path, deadline)?)
             }
         });
-        let size = read.size() + size_of::<(PathBuf, Pointer)>() + key.0.capacity();
+        let size = read.size() + size_of::<(PathBuf, Pointer)>() + key.0.capacity() + held(&key.1);
         let mut cache = cache();
         if cache.1 + size > CACHE_LIMIT {
             *cache = Default::default();
@@ -164,7 +185,7 @@ mod tests {
         assert!(out.starts_with(&format!("{before}<figure data-backbone-diff=")));
         assert!(out.ends_with("</figure><p>End</p>"));
         assert!(out.contains(
-            r#"<details open class="ai-git"><summary>The <b>fix</b></summary><div class="ai-git-scroll">"#
+            r#"<details open class="ai-git"><summary>The <b>fix</b></summary><div class="ai-git-head">a.txt</div><div class="ai-git-scroll">"#
         ));
         assert!(out.contains(r#"<td class="ai-git-s">+</td><td class="ai-git-t">TWO</td>"#));
         assert!(out.contains("<summary>a.txt · lines 2–2</summary>"));

@@ -36,6 +36,7 @@ pub fn run(dir: &Path, args: &[&str], limit: usize, deadline: Instant) -> Option
         // A partial clone would otherwise fetch a missing object; no
         // transport may run at all.
         .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_ALLOW_PROTOCOL", "")
         // A commit ID names that commit, not a local replacement.
         .env("GIT_NO_REPLACE_OBJECTS", "1")
         .arg("-C")
@@ -145,7 +146,12 @@ pub fn diff(
     // The file list, with exact names, then the patch in the same order.
     let raw = run(
         top,
-        &[&args[..], &["--raw", "-z"][..], &tail[..]].concat(),
+        &[
+            &args[..],
+            &["--raw", "-z", "--ignore-submodules=none"][..],
+            &tail[..],
+        ]
+        .concat(),
         OUTPUT_LIMIT,
         deadline,
     )?;
@@ -512,6 +518,8 @@ pub(super) mod tests {
             git(dir.path(), &["commit", "-qm", "sub"]);
             commits.push(git(dir.path(), &["rev-parse", "HEAD"]));
         }
+        // Even where the configuration would hide submodules.
+        git(dir.path(), &["config", "diff.ignoreSubmodules", "all"]);
         assert_eq!(
             diff(dir.path(), &commits[0], &commits[1], None, later()),
             None

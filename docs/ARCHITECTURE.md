@@ -770,11 +770,12 @@ had read by then is kept for the next opening.
 - **Reading Git.** `git` runs without the inherited Git environment, with
   `GIT_OPTIONAL_LOCKS=0`, no terminal prompt, no pager, literal pathspecs,
   `GIT_NO_REPLACE_OBJECTS=1` (a commit ID names that commit, never a local
-  replacement), and `GIT_NO_LAZY_FETCH=1` with `-c protocol.allow=never`, so
-  no transport runs and nothing is fetched. A diff is read with
-  `--no-ext-diff --no-textconv`, so no configured program runs: its file list
-  from `--raw -z`, then its lines from the patch, which is not read when the
-  list holds a submodule, since a submodule's patch can run Git inside it.
+  replacement), and `GIT_NO_LAZY_FETCH=1` with `-c protocol.allow=never` and
+  an empty `GIT_ALLOW_PROTOCOL`, so no transport runs and nothing is fetched.
+  A diff is read with `--no-ext-diff --no-textconv`, so no configured program
+  runs: its file list from `--raw -z --ignore-submodules=none`, then its lines
+  from the patch, which is not read when the list holds a submodule, since a
+  submodule's patch can run Git inside it.
   A file is read with
   `git cat-file blob`. Each command stops after 3 seconds or 4 MiB of output,
   no command starts after a page's 8 seconds, and a diff or code view holds at
@@ -784,9 +785,10 @@ had read by then is kept for the next opening.
   written to a checkout.
 - **The view.** Each pointer becomes `<details open>`, so it collapses and
   expands without a script. For one file or a code reference, its summary is
-  the caption, or else the file's header (`old → new` for a rename); a diff of
-  several files holds one `<details open>` per file, under the caption or the
-  number of files. Rows show old and new line numbers, the sign
+  the caption with the file's header under it, or else the header (`old → new`
+  for a rename; a file with no lines to show is marked added, deleted, renamed
+  or mode changed); a diff of several files holds one `<details open>` per
+  file, under the caption or the number of files. Rows show old and new line numbers, the sign
   as text, and added and removed lines in the theme's `--ai-diff-*` colours,
   set by `views/reading.rs` for every theme, with each sign readable on its
   row's fill, and styled by
