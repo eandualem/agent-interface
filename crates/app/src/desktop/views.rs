@@ -359,6 +359,10 @@ impl ViewPane {
             pane.artifacts = Some(artifacts);
             return pane;
         }
+        let Some(connection) = pane.connection.clone() else {
+            pane.error = Some("Choose a profile for this workspace to show this view.");
+            return pane;
+        };
         if matches!(pane.view.kind, ViewKind::Skills | ViewKind::Reports) {
             let field = cx.new(|cx| NameField::filter(window, cx));
             pane._search
@@ -370,10 +374,6 @@ impl ViewPane {
                 }));
             pane.search = Some(field);
         }
-        let Some(connection) = pane.connection.clone() else {
-            pane.error = Some("Choose a profile for this workspace to show this view.");
-            return pane;
-        };
         // Backbone collects usage about once a minute, and a library gathers
         // many agents' previews and changes rarely; everything else is live.
         let every = Duration::from_secs(match pane.view.kind {
