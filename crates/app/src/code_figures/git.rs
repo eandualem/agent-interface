@@ -212,6 +212,10 @@ pub fn diff(
     }
     args.extend(tail);
     let patch = run(top, &args, OUTPUT_LIMIT, deadline)?;
+    // Git calls a file binary only from its first bytes.
+    if patch.contains(&0) {
+        return None;
+    }
     files(entries, &patch)
 }
 
@@ -383,7 +387,7 @@ pub fn file(top: &Path, commit: &str, path: &str, deadline: Instant) -> Option<S
         OUTPUT_LIMIT,
         deadline,
     )?;
-    if blob[..blob.len().min(8000)].contains(&0) {
+    if blob.contains(&0) {
         return None;
     }
     String::from_utf8(blob).ok()
@@ -632,6 +636,19 @@ pub(super) mod tests {
         git(dir.path(), &["commit", "-qm", "latin"]);
         let third = git(dir.path(), &["rev-parse", "HEAD"]);
         assert_eq!(file(dir.path(), &third, "latin.txt", later()), None);
+        assert_eq!(diff(dir.path(), &second, &third, None, later()), None);
+    }
+
+    #[test]
+    fn a_nul_byte_anywhere_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, second) = repository(dir.path(), "git@github.com:owner/name.git");
+        let late = format!("{}\0\n", "a\n".repeat(5000));
+        fs::write(dir.path().join("late.txt"), late).unwrap();
+        git(dir.path(), &["add", "-A"]);
+        git(dir.path(), &["commit", "-qm", "late"]);
+        let third = git(dir.path(), &["rev-parse", "HEAD"]);
+        assert_eq!(file(dir.path(), &third, "late.txt", later()), None);
         assert_eq!(diff(dir.path(), &second, &third, None, later()), None);
     }
 

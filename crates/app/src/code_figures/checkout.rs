@@ -71,14 +71,15 @@ pub fn checkouts(folders: &[PathBuf], deadline: Instant) -> Vec<Checkout> {
                 "config",
                 "-z",
                 "--get-regexp",
-                r"^(remote\.origin\.url|extensions\.partialclone|remote\..*\.(promisor|partialclonefilter))$",
+                r"^(remote\.origin\.url|extensions\.(partialclone|objectformat)|remote\..*\.(promisor|partialclonefilter))$",
             ],
             64 * 1024,
             deadline,
         )
         .unwrap_or_default();
         let mut origin = None;
-        let mut partial = false;
+        // A partial clone, or one whose object IDs are not SHA-1, is refused.
+        let mut refused = false;
         for entry in config
             .split(|&byte| byte == 0)
             .filter(|entry| !entry.is_empty())
@@ -87,10 +88,12 @@ pub fn checkouts(folders: &[PathBuf], deadline: Instant) -> Vec<Checkout> {
                 Some(("remote.origin.url", url)) => {
                     origin.get_or_insert_with(|| url.trim().to_owned());
                 }
-                _ => partial = true,
+                Some(("extensions.objectformat", format))
+                    if format.trim().eq_ignore_ascii_case("sha1") => {}
+                _ => refused = true,
             }
         }
-        if !partial {
+        if !refused {
             found.push(Checkout {
                 top,
                 common,
@@ -219,6 +222,13 @@ mod tests {
         std::fs::create_dir(&partial).unwrap();
         repository(&partial, "git@github.com:owner/name.git");
         git(&partial, &["config", "remote.origin.promisor", "true"]);
+        let sha256 = root.join("sha256");
+        std::fs::create_dir(&sha256).unwrap();
+        git(&sha256, &["init", "-q", "--object-format=sha256"]);
+        git(
+            &sha256,
+            &["remote", "add", "origin", "git@github.com:owner/name.git"],
+        );
         let worktree = root.join("worktree");
         git(
             &main,
@@ -227,6 +237,7 @@ mod tests {
         let mut folders = vec![plain.clone(); 70];
         folders.extend([
             partial,
+            sha256,
             root.join("missing"),
             PathBuf::from("relative"),
             main.join("sub"),
@@ -237,8 +248,9 @@ mod tests {
         std::fs::create_dir(main.join("sub")).unwrap();
         assert_eq!(checkouts(&folders, Instant::now()), vec![]);
         let found = checkouts(&folders, Instant::now() + Duration::from_secs(10));
-        // Repeated folders count once. The partial clone is left out, and the
-        // worktree shares its clone with `main`, so only the first is kept.
+        // Repeated folders count once. The partial and SHA-256 clones are left
+        // out, and the worktree shares its clone with `main`, so only the first
+        // is kept.
         assert_eq!(
             found.iter().map(Checkout::top).collect::<Vec<_>>(),
             [main.as_path(), other.as_path()]

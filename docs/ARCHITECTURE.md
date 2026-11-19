@@ -769,7 +769,9 @@ had read by then is kept for the next opening.
   `ssh://…github.com/…` (port 22 at most), `git@github.com:…`, or
   `ssh://…ssh.github.com:443/…`; and it has the commits as commit objects.
   Partial clones (`extensions.partialClone`, or a remote with `promisor` or
-  `partialclonefilter`) are left out, since Git fills them in from the network.
+  `partialclonefilter`) are left out, since Git fills them in from the network,
+  and so are clones whose object format is not SHA-1, where a 40-digit ID
+  could name something else.
 - **Reading Git.** `git`, as found on the app's own PATH, is not run at all
   when it is macOS's `/usr/bin/git` stub with no developer tools installed
   (checked once, on the file system). It runs without the
@@ -786,8 +788,8 @@ had read by then is kept for the next opening.
   are binary, come from the new commit (`--attr-source`), not from the
   checkout's files or system or user attribute files (`GIT_ATTR_NOSYSTEM=1`,
   `core.attributesFile=/dev/null`); the clone's own configuration still
-  applies, as it is the person's. A Git too old for `--attr-source` answers
-  nothing.
+  applies, as it is the person's. Git pointers in Documents need Git 2.41 or
+  later; with older Git they are shown as their authors wrote them.
   A file is read with
   `git cat-file blob`. Each command stops after 3 seconds or 4 MiB of output,
   no command starts after a page's 8 seconds, and a diff or code view holds at
@@ -810,9 +812,9 @@ had read by then is kept for the next opening.
   content policy is unchanged.
 - **Nothing to show.** A pointer with no matching checkout or commit, a path
   missing at that commit, a diff that touches a submodule, a binary file at a
-  code pointer, a path or text that is not UTF-8, a read that is too
-  large or too slow, or a view past 32 MiB of views on the page stays exactly
-  as authored.
+  code pointer, a path or text that is not UTF-8 or holds a NUL byte, a read
+  that is too large or too slow, or a view past 32 MiB of views on the page
+  stays exactly as authored.
 
 The experimental Artifacts pane is independent of Backbone. `app::artifacts`
 copies a UTF-8 HTML document and small metadata record into an immutable UUID
