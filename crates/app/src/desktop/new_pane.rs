@@ -502,9 +502,7 @@ impl NewPane {
                     VIEWS
                         .iter()
                         .enumerate()
-                        .filter(|(_, view)| {
-                            self.origin.allows_view(view.kind) && self.matches(view.label)
-                        })
+                        .filter(|(_, view)| self.origin.has_provider() && self.matches(view.label))
                         .map(|(index, _)| Row::View(index)),
                 );
             }
@@ -604,7 +602,7 @@ impl NewPane {
     }
 
     fn choose(&mut self, row: Row, cx: &mut Context<Self>) {
-        if matches!(&row, Row::View(index) if !self.origin.allows_view(VIEWS[*index].kind)) {
+        if matches!(&row, Row::View(_)) && !self.origin.has_provider() {
             return;
         }
         match row {

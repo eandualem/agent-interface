@@ -2,7 +2,7 @@
 
 use std::{io, path::PathBuf, time::Duration};
 
-use agent_interface_core::{View, ViewKind};
+use agent_interface_core::View;
 use agent_interface_roster::{
     profiles::{Connection, Kind},
     views::{Member, Request},
@@ -30,14 +30,6 @@ impl Origin {
 
     pub fn has_provider(&self) -> bool {
         matches!(self, Self::Bound(_))
-    }
-
-    /// Whether the new-pane chooser offers `kind` here: no view without a
-    /// profile, and Artifacts only for a profile that shows them.
-    pub fn allows_view(&self, kind: ViewKind) -> bool {
-        self.connection().is_some_and(|connection| {
-            kind != ViewKind::Artifacts || shows_artifacts(connection.kind())
-        })
     }
 
     /// Bind navigation to the registration in the displayed profile list.
@@ -121,9 +113,7 @@ mod tests {
             Some(socket),
         );
         let origin = Origin::Bound(connection.clone());
-        assert!(origin.allows_view(ViewKind::Agent));
-        assert!(!origin.allows_view(ViewKind::Artifacts));
-        assert!(origin.allows_view(ViewKind::Reports));
+        assert!(origin.has_provider());
         assert!(super::shows_artifacts(&Kind::LegacyDefault));
         assert!(!super::shows_artifacts(&Kind::Isolated));
         let (wake, ready) = mpsc::channel();
@@ -169,13 +159,6 @@ mod tests {
         let standalone = Origin::Standalone { socket: None };
         assert!(standalone.sessions(|| {}).unwrap().is_none());
         assert!(standalone.team(|| {}).unwrap().is_none());
-        for kind in [
-            ViewKind::Agent,
-            ViewKind::Team,
-            ViewKind::Reports,
-            ViewKind::Artifacts,
-        ] {
-            assert!(!standalone.allows_view(kind));
-        }
+        assert!(!standalone.has_provider());
     }
 }
