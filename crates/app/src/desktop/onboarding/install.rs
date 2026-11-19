@@ -776,6 +776,49 @@ mod tests {
         assert_eq!(request.as_deref(), Some(ID));
     }
 
+    /// First run's `initialize` against a real Agent Backbone service: the
+    /// request first run builds, sent and read as first run does. Ignored by
+    /// default. Run it by name against a private trial whose service is
+    /// already up, with `PATH` (the trial's `backbone` first), `HOME`,
+    /// `BACKBONE_DIR` and `TMUX_TMPDIR` all the trial's own. Only `service`
+    /// differs from what first run sends: the trial's service was started by
+    /// hand, so no login service is installed.
+    #[test]
+    #[ignore = "needs a private trial of a real Agent Backbone service"]
+    fn initialize_against_a_real_service() {
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap())
+            .canonicalize()
+            .unwrap();
+        assert!(
+            home.starts_with("/tmp") || home.starts_with("/private/tmp"),
+            "HOME must be a disposable temporary folder"
+        );
+        let path_env = std::env::var("PATH").unwrap();
+        let backbone = std::env::split_paths(&path_env)
+            .map(|directory| directory.join("backbone"))
+            .find(|candidate| candidate.is_file())
+            .expect("backbone on PATH");
+        let request_id = uuid::Uuid::now_v7().simple().to_string();
+        let mut request = initialize_request(&request_id);
+        request["service"] = "none".into();
+        println!("backbone: {}", backbone.display());
+        println!("request: {request}");
+        let sent = send(
+            &backbone,
+            &path_env,
+            &request.to_string(),
+            &request_id,
+            Instant::now() + SETUP_LIMIT,
+        );
+        println!("answer: {sent:?}");
+        let answer = sent.expect("setup ran").expect("an answer first run reads");
+        assert_eq!(answer.status, "completed");
+        assert!(matches!(
+            answer.code.as_str(),
+            "initialized" | "existing_preserved"
+        ));
+    }
+
     #[test]
     fn a_tool_installer_that_succeeds_is_done() {
         let (_directory, path) = temporary_path();
