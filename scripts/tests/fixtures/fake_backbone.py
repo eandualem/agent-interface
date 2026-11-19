@@ -241,14 +241,6 @@ def after_dashes(args):
     return args[args.index("--") + 1] if "--" in args and args.index("--") + 1 < len(args) else None
 
 
-def unique(pairs):
-    """An object from `pairs`, refusing a key said twice, at any depth."""
-    keys = [key for key, _ in pairs]
-    if len(keys) != len(set(keys)):
-        raise ValueError("a key is said twice")
-    return dict(pairs)
-
-
 def cli(argv):
     # Every command only as the app runs it, with --json; anything else is
     # a usage error.
@@ -290,16 +282,7 @@ def cli(argv):
         if len(argv) != 4 or argv[1] != "--file" or argv[3] != "--jsonl":
             sys.stderr.write(f"stand-in backbone: setup is run as setup --file F --jsonl, not {argv!r}\n")
             return 2
-        try:
-            request = json.loads(Path(argv[2]).read_text(), object_pairs_hook=unique)
-        except ValueError as error:
-            # Refused before it runs, as setup refuses a request it cannot read.
-            log("setup.jsonl", {"refused": str(error)})
-            line({"schema_version": 3, "request_id": "", "seq": 1, "type": "result",
-                  "action": "validate", "status": "failed", "code": "invalid_request",
-                  "message": f"the request is not one this version takes: {error}",
-                  "data": {}, "completed_steps": [], "retry": "new_request"})
-            return 2
+        request = json.loads(Path(argv[2]).read_text())
         log("setup.jsonl", {"request": request})
         return setup(request)
 
@@ -429,9 +412,7 @@ def first_agent(request):
             "tmux_created": rfc3339(now()), "tmux_attached": False, "tmux_windows": 1,
             "last_activity": now(), "state_since": now(), "last_message": None, "detail": None,
             "state_source": "push", "evidence": [], "machine": dict(state["machine"]), "waiting": None,
-            # The profile's first registration is its main agent.
-            "background": {"running": 0, "queued": 0, "processes": 0},
-            "role": "main" if not profile["agents"] else "swarm_member",
+            "background": {"running": 0, "queued": 0, "processes": 0}, "role": None,
             "superior": None, "mode": "sandboxed", "grants": [], "ceiling": [], "takes_issues": True}]
     steps = ["preflight", "agent", "launch", "ready"] + (["greeting"] if request["start_greeting"] else [])
     return events(request, [(step, "completed") for step in steps], {
