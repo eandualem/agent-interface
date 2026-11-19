@@ -153,7 +153,7 @@ pub(super) struct Conversation {
 /// A conversation as Backbone keeps it.
 struct Stored {
     /// The profile the record came from; requests go nowhere else.
-    bound: Option<stored::Client>,
+    bound: stored::Client,
     kind: Kind,
     /// `None` until Backbone first answers; `Some(false)` when it keeps none.
     supported: Option<bool>,
@@ -372,7 +372,7 @@ impl Conversation {
         if let Some((kind, id)) = item.conversation() {
             let origin = connection.identity().clone();
             let bound = match stored::Client::new(connection, &origin, kind, id) {
-                Ok(client) => Some(client),
+                Ok(client) => client,
                 Err(error) => {
                     conversation.read_error = Some(error);
                     conversation.blocked = true;
@@ -466,7 +466,7 @@ impl Conversation {
         conversation.open = true;
         conversation.anchor = Some(format!("{} {}", target.kind.name(), target.id));
         let bound = match target.bound_client() {
-            Ok(client) => Some(client),
+            Ok(client) => client,
             Err(error) => {
                 conversation.read_error = Some(error);
                 conversation.blocked = true;
@@ -565,7 +565,7 @@ impl Conversation {
             ..Default::default()
         });
         let bound = match target.bound_client() {
-            Ok(client) => Some(client),
+            Ok(client) => client,
             Err(error) => {
                 conversation.read_error = Some(error);
                 conversation.blocked = true;
@@ -813,7 +813,7 @@ impl Conversation {
 
     /// The request's target: the record's profile, kind and identity.
     fn target(&self) -> Option<stored::Client> {
-        self.stored.as_ref()?.bound.clone()
+        Some(self.stored.as_ref()?.bound.clone())
     }
 
     /// Read the newest page on an I/O worker.
@@ -2405,8 +2405,11 @@ mod tests {
 
     #[test]
     fn polling_keeps_the_thread_continuous() {
+        let (_directory, connection, server) = crate::roster::content::tests::provider("a", vec![]);
+        server.join().unwrap();
+        let origin = connection.identity().clone();
         let mut stored = Stored {
-            bound: None,
+            bound: stored::Client::new(connection, &origin, Kind::Report, "1".into()).unwrap(),
             kind: Kind::Report,
             supported: Some(true),
             page: None,

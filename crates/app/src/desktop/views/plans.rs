@@ -278,34 +278,26 @@ impl Plans {
 
 /// Immutable context for a draft and every retry of a sent message.
 pub(super) struct ConversationTarget {
-    pub connection: Option<Connection>,
+    pub connection: Connection,
     pub author: String,
     pub agent: String,
     pub anchor: conversations::Anchor,
 }
 
 impl ConversationTarget {
-    pub fn bound_client(&self) -> Result<Option<conversations::Client>, conversations::Error> {
-        self.connection
-            .as_ref()
-            .map(|connection| {
-                conversations::Client::new(
-                    connection.clone(),
-                    connection.identity(),
-                    conversations::Kind::Plan,
-                    self.author.clone(),
-                )
-            })
-            .transpose()
+    pub fn bound_client(&self) -> Result<conversations::Client, conversations::Error> {
+        conversations::Client::new(
+            self.connection.clone(),
+            self.connection.identity(),
+            conversations::Kind::Plan,
+            self.author.clone(),
+        )
     }
 
     pub fn key(&self) -> String {
         format!(
             "plan\n{}\n{}\n{}\n{}",
-            self.connection
-                .as_ref()
-                .map(|connection| super::seen::origin_key(connection.identity()))
-                .unwrap_or_default(),
+            super::seen::origin_key(self.connection.identity()),
             self.author,
             self.anchor.revision_id.as_deref().unwrap_or_default(),
             self.anchor.item_id.as_deref().unwrap_or_default()
@@ -348,7 +340,7 @@ impl Frame {
             .as_ref()
             .and_then(|id| record.plan.items.iter().find(|item| &item.item_id == id));
         Some(ConversationTarget {
-            connection: self.connection.clone(),
+            connection: self.connection.clone()?,
             author: entry.author_id.clone(),
             agent: entry.agent_name.clone(),
             anchor: conversations::Anchor {
@@ -1291,7 +1283,7 @@ mod tests {
             .revision_id = "second".into();
         assert_eq!(target.anchor.revision_id.as_deref(), Some("first"));
         assert_eq!(target.anchor.item_id.as_deref(), Some("step"));
-        let client = target.bound_client().unwrap().unwrap();
+        let client = target.bound_client().unwrap();
         assert_eq!(client.identity(), a.identity());
         assert!(
             client
