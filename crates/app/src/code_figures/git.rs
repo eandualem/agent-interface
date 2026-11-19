@@ -21,8 +21,9 @@ const TIMEOUT: Duration = Duration::from_secs(3);
 const BIG: usize = 16 * 1024 * 1024;
 /// The most rows read from one diff, and lines shown from one file.
 pub const ROW_LIMIT: usize = 20_000;
-/// The most files one diff may change, so that their object IDs fit on one
-/// command line.
+/// The most changed entries one diff may list before renames are paired (a
+/// moved file counts twice), so that their object IDs fit on one command
+/// line.
 const CHANGE_LIMIT: usize = 2_000;
 
 /// The standard output of `git -C dir args…`, when it succeeds before

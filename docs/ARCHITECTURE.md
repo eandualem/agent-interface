@@ -799,8 +799,8 @@ not be read is never remembered.
   other changed blob whole, and finding renames reads blobs too. So a diff
   is first listed with `--raw -z --no-renames --no-abbrev`, which reads no
   blob, and one `git rev-list --filter=blob:limit=…` names the listed blobs
-  over 16 MiB; a diff that would make Git read one is not read, so rename
-  detection never sees one.
+  over 16 MiB; a diff that would make Git read a changed blob over 16 MiB
+  is not read, so rename detection never sees one.
   A diff is read with `--no-ext-diff --no-textconv`, so no configured program
   runs, and `--submodule=short`, which overrides `diff.submodule`, so Git
   never reads inside a submodule. Its file list comes from
@@ -817,7 +817,11 @@ not be read is never remembered.
   A file is read with `git cat-file blob`, once `git cat-file -s` says it is
   at most 4 MiB. Each command stops after 3 seconds or 4 MiB of output,
   no command starts after a page's 8 seconds, and a diff or code view holds at
-  most 20,000 rows, counted while it is read and drawn. Commits do not change,
+  most 20,000 rows, counted while it is read and drawn. The app bounds Git's
+  output, its time, the number of changed entries and the sizes of the
+  blobs a pointer names directly; what Git reads internally to produce them
+  (the head commit's `.gitattributes` files along the changed paths, and
+  delta bases) is bounded by the repository's own objects. Commits do not change,
   so answers are kept for the session, up to 64 MiB, by the clone that gave
   them and what Git read (a file at a commit, or a diff's commits and paths,
   so excerpts of one file share one read), and used again only while that
@@ -839,7 +843,8 @@ not be read is never remembered.
   content policy is unchanged.
 - **Nothing to show.** A pointer with no matching checkout or commit, a code
   pointer's path missing at that commit, a diff that touches a submodule, a
-  diff that changes more than 2,000 files, a diff with a file over 16 MiB on
+  diff with more than 2,000 changed entries, counted before renames are
+  paired (a moved file counts twice), a diff with a file over 16 MiB on
   either side unless both sides are regular files over that size, which Git
   compares by size alone and shows as binary (so one added, deleted,
   renamed, grown past or shrunk from that size, or changed to or from a

@@ -626,7 +626,9 @@
       const variables = Object.entries(T.variables || {})
         .map(([name, value]) => `--ai-${name}:${value}!important;`)
         .join('');
-      const css = `:root{color-scheme:${T.scheme}!important;${variables}}${T.css}${
+      // A Git view takes the theme's scheme, not the nearest the document set.
+      const view = `.ai-git.ai-git{color-scheme:${T.scheme}!important}`;
+      const css = `:root{color-scheme:${T.scheme}!important;${variables}}${T.css}${view}${
         selecting ? '' : SELECTION
       }${held}`;
       style.textContent = HOLD + css;

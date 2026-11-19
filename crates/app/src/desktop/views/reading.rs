@@ -243,6 +243,14 @@ mod tests {
         assert!(
             view.contains("all: initial !important") && view.contains("all: revert !important")
         );
+        // The view's scheme is the theme's: the reader's script sets it after
+        // these rules, which set none.
+        assert!(!view.contains("color-scheme"));
+        let script = include_str!("../../../assets/document/theme.js");
+        assert!(
+            script.contains("const view = `.ai-git.ai-git{color-scheme:${T.scheme}!important}`;")
+        );
+        assert!(script.contains("${T.css}${view}"));
         let mut closed = None;
         for rule in view
             .split('}')

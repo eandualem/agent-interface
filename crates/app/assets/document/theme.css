@@ -57,10 +57,10 @@ hr { border: 0 !important; height: 1px; background-color: var(--ai-line) !import
   /* What its dir="ltr" gives it. */
   direction: ltr !important;
   unicode-bidi: isolate !important;
-  /* What the view took from the page before: the theme's own html, :root
-     and body rules. */
+  /* What the view took from the page before: the theme's own html and
+     body rules. Its color-scheme is the theme's, which the reader's script
+     sets after these rules, as it does on :root. */
   font-family: system-ui !important;
-  color-scheme: inherit !important;
   -webkit-user-select: text !important;
   user-select: text !important;
   /* A details element's own. */
