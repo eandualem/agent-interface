@@ -256,6 +256,69 @@ pub fn token(text: &str) -> bool {
     valid_id(text) && text.len() <= 128
 }
 
+/// Whether the JSON text `bytes` says no key twice in any object, at any
+/// depth, read or not: a key said twice is refused before any field is
+/// read, so no reading of it can take the last one.
+pub fn unique_keys(bytes: &[u8]) -> bool {
+    use serde::de::{Error as _, MapAccess, SeqAccess, Visitor};
+    use std::{collections::HashSet, fmt};
+    struct Unique;
+    impl<'de> Deserialize<'de> for Unique {
+        fn deserialize<D: serde::Deserializer<'de>>(json: D) -> Result<Unique, D::Error> {
+            json.deserialize_any(Unique)
+        }
+    }
+    impl<'de> Visitor<'de> for Unique {
+        type Value = Unique;
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a JSON value")
+        }
+        fn visit_bool<E>(self, _: bool) -> Result<Unique, E> {
+            Ok(Unique)
+        }
+        fn visit_i64<E>(self, _: i64) -> Result<Unique, E> {
+            Ok(Unique)
+        }
+        fn visit_u64<E>(self, _: u64) -> Result<Unique, E> {
+            Ok(Unique)
+        }
+        fn visit_f64<E>(self, _: f64) -> Result<Unique, E> {
+            Ok(Unique)
+        }
+        fn visit_str<E>(self, _: &str) -> Result<Unique, E> {
+            Ok(Unique)
+        }
+        fn visit_unit<E>(self) -> Result<Unique, E> {
+            Ok(Unique)
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut items: A) -> Result<Unique, A::Error> {
+            while items.next_element::<Unique>()?.is_some() {}
+            Ok(Unique)
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut fields: A) -> Result<Unique, A::Error> {
+            let mut keys = HashSet::new();
+            while let Some(key) = fields.next_key::<String>()? {
+                if !keys.insert(key) {
+                    return Err(A::Error::custom("a key said twice"));
+                }
+                fields.next_value::<Unique>()?;
+            }
+            Ok(Unique)
+        }
+    }
+    let mut json = serde_json::Deserializer::from_slice(bytes);
+    Unique::deserialize(&mut json).is_ok() && json.end().is_ok()
+}
+
+/// A field that may be left out, but when it is there is of its type: a
+/// string said as null is refused; a field that may be null says so in
+/// its type.
+fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    json: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(json).map(Some)
+}
+
 /// Validated progress or terminal outcome; provider prose is never retained.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Event {
@@ -326,24 +389,43 @@ struct DataWire<T> {
 }
 
 /// What a first agent's result reports, as the setup guide's `data`
-/// table names it. A result setup made without reaching the profile has
-/// none of it.
+/// table names it: all of it, or, from a result setup made without
+/// reaching the profile, none. `launch_id` and `greeting_delivery_id` may
+/// be null.
 #[derive(Deserialize)]
 struct FirstAgentData {
+    #[serde(default, deserialize_with = "present")]
     agent_name: Option<String>,
+    #[serde(default, deserialize_with = "present")]
     ready: Option<String>,
-    launch_id: Option<String>,
-    #[serde(rename = "greeting_delivery_id")]
-    _greeting: Option<i64>,
-    #[serde(rename = "evidence")]
-    _evidence: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    launch_id: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    greeting_delivery_id: Option<Option<i64>>,
+    #[serde(default, deserialize_with = "present")]
+    evidence: Option<String>,
+}
+impl FirstAgentData {
+    /// All of it, or none.
+    fn whole(&self) -> bool {
+        let said = [
+            self.agent_name.is_some(),
+            self.ready.is_some(),
+            self.launch_id.is_some(),
+            self.greeting_delivery_id.is_some(),
+            self.evidence.is_some(),
+        ];
+        said.iter().all(|&said| said) || said.iter().all(|&said| !said)
+    }
 }
 
-/// What a cancellation's result reports; only the answer that confirms
-/// the cancellation has it.
+/// What a cancellation's result reports: all of it from the one answer
+/// that confirms the cancellation, none from any other.
 #[derive(Deserialize)]
 struct CancelData {
+    #[serde(default, deserialize_with = "present")]
     cancelled_request_id: Option<String>,
+    #[serde(default, deserialize_with = "present")]
     can_start_new_request: Option<bool>,
 }
 
@@ -393,6 +475,9 @@ impl Stream {
         Ok(events)
     }
     fn line(&mut self, bytes: &[u8]) -> Result<Event, Error> {
+        if !unique_keys(bytes) {
+            return Err(Error::Invalid);
+        }
         let wire: Wire = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
         if wire.schema_version != SCHEMA_VERSION {
             return Err(Error::Unsupported);
@@ -445,6 +530,9 @@ impl Stream {
                     let data = serde_json::from_slice::<DataWire<CancelData>>(bytes)
                         .map_err(|_| Error::Invalid)?
                         .data;
+                    if data.cancelled_request_id.is_some() != data.can_start_new_request.is_some() {
+                        return Err(Error::Invalid);
+                    }
                     if completed && code == "request_cancelled" {
                         // Only this answer confirms the cancellation; naming
                         // another request contradicts it.
@@ -460,9 +548,11 @@ impl Stream {
                     let data = serde_json::from_slice::<DataWire<FirstAgentData>>(bytes)
                         .map_err(|_| Error::Invalid)?
                         .data;
-                    if [&data.ready, &data.launch_id]
-                        .into_iter()
-                        .any(|value| value.as_deref().is_some_and(|value| !token(value)))
+                    let launch_id = data.launch_id.clone().flatten();
+                    if !data.whole()
+                        || [&data.ready, &launch_id]
+                            .into_iter()
+                            .any(|value| value.as_deref().is_some_and(|value| !token(value)))
                     {
                         return Err(Error::Invalid);
                     }
@@ -475,7 +565,7 @@ impl Stream {
                             return Err(Error::Invalid);
                         }
                         event.ready_agent = Some(self.name.clone());
-                        event.launch_id = data.launch_id;
+                        event.launch_id = launch_id;
                     }
                 }
             }

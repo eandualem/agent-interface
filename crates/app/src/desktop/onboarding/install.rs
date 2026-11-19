@@ -5,7 +5,9 @@
 //! installation's login service. Every fix runs off the UI thread with a
 //! deadline, and a failure explains itself.
 
-use agent_interface_roster::profiles::setup::{EVENT_LIMIT, LINE_LIMIT, OUTPUT_LIMIT, token};
+use agent_interface_roster::profiles::setup::{
+    EVENT_LIMIT, LINE_LIMIT, OUTPUT_LIMIT, token, unique_keys,
+};
 use std::{
     io::Read,
     os::unix::fs::FileExt,
@@ -333,6 +335,10 @@ fn answer(printed: &str, request_id: &str) -> Option<Answer> {
         if text.trim().is_empty() {
             continue;
         }
+        // No key said twice anywhere in it, its data among them.
+        if !unique_keys(text.as_bytes()) {
+            return None;
+        }
         let line: Line = serde_json::from_str(text).ok()?;
         if line.schema_version != 3
             || line.request_id != request_id
@@ -573,6 +579,15 @@ mod tests {
         let blank = " ".repeat(LINE_LIMIT + 1);
         let printed = format!("{}\n{blank}\n{}\n", fixture("step"), fixture("result"));
         assert_eq!(answer(&printed, ID), None);
+        // A key said twice inside the data, which the app doesn't read.
+        let mut twice = fixture("result");
+        twice["data"]["profile"] = serde_json::json!({"profile_id": "0a1b2c3d4e5f"});
+        let twice = twice.to_string().replacen(
+            "\"profile\":{",
+            "\"profile\":{\"profile_id\":\"0a1b2c3d4e60\",",
+            1,
+        );
+        assert_eq!(answer(&format!("{}\n{twice}\n", fixture("step")), ID), None);
         // A step with a result's fields, of any type, is read as a step.
         let mut step = fixture("step");
         step["retry"] = serde_json::json!({"not": "a token"});

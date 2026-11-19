@@ -23,7 +23,8 @@ impl Prepared {
         let data = if event.cancelled {
             json!({"cancelled_request_id":event.request_id,"can_start_new_request":true})
         } else if let Some(name) = &event.ready_agent {
-            json!({"agent_name":name,"ready":"ready","launch_id":event.launch_id})
+            json!({"agent_name":name,"ready":"ready","launch_id":event.launch_id,
+                "greeting_delivery_id":null,"evidence":""})
         } else {
             json!({})
         };

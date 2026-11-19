@@ -554,3 +554,72 @@ fn a_field_of_the_data_the_app_reads_said_twice_poisons() {
     );
     assert!(decode(Action::FirstAgent, &empty).is_ok());
 }
+
+#[test]
+fn a_key_said_twice_at_any_depth_is_refused_read_or_not() {
+    for twice in [
+        r#"{"a":1,"a":1}"#,
+        r#"{"data":{"more":{"x":1,"x":2}}}"#,
+        r#"{"data":[{"x":[{"y":1,"y":1}]}]}"#,
+        r#"{"a":1,"a":1}"#,
+    ] {
+        assert!(!super::unique_keys(twice.as_bytes()), "{twice}");
+    }
+    for once in [
+        r#"{"a":{"a":1},"b":[{"a":1},{"a":2}]}"#,
+        r#"[1,"x",null,1.5]"#,
+    ] {
+        assert!(super::unique_keys(once.as_bytes()), "{once}");
+    }
+    assert!(!super::unique_keys(br#"{"a":1} {"#));
+    // In data the app doesn't read, too.
+    let mut deep = ready();
+    deep["data"]["more"] = json!({"x": 1});
+    let twice =
+        serde_json::to_string(&deep)
+            .unwrap()
+            .replacen("\"more\":{", "\"more\":{\"x\":2,", 1);
+    let mut stream = prepared(guide()).stream(Action::FirstAgent);
+    assert!(stream.push(format!("{twice}\n").as_bytes()).is_err());
+}
+
+#[test]
+fn data_is_all_there_or_none_and_a_string_is_never_null() {
+    // Null only where the guide says it may be.
+    for field in ["launch_id", "greeting_delivery_id"] {
+        let mut nullable = ready();
+        nullable["data"][field] = Value::Null;
+        assert!(decode(Action::FirstAgent, &nullable).is_ok(), "{field}");
+    }
+    for field in ["agent_name", "ready", "evidence"] {
+        let mut null = ready();
+        null["data"][field] = Value::Null;
+        assert!(decode(Action::FirstAgent, &null).is_err(), "{field}");
+        // Left out of data that has the rest, on any result.
+        for mut partial in [
+            ready(),
+            answer(
+                Action::FirstAgent,
+                "failed",
+                "agent_conflict",
+                "new_request",
+            ),
+        ] {
+            partial["data"] = ready()["data"].clone();
+            partial["data"].as_object_mut().unwrap().remove(field);
+            assert!(decode(Action::FirstAgent, &partial).is_err(), "{field}");
+        }
+    }
+    // A cancellation's data: both or neither.
+    let mut null = cancelled();
+    null["data"]["cancelled_request_id"] = Value::Null;
+    assert!(decode(Action::CancelFirstAgent, &null).is_err());
+    let mut partial = answer(
+        Action::CancelFirstAgent,
+        "action_required",
+        "cancellation_unsafe",
+        "none",
+    );
+    partial["data"] = json!({"can_start_new_request": true});
+    assert!(decode(Action::CancelFirstAgent, &partial).is_err());
+}
