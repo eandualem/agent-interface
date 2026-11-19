@@ -584,7 +584,7 @@ impl ViewPane {
                                 return;
                             }
                             let link_error = result.as_ref().err().copied();
-                            if let Ok(Data::Reports(page)) = result
+                            if let Ok(page) = result
                                 && let Some(item) = page.items.first()
                             {
                                 pane.show_records(

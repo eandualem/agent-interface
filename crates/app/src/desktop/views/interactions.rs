@@ -63,11 +63,12 @@ impl Source {
         api::Client::new(self.connection().clone()).detail(id)
     }
 
+    /// The progress report or answer a message links to, as a one-record page.
     pub fn report(
         &self,
         id: u64,
         response: bool,
-    ) -> Result<agent_interface_roster::views::Data, &'static str> {
+    ) -> Result<agent_interface_roster::views::ReportPage, &'static str> {
         use agent_interface_roster::views::{self, content};
         let request = if response {
             content::Request::Response(id)
@@ -77,9 +78,9 @@ impl Source {
         content::read(self.connection(), &request, &|| true)
             .result
             .and_then(|data| match data {
-                content::Data::Reports(page) => Ok(views::Data::Reports(page)),
-                content::Data::Document(document) => Ok(views::Data::Document(document)),
-                content::Data::Team(_)
+                content::Data::Reports(page) => Ok(page),
+                content::Data::Document(_)
+                | content::Data::Team(_)
                 | content::Data::Tags(_)
                 | content::Data::Policies(_)
                 | content::Data::Skills(_)

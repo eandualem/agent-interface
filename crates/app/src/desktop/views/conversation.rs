@@ -847,9 +847,6 @@ impl Conversation {
                 stored.reading = false;
                 let mut failure = None;
                 conversation.read_error = result.as_ref().err().copied();
-                let Some(stored) = conversation.stored.as_mut() else {
-                    return;
-                };
                 match result {
                     Ok(page) => {
                         stored.supported = Some(true);
