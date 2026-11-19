@@ -809,11 +809,26 @@ mod tests {
                 assert!(!required, "{name} must be set");
                 continue;
             };
-            let place = PathBuf::from(place).canonicalize().unwrap();
+            // The three a trial is made of exist already. Another that
+            // doesn't exist yet is judged by what exists of its path, so a
+            // link on the way can't lead out.
+            let place = PathBuf::from(place);
+            assert!(!required || place.exists(), "{name} must exist");
+            let existing = place
+                .ancestors()
+                .find(|ancestor| ancestor.exists())
+                .and_then(|existing| existing.canonicalize().ok());
             assert!(
-                ["/tmp", "/private/tmp"].iter().any(|root| place
-                    .strip_prefix(root)
-                    .is_ok_and(|rest| rest.components().next().is_some())),
+                place
+                    .components()
+                    .all(|part| part != std::path::Component::ParentDir)
+                    && existing.is_some_and(|existing| {
+                        ["/tmp", "/private/tmp"].iter().any(|root| {
+                            existing
+                                .strip_prefix(root)
+                                .is_ok_and(|rest| rest.components().next().is_some())
+                        })
+                    }),
                 "{name} must be a disposable folder inside the temporary one"
             );
         }

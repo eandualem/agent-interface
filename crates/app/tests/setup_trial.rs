@@ -27,12 +27,21 @@ fn live() -> bool {
 }
 
 /// Whether `path` is inside the temporary folder: never that folder itself,
-/// where tmux keeps its default server.
+/// where tmux keeps its default server. A folder that doesn't exist yet is
+/// judged by what exists of its path, so a link on the way can't lead out.
 fn temporary(path: &Path) -> bool {
-    ["/tmp", "/private/tmp"].iter().any(|root| {
-        path.strip_prefix(root)
-            .is_ok_and(|rest| rest.components().next().is_some())
-    })
+    let inside = |path: &Path| {
+        ["/tmp", "/private/tmp"].iter().any(|root| {
+            path.strip_prefix(root)
+                .is_ok_and(|rest| rest.components().next().is_some())
+        })
+    };
+    path.components().all(|part| part != Component::ParentDir)
+        && path
+            .ancestors()
+            .find(|ancestor| ancestor.exists())
+            .and_then(|existing| existing.canonicalize().ok())
+            .is_some_and(|existing| inside(&existing))
 }
 
 /// The trial's client. Nothing of a person's own: every place the service is
@@ -53,8 +62,10 @@ fn client() -> Client {
             assert!(!required, "{name} must be set");
             continue;
         };
+        // The three a trial is made of exist already.
+        assert!(!required || Path::new(&place).exists(), "{name} must exist");
         assert!(
-            temporary(&PathBuf::from(place).canonicalize().unwrap()),
+            temporary(Path::new(&place)),
             "{name} must be a disposable folder inside the temporary one"
         );
     }
@@ -82,18 +93,9 @@ fn first_agent_on_the_default_profile() {
     let variable = |name: &str| std::env::var(name).ok();
     let name = variable("TRIAL_AGENT_NAME").unwrap_or_else(|| "guide".into());
     let directory = PathBuf::from(variable("TRIAL_AGENT_DIR").expect("TRIAL_AGENT_DIR"));
-    // Setup makes the folder, so what exists of its path is what is checked:
-    // a link on the way must not lead out of the temporary folder.
-    let existing = directory
-        .ancestors()
-        .find(|ancestor| ancestor.exists())
-        .expect("an existing folder above TRIAL_AGENT_DIR");
+    // Setup makes the folder, so what exists of its path is what is checked.
     assert!(
-        temporary(&directory)
-            && temporary(&existing.canonicalize().unwrap())
-            && directory
-                .components()
-                .all(|part| part != Component::ParentDir),
+        temporary(&directory),
         "TRIAL_AGENT_DIR must be a folder inside the trial's own under /tmp"
     );
     let runtime = variable("TRIAL_RUNTIME").unwrap_or_else(|| "codex".into());
