@@ -141,8 +141,8 @@ fn each_code_says_what_happened_by_what_may_follow_it() {
         "action_required runtime_missing new_request: isn't installed",
         "failed runtime_missing new_request: isn't installed",
         "failed starter_conflict new_request: starter",
-        "failed launch_failed none: exited right after starting",
-        "action_required service_unavailable same_request: nothing was sent",
+        "failed launch_failed none: did not start, or exited right after starting",
+        "action_required service_unavailable same_request: did not answer. Try again: it sends the same request",
         "action_required service_unavailable new_request: couldn't reach",
         "failed installation_conflict none: another profile",
         "failed request_conflict new_request: used for another request",
@@ -152,7 +152,7 @@ fn each_code_says_what_happened_by_what_may_follow_it() {
         "action_required outcome_unknown none: never runs again",
         "action_required outcome_unknown new_request: only a new request can follow",
         "failed setup_failed same_request: before it changed anything",
-        "failed operator_required none: not one of your agents",
+        "failed operator_required none: worker may have been added",
         "failed invalid_request new_request: were refused",
         "paused new_code later: new_code",
         // A retry this app doesn't know: kept open, never "never runs again".
@@ -167,7 +167,7 @@ fn each_code_says_what_happened_by_what_may_follow_it() {
     }
     for row in [
         "action_required outcome_unknown same_request: Send the cancellation again",
-        "action_required service_unavailable same_request: nothing was sent",
+        "action_required service_unavailable same_request: did not answer",
         "action_required cancellation_unsafe none: not a rollback",
         "failed request_conflict new_request: used for another request",
         "failed request_expired none: never runs now",
@@ -186,6 +186,7 @@ fn each_code_says_what_happened_by_what_may_follow_it() {
         ("action_required", "outcome_unknown"),
         ("failed", "request_expired"),
         ("failed", "agent_conflict"),
+        ("failed", "operator_required"),
         ("failed", "new_code"),
     ] {
         let s = answered(false, row.0, row.1, "none");

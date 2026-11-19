@@ -127,7 +127,10 @@ fn unknown_whether_added(s: &Snapshot) -> bool {
                 && code.is_some_and(|code| {
                     matches!(
                         code,
-                        "outcome_unknown" | "request_expired" | "agent_conflict"
+                        "outcome_unknown"
+                            | "request_expired"
+                            | "agent_conflict"
+                            | "operator_required"
                     ) || !KNOWN.contains(&code)
                 }))
     })
@@ -162,9 +165,9 @@ fn outcome(s: &Snapshot) -> Option<String> {
         ("runtime_missing", _) => "This tool isn't installed where the profile can use it, or setup doesn't start it. Install it or choose another, then start again.".into(),
         ("starter_conflict", _) => "The profile's starter isn't as a first agent needs it: a starter policy, skill or the guide's brief is missing or changed. Fix it, then start again.".into(),
         ("launch_failed", _) => format!(
-            "{name} was added, but its CLI exited right after starting, so it isn't running. Run the CLI in a terminal in its folder to see why, then start it again."
+            "{name} was added, but its CLI did not start, or exited right after starting, so it isn't running. Run the CLI in a terminal in its folder to see why, then start it again."
         ),
-        ("service_unavailable", Some("same_request")) => "The profile's service isn't answering, so nothing was sent. Start it with backbone up --detach, then try again.".into(),
+        ("service_unavailable", Some("same_request")) => "The profile's service, or the computer the agent runs on, did not answer. Try again: it sends the same request.".into(),
         ("service_unavailable", _) => "The profile couldn't reach the computer the agent runs on. Start again once it answers.".into(),
         ("installation_conflict", _) => "This request is for another profile, or this computer is no longer the profile's. Open the profile again before adding agents.".into(),
         ("request_conflict", _) => "Its request ID was used for another request. Start again: that makes a new request.".into(),
@@ -189,7 +192,9 @@ fn outcome(s: &Snapshot) -> Option<String> {
             "Setup had already begun to change things, so it wasn't cancelled. Look at {name} in the workspace: a cancellation is not a rollback."
         ),
         ("setup_failed", _) => "Setup stopped on an error of its own before it changed anything. Try again.".into(),
-        ("operator_required", _) => "Only you can add a first agent, not one of your agents. Open Agent Interface yourself, then start again.".into(),
+        ("operator_required", _) => format!(
+            "Setup took this for one of your agents asking, not you. {name} may have been added: look at the workspace."
+        ),
         ("invalid_request", _) => "The agent's name, folder, model or instructions were refused. Go back and change them.".into(),
         (code, Some("none")) => format!(
             "The profile answered: {code}. It isn't known whether {name} was added: look at the workspace before adding it again."
