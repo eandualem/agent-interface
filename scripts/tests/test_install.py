@@ -278,7 +278,6 @@ if url.endswith('/releases/latest'):
 assert '/releases/download/vfixture/' in url
 if url.endswith('.sha256'):
     output.write_bytes(Path(str(archive) + '.sha256').read_bytes())
-    print('200', end='')
     sys.exit(0)
 assert '--continue-at' in args and args[args.index('--continue-at') + 1] == '-'
 assert '--max-time' not in args
@@ -517,6 +516,17 @@ sys.exit(0 if outcome in ('ok', 'corrupt') else int(outcome))
         self.assertEqual(subprocess.check_output([binary, "--version"], text=True).strip(), "agent-interface 0.0.1")
         self.install(self.package("0.0.2", target="aarch64-apple-darwin"))
         self.assertEqual(subprocess.check_output([binary, "--version"], text=True).strip(), "agent-interface 0.0.2")
+
+    def test_mac_download_installs_the_latest_release(self):
+        self.command("uname", 'case "$1" in -s) echo Darwin;; -m) echo arm64;; esac')
+        self.command("codesign", "exit 0")
+        self.mock_download(self.package("0.1.1", target="aarch64-apple-darwin"))
+        self.install(None)
+        binary = self.home / "Applications/Agent Interface.app/Contents/MacOS/agent-interface"
+        self.assertEqual(subprocess.check_output([binary, "--version"], text=True).strip(), "agent-interface 0.1.1")
+        self.assertEqual((self.root / "downloads").read_text().splitlines(), [
+            "agent-interface-aarch64-apple-darwin.tar.gz.sha256",
+            "agent-interface-aarch64-apple-darwin.tar.gz"])
 
     def test_rollback_after_launcher_failure(self):
         self.install(self.package())

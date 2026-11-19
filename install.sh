@@ -202,12 +202,10 @@ else
     # Fetch the small checksum first so a cached partial belongs to exactly
     # these bytes, even if the latest release changes between installer runs.
     printf 'Checking the release checksum...\n'
-    fetch_checksum() {
-        curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
-            --connect-timeout 15 --max-time 60 --retry 4 --retry-delay 2 --retry-connrefused \
-            --write-out '%{http_code}' "$base/$name.sha256" -o "$staging/checksum"
-    }
-    fetch_checksum > /dev/null || fail 'Could not fetch the release checksum. Check your connection and retry.'
+    curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
+        --connect-timeout 15 --max-time 60 --retry 4 --retry-delay 2 --retry-connrefused \
+        "$base/$name.sha256" -o "$staging/checksum" ||
+        fail 'Could not fetch the release checksum. Check your connection and retry.'
     expected=$(awk 'NR == 1 {print $1}' "$staging/checksum")
     [ ${#expected} -eq 64 ] || fail 'Invalid SHA-256 checksum.'
     case $expected in *[!0-9a-f]*) fail 'Invalid SHA-256 checksum.';; esac
