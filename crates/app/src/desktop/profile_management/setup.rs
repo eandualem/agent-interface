@@ -112,7 +112,7 @@ fn said(event: &Event) -> Option<String> {
     Some(match event.code.as_deref()? {
         "agent_ready" if event.ready_agent.is_some() => return None,
         "request_cancelled" if event.cancelled => return None,
-        "cancellation_unsafe" => "Setup had already begun to change things, so it wasn't cancelled: a cancellation is not a rollback.".into(),
+        "cancellation_unsafe" => "Setup had already begun to change things, so it wasn't cancelled: a cancellation is not a rollback. Look at the agent first.".into(),
         "agent_conflict" => "The name, its folder or its terminal isn't free, or the folder is missing or could not be made: change the name or folder.".into(),
         "runtime_missing" => "This tool isn't installed where the profile can use it, or setup doesn't start it: install it or choose another.".into(),
         "invalid_request" if cancel => "Setup refused the cancellation as it was sent.".into(),
@@ -138,7 +138,7 @@ fn next(s: &Snapshot, cancel_view: bool) -> &'static str {
         && Command::Retry.allowed(Some(s))
         && event.and_then(|e| e.code.as_deref()) == Some("cancellation_unsafe")
     {
-        "Look at the agent first, then send it again to learn what came of it, or forget it."
+        "Then send it again to learn what came of it, or forget it."
     } else if cancel_view && Command::Retry.allowed(Some(s)) {
         // Refused, or answered for another request: an earlier send of it
         // may have cancelled it.
@@ -172,17 +172,29 @@ impl Then {
         }
     }
 }
-/// What may follow a stopped start: the same request while it may be sent
-/// again, a new one only once it is closed.
-fn then(served: Option<&Served>, snapshot: Option<&Snapshot>) -> Then {
+/// What may follow a guide's stopped start: the same request while it may
+/// be sent again, a new one only once it is closed.
+fn then(snapshot: Option<&Snapshot>) -> Then {
+    match saved_open(snapshot) {
+        Some(true) => Then::Replay,
+        Some(false) => Then::Wait,
+        None => Then::Fresh,
+    }
+}
+/// The main button a stopped start shows, if any, and what pressing it
+/// does. Add agent's is as it always was: Try again, the same start while
+/// what came of it isn't known, else a new one.
+fn main_button(
+    served: Option<&Option<Answer>>,
+    snapshot: Option<&Snapshot>,
+) -> Option<(&'static str, Then)> {
     match served {
-        Some(served) if matches!(served.answer, Some(Answer::Unknown(_))) => Then::Replay,
-        Some(_) => Then::Fresh,
-        None => match saved_open(snapshot) {
-            Some(true) => Then::Replay,
-            Some(false) => Then::Wait,
-            None => Then::Fresh,
-        },
+        Some(Some(Answer::Unknown(_))) => Some(("Try again", Then::Replay)),
+        Some(_) => Some(("Try again", Then::Fresh)),
+        None => {
+            let after = then(snapshot);
+            after.label().map(|label| (label, after))
+        }
     }
 }
 /// Whether a saved request that is still open can be sent again; `None`
@@ -891,10 +903,11 @@ impl Pane {
     /// What the guide's main button says once a start has stopped: none
     /// while its request is open with nothing it may send.
     pub fn again_label(&self) -> Option<&'static str> {
-        let Page::Operation { snapshot, .. } = &self.page else {
-            return then(self.served.as_ref(), None).label();
+        let snapshot = match &self.page {
+            Page::Operation { snapshot, .. } => snapshot.as_deref(),
+            _ => None,
         };
-        then(self.served.as_ref(), snapshot.as_deref()).label()
+        main_button(self.served.as_ref().map(|s| &s.answer), snapshot).map(|(label, _)| label)
     }
 
     /// Once a fresh start has stopped without its agent running, the revision
@@ -968,14 +981,17 @@ impl Pane {
         if !starting {
             // The same request while it may be sent again; a new one only
             // once it is closed, under the text that says to look first.
-            let after = then(self.served.as_ref(), snapshot);
-            if let Some(label) = after.label() {
+            if let Some((label, after)) =
+                main_button(self.served.as_ref().map(|s| &s.answer), snapshot)
+            {
                 actions = actions.child(
                     ui::button("setup-try-again", label, ui::Button::Primary).on_click(
                         cx.listener(move |pane, _, _, cx| {
                             if after == Then::Fresh {
                                 pane.finished = true;
                                 cx.emit(Again);
+                            } else if pane.served.is_some() {
+                                pane.run_served(cx);
                             } else {
                                 pane.retry(cx);
                             }

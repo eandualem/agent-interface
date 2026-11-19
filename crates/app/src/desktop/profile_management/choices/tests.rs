@@ -441,3 +441,29 @@ fn each_result_a_start_stops_on_reads_the_open_setups_again() {
     // Stopped before anything was saved.
     assert!(read_again(None, Some(0)));
 }
+
+#[test]
+fn the_start_button_after_a_stop_is_the_one_its_request_offers_or_none() {
+    // As rendered: no button at all while the request is open with nothing
+    // it may send.
+    assert_eq!(start_label(false, Some(None), true, true, "guide"), None);
+    for label in ["Try again", "Start a new request"] {
+        assert_eq!(
+            start_label(false, Some(Some(label)), true, true, "guide").as_deref(),
+            Some(label)
+        );
+    }
+    // Before any stop, and while starting, as before.
+    assert_eq!(
+        start_label(false, None, true, true, "guide").as_deref(),
+        Some("Start guide")
+    );
+    assert_eq!(
+        start_label(false, None, false, true, "guide").as_deref(),
+        Some("Choose a tool")
+    );
+    assert_eq!(
+        start_label(true, Some(None), true, true, "guide").as_deref(),
+        Some("Starting guide…")
+    );
+}

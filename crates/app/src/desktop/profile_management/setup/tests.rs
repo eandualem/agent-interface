@@ -225,7 +225,7 @@ fn every_answer_s_words_agree_with_its_status_and_buttons() {
                     );
                     assert_eq!(
                         text.contains("Look at the agent first"),
-                        cancel && again && !again_cancel,
+                        code == "cancellation_unsafe" || (cancel && again && !again_cancel),
                         "{row}: {text}"
                     );
                     // A new request only where one may follow, and look first
@@ -279,23 +279,38 @@ fn every_answer_s_words_agree_with_its_status_and_buttons() {
         assert_eq!(Command::Retry.allowed(Some(&s)), open, "{code}");
         assert_eq!(s.closed(), !open, "{code}");
     }
-    // The guide's button: the same request while it may be sent again, a
-    // new one only once it is closed, and neither while it is open with
-    // nothing it may send.
-    for (retry, after, label) in [
-        ("same_request", Then::Replay, Some("Try again")),
-        ("none", Then::Fresh, Some("Start a new request")),
-        ("new_request", Then::Fresh, Some("Start a new request")),
-        ("later", Then::Wait, None),
+    // The guide's main button, as rendered: the same request while it may
+    // be sent again, a new one only once it is closed, and no button while
+    // it is open with nothing it may send.
+    for (retry, button) in [
+        ("same_request", Some(("Try again", Then::Replay))),
+        ("none", Some(("Start a new request", Then::Fresh))),
+        ("new_request", Some(("Start a new request", Then::Fresh))),
+        ("later", None),
     ] {
         let s = answered(false, "action_required", "outcome_unknown", retry);
-        assert_eq!(then(None, Some(&s)), after, "{retry}");
-        assert_eq!(after.label(), label, "{retry}");
+        assert_eq!(main_button(None, Some(&s)), button, "{retry}");
     }
     let mut saved = snapshot();
     saved.phase = Phase::Prepared;
-    assert_eq!(then(None, Some(&saved)), Then::Replay);
-    assert_eq!(then(None, None), Then::Fresh);
+    assert_eq!(
+        main_button(None, Some(&saved)),
+        Some(("Try again", Then::Replay))
+    );
+    assert_eq!(
+        main_button(None, None),
+        Some(("Start a new request", Then::Fresh))
+    );
+    // Add agent's, as it always was: Try again, the same start while what
+    // came of it isn't known, else a new one.
+    for (answer, then) in [
+        (Some(Answer::Unknown(None)), Then::Replay),
+        (Some(Answer::Unknown(Some("why".into()))), Then::Replay),
+        (Some(Answer::Stopped("guide is taken".into())), Then::Fresh),
+        (None, Then::Fresh),
+    ] {
+        assert_eq!(main_button(Some(&answer), None), Some(("Try again", then)));
+    }
     // Setup said nothing: the app says so, never an empty line.
     let s = answered(false, "failed", "new_code", "none");
     assert!(

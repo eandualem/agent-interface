@@ -1390,23 +1390,12 @@ impl Form {
         // Start, and what it is doing.
         let tool = self.runtime().is_some();
         let ready = self.can_start(cx);
-        let start = if busy {
-            format!("Starting {name}…")
-        } else if failure.is_some() {
-            // The same request while it may be sent again; a new one once it
-            // is closed.
+        let again = failure.as_ref().map(|_| {
             self.start
                 .as_ref()
                 .and_then(|(pane, _)| pane.read(cx).again_label())
-                .unwrap_or("Try again")
-                .to_owned()
-        } else if !tool {
-            "Choose a tool".to_owned()
-        } else if valid {
-            format!("Start {name}")
-        } else {
-            "Start guide".to_owned()
-        };
+        });
+        let start = start_label(busy, again, tool, valid, &name);
         let status = self
             .start
             .as_ref()
@@ -1433,15 +1422,15 @@ impl Form {
                 .flex()
                 .flex_col()
                 .pt(px(t.space.s20))
-                .child(
+                .children(start.map(|start| {
                     ui::setup_button("setup-choice-submit", start, ready, busy).on_click(
                         cx.listener(move |form, _, _, cx| {
                             if ready {
                                 form.submit(&expected, cx)
                             }
                         }),
-                    ),
-                )
+                    )
+                }))
                 .children(status.map(|status| {
                     div()
                         .pt(px(t.space.s10))
@@ -1694,5 +1683,27 @@ impl Form {
     }
 }
 
+/// The Start button's words, or none: after a start stopped, `again` is
+/// the button its saved request offers, none while it is open with
+/// nothing it may send.
+fn start_label(
+    busy: bool,
+    again: Option<Option<&'static str>>,
+    tool: bool,
+    valid: bool,
+    name: &str,
+) -> Option<String> {
+    Some(if busy {
+        format!("Starting {name}…")
+    } else if let Some(again) = again {
+        again?.to_owned()
+    } else if !tool {
+        "Choose a tool".to_owned()
+    } else if valid {
+        format!("Start {name}")
+    } else {
+        "Start guide".to_owned()
+    })
+}
 #[cfg(test)]
 mod tests;
