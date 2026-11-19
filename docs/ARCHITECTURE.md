@@ -748,7 +748,9 @@ an optional `figcaption`. Before the reader serves a verified revision,
 a thread of its own. The reader says it is reading the document until then,
 for at most 8 seconds; after that it serves the page as stored, and what Git
 had read by then is kept for the next opening. Leaving the reader, or a newer
-revision, stops that work, a running Git command included.
+revision, stops that work, a running Git command included. Refresh reads the
+pointers again, so a commit fetched since then appears; a pointer that could
+not be read is never remembered.
 
 - **Finding pointers.** The `html5ever` tokenizer reads the page as a browser
   does, so markup in comments, attribute values, scripts, styles, text areas,
@@ -759,8 +761,8 @@ revision, stops that work, a running Git command included.
   version, a short or non-hexadecimal commit, a path that is absolute or has
   `..`, empty parts, backslashes or control characters, unreadable JSON, a
   repeated attribute, or content other than whitespace, comments and one
-  caption, or a caption holding a `details` or `summary` tag, is not a
-  pointer. A page's first 64 pointers are read. The page is fed to the
+  caption, or a caption holding a `details`, `summary`, `svg` or `math` tag,
+  is not a pointer. A page's first 64 pointers are read. The page is fed to the
   tokenizer in steps of at most 1 KiB, with the deadline and cancellation
   checked between steps. The tokenizer compares each new attribute of a tag
   with all before it, so a tag with very many attributes is slow to read;

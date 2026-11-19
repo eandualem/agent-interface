@@ -206,6 +206,11 @@ impl TokenSink for Sink {
                         if foreign > 0 && matches!(name, "svg" | "math") {
                             self.foreign.set(foreign - 1);
                         }
+                        // SVG and MathML have no such elements, so a browser
+                        // closes any of their content still open here.
+                        if matches!(name, "figure" | "figcaption") {
+                            self.foreign.set(0);
+                        }
                         Event::End(tag.name)
                     }
                 }
@@ -304,9 +309,13 @@ impl Scan<'_> {
                 Step::Open(open)
             }
             // The caption becomes a view's summary, so it may not open or
-            // close a summary or details of its own.
+            // close a summary or details of its own, nor open SVG or MathML,
+            // whose content the tokenizer reads differently.
             (Caption::Inside(_), Event::Start(tag, _))
-                if !matches!(&*tag.name, "figure" | "figcaption" | "details" | "summary") =>
+                if !matches!(
+                    &*tag.name,
+                    "figure" | "figcaption" | "details" | "summary" | "svg" | "math"
+                ) =>
             {
                 Step::Open(open)
             }
@@ -716,6 +725,16 @@ mod tests {
             let _ = sink.process_token(Token::NullCharacterToken, 1);
         }
         assert!(matches!(&sink.events.borrow()[..], [Event::Text(false)]));
+    }
+
+    #[test]
+    fn svg_in_a_caption_is_no_pointer_and_spares_the_next() {
+        let html = format!(
+            "<figure data-backbone-code=\"1\" data-repo=\"owner/name\" data-commit=\"{A}\" data-path=\"a.txt\">\n  <figcaption><svg><![CDATA[</figcaption> ]]></figcaption>\n</figure>\n<figure data-backbone-code=\"1\" data-repo=\"owner/name\" data-commit=\"{A}\" data-path=\"b.txt\"></figure>"
+        );
+        assert!(matches!(&pointers(&html)[..], [Pointer::Code { path, .. }] if path == "b.txt"));
+        let math = diff("", "<figcaption><math><mi>x</mi></math></figcaption>");
+        assert_eq!(pointers(&math), vec![]);
     }
 
     #[test]

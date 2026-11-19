@@ -270,7 +270,8 @@ pub(super) fn reader(pane: &ViewPane, cx: &mut Context<ViewPane>) -> AnyElement 
         .child(
             ui::icon_button("document-refresh", "refresh-cw").on_click(cx.listener(
                 |pane, _, _, cx| {
-                    pane.documents.error = None;
+                    // Read again from Git as well: commits may have arrived.
+                    pane.documents.clear();
                     pane.refetch(false, cx);
                 },
             )),
@@ -445,6 +446,19 @@ mod tests {
         assert!(state.finish(revision(&one), "first".into()));
         assert!(!state.load(&one));
         assert_eq!(state.page().map(|page| &**page), Some("first"));
+    }
+
+    #[test]
+    fn refresh_makes_the_same_revision_page_again() {
+        let mut state = State::default();
+        let one = document(1, "<p>one</p>");
+        assert!(state.load(&one));
+        assert!(state.finish(revision(&one), "first".into()));
+        // A poll or a pane shown again keeps the page.
+        assert!(!state.load(&one));
+        // Refresh clears first, so the page is made again.
+        state.clear();
+        assert!(state.load(&one));
     }
 
     #[test]
