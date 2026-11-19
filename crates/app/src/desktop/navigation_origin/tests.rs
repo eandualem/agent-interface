@@ -307,16 +307,22 @@ fn moved_view_refreshes_events_and_survives_source_workspace_deletion() {
     assert_eq!(selected(&browser), destination);
     // Moving away and back must not reactivate the old subscription generation.
     let model = browser.layout.as_mut().unwrap().model_mut();
+    model.add_workspace("Plain".into());
+    let plain = model.selected.clone();
+    // Tabs move only between workspaces of the same profile.
     model.add_workspace("Third".into());
     let third = model.selected.clone();
+    let space = model.workspaces.iter_mut().find(|s| s.id == third).unwrap();
+    space.profile_id = Some(a.identity().profile_id.clone());
+    browser.workspace_profiles.bind(space, a.clone());
     model.choose_workspace(&destination);
     assert!(model.transfer_tab(&third));
     events
         .refresh(browser.pane_navigation_origin(&pane))
         .unwrap();
-    // In a workspace without a profile the same pane is no agent to go to.
+    // A workspace without a profile has no agent to go to.
     assert!(!browser.select_agent_target(&AgentTarget {
-        origin: browser.navigation_origin(&third).unwrap(),
+        origin: browser.navigation_origin(&plain).unwrap(),
         name: "worker".into()
     }));
     assert!(

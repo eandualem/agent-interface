@@ -1335,8 +1335,11 @@ mod tests {
                 ]}
             }}], "next_after_author_id": null
         })).unwrap();
+        let (_directory, connection, server) = crate::roster::content::tests::provider("a", vec![]);
+        server.join().unwrap();
         let mut frame = Frame {
             page: Some(page),
+            connection: Some(connection),
             card_step: Some(("author".into(), "old".into())),
             ..Default::default()
         };
@@ -1372,8 +1375,11 @@ mod tests {
             }}], "next_after_author_id": null
         }))
         .unwrap();
+        let (_directory, connection, server) = crate::roster::content::tests::provider("a", vec![]);
+        server.join().unwrap();
         let mut frame = Frame {
             page: Some(page),
+            connection: Some(connection),
             open: Some("author".into()),
             step: Some("step".into()),
             ..Default::default()
