@@ -43,6 +43,7 @@ fn client() -> Client {
         ("HOME", true),
         ("BACKBONE_DIR", true),
         ("TMUX_TMPDIR", true),
+        ("XDG_CACHE_HOME", false),
         ("XDG_CONFIG_HOME", false),
         ("XDG_DATA_HOME", false),
         ("XDG_STATE_HOME", false),
@@ -58,6 +59,13 @@ fn client() -> Client {
         );
     }
     assert!(std::env::var_os("TMUX").is_none(), "TMUX must be unset");
+    // A shell an agent runs in carries more of its own Backbone than the
+    // directory, so nothing else of that kind may be set.
+    let own: Vec<_> = std::env::vars_os()
+        .filter_map(|(name, _)| name.into_string().ok())
+        .filter(|name| name.starts_with("BACKBONE_") && name != "BACKBONE_DIR")
+        .collect();
+    assert!(own.is_empty(), "these must be unset: {own:?}");
     let path = std::env::var_os("PATH").unwrap();
     let executable = std::env::split_paths(&path)
         .map(|directory| directory.join("backbone"))
