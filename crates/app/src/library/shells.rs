@@ -198,8 +198,12 @@ mod tests {
     #[test]
     fn failed_discovery_does_not_authorize_creation() {
         // A socket in a private folder that accepts connections but never
-        // answers, so its sessions cannot be read.
-        let root = tempfile::tempdir().unwrap();
+        // answers, so its sessions cannot be read. The folder is in /tmp so
+        // the path stays within macOS's Unix socket limit.
+        let root = tempfile::Builder::new()
+            .prefix("tw-s-")
+            .tempdir_in("/tmp")
+            .unwrap();
         let unresponsive = root.path().join("unresponsive.sock");
         let _listener = UnixListener::bind(&unresponsive).unwrap();
         assert!(select_socket(Some(unresponsive), "0123456789ab", true).is_err());
