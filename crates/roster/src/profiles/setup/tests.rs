@@ -474,3 +474,18 @@ fn every_event_needs_this_request_a_rising_sequence_and_one_result_last() {
     stream.push(&serde_json::to_vec(&ready()).unwrap()).unwrap();
     assert!(stream.finish().unwrap().ready_agent.is_some());
 }
+
+#[test]
+fn an_event_ignores_what_only_the_other_kind_defines() {
+    // A step with a result's fields, of any type, and a result with a step's.
+    let mut early = step(1, "preflight", "completed");
+    early["retry"] = json!({"not": "a token"});
+    early["data"] = json!(3);
+    early["action"] = json!(7);
+    let mut result = ready();
+    result["step"] = json!({"name": 1});
+    let mut stream = prepared(guide()).stream(Action::FirstAgent);
+    stream.push(&line(&early)).unwrap();
+    stream.push(&line(&result)).unwrap();
+    assert!(stream.finish().unwrap().ready_agent.is_some());
+}

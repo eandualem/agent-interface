@@ -5,7 +5,7 @@
 //! installation's login service. Every fix runs off the UI thread with a
 //! deadline, and a failure explains itself.
 
-use agent_interface_roster::profiles::setup::token;
+use agent_interface_roster::profiles::setup::{EVENT_LIMIT, LINE_LIMIT, OUTPUT_LIMIT, token};
 use std::{
     io::Read,
     os::unix::fs::FileExt,
@@ -24,8 +24,6 @@ const TAIL: usize = 16 * 1024;
 const SETUP_LIMIT: Duration = Duration::from_secs(5 * 60);
 /// How often one setup request is sent when what came of it isn't known.
 const SENDS: usize = 3;
-/// More than setup prints for `initialize`.
-const SETUP_OUTPUT: u64 = 1024 * 1024;
 
 /// How a fix ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -282,10 +280,10 @@ fn send(
     let mut printed = String::new();
     let read = std::io::Seek::rewind(&mut &output).and_then(|_| {
         (&output)
-            .take(SETUP_OUTPUT + 1)
+            .take(OUTPUT_LIMIT as u64 + 1)
             .read_to_string(&mut printed)
     });
-    if read.is_err() || printed.len() as u64 > SETUP_OUTPUT {
+    if read.is_err() || printed.len() > OUTPUT_LIMIT {
         return Ok(None);
     }
     // An answer its exit contradicts is no readable answer.
@@ -296,61 +294,75 @@ fn send(
 /// event of that request, in order, and the last its `initialize` result.
 /// `None` when what it printed is not that.
 fn answer(printed: &str, request_id: &str) -> Option<Answer> {
-    #[derive(serde::Deserialize)]
+    use serde::Deserialize;
+    use serde_json::Value;
+    // What every line has; then only the fields its own kind defines, so a
+    // field of the other kind, of any type, is ignored.
+    #[derive(Deserialize)]
     struct Line {
         schema_version: u32,
         request_id: String,
         seq: u64,
         #[serde(rename = "type")]
         kind: String,
-        action: Option<String>,
-        step: Option<String>,
-        status: Option<String>,
-        code: Option<String>,
-        message: Option<String>,
-        retry: Option<String>,
-        data: Option<serde_json::Value>,
-        completed_steps: Option<Vec<String>>,
+    }
+    #[derive(Deserialize)]
+    struct Step {
+        step: String,
+        status: String,
+    }
+    #[derive(Deserialize)]
+    struct Done {
+        action: String,
+        status: String,
+        code: String,
+        message: String,
+        retry: String,
+        completed_steps: Vec<String>,
+        data: Value,
     }
     let mut seq = 0;
     let mut result = None;
     for text in printed.lines().filter(|text| !text.trim().is_empty()) {
-        let line: Line = serde_json::from_str(text).ok()?;
+        // Bounded as a first agent's events are, and every value kept as it
+        // came a bounded token.
+        if text.len() > LINE_LIMIT {
+            return None;
+        }
+        let value: Value = serde_json::from_str(text).ok()?;
+        let line = Line::deserialize(&value).ok()?;
         if result.is_some()
             || line.schema_version != 3
             || line.request_id != request_id
             || line.seq <= seq
+            || line.seq > EVENT_LIMIT
         {
             return None;
         }
         seq = line.seq;
-        // Every value kept as it came is a bounded token, as a first agent's
-        // events are read.
-        let tokens = |values: &[&Option<String>]| {
-            values
-                .iter()
-                .all(|value| value.as_deref().is_none_or(token))
-        };
-        if !tokens(&[&line.step, &line.status, &line.code, &line.retry])
-            || line
-                .completed_steps
-                .as_ref()
-                .is_some_and(|steps| !steps.iter().all(|step| token(step)))
-        {
-            return None;
-        }
         match line.kind.as_str() {
-            "step" if line.step.is_some() && line.status.is_some() => {}
-            "result"
-                if line.action.as_deref() == Some("initialize")
-                    && line.data.as_ref().is_some_and(serde_json::Value::is_object)
-                    && line.completed_steps.is_some() =>
-            {
+            "step" => {
+                let step = Step::deserialize(&value).ok()?;
+                if !token(&step.step) || !token(&step.status) {
+                    return None;
+                }
+            }
+            "result" => {
+                let done = Done::deserialize(&value).ok()?;
+                if done.action != "initialize"
+                    || !done.data.is_object()
+                    || ![&done.status, &done.code, &done.retry]
+                        .into_iter()
+                        .all(|value| token(value))
+                    || !done.completed_steps.iter().all(|step| token(step))
+                {
+                    return None;
+                }
                 result = Some(Answer {
-                    status: line.status?,
-                    code: line.code?,
-                    message: line.message?,
-                    retry: line.retry?,
+                    status: done.status,
+                    code: done.code,
+                    message: done.message,
+                    retry: done.retry,
                 });
             }
             _ => return None,
@@ -526,6 +538,19 @@ mod tests {
             let printed = format!("{}\n{result}\n", fixture("step"));
             assert_eq!(answer(&printed, ID), None, "{printed}");
         }
+        // A line over its bound, or an event past the most a run has.
+        let mut padded = fixture("step");
+        padded["pad"] = "x".repeat(LINE_LIMIT).into();
+        let late = changed("seq", (EVENT_LIMIT + 1).into());
+        for printed in [format!("{padded}\n{}\n", fixture("result")), late] {
+            assert_eq!(answer(&printed, ID), None);
+        }
+        // A step with a result's fields, of any type, is read as a step.
+        let mut step = fixture("step");
+        step["retry"] = serde_json::json!({"not": "a token"});
+        step["data"] = 3.into();
+        let printed = format!("{step}\n{}\n", fixture("result"));
+        assert!(answer(&printed, ID).is_some());
         for (field, value) in [
             ("step", serde_json::Value::Null),
             ("step", long),

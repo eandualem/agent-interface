@@ -16,9 +16,12 @@ const SCHEMA_VERSION: u32 = 3;
 const REQUEST_LIMIT: usize = 32_768;
 /// A request of the most bytes, with its action changed to the longer one.
 const CANCEL_LIMIT: usize = 32_775;
-const LINE_LIMIT: usize = 64 * 1024;
-const OUTPUT_LIMIT: usize = 1024 * 1024;
-const EVENT_LIMIT: u64 = 1024;
+/// The most bytes one line of setup's output may have.
+pub const LINE_LIMIT: usize = 64 * 1024;
+/// The most bytes setup's output may have.
+pub const OUTPUT_LIMIT: usize = 1024 * 1024;
+/// The highest sequence number an event of one run may have.
+pub const EVENT_LIMIT: u64 = 1024;
 /// The most characters a written brief may have.
 const BRIEF_LIMIT: usize = 16_000;
 /// The most characters an agent's folder may have.
@@ -280,8 +283,9 @@ pub struct Event {
     pub launch_id: Option<String>,
 }
 
-/// One line of the setup command's output. Steps carry no action; fields
-/// this app doesn't know are ignored.
+/// What every line of the setup command's output has. The fields its kind
+/// defines are read after it, and only those: anything else, a field of the
+/// other kind among them, is ignored.
 #[derive(Deserialize)]
 struct Wire {
     schema_version: u32,
@@ -289,22 +293,27 @@ struct Wire {
     seq: u64,
     #[serde(rename = "type")]
     kind: String,
+}
+
+/// What a step event defines. It carries no action.
+#[derive(Deserialize)]
+struct StepWire {
+    step: String,
     status: String,
-    #[serde(default)]
-    action: Option<String>,
-    #[serde(default)]
-    step: Option<String>,
-    #[serde(default)]
-    code: Option<String>,
-    #[serde(default)]
-    retry: Option<String>,
-    #[serde(default)]
-    completed_steps: Option<Vec<String>>,
-    #[serde(default)]
-    data: Option<Value>,
+}
+
+/// What a result event defines.
+#[derive(Deserialize)]
+struct ResultWire {
+    action: String,
+    status: String,
+    code: String,
     /// Read only to check its type: provider prose is never kept.
-    #[serde(default)]
-    message: Option<String>,
+    #[serde(rename = "message")]
+    _message: String,
+    retry: String,
+    completed_steps: Vec<String>,
+    data: Value,
 }
 
 /// A bounded JSON-lines decoder owned by one exact request and action.
@@ -353,7 +362,8 @@ impl Stream {
         Ok(events)
     }
     fn line(&mut self, bytes: &[u8]) -> Result<Event, Error> {
-        let wire: Wire = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
+        let value: Value = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
+        let wire = Wire::deserialize(&value).map_err(|_| Error::Invalid)?;
         if wire.schema_version != SCHEMA_VERSION {
             return Err(Error::Unsupported);
         }
@@ -361,7 +371,6 @@ impl Stream {
             || wire.seq <= self.sequence
             || wire.seq > EVENT_LIMIT
             || self.result.is_some()
-            || !token(&wire.status)
         {
             return Err(Error::Invalid);
         }
@@ -372,7 +381,7 @@ impl Stream {
             action: self.action,
             sequence: wire.seq,
             step: None,
-            status: wire.status.clone(),
+            status: String::new(),
             code: None,
             retry: None,
             cancelled: false,
@@ -381,26 +390,27 @@ impl Stream {
         };
         if wire.kind == "step" {
             // A status this app doesn't know is kept as it came.
-            let step = wire
-                .step
-                .filter(|step| valid_id(step))
-                .ok_or(Error::Invalid)?;
-            event.step = Some(step);
-        } else if result && wire.action.as_deref() == Some(self.action.name()) {
-            let code = wire.code.filter(|code| token(code)).ok_or(Error::Invalid)?;
-            let retry = wire
-                .retry
-                .filter(|retry| token(retry))
-                .ok_or(Error::Invalid)?;
-            let steps = wire.completed_steps.ok_or(Error::Invalid)?;
-            if wire.message.is_none() {
+            let step = StepWire::deserialize(&value).map_err(|_| Error::Invalid)?;
+            if !valid_id(&step.step) || !token(&step.status) {
                 return Err(Error::Invalid);
             }
-            if steps.iter().any(|step| !valid_id(step)) {
+            event.step = Some(step.step);
+            event.status = step.status;
+        } else if result {
+            let wire = ResultWire::deserialize(&value).map_err(|_| Error::Invalid)?;
+            let (code, retry) = (wire.code, wire.retry);
+            if wire.action != self.action.name()
+                || !token(&wire.status)
+                || !token(&code)
+                || !token(&retry)
+                || wire.completed_steps.iter().any(|step| !valid_id(step))
+                || !wire.data.is_object()
+            {
                 return Err(Error::Invalid);
             }
-            let data = wire.data.filter(Value::is_object).ok_or(Error::Invalid)?;
-            let completed = wire.status == "completed";
+            let data = wire.data;
+            event.status = wire.status;
+            let completed = event.status == "completed";
             if self.action == Action::CancelFirstAgent && completed && code == "request_cancelled" {
                 // Only this answer confirms the cancellation; naming another
                 // request contradicts it.
