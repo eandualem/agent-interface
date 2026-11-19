@@ -93,6 +93,11 @@ fn closed(phase: Phase, first: Option<&Event>, cancel: Option<&Event>) -> bool {
         |event: &Event| matches!(event.retry.as_deref(), Some("new_request" | "none"));
     first.is_some_and(|event| event.ready_agent.is_some())
         || cancel.is_some_and(|event| event.cancelled)
+        // Too old for the profile to keep: it never runs now, whatever came
+        // of it before.
+        || cancel.is_some_and(|event| {
+            event.code.as_deref() == Some("request_expired") && final_result(event)
+        })
         || match phase {
             Phase::Prepared => false,
             Phase::Submitted => first.is_some_and(final_result),
@@ -449,10 +454,12 @@ fn inspect(record: &journal::Record) -> Result<(Envelope, Snapshot), Error> {
     {
         return Err(Error::Invalid);
     }
+    // Only the request's own schema says it is an earlier one's; an outcome
+    // this request can't have is not.
     let outcome = |action, bytes: &String| {
         prepared
             .restore_outcome(action, bytes.as_bytes())
-            .map_err(refused)
+            .map_err(|_| Error::Invalid)
     };
     let snapshot = Snapshot {
         key: record.id().into(),

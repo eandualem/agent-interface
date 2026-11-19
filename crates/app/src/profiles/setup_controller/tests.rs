@@ -599,3 +599,63 @@ fn a_request_saved_under_schema_2_holds_nothing_back_and_can_be_forgotten() {
     assert_eq!(controller.read(&key), Err(Error::Missing));
     assert_eq!(fixture.calls(), "");
 }
+
+#[test]
+fn an_expired_cancellation_releases_the_profile_and_keeps_what_is_unknown() {
+    let fixture = Fixture::new("");
+    let controller = fixture.controller();
+    let original = controller.enqueue(intent()).unwrap();
+    fixture.raw(Action::FirstAgent, b"lost", 0);
+    assert!(controller.submit(&original.key, &|| true, |_| {}).is_err());
+    fixture.reply(
+        Action::CancelFirstAgent,
+        &answer(
+            &id(),
+            "cancel_first_agent",
+            "failed",
+            "request_expired",
+            "none",
+        ),
+        1,
+    );
+    let expired = controller.cancel(&original.key, &|| true, |_| {}).unwrap();
+    assert!(!expired.cancelled);
+    // It never runs now: the profile takes a new request, and this one keeps
+    // its unknown outcome and its history until it is forgotten.
+    let saved = controller.read(&original.key).unwrap();
+    assert!(saved.closed() && saved.first_result.is_none());
+    assert_eq!(saved.cancellation_result, Some(expired));
+    assert_eq!(
+        controller.retry(&original.key, &|| true, |_| {}),
+        Err(Error::Completed)
+    );
+    controller.enqueue(intent_for(2, PROFILE)).unwrap();
+    assert_eq!(fixture.calls(), "first\ncancel\n");
+}
+
+#[test]
+fn an_outcome_of_an_earlier_schema_under_this_request_fails_closed() {
+    let fixture = Fixture::new("");
+    let controller = fixture.controller();
+    let key = controller.enqueue(intent()).unwrap().key;
+    fixture.reply(Action::FirstAgent, &ready(&id()), 0);
+    controller.submit(&key, &|| true, |_| {}).unwrap();
+    let journal = journal::Journal::open(&fixture.journal).unwrap();
+    let record = journal.read(&key).unwrap().unwrap();
+    let mut envelope: Envelope = serde_json::from_slice(record.payload()).unwrap();
+    let first = envelope.first.as_ref().unwrap();
+    let mut outcome: Value = serde_json::from_str(first).unwrap();
+    let mut result: Value = serde_json::from_str(outcome["result"].as_str().unwrap()).unwrap();
+    result["schema_version"] = 2.into();
+    outcome["result"] = result.to_string().into();
+    envelope.first = Some(outcome.to_string());
+    journal
+        .save(
+            &key,
+            Some(record.revision()),
+            &serde_json::to_vec(&envelope).unwrap(),
+        )
+        .unwrap();
+    // Only the request's own schema makes a record an earlier one's.
+    assert_eq!(controller.read(&key), Err(Error::Invalid));
+}
