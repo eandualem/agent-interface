@@ -60,11 +60,10 @@ server.
 - A swarm's coordinator runs Claude Code with `claude-opus-5-5` at `high`
   effort. It designs and directs the work; it writes no implementation code
   and never reviews.
-- Reviews run in rounds on Codex `gpt-6.2-sol` at high effort. Each round
-  starts in a fresh context, separate from the implementer's and from
-  earlier rounds. Round 2 runs even after a clean round 1, and valid
-  findings are fixed between rounds. From round 2 on, a clean round ends
-  the chain.
+- Reviews follow the shared review policy of the Agent Backbone environment
+  this repository is developed in. It sets the rounds, their models and
+  effort, and they are not repeated here. Every round runs in a fresh
+  context, separate from the implementer's and from earlier rounds.
 - Use Codex `gpt-6.2-astra` as much as the work needs for research, analysis,
   benchmarking and verification.
 - Work at the depth the problem needs: progress matters more than token
