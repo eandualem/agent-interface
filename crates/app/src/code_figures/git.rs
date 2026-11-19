@@ -10,6 +10,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use super::Until;
+
 /// The most output one Git command may write.
 pub const OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
 /// The longest one Git command may run.
@@ -17,10 +19,11 @@ const TIMEOUT: Duration = Duration::from_secs(3);
 /// The most rows read from one diff, and lines shown from one file.
 pub const ROW_LIMIT: usize = 20_000;
 
-/// The standard output of `git -C dir args…`, when it succeeds by `deadline`
-/// (and within 3 s) and writes at most `limit` bytes.
-pub fn run(dir: &Path, args: &[&str], limit: usize, deadline: Instant) -> Option<Vec<u8>> {
-    if Instant::now() >= deadline || !runs_git() {
+/// The standard output of `git -C dir args…`, when it succeeds before
+/// `until` (and within 3 s) and writes at most `limit` bytes. Cancelling
+/// `until` stops a running command.
+pub fn run(dir: &Path, args: &[&str], limit: usize, until: &Until) -> Option<Vec<u8>> {
+    if until.passed() || !runs_git() {
         return None;
     }
     let mut child = command(dir, args).spawn().ok()?;
@@ -43,9 +46,10 @@ pub fn run(dir: &Path, args: &[&str], limit: usize, deadline: Instant) -> Option
         stop(&mut child);
         return None;
     };
-    let deadline = deadline.min(Instant::now() + TIMEOUT);
+    let deadline = until.at().min(Instant::now() + TIMEOUT);
+    let over = || Instant::now() >= deadline || until.passed();
     while !reader.is_finished() {
-        if Instant::now() >= deadline {
+        if over() {
             // The reader ends when the output closes; it is not waited for,
             // in case something Git started still holds the output open.
             stop(&mut child);
@@ -60,7 +64,7 @@ pub fn run(dir: &Path, args: &[&str], limit: usize, deadline: Instant) -> Option
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return status.success().then_some(out),
-            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(2)),
+            Ok(None) if !over() => thread::sleep(Duration::from_millis(2)),
             _ => {
                 stop(&mut child);
                 return None;
@@ -140,8 +144,8 @@ fn command(dir: &Path, args: &[&str]) -> Command {
 
 /// Whether the checkout at `top` has `commit`, and it is a commit rather
 /// than, say, a tag.
-pub fn has_commit(top: &Path, commit: &str, deadline: Instant) -> bool {
-    run(top, &["cat-file", "-t", commit], 64, deadline).as_deref() == Some(&b"commit\n"[..])
+pub fn has_commit(top: &Path, commit: &str, until: &Until) -> bool {
+    run(top, &["cat-file", "-t", commit], 64, until).as_deref() == Some(&b"commit\n"[..])
 }
 
 /// One changed file.
@@ -186,7 +190,7 @@ pub fn diff(
     base: &str,
     head: &str,
     paths: Option<&[String]>,
-    deadline: Instant,
+    until: &Until,
 ) -> Option<Vec<File>> {
     // Attributes, such as which files are binary, come from the new commit,
     // not from whatever the checkout has; a Git without this option answers
@@ -213,7 +217,7 @@ pub fn diff(
         ]
         .concat(),
         OUTPUT_LIMIT,
-        deadline,
+        until,
     )?;
     let entries = entries(&raw)?;
     // A submodule's patch could run Git inside it.
@@ -221,7 +225,7 @@ pub fn diff(
         return None;
     }
     args.extend(tail);
-    let patch = run(top, &args, OUTPUT_LIMIT, deadline)?;
+    let patch = run(top, &args, OUTPUT_LIMIT, until)?;
     // Git calls a file binary only from its first bytes.
     if patch.contains(&0) {
         return None;
@@ -387,12 +391,12 @@ fn starts(header: &str) -> (u32, u32) {
 }
 
 /// The text of `path` at `commit`, unless it is missing, binary or not UTF-8.
-pub fn file(top: &Path, commit: &str, path: &str, deadline: Instant) -> Option<String> {
+pub fn file(top: &Path, commit: &str, path: &str, until: &Until) -> Option<String> {
     let blob = run(
         top,
         &["cat-file", "blob", &format!("{commit}:{path}")],
         OUTPUT_LIMIT,
-        deadline,
+        until,
     )?;
     if blob.contains(&0) {
         return None;
@@ -459,8 +463,8 @@ pub(super) mod tests {
         (first, git(dir, &["rev-parse", "HEAD"]))
     }
 
-    fn later() -> Instant {
-        Instant::now() + Duration::from_secs(10)
+    fn later() -> Until {
+        Until::new(Instant::now() + Duration::from_secs(10))
     }
 
     fn line(sign: char, old: Option<u32>, new: Option<u32>, text: &str) -> Row {
@@ -478,7 +482,7 @@ pub(super) mod tests {
         let (first, second) = repository(dir.path(), "git@github.com:owner/name.git");
         // The checkout's own attributes do not change the answer.
         fs::write(dir.path().join(".gitattributes"), "a.txt -diff\n").unwrap();
-        let files = diff(dir.path(), &first, &second, None, later()).unwrap();
+        let files = diff(dir.path(), &first, &second, None, &later()).unwrap();
         let by = |path: &str| files.iter().find(|file| file.path == path).unwrap();
         assert_eq!(files.len(), 7);
         assert_eq!(
@@ -523,7 +527,7 @@ pub(super) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (first, second) = repository(dir.path(), "git@github.com:owner/name.git");
         let paths = ["sp ace.txt".to_owned(), "missing/*".to_owned()];
-        let files = diff(dir.path(), &first, &second, Some(&paths), later()).unwrap();
+        let files = diff(dir.path(), &first, &second, Some(&paths), &later()).unwrap();
         assert_eq!(
             files.iter().map(|file| &*file.path).collect::<Vec<_>>(),
             ["sp ace.txt"]
@@ -531,7 +535,7 @@ pub(super) mod tests {
         // Paths are literal, never patterns.
         let star = ["*.txt".to_owned()];
         assert_eq!(
-            diff(dir.path(), &first, &second, Some(&star), later()),
+            diff(dir.path(), &first, &second, Some(&star), &later()),
             Some(vec![])
         );
     }
@@ -541,31 +545,31 @@ pub(super) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (first, second) = repository(dir.path(), "git@github.com:owner/name.git");
         assert_eq!(
-            file(dir.path(), &second, "a.txt", later()).as_deref(),
+            file(dir.path(), &second, "a.txt", &later()).as_deref(),
             Some("one\nTWO\n\nthree\n")
         );
         assert_eq!(
-            file(dir.path(), &first, "old.txt", later()).as_deref(),
+            file(dir.path(), &first, "old.txt", &later()).as_deref(),
             Some("moved\n")
         );
-        assert_eq!(file(dir.path(), &second, "old.txt", later()), None);
-        assert_eq!(file(dir.path(), &second, "bin.dat", later()), None);
-        assert!(has_commit(dir.path(), &first, later()));
-        assert!(!has_commit(dir.path(), &"0".repeat(40), later()));
+        assert_eq!(file(dir.path(), &second, "old.txt", &later()), None);
+        assert_eq!(file(dir.path(), &second, "bin.dat", &later()), None);
+        assert!(has_commit(dir.path(), &first, &later()));
+        assert!(!has_commit(dir.path(), &"0".repeat(40), &later()));
         // A tag is not a commit, and a replacement never stands in for one.
         git(dir.path(), &["tag", "-a", "v1", "-m", "tag"]);
         assert!(!has_commit(
             dir.path(),
             &git(dir.path(), &["rev-parse", "v1"]),
-            later()
+            &later()
         ));
         git(dir.path(), &["replace", &first, &second]);
         assert_eq!(
-            file(dir.path(), &first, "old.txt", later()).as_deref(),
+            file(dir.path(), &first, "old.txt", &later()).as_deref(),
             Some("moved\n")
         );
         let missing = "0".repeat(40);
-        assert_eq!(diff(dir.path(), &missing, &second, None, later()), None);
+        assert_eq!(diff(dir.path(), &missing, &second, None, &later()), None);
     }
 
     #[test]
@@ -585,7 +589,7 @@ pub(super) mod tests {
         // Even where the configuration would hide submodules.
         git(dir.path(), &["config", "diff.ignoreSubmodules", "all"]);
         assert_eq!(
-            diff(dir.path(), &commits[0], &commits[1], None, later()),
+            diff(dir.path(), &commits[0], &commits[1], None, &later()),
             None
         );
     }
@@ -649,8 +653,8 @@ pub(super) mod tests {
         git(dir.path(), &["add", "-A"]);
         git(dir.path(), &["commit", "-qm", "latin"]);
         let third = git(dir.path(), &["rev-parse", "HEAD"]);
-        assert_eq!(file(dir.path(), &third, "latin.txt", later()), None);
-        assert_eq!(diff(dir.path(), &second, &third, None, later()), None);
+        assert_eq!(file(dir.path(), &third, "latin.txt", &later()), None);
+        assert_eq!(diff(dir.path(), &second, &third, None, &later()), None);
     }
 
     #[test]
@@ -662,8 +666,8 @@ pub(super) mod tests {
         git(dir.path(), &["add", "-A"]);
         git(dir.path(), &["commit", "-qm", "late"]);
         let third = git(dir.path(), &["rev-parse", "HEAD"]);
-        assert_eq!(file(dir.path(), &third, "late.txt", later()), None);
-        assert_eq!(diff(dir.path(), &second, &third, None, later()), None);
+        assert_eq!(file(dir.path(), &third, "late.txt", &later()), None);
+        assert_eq!(diff(dir.path(), &second, &third, None, &later()), None);
     }
 
     #[test]
@@ -683,18 +687,32 @@ pub(super) mod tests {
         let (_, second) = repository(dir.path(), "git@github.com:owner/name.git");
         let blob = format!("{second}:a.txt");
         let args = ["cat-file", "blob", blob.as_str()];
-        assert!(run(dir.path(), &args, 64, later()).is_some());
-        assert_eq!(run(dir.path(), &args, 4, later()), None);
-        assert_eq!(run(dir.path(), &args, 64, Instant::now()), None);
+        assert!(run(dir.path(), &args, 64, &later()).is_some());
+        assert_eq!(run(dir.path(), &args, 4, &later()), None);
+        assert_eq!(
+            run(dir.path(), &args, 64, &Until::new(Instant::now())),
+            None
+        );
         // A command still running at its deadline is stopped, and the read
         // returns soon after.
         let started = Instant::now();
         let slow = ["-c", "alias.slow=!sleep 3", "slow"];
         let soon = started + Duration::from_millis(300);
-        assert_eq!(run(dir.path(), &slow, 64, soon), None);
+        assert_eq!(run(dir.path(), &slow, 64, &Until::new(soon)), None);
         assert!(started.elapsed() < Duration::from_secs(2));
+        // Cancelling stops a command that is running.
+        let until = later();
+        let cancel = until.clone();
+        let started = Instant::now();
+        let stopper = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            cancel.cancel();
+        });
+        assert_eq!(run(dir.path(), &slow, 64, &until), None);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        stopper.join().unwrap();
         assert_eq!(
-            run(&PathBuf::from("/nonexistent"), &args, 64, later()),
+            run(&PathBuf::from("/nonexistent"), &args, 64, &later()),
             None
         );
     }

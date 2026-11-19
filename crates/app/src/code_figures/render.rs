@@ -20,15 +20,13 @@ pub fn diff(files: &[File], caption: Option<&str>, limit: usize) -> Option<Strin
         }
         escape(&file.path, &mut header);
         // A file with no lines to show says what changed.
-        if file.rows.is_empty() {
-            header.push_str(match file.status {
-                'A' => " (added)",
-                'D' => " (deleted)",
-                'R' => " (renamed)",
-                'M' => " (mode changed)",
-                _ => "",
-            });
-        }
+        header.push_str(match (file.status, &file.rows[..]) {
+            ('A', [] | [Row::Binary]) => " (added)",
+            ('D', [] | [Row::Binary]) => " (deleted)",
+            ('R', [] | [Row::Binary]) => " (renamed)",
+            ('M', []) => " (mode changed)",
+            _ => "",
+        });
         header
     };
     let mut out = String::new();
@@ -242,15 +240,17 @@ mod tests {
 
     #[test]
     fn one_file_is_one_details_and_several_are_one_each_inside() {
+        // A binary file still says it was renamed.
         let mut renamed = file("new.rs", vec![Row::Binary]);
         renamed.from = Some("old.rs".into());
+        renamed.status = 'R';
         let html = diff(&[file("a.rs", vec![]), renamed.clone()], None, ANY).unwrap();
         assert!(html.starts_with(r#"<details open class="ai-git"><summary>2 files changed</summary><details open class="ai-git-file"><summary>a.rs (mode changed)</summary></details>"#));
-        assert!(html.contains("<summary>old.rs → new.rs</summary>"));
+        assert!(html.contains("<summary>old.rs → new.rs (renamed)</summary>"));
         assert!(html.contains("Binary file"));
         let html = diff(&[renamed], Some("The <em>move</em>"), ANY).unwrap();
         assert!(html.starts_with(
-            r#"<details open class="ai-git"><summary>The <em>move</em></summary><div class="ai-git-head">old.rs → new.rs</div><div"#
+            r#"<details open class="ai-git"><summary>The <em>move</em></summary><div class="ai-git-head">old.rs → new.rs (renamed)</div><div"#
         ));
         assert_eq!(html.matches("<details").count(), 1);
         assert!(html.ends_with("</details>"));

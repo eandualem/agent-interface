@@ -747,7 +747,8 @@ an optional `figcaption`. Before the reader serves a verified revision,
 `app::code_figures` puts a static view in place of each pointer's content, on
 a thread of its own. The reader says it is reading the document until then,
 for at most 8 seconds; after that it serves the page as stored, and what Git
-had read by then is kept for the next opening.
+had read by then is kept for the next opening. Leaving the reader, or a newer
+revision, stops that work, a running Git command included.
 
 - **Finding pointers.** The `html5ever` tokenizer reads the page as a browser
   does, so markup in comments, attribute values, scripts, styles, text areas,
@@ -759,7 +760,14 @@ had read by then is kept for the next opening.
   `..`, empty parts, backslashes or control characters, unreadable JSON, a
   repeated attribute, or content other than whitespace, comments and one
   caption, or a caption holding a `details` or `summary` tag, is not a
-  pointer. A page's first 64 pointers are read.
+  pointer. A page's first 64 pointers are read. A page with a tag of more
+  than 1,000 attributes is served as stored: the tokenizer compares each new
+  attribute with all before it, so such a tag would take very long. The
+  attributes are counted the tokenizer's way before the tag is read, so long
+  quoted values, such as inline images, do not count. The page is fed in
+  steps of at most 1 KiB, and the deadline and cancellation are checked
+  between steps, so even a tag the count let through holds the scan at most
+  one step longer.
 - **Finding a checkout.** The candidates are the saved folders of the
   window's panes, then the folders of the profile's agents as `/api/agents`
   reports them, each counted once, up to 64. Each resolves to its Git top
@@ -803,8 +811,9 @@ had read by then is kept for the next opening.
 - **The view.** Each pointer becomes `<details open>`, so it collapses and
   expands without a script. For one file or a code reference, its summary is
   the caption with the file's header under it, or else the header (`old → new`
-  for a rename; a file with no lines to show is marked added, deleted, renamed
-  or mode changed); a diff of several files holds one `<details open>` per
+  for a rename; a file with no lines to show, a binary one included, is
+  marked added, deleted or renamed, or else mode changed); a diff of several
+  files holds one `<details open>` per
   file, under the caption or the number of files. Rows show old and new line numbers, the sign
   as text, and added and removed lines in the theme's `--ai-diff-*` colours,
   set by `views/reading.rs` for every theme, with each sign readable on its

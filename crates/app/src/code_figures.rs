@@ -7,7 +7,10 @@ use std::{
     collections::HashMap,
     mem::size_of,
     path::PathBuf,
-    sync::{Arc, LazyLock, Mutex},
+    sync::{
+        Arc, LazyLock, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Instant,
 };
 
@@ -24,6 +27,39 @@ const VIEW_LIMIT: usize = 32 * 1024 * 1024;
 /// The most memory the session's answers may hold. Commits never change, so
 /// an answer is kept until the cache is full, and then all are dropped.
 const CACHE_LIMIT: usize = 64 * 1024 * 1024;
+
+/// When the work for a page stops: at its deadline, or as soon as the page
+/// is no longer wanted.
+#[derive(Clone, Debug)]
+pub struct Until {
+    at: Instant,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl Until {
+    /// Until `at`, unless cancelled first.
+    pub fn new(at: Instant) -> Self {
+        Self {
+            at,
+            cancelled: Default::default(),
+        }
+    }
+
+    /// Stop the work, and all work bounded by a clone, at its next check.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether the work must stop now.
+    pub fn passed(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed) || Instant::now() >= self.at
+    }
+
+    /// The deadline.
+    pub fn at(&self) -> Instant {
+        self.at
+    }
+}
 
 /// What Git answered for a pointer.
 enum Read {
@@ -52,6 +88,23 @@ impl Read {
             Self::Code(text) => text.capacity(),
         }
     }
+}
+
+/// Keep `read` under `key`, charged once even when another read stored the
+/// same answer meanwhile.
+fn remember(cache: &mut (Answers, usize), key: (PathBuf, Pointer), read: Arc<Read>) {
+    let charge = |read: &Read| {
+        read.size() + size_of::<(PathBuf, Pointer)>() + key.0.capacity() + held(&key.1)
+    };
+    if let Some(old) = cache.0.remove(&key) {
+        cache.1 = cache.1.saturating_sub(charge(&old));
+    }
+    let size = charge(&read);
+    if cache.1 + size > CACHE_LIMIT {
+        *cache = Default::default();
+    }
+    cache.1 += size;
+    cache.0.insert(key, read);
 }
 
 /// The memory a pointer's strings hold.
@@ -85,16 +138,16 @@ static CACHE: LazyLock<Mutex<(Answers, usize)>> = LazyLock::new(Default::default
 /// pointer could be read. Checkouts are looked for in `folders`: workspace
 /// and agent folders. Git runs until `deadline` at the latest; a pointer not
 /// read by then stays as authored. This blocks; call it off the UI thread.
-pub fn transform(html: &str, folders: &[PathBuf], deadline: Instant) -> Option<String> {
-    let found = pointer::find(html);
+pub fn transform(html: &str, folders: &[PathBuf], until: &Until) -> Option<String> {
+    let found = pointer::find(html, until);
     if found.is_empty() {
         return None;
     }
-    let checkouts = checkout::checkouts(folders, deadline);
+    let checkouts = checkout::checkouts(folders, until);
     let mut views = Vec::new();
     let mut added = 0;
     for found in found {
-        let Some(read) = answer(&found.pointer, &checkouts, deadline) else {
+        let Some(read) = answer(&found.pointer, &checkouts, until) else {
             continue;
         };
         let caption = found.caption.map(|range| &html[range]);
@@ -115,7 +168,7 @@ pub fn transform(html: &str, folders: &[PathBuf], deadline: Instant) -> Option<S
 
 /// What the first checkout of the pointer's repository with its commits
 /// answers. An answer that checkout gave before is taken from the cache.
-fn answer(pointer: &Pointer, checkouts: &[Checkout], deadline: Instant) -> Option<Arc<Read>> {
+fn answer(pointer: &Pointer, checkouts: &[Checkout], until: &Until) -> Option<Arc<Read>> {
     let commits: Vec<&str> = match pointer {
         Pointer::Diff { base, head, .. } => vec![base, head],
         Pointer::Code { commit, .. } => vec![commit],
@@ -130,7 +183,7 @@ fn answer(pointer: &Pointer, checkouts: &[Checkout], deadline: Instant) -> Optio
         let top = checkout.top();
         if !commits
             .iter()
-            .all(|commit| git::has_commit(top, commit, deadline))
+            .all(|commit| git::has_commit(top, commit, until))
         {
             continue;
         }
@@ -141,18 +194,10 @@ fn answer(pointer: &Pointer, checkouts: &[Checkout], deadline: Instant) -> Optio
         let read = Arc::new(match pointer {
             Pointer::Diff {
                 base, head, paths, ..
-            } => Read::Diff(git::diff(top, base, head, paths.as_deref(), deadline)?),
-            Pointer::Code { commit, path, .. } => {
-                Read::Code(git::file(top, commit, path, deadline)?)
-            }
+            } => Read::Diff(git::diff(top, base, head, paths.as_deref(), until)?),
+            Pointer::Code { commit, path, .. } => Read::Code(git::file(top, commit, path, until)?),
         });
-        let size = read.size() + size_of::<(PathBuf, Pointer)>() + key.0.capacity() + held(&key.1);
-        let mut cache = cache();
-        if cache.1 + size > CACHE_LIMIT {
-            *cache = Default::default();
-        }
-        cache.1 += size;
-        cache.0.insert(key, read.clone());
+        remember(&mut cache(), key, read.clone());
         return Some(read);
     }
     None
@@ -164,8 +209,8 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    fn later() -> Instant {
-        Instant::now() + Duration::from_secs(10)
+    fn later() -> Until {
+        Until::new(Instant::now() + Duration::from_secs(10))
     }
 
     #[test]
@@ -183,7 +228,7 @@ mod tests {
             dir.join("sub-folder-that-is-absent"),
             dir.clone(),
         ];
-        let out = transform(&html, &folders, later()).unwrap();
+        let out = transform(&html, &folders, &later()).unwrap();
         assert!(out.starts_with(&format!("{before}<figure data-backbone-diff=")));
         assert!(out.ends_with("</figure><p>End</p>"));
         assert!(out.contains(
@@ -201,8 +246,8 @@ mod tests {
             let id = git(&dir, &["rev-parse", &blob]);
             std::fs::remove_file(dir.join(".git/objects").join(&id[..2]).join(&id[2..])).unwrap();
         }
-        assert_eq!(transform(&html, &folders, later()).as_ref(), Some(&out));
-        assert_eq!(transform(&html, &[], later()), None);
+        assert_eq!(transform(&html, &folders, &later()).as_ref(), Some(&out));
+        assert_eq!(transform(&html, &[], &later()), None);
         std::fs::remove_dir_all(dir.join(".git")).unwrap();
         git(&dir, &["init", "-q"]);
         git(
@@ -214,7 +259,51 @@ mod tests {
                 "https://github.com/Owner/Name.git",
             ],
         );
-        assert_eq!(transform(&html, &folders, later()), None);
+        assert_eq!(transform(&html, &folders, &later()), None);
+    }
+
+    #[test]
+    fn cancelling_stops_a_running_transform() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("checkout");
+        std::fs::create_dir(&dir).unwrap();
+        let (_, second) = repository(&dir, "git@github.com:owner/name.git");
+        // Git waits on this configuration file until it is stopped.
+        let fifo = root.path().join("fifo");
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+        assert!(made.unwrap().success());
+        git(&dir, &["config", "include.path", fifo.to_str().unwrap()]);
+        let html = format!(
+            r#"<figure data-backbone-code="1" data-repo="owner/name" data-commit="{second}" data-path="a.txt"></figure>"#
+        );
+        let until = later();
+        let cancel = until.clone();
+        let started = Instant::now();
+        let stopper = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            cancel.cancel();
+        });
+        assert_eq!(transform(&html, &[dir], &until), None);
+        // Well before the 3 s a single command may take.
+        assert!(started.elapsed() < Duration::from_secs(2));
+        stopper.join().unwrap();
+    }
+
+    #[test]
+    fn an_answer_stored_twice_is_charged_once() {
+        let mut cache = (Answers::new(), 0);
+        let pointer = Pointer::Code {
+            repo: "owner/name".into(),
+            commit: "0".repeat(40),
+            path: "a.txt".into(),
+            lines: None,
+        };
+        let key = (PathBuf::from("/clone/.git"), pointer);
+        let read = || Arc::new(Read::Code("text".into()));
+        remember(&mut cache, key.clone(), read());
+        let once = cache.1;
+        remember(&mut cache, key, read());
+        assert_eq!((cache.0.len(), cache.1), (1, once));
     }
 
     #[test]
@@ -246,8 +335,8 @@ mod tests {
             pointer("owner/name", &second[..12]),
             "<p>No pointers</p>".to_owned(),
         ] {
-            assert_eq!(transform(&html, &folders, later()), None, "{html}");
+            assert_eq!(transform(&html, &folders, &later()), None, "{html}");
         }
-        assert!(transform(&pointer("owner/name", &second), &folders, later()).is_some());
+        assert!(transform(&pointer("owner/name", &second), &folders, &later()).is_some());
     }
 }

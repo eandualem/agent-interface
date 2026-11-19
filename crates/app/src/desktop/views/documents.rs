@@ -34,10 +34,24 @@ pub(super) struct State {
     /// The page served for a revision: with views of Git diffs and code in
     /// place of its pointers, once Git has been read.
     served: Option<(Revision, Arc<str>)>,
-    /// The revision whose page is being made, and the work making it.
-    serving: Option<(Revision, Task<()>)>,
+    /// The work making a revision's page.
+    serving: Option<Serving>,
     pub surface: Rc<RefCell<Surface>>,
     pub error: Option<String>,
+}
+
+/// The work making a revision's page. Dropping it stops the work, Git
+/// included, at its next check.
+struct Serving {
+    revision: Revision,
+    until: crate::code_figures::Until,
+    _waiting: Task<()>,
+}
+
+impl Drop for Serving {
+    fn drop(&mut self) {
+        self.until.cancel();
+    }
 }
 
 impl State {
@@ -57,7 +71,7 @@ impl State {
         self.loaded = Some(document.clone());
         let known = |entry: Option<&Revision>| entry == Some(&key);
         if known(self.served.as_ref().map(|(served, _)| served))
-            || known(self.serving.as_ref().map(|(serving, _)| serving))
+            || known(self.serving.as_ref().map(|serving| &serving.revision))
         {
             return false;
         }
@@ -102,12 +116,13 @@ pub(super) fn serve(pane: &mut ViewPane, document: &DocumentRevision, cx: &mut C
     folders.extend(pane.agents.folders());
     let (done, served) = futures::channel::oneshot::channel();
     let stored = html.clone();
-    let deadline = Instant::now() + GIT_WAIT;
+    let until = crate::code_figures::Until::new(Instant::now() + GIT_WAIT);
+    let worker = until.clone();
     // Without the thread the sender is dropped, and the page is served as stored.
     let _ = std::thread::Builder::new()
         .name("document code".into())
         .spawn(move || {
-            let _ = done.send(crate::code_figures::transform(&stored, &folders, deadline));
+            let _ = done.send(crate::code_figures::transform(&stored, &folders, &worker));
         });
     let made = key.clone();
     let task = cx.spawn(async move |pane, cx| {
@@ -123,7 +138,11 @@ pub(super) fn serve(pane: &mut ViewPane, document: &DocumentRevision, cx: &mut C
             }
         });
     });
-    pane.documents.serving = Some((key, task));
+    pane.documents.serving = Some(Serving {
+        revision: key,
+        until,
+        _waiting: task,
+    });
 }
 
 pub(super) fn selected(pane: &ViewPane) -> Option<&DocumentMetadata> {
@@ -408,12 +427,20 @@ mod tests {
         assert_eq!(state.page(), None);
     }
 
+    fn serving(document: &DocumentRevision) -> Serving {
+        Serving {
+            revision: revision(document),
+            until: crate::code_figures::Until::new(Instant::now() + GIT_WAIT),
+            _waiting: Task::ready(()),
+        }
+    }
+
     #[test]
     fn the_same_revision_read_again_keeps_its_work() {
         let mut state = State::default();
         let one = document(1, "<p>one</p>");
         assert!(state.load(&one));
-        state.serving = Some((revision(&one), Task::ready(())));
+        state.serving = Some(serving(&one));
         assert!(!state.load(&one));
         assert!(state.finish(revision(&one), "first".into()));
         assert!(!state.load(&one));
@@ -421,13 +448,23 @@ mod tests {
     }
 
     #[test]
-    fn leaving_the_reader_drops_the_work_and_its_page() {
+    fn leaving_the_reader_stops_the_work_and_drops_its_page() {
         let mut state = State::default();
-        let one = document(1, "<p>one</p>");
+        let (one, two) = (document(1, "<p>one</p>"), document(2, "<p>two</p>"));
         assert!(state.load(&one));
-        state.serving = Some((revision(&one), Task::ready(())));
+        let work = serving(&one);
+        let until = work.until.clone();
+        state.serving = Some(work);
+        // Another revision stops the last one's work.
+        assert!(state.load(&two));
+        assert!(until.passed());
+        // Leaving stops the work, Git included (code_figures' tests cancel a
+        // running transform).
+        state.serving = Some(serving(&two));
+        let until = state.serving.as_ref().unwrap().until.clone();
+        assert!(!until.passed());
         state.clear();
-        assert!(state.serving.is_none());
+        assert!(until.passed() && state.serving.is_none());
         assert!(!state.finish(revision(&one), "late".into()));
         assert_eq!(state.page(), None);
     }

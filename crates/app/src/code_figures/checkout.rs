@@ -4,10 +4,9 @@
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
-    time::Instant,
 };
 
-use super::git;
+use super::{Until, git};
 
 /// The most folders looked at for one Document.
 pub const LIMIT: usize = 64;
@@ -25,7 +24,7 @@ pub struct Checkout {
 /// The checkouts that `folders` are in, one per clone, in the folders' order.
 /// Folders that are not in a checkout are left out, and so are partial
 /// clones, which Git would fill in from the network.
-pub fn checkouts(folders: &[PathBuf], deadline: Instant) -> Vec<Checkout> {
+pub fn checkouts(folders: &[PathBuf], until: &Until) -> Vec<Checkout> {
     let mut seen = HashSet::new();
     let mut found: Vec<Checkout> = Vec::new();
     let folders = folders
@@ -33,7 +32,7 @@ pub fn checkouts(folders: &[PathBuf], deadline: Instant) -> Vec<Checkout> {
         .filter(|folder| seen.insert(*folder))
         .take(LIMIT);
     for folder in folders {
-        if Instant::now() >= deadline {
+        if until.passed() {
             break;
         }
         if !folder.is_absolute() || !folder.is_dir() {
@@ -48,7 +47,7 @@ pub fn checkouts(folders: &[PathBuf], deadline: Instant) -> Vec<Checkout> {
                 "--git-common-dir",
             ],
             64 * 1024,
-            deadline,
+            until,
         ) else {
             continue;
         };
@@ -74,7 +73,7 @@ pub fn checkouts(folders: &[PathBuf], deadline: Instant) -> Vec<Checkout> {
                 r"^(remote\.origin\.url|extensions\.(partialclone|objectformat)|remote\..*\.(promisor|partialclonefilter))$",
             ],
             64 * 1024,
-            deadline,
+            until,
         )
         .unwrap_or_default();
         let mut origin = None;
@@ -164,7 +163,7 @@ pub fn is_remote(url: &str, repo: &str) -> bool {
 mod tests {
     use super::*;
     use crate::code_figures::git::tests::{git, repository};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn remotes_match_in_every_github_form() {
@@ -246,8 +245,11 @@ mod tests {
             other.clone(),
         ]);
         std::fs::create_dir(main.join("sub")).unwrap();
-        assert_eq!(checkouts(&folders, Instant::now()), vec![]);
-        let found = checkouts(&folders, Instant::now() + Duration::from_secs(10));
+        assert_eq!(checkouts(&folders, &Until::new(Instant::now())), vec![]);
+        let found = checkouts(
+            &folders,
+            &Until::new(Instant::now() + Duration::from_secs(10)),
+        );
         // Repeated folders count once. The partial and SHA-256 clones are left
         // out, and the worktree shares its clone with `main`, so only the first
         // is kept.
