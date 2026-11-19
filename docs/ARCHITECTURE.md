@@ -760,14 +760,13 @@ revision, stops that work, a running Git command included.
   `..`, empty parts, backslashes or control characters, unreadable JSON, a
   repeated attribute, or content other than whitespace, comments and one
   caption, or a caption holding a `details` or `summary` tag, is not a
-  pointer. A page's first 64 pointers are read. A page with a tag of more
-  than 1,000 attributes is served as stored: the tokenizer compares each new
-  attribute with all before it, so such a tag would take very long. The
-  attributes are counted the tokenizer's way before the tag is read, so long
-  quoted values, such as inline images, do not count. The page is fed in
-  steps of at most 1 KiB, and the deadline and cancellation are checked
-  between steps, so even a tag the count let through holds the scan at most
-  one step longer.
+  pointer. A page's first 64 pointers are read. The page is fed to the
+  tokenizer in steps of at most 1 KiB, with the deadline and cancellation
+  checked between steps. The tokenizer compares each new attribute of a tag
+  with all before it, so a tag with very many attributes is slow to read;
+  the slowest step measured, late in a 4 MiB tag of distinct attributes, took
+  about 0.11 s. Such a page holds one background thread until the deadline,
+  then it is served as stored; the reader is never blocked.
 - **Finding a checkout.** The candidates are the saved folders of the
   window's panes, then the folders of the profile's agents as `/api/agents`
   reports them, each counted once, up to 64. Each resolves to its Git top

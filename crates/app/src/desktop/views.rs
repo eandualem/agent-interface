@@ -161,6 +161,28 @@ pub(super) struct Open {
     pub text: Option<Result<(std::sync::Arc<str>, bool), &'static str>>,
 }
 
+/// What a Reports pane reads: its open record, or else its feed.
+fn reports_request(reports: &reports::State) -> Request {
+    match &reports.open {
+        // A correction asked for by number reads only that answer.
+        _ if let Some(id) = reports.pending_correction() => Request::Response(id),
+        Some(item) if matches!(item.content, views::ReportContent::Document(_)) => {
+            Request::Document(item.id)
+        }
+        Some(item) if matches!(item.content, views::ReportContent::Response { .. }) => {
+            Request::Response(item.id)
+        }
+        _ => Request::Reports(reports.query.clone(), reports.agent.clone()),
+    }
+}
+
+/// Close the open record and drop a Document's page and its work. A read
+/// for that record then no longer matches the pane's request and is dropped.
+fn leave(documents: &mut documents::State, reports: &mut reports::State) {
+    documents.clear();
+    reports.open = None;
+}
+
 /// The folders of a window's workspaces, read when a Document is opened.
 pub(super) type Folders = Rc<dyn Fn(&gpui::App) -> Vec<PathBuf>>;
 
@@ -464,17 +486,7 @@ impl ViewPane {
             ViewKind::Skills => Request::Skills,
             ViewKind::Policies => Request::Policies,
             ViewKind::Tags => Request::Tags,
-            ViewKind::Reports => match &self.reports.open {
-                // A correction asked for by number reads only that answer.
-                _ if let Some(id) = self.reports.pending_correction() => Request::Response(id),
-                Some(item) if matches!(item.content, views::ReportContent::Document(_)) => {
-                    Request::Document(item.id)
-                }
-                Some(item) if matches!(item.content, views::ReportContent::Response { .. }) => {
-                    Request::Response(item.id)
-                }
-                _ => Request::Reports(self.reports.query.clone(), self.reports.agent.clone()),
-            },
+            ViewKind::Reports => reports_request(&self.reports),
             ViewKind::Artifacts => unreachable!("artifacts have no Backbone source"),
             ViewKind::Agent => Request::Agent(
                 self.view.agent.clone().unwrap_or_default(),
@@ -513,10 +525,15 @@ impl ViewPane {
         self.plans_shown(false, cx);
         self.interactions_shown(false, cx);
         self.shown = Shown::Records;
-        self.documents.clear();
-        self.reports.open = None;
         self.reports.query = query;
         self.reports.previous.clear();
+        self.leave_reader(cx);
+    }
+
+    /// Close the open record, and with it a Document's page and its work,
+    /// as every section switch does, and read for the section shown.
+    fn leave_reader(&mut self, cx: &mut Context<Self>) {
+        leave(&mut self.documents, &mut self.reports);
         self.refetch(true, cx);
     }
 
@@ -537,7 +554,7 @@ impl ViewPane {
         if !source.belongs_to(&self.agents) {
             return;
         }
-        self.documents.clear();
+        self.leave_reader(cx);
         match &self.plans {
             Some(_) => self.plans_shown(true, cx),
             None => {
@@ -563,7 +580,7 @@ impl ViewPane {
             return;
         }
         self.interactions_shown(false, cx);
-        self.documents.clear();
+        self.leave_reader(cx);
         self.plans_shown(false, cx);
         if self.sheets.is_none() {
             let sheets = cx.new(|cx| sheets::Sheets::new(source, window, cx));
@@ -591,7 +608,7 @@ impl ViewPane {
         if !source.belongs_to(&self.agents) {
             return;
         }
-        self.documents.clear();
+        self.leave_reader(cx);
         self.plans_shown(false, cx);
         if self.interactions.is_none() {
             let visible = self.visible.clone();
@@ -1427,6 +1444,47 @@ fn line(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn leaving_the_reader_closes_its_record_so_a_late_read_is_refused() {
+        use agent_interface_roster::views::{
+            DocumentMetadata, DocumentRevision, ReportContent, ReportItem,
+        };
+        let metadata = DocumentMetadata {
+            id: 7,
+            document_id: "a".repeat(32),
+            author_id: "b".repeat(32),
+            author_name: "worker".into(),
+            agent_name: None,
+            title: "Title".into(),
+            created_at: "2026-11-19T00:00:00Z".into(),
+            content_bytes: 1,
+            content_sha256: "c".repeat(64),
+            supersedes_id: None,
+            superseded_by: None,
+        };
+        let mut reports = reports::State::default();
+        reports.open = Some(ReportItem {
+            id: 7,
+            author: "worker".into(),
+            author_id: Some("b".repeat(32)),
+            registered: false,
+            provider_url: String::new(),
+            created_at: metadata.created_at.clone(),
+            conversation_id: None,
+            content: ReportContent::Document(metadata.clone()),
+        });
+        let mut documents = documents::State::default();
+        documents.loaded = Some(DocumentRevision {
+            metadata,
+            html: "x".into(),
+        });
+        assert_eq!(reports_request(&reports), Request::Document(7));
+        leave(&mut documents, &mut reports);
+        assert!(reports.open.is_none() && documents.loaded.is_none());
+        // A read of the Document still in flight no longer matches.
+        assert_ne!(reports_request(&reports), Request::Document(7));
+    }
 
     #[test]
     fn counts_and_ages_stay_short() {

@@ -29,12 +29,10 @@ use super::Until;
 
 /// The most pointers read from one Document; later ones stay as authored.
 pub const LIMIT: usize = 64;
-/// The most attributes one tag may have before the page is not read: the
-/// tokenizer compares each new attribute with all before it.
-const ATTRIBUTES: usize = 1_000;
-/// The most bytes fed to the tokenizer at once. A step's cost grows with
-/// the attributes already in its tag; at this size one step stays far below
-/// a second even late in a 4 MiB tag of distinct attributes.
+/// The most bytes fed to the tokenizer at once. The tokenizer compares each
+/// new attribute of a tag with all before it, so a step's cost grows with
+/// the attributes already in its tag; at this size the slowest step measured
+/// late in a 4 MiB tag of distinct attributes took about 0.11 s.
 const STEP: usize = 1024;
 /// The most paths a diff pointer may name.
 const PATHS: usize = 100;
@@ -89,14 +87,8 @@ pub struct Found {
 /// The pointers in `html`, in page order, at most [`LIMIT`]. A pointer is a
 /// `figure` in HTML content with valid pointer attributes, holding only
 /// whitespace, comments and at most one `figcaption`, closed by `</figure>`.
-/// None are found once `until` passes, or in a page with a tag of more than
-/// 1,000 attributes.
+/// None are found once `until` passes.
 pub fn find(html: &str, until: &Until) -> Vec<Found> {
-    find_in(html, until, true)
-}
-
-/// [`find`]; `metered` is false only to test that `until` alone bounds it.
-fn find_in(html: &str, until: &Until, metered: bool) -> Vec<Found> {
     let tokenizer = Tokenizer::new(
         Sink::default(),
         TokenizerOpts {
@@ -117,23 +109,12 @@ fn find_in(html: &str, until: &Until, metered: bool) -> Vec<Found> {
     // each end at a `>` places the end of every tag, comment and doctype
     // exactly at the end of the chunk that emitted it.
     let mut start = 0;
-    let mut meter = Meter::default();
     while start < html.len() && scan.found.len() < LIMIT {
-        if until.passed() {
-            return Vec::new();
-        }
         let end = html[start..]
             .find('>')
             .map_or(html.len(), |at| start + at + 1);
-        // Raw text, as in a script, has no tags to count.
-        let foreign = tokenizer.sink.foreign.get() > 0;
-        if !metered || tokenizer.sink.raw.borrow().is_some() {
-            meter = Meter::default();
-        } else if !meter.read(&html.as_bytes()[start..end], foreign) {
-            return Vec::new();
-        }
-        // In steps, so that even a tag the meter let through holds the scan
-        // at most one step past `until`.
+        // In steps, so that even a tag that is slow to read holds the scan at
+        // most one step past `until`.
         let mut from = start;
         while from < end {
             if until.passed() {
@@ -148,12 +129,6 @@ fn find_in(html: &str, until: &Until, metered: bool) -> Vec<Found> {
             from = to;
         }
         for event in tokenizer.sink.events.take() {
-            // A tag, comment or doctype just ended, so the tokenizer reads
-            // text again: the meter starts there too, whatever it made of a
-            // comment's content.
-            if !matches!(event, Event::Text(_)) {
-                meter = Meter::default();
-            }
             scan.event(event, end);
         }
         start = end;
@@ -195,8 +170,6 @@ struct Sink {
     events: RefCell<Vec<Event>>,
     /// Open `svg` and `math` elements, where these elements are not raw text.
     foreign: Cell<u32>,
-    /// The element whose content is being read as raw text, if any.
-    raw: RefCell<Option<LocalName>>,
 }
 
 impl TokenSink for Sink {
@@ -223,17 +196,11 @@ impl TokenSink for Sink {
                         if matches!(name, "svg" | "math") && !tag.self_closing {
                             self.foreign.set(foreign + 1);
                         }
-                        if !matches!(result, TokenSinkResult::Continue) {
-                            *self.raw.borrow_mut() = Some(tag.name.clone());
-                        }
                         Event::Start(tag, foreign == 0)
                     }
                     TagKind::EndTag => {
                         if foreign > 0 && matches!(name, "svg" | "math") {
                             self.foreign.set(foreign - 1);
-                        }
-                        if self.raw.borrow().as_ref() == Some(&tag.name) {
-                            *self.raw.borrow_mut() = None;
                         }
                         Event::End(tag.name)
                     }
@@ -244,86 +211,18 @@ impl TokenSink for Sink {
             Token::NullCharacterToken => Event::Text(false),
             Token::EOFToken | Token::ParseError(_) => return result,
         };
-        self.events.borrow_mut().push(event);
+        let mut events = self.events.borrow_mut();
+        // A run of text is one event, however many tokens it took.
+        if let (Some(Event::Text(blank)), Event::Text(also)) = (events.last_mut(), &event) {
+            *blank &= *also;
+        } else {
+            events.push(event);
+        }
         result
     }
 
     fn adjusted_current_node_present_but_not_in_html_namespace(&self) -> bool {
         self.foreign.get() > 0
-    }
-}
-
-/// Counts the attributes of the tag being fed, before the tokenizer reads
-/// them, by following the tokenizer's own states for a tag.
-#[derive(Default)]
-struct Meter {
-    place: Place,
-    attributes: usize,
-}
-
-#[derive(Clone, Copy, Default)]
-enum Place {
-    #[default]
-    Text,
-    TagName,
-    BeforeName,
-    Name,
-    AfterName,
-    BeforeValue,
-    Quoted(u8),
-    AfterQuoted,
-    Unquoted,
-    /// A CDATA section in SVG or MathML, with how many `]` just came.
-    CData(u8),
-}
-
-impl Meter {
-    /// Follow `bytes` of the page, `foreign` when they are in SVG or MathML;
-    /// false once a tag has more than [`ATTRIBUTES`] attributes.
-    fn read(&mut self, bytes: &[u8], foreign: bool) -> bool {
-        for (at, &byte) in bytes.iter().enumerate() {
-            let space = is_space(char::from(byte));
-            let tag_starts = |from: usize| bytes.get(from).is_some_and(u8::is_ascii_alphabetic);
-            let ends_tag = |from: usize| bytes.get(from) == Some(&b'/') && tag_starts(from + 1);
-            self.place = match (self.place, byte) {
-                // CDATA is text, and emits no tag to resynchronise on.
-                (Place::Text, b'<') if foreign && bytes[at..].starts_with(b"<![CDATA[") => {
-                    Place::CData(0)
-                }
-                (Place::CData(brackets), b']') => Place::CData((brackets + 1).min(2)),
-                (Place::CData(2), b'>') => Place::Text,
-                (Place::CData(_), _) => Place::CData(0),
-                (Place::Text, b'<') if tag_starts(at + 1) || ends_tag(at + 1) => {
-                    self.attributes = 0;
-                    Place::TagName
-                }
-                (Place::Text, _) => Place::Text,
-                (Place::Quoted(quote), _) if byte == quote => Place::AfterQuoted,
-                (Place::Quoted(quote), _) => Place::Quoted(quote),
-                (_, b'>') => Place::Text,
-                (Place::TagName | Place::BeforeName, _) if space || byte == b'/' => {
-                    Place::BeforeName
-                }
-                (Place::TagName, _) => Place::TagName,
-                (Place::Name | Place::AfterName, _) if space => Place::AfterName,
-                (Place::Name | Place::AfterName | Place::AfterQuoted, b'/') => Place::BeforeName,
-                (Place::Name | Place::AfterName, b'=') => Place::BeforeValue,
-                (Place::Name, _) => Place::Name,
-                (Place::BeforeValue, b'"' | b'\'') => Place::Quoted(byte),
-                (Place::BeforeValue, _) if space => Place::BeforeValue,
-                (Place::AfterQuoted | Place::Unquoted, _) if space => Place::BeforeName,
-                (Place::BeforeValue | Place::Unquoted, _) => Place::Unquoted,
-                // A new attribute begins.
-                (Place::BeforeName | Place::AfterName | Place::AfterQuoted, _) => {
-                    self.attributes += 1;
-                    Place::Name
-                }
-            };
-            if self.attributes > ATTRIBUTES {
-                return false;
-            }
-        }
-        true
     }
 }
 
@@ -788,24 +687,17 @@ mod tests {
     }
 
     #[test]
-    fn a_tag_with_too_many_attributes_stops_the_scan_at_once() {
+    fn a_tag_that_is_slow_to_read_stops_at_the_deadline() {
         let names: String = (0..100_000).map(|n| format!("a{n} ")).collect();
         let hostile = format!("<p {names}>{}", code(""));
         let started = std::time::Instant::now();
-        assert_eq!(find(&hostile, &later()), vec![]);
-        assert!(started.elapsed() < std::time::Duration::from_secs(1));
-        // A long value is no attribute: a large inline image keeps its page.
-        let data = "A/+=".repeat(250_000);
-        let image = format!(r#"<img src="data:image/png;base64,{data}">{}"#, code(""));
-        assert_eq!(find(&image, &later()).len(), 1);
-        // What the tokenizer reads as a comment or CDATA cannot hide a tag
-        // from the count.
-        for cover in [r#"<!-- <a b=" -->"#, r#"<svg><![CDATA[ <a b=" ]]>"#] {
-            let hidden = format!(r#"{cover}<p {names}>"{}"#, code(""));
-            let started = std::time::Instant::now();
-            assert_eq!(find(&hidden, &later()), vec![], "{cover}");
-            assert!(started.elapsed() < std::time::Duration::from_secs(1));
-        }
+        let soon = Until::new(started + std::time::Duration::from_millis(200));
+        assert_eq!(find(&hostile, &soon), vec![]);
+        // One step past the deadline, with room for a slow machine.
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+        // Steps keep every byte: a page split mid-character still reads.
+        let wide = format!("<p title=\"x{}\">{}", "é".repeat(STEP), code(""));
+        assert_eq!(find(&wide, &later()).len(), 1);
         // A cancelled scan finds nothing.
         let until = later();
         until.cancel();
@@ -813,17 +705,13 @@ mod tests {
     }
 
     #[test]
-    fn the_deadline_alone_stops_a_scan_the_meter_would_let_through() {
-        let names: String = (0..100_000).map(|n| format!("a{n} ")).collect();
-        let hostile = format!("<p {names}>{}", code(""));
-        let started = std::time::Instant::now();
-        let soon = Until::new(started + std::time::Duration::from_millis(200));
-        assert_eq!(find_in(&hostile, &soon, false), vec![]);
-        // One step past the deadline, with room for a slow machine.
-        assert!(started.elapsed() < std::time::Duration::from_secs(3));
-        // Steps keep every byte: a page split mid-character still reads.
-        let wide = format!("<p title=\"x{}\">{}", "é".repeat(STEP), code(""));
-        assert_eq!(find_in(&wide, &later(), false).len(), 1);
+    fn a_run_of_text_is_one_event() {
+        let sink = Sink::default();
+        for _ in 0..10_000 {
+            let _ = sink.process_token(Token::CharacterTokens(" ".into()), 1);
+            let _ = sink.process_token(Token::NullCharacterToken, 1);
+        }
+        assert!(matches!(&sink.events.borrow()[..], [Event::Text(false)]));
     }
 
     #[test]
