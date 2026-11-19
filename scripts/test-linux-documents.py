@@ -67,6 +67,10 @@ with tempfile.TemporaryDirectory(prefix="document-smoke-") as directory:
         f"    'profiles show') printf '%s' '{json.dumps(entry)}' ;;\n"
         '    *) exit 2 ;;\nesac\n')
     (commands / "backbone").chmod(0o755)
+    # The app asks a login shell, then PATH, for `backbone`: this fixture must
+    # come first in both, whatever the runner has installed.
+    env.update(SHELL="/bin/sh", PATH=f"{commands}:{env.get('PATH', '')}")
+    (root / ".profile").write_text(f'PATH="{commands}:$PATH"\nexport PATH\n')
     leaks = []
 
     class Trap(http.server.BaseHTTPRequestHandler):
