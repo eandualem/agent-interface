@@ -94,7 +94,8 @@ fn readonly_reload_remains_available_when_record_cannot_be_restored() {
     assert!(!Command::Retry.allowed(Some(&s)));
     // Nothing further can happen on this request, so it offers no provider action.
     assert!(!Command::Cancel.allowed(Some(&s)));
-    assert_eq!(status(&s), "Agent not added");
+    // A code that doesn't say the agent wasn't added: not known.
+    assert_eq!(status(&s), "Not known whether it was added");
 }
 
 /// A saved request whose latest result, of the first agent or of its
@@ -136,24 +137,27 @@ fn each_code_says_what_happened_by_what_may_follow_it() {
         )
     };
     for row in [
-        "failed agent_conflict new_request: already uses the name worker",
+        "failed agent_conflict new_request: isn't free, or the folder is missing",
         "failed agent_conflict none: uses the name worker or its folder now",
         "action_required runtime_missing new_request: isn't installed",
         "failed runtime_missing new_request: isn't installed",
         "failed starter_conflict new_request: starter",
+        // Start again only where a new request may follow.
+        "failed runtime_missing none: It isn't known whether worker was added",
+        "failed service_unavailable none: It isn't known whether worker was added",
         "failed launch_failed none: did not start, or exited right after starting",
         "action_required service_unavailable same_request: did not answer. Try again: it sends the same request",
         "action_required service_unavailable new_request: couldn't reach",
-        "failed installation_conflict none: another profile",
+        "failed installation_conflict none: It isn't known whether worker was added",
         "failed request_conflict new_request: used for another request",
         "failed request_expired none: never runs now",
         "failed request_cancelled new_request: was cancelled",
         "action_required outcome_unknown same_request: isn't known yet",
         "action_required outcome_unknown none: never runs again",
         "action_required outcome_unknown new_request: only a new request can follow",
-        "failed setup_failed same_request: before it changed anything",
-        "failed operator_required none: worker may have been added",
-        "failed invalid_request new_request: were refused",
+        "failed setup_failed same_request: before this attempt changed anything",
+        "failed operator_required none: only the machine's operator may do it. worker may have been added",
+        "failed invalid_request new_request: refused the request as it was sent",
         "paused new_code later: new_code",
         // A retry this app doesn't know: kept open, never "never runs again".
         "action_required outcome_unknown later: isn't one this app knows",
@@ -169,12 +173,17 @@ fn each_code_says_what_happened_by_what_may_follow_it() {
         "action_required outcome_unknown same_request: Send the cancellation again",
         "action_required service_unavailable same_request: did not answer",
         "action_required cancellation_unsafe none: not a rollback",
-        "failed request_conflict new_request: used for another request",
+        "failed request_conflict new_request: so it isn't cancelled: it stays open",
         "failed request_expired none: never runs now",
         "failed installation_conflict none: another profile",
+        "failed invalid_request new_request: refused the cancellation",
     ] {
         let (s, again, _) = read(row, true);
         assert_eq!(Command::RetryCancel.allowed(Some(&s)), again, "{row}");
+        // A final answer that didn't cancel it leaves the request open to be
+        // sent again, unless it is too old to run now.
+        let open = !row.contains("same_request") && !row.contains("request_expired");
+        assert_eq!(Command::Retry.allowed(Some(&s)), open, "{row}");
     }
     // The one answer that confirms a cancellation.
     let mut s = answered(true, "completed", "request_cancelled", "new_request");
@@ -187,15 +196,31 @@ fn each_code_says_what_happened_by_what_may_follow_it() {
         ("failed", "request_expired"),
         ("failed", "agent_conflict"),
         ("failed", "operator_required"),
+        ("failed", "installation_conflict"),
+        ("failed", "runtime_missing"),
         ("failed", "new_code"),
     ] {
         let s = answered(false, row.0, row.1, "none");
         assert_eq!(status(&s), "Not known whether it was added", "{row:?}");
     }
-    assert_eq!(
-        status(&answered(false, "failed", "agent_conflict", "new_request")),
-        "Agent not added"
-    );
+    // Nor from these, as the answer to a request sent again may describe
+    // only that send.
+    for code in ["invalid_request", "new_code"] {
+        let s = answered(false, "failed", code, "new_request");
+        assert_eq!(status(&s), "Not known whether it was added", "{code}");
+    }
+    // Only these say it wasn't, whenever they come.
+    for code in [
+        "agent_conflict",
+        "runtime_missing",
+        "starter_conflict",
+        "service_unavailable",
+        "request_conflict",
+        "request_cancelled",
+    ] {
+        let s = answered(false, "failed", code, "new_request");
+        assert_eq!(status(&s), "Agent not added", "{code}");
+    }
     assert_eq!(
         status(&answered(
             false,
