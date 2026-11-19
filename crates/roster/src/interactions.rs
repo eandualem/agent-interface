@@ -17,7 +17,7 @@ pub enum Error {
     Unsupported,
     /// This specific retained record no longer exists.
     Missing,
-    /// The current credential cannot inspect message history.
+    /// Backbone answered that this app may not read the history.
     Forbidden,
     /// Invalid or oversized provider data.
     Unreadable,
@@ -29,14 +29,12 @@ impl Error {
     /// Safe text for an unavailable or stale view.
     pub fn message(self) -> &'static str {
         match self {
-            Self::Unavailable => {
-                "Backbone could not provide the interaction history. The last one is still shown."
-            }
+            Self::Unavailable => "Backbone could not provide the interaction history.",
             Self::Unsupported => {
                 "Interaction history isn’t available. This Backbone does not offer it yet."
             }
             Self::Missing => "This message is no longer retained by Backbone.",
-            Self::Forbidden => "Interaction history needs the owner's Backbone connection.",
+            Self::Forbidden => "Backbone did not let this app read the interaction history.",
             Self::Unreadable => "Backbone returned unreadable interaction history.",
             Self::Connection(
                 crate::profiles::Error::BindingRequired | crate::profiles::Error::BindingMismatch,

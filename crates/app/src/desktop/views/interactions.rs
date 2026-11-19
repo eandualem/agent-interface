@@ -92,7 +92,7 @@ impl Source {
                     agent_interface_roster::profiles::Error::BindingRequired
                     | agent_interface_roster::profiles::Error::BindingMismatch,
                 ) => "The original profile binding was refused.",
-                _ => views::UNAVAILABLE,
+                _ => "Backbone could not provide the linked record.",
             })
     }
 }

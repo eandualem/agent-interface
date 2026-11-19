@@ -26,7 +26,8 @@ pub enum Error {
     ProviderChanged,
     /// The provider refused the original profile or lifecycle binding.
     BindingRefused,
-    /// The profile connection could not complete a read.
+    /// A read did not complete: Backbone could not be reached, or the
+    /// transport refused its reply.
     Unavailable,
     /// Invalid or oversized client input, before any request.
     Invalid,
@@ -58,7 +59,7 @@ impl Error {
             Self::BindingRefused => {
                 "The original profile binding was refused. Keep the draft and reconnect to that profile."
             }
-            Self::Unavailable => "Backbone could not be reached for Sheets.",
+            Self::Unavailable => "Backbone did not complete this Sheets read.",
             Self::Invalid => {
                 "This request is invalid or exceeds the supported size. The draft is unchanged."
             }
@@ -136,17 +137,10 @@ impl Client {
                 crate::profiles::Error::BindingRequired
                 | crate::profiles::Error::BindingMismatch => Error::BindingRefused,
                 _ if mutation => Error::Unknown,
-                // An oversized reply, not an unreachable profile.
+                // The connection refuses a body over `limit` as Invalid.
                 crate::profiles::Error::Invalid => Error::Unreadable,
                 _ => Error::Unavailable,
             })?;
-        if result.body.len() > limit {
-            return Err(if mutation {
-                Error::Unknown
-            } else {
-                Error::Unreadable
-            });
-        }
         if (200..300).contains(&result.status) {
             return Ok(result);
         }
