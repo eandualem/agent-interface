@@ -1,6 +1,10 @@
 //! Diff and code pointers in a Document's HTML, found as a browser tokenizes
 //! the page, with the byte ranges a view replaces. Anything malformed is not
-//! a pointer and stays as authored.
+//! a pointer and stays as authored. A caption holds text and only these
+//! elements, each closed in the order opened, with no link inside a link:
+//! `em`, `strong`, `b`, `i`, `u`, `s`, `small`, `code`, `a`, `span`, `kbd`,
+//! `samp`, `var`, `sub`, `sup`, `mark`, `abbr`, `cite`, `q`, `time`, `bdi`,
+//! and the empty `br` and `wbr`.
 //!
 //! ```html
 //! <figure data-backbone-diff="1" data-repo="owner/name"
@@ -86,7 +90,8 @@ pub struct Found {
 
 /// The pointers in `html`, in page order, at most [`LIMIT`]. A pointer is a
 /// `figure` in HTML content with valid pointer attributes, holding only
-/// whitespace, comments and at most one `figcaption`, closed by `</figure>`.
+/// whitespace, comments and at most one `figcaption` of the content the
+/// module describes, closed by `</figure>`.
 /// None are found once `until` passes.
 pub fn find(html: &str, until: &Until) -> Vec<Found> {
     let tokenizer = Tokenizer::new(
@@ -258,7 +263,8 @@ struct Open {
 
 enum Caption {
     Before,
-    Inside(usize),
+    /// Where its content starts, and its elements still open.
+    Inside(usize, Vec<LocalName>),
     After(Range<usize>),
 }
 
@@ -300,37 +306,72 @@ impl Scan<'_> {
     }
 
     fn step(&mut self, mut open: Open, event: &Event, end: usize) -> Step {
-        match (&open.caption, event) {
-            (_, Event::Comment | Event::Text(true)) | (Caption::Inside(_), Event::Text(_)) => {
-                Step::Open(open)
-            }
-            (Caption::Before, Event::Start(tag, _)) if &*tag.name == "figcaption" => {
-                open.caption = Caption::Inside(end);
-                Step::Open(open)
-            }
-            // The caption becomes a view's summary, so it may not open or
-            // close a summary or details of its own, nor open SVG or MathML,
-            // whose content the tokenizer reads differently.
-            (Caption::Inside(_), Event::Start(tag, _))
-                if !matches!(
-                    &*tag.name,
-                    "figure" | "figcaption" | "details" | "summary" | "svg" | "math"
-                ) =>
-            {
-                Step::Open(open)
-            }
-            (&Caption::Inside(start), Event::End(name)) if &**name == "figcaption" => {
-                match tag_start(self.html, self.markup_end, end, "</figcaption") {
-                    Some(stop) => {
-                        open.caption = Caption::After(start..stop);
-                        Step::Open(open)
+        // The caption becomes a view's summary, and a browser builds the view
+        // after it from the page's tree: only plain inline elements, closed
+        // as opened, leave the summary to end where the view ends it.
+        if let Caption::Inside(start, tags) = &mut open.caption {
+            return match event {
+                Event::Comment | Event::Text(_) => Step::Open(open),
+                Event::Start(tag, _) => {
+                    let name = &*tag.name;
+                    // Empty elements; a browser ignores the slash of any other,
+                    // so '<b/>' opens a b.
+                    let empty = matches!(name, "br" | "wbr");
+                    let inline = matches!(
+                        name,
+                        "em" | "strong"
+                            | "b"
+                            | "i"
+                            | "u"
+                            | "s"
+                            | "small"
+                            | "code"
+                            | "a"
+                            | "span"
+                            | "kbd"
+                            | "samp"
+                            | "var"
+                            | "sub"
+                            | "sup"
+                            | "mark"
+                            | "abbr"
+                            | "cite"
+                            | "q"
+                            | "time"
+                            | "bdi"
+                    );
+                    // A link opened in a link closes the first.
+                    let link_in_link = name == "a" && tags.iter().any(|element| &**element == "a");
+                    let allowed = empty || inline;
+                    if !allowed || link_in_link {
+                        return Step::Rejected;
                     }
-                    None => Step::Rejected,
+                    if inline {
+                        tags.push(tag.name.clone());
+                    }
+                    Step::Open(open)
                 }
-            }
-            (Caption::Inside(_), Event::End(name))
-                if !matches!(&**name, "figure" | "details" | "summary") =>
-            {
+                Event::End(name) if &**name == "figcaption" && tags.is_empty() => {
+                    let start = *start;
+                    match tag_start(self.html, self.markup_end, end, "</figcaption") {
+                        Some(stop) => {
+                            open.caption = Caption::After(start..stop);
+                            Step::Open(open)
+                        }
+                        None => Step::Rejected,
+                    }
+                }
+                Event::End(name) if tags.last() == Some(name) => {
+                    tags.pop();
+                    Step::Open(open)
+                }
+                Event::End(_) => Step::Rejected,
+            };
+        }
+        match (&open.caption, event) {
+            (_, Event::Comment | Event::Text(true)) => Step::Open(open),
+            (Caption::Before, Event::Start(tag, _)) if &*tag.name == "figcaption" => {
+                open.caption = Caption::Inside(end, Vec::new());
                 Step::Open(open)
             }
             (Caption::Before | Caption::After(_), Event::End(name)) if &**name == "figure" => {
@@ -673,6 +714,33 @@ mod tests {
         // A pointer inside another's caption is found; the outer one is not.
         let html = diff("", &format!("<figcaption>{}</figcaption>", code("")));
         assert!(matches!(&pointers(&html)[..], [Pointer::Code { .. }]));
+    }
+
+    #[test]
+    fn a_caption_holds_only_plain_inline_elements_closed_as_opened() {
+        for caption in [
+            "<table>a",
+            "<select>a",
+            "<object>a",
+            "<template>a",
+            "<b>a",
+            "<a href=x>a",
+            "<b><i>a</b></i>",
+            "a</p>",
+            "a</br>",
+            "a<b/>",
+            "<a href=x>a<a href=y>b</a></a>",
+        ] {
+            let html = diff("", &format!("<figcaption>{caption}</figcaption>"));
+            assert_eq!(pointers(&html), vec![], "{caption}");
+        }
+        let caption = "The <em>fix</em> in <a href=\"#n\"><code>sum</code></a>,<br>by <b><i>them</i></b><wbr/> <!--c--> &amp; <span dir=rtl>שלום</span>";
+        let html = diff("", &format!("<figcaption>{caption}</figcaption>"));
+        let found = find(&html, &later());
+        assert_eq!(
+            found[0].caption.clone().map(|range| &html[range]),
+            Some(caption)
+        );
     }
 
     #[test]

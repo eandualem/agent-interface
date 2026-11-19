@@ -273,6 +273,10 @@ mod tests {
                     ),
                     "{selector}"
                 );
+                // A reset of a closed details' content would show it.
+                if selector.contains("::details-content") {
+                    assert!(selector.contains("[open]::details-content"), "{selector}");
+                }
             }
             for declaration in body.split(';').map(str::trim).filter(|d| !d.is_empty()) {
                 assert!(declaration.ends_with("!important"), "{declaration}");

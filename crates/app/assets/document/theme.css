@@ -47,11 +47,11 @@ hr { border: 0 !important; height: 1px; background-color: var(--ai-line) !import
 /* Git diffs and code the app shows in place of a document's pointers. Each
    opens and closes as <details>; long lines scroll inside it. The view is
    the app's own: its root starts from initial values and its parts from the
-   browser's own, then the rules below apply, all of them important and
-   above any rule of a document's that is not, so a document reaches in only
-   with a rule that ranks higher (important, or with an ID). The author's
-   markup inside a caption stays the author's. 'all' leaves out direction,
-   unicode-bidi and custom properties, so the first two are set here too. */
+   browser's own, then the rules below apply, all of them important, so a
+   document's rule reaches in only if it is important too and ranks higher,
+   as with an ID. The author's markup inside a caption stays the author's.
+   'all' leaves out direction, unicode-bidi and custom properties, so the
+   first two are set here too. */
 .ai-git.ai-git {
   all: initial !important;
   /* What its dir="ltr" gives it. */
@@ -92,6 +92,21 @@ hr { border: 0 !important; height: 1px; background-color: var(--ai-line) !import
 }
 .ai-git.ai-git summary::marker { all: revert !important; }
 .ai-git.ai-git summary::-webkit-details-marker { all: revert !important; }
+/* What a details shows when open, which its parts inherit from; a WebKit
+   that has no ::details-content drops this rule alone. Only when open: the
+   browser hides a closed details' content on this same slot, and a reset
+   there shows it (measured in WebKit). */
+.ai-git.ai-git[open]::details-content,
+.ai-git.ai-git details[open]::details-content {
+  all: revert !important;
+  direction: ltr !important;
+}
+/* The theme's selection, whatever the document's. */
+.ai-git.ai-git::selection,
+.ai-git.ai-git :where(:not(.ai-git > summary.ai-git-caption *))::selection {
+  all: revert !important;
+  background: var(--ai-selection) !important;
+}
 .ai-git.ai-git summary {
   padding: 6px 10px !important;
   cursor: pointer !important;

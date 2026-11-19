@@ -761,8 +761,12 @@ not be read is never remembered.
   version, a short or non-hexadecimal commit, a path that is absolute or has
   `..`, empty parts, backslashes or control characters, unreadable JSON, a
   repeated attribute, or content other than whitespace, comments and one
-  caption, or a caption holding a `details`, `summary`, `svg` or `math` tag,
-  is not a pointer. A page's first 64 pointers are read. The page is fed to the
+  caption is not a pointer. A caption holds text and only these elements,
+  each closed in the order opened, with no link inside a link: `em`,
+  `strong`, `b`, `i`, `u`, `s`, `small`, `code`, `a`, `span`, `kbd`, `samp`,
+  `var`, `sub`, `sup`, `mark`, `abbr`, `cite`, `q`, `time`, `bdi`, and the
+  empty `br` and `wbr`. It becomes the view's summary, and anything else
+  (an unclosed `table`, say) could make a browser build the view inside it. A page's first 64 pointers are read. The page is fed to the
   tokenizer in steps of at most 1 KiB, with the deadline and cancellation
   checked between steps. The tokenizer compares each new attribute of a tag
   with all before it, so a tag with very many attributes is slow to read;

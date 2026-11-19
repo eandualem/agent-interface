@@ -23,9 +23,11 @@ pub const ROW_LIMIT: usize = 20_000;
 /// `until` (and within 3 s) and writes at most `limit` bytes. Cancelling
 /// `until` stops a running command.
 pub fn run(dir: &Path, args: &[&str], limit: usize, until: &Until) -> Option<Vec<u8>> {
-    // The first check on macOS reads the file system, so the deadline and a
-    // cancel are checked after it, just before Git starts.
-    if !runs_git() || until.passed() {
+    if until.passed() || !runs_git() {
+        return None;
+    }
+    // The first check on macOS reads the file system, which takes time.
+    if until.passed() {
         return None;
     }
     let mut child = command(dir, args).spawn().ok()?;
