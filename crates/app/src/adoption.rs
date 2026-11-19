@@ -4,32 +4,41 @@
 use std::path::{Path, PathBuf};
 
 use agent_interface_core::{Leaf, Node, Workspace};
+use agent_interface_roster::profiles::Connection;
 
-use crate::library;
+use crate::library::{self, location::resolve_path};
 
 /// What binding a workspace without a profile to one profile needs: that
-/// profile and the tmux server the workspace used unbound.
+/// profile and its tmux server, and the tmux server the workspace used unbound.
 pub struct Binding {
     profile_id: String,
+    /// The profile's tmux server, resolved; none when it cannot be.
+    profile_server: Option<PathBuf>,
     source: String,
+    resolved_source: Option<PathBuf>,
 }
 
 impl Binding {
-    /// Bind to `profile_id`. `source` is the tmux server the workspace used
-    /// unbound.
-    pub fn new(profile_id: &str, source: &Path) -> Result<Self, String> {
+    /// Bind to the profile `connection` reaches. `source` is the tmux server
+    /// the workspace used unbound. This reads the file system.
+    pub fn new(connection: &Connection, source: &Path) -> Result<Self, String> {
+        let resolved_source = resolve_path(source).ok();
         let source = source
             .to_str()
             .ok_or("The tmux socket path is not UTF-8.")?
             .to_owned();
         Ok(Self {
-            profile_id: profile_id.to_owned(),
+            profile_id: connection.identity().profile_id.clone(),
+            profile_server: resolve_path(connection.tmux_socket()).ok(),
             source,
+            resolved_source,
         })
     }
 
     /// Bind `space`, saved without a profile, to the profile, in the library
-    /// at `directory`. Every attached session stays on the server it is on.
+    /// at `directory`. Every attached session stays on the server it is on:
+    /// one already on the profile's server, under any spelling of its path,
+    /// follows the profile.
     /// Ordinary shell panes become shells of the profile, as in any bound
     /// workspace, so the tmux server of each shell they showed is returned: it
     /// keeps running. An error means a shell could not be looked for, and
@@ -41,11 +50,18 @@ impl Binding {
             each_leaf(&mut tab.tree, &mut |leaf| {
                 // A session without a socket means the unbound server while
                 // unbound and the profile's server afterwards, so it is pinned
-                // to the unbound server, where it still is.
-                if let Some(attachment) = &mut leaf.attachment
-                    && attachment.source_socket.is_none()
-                {
-                    attachment.source_socket = Some(self.source.clone());
+                // to the unbound server, where it still is, unless that is the
+                // profile's own server.
+                if let Some(attachment) = &mut leaf.attachment {
+                    let server = match &attachment.source_socket {
+                        Some(socket) => resolve_path(Path::new(socket)).ok(),
+                        None => self.resolved_source.clone(),
+                    };
+                    if self.profile_server.is_some() && server == self.profile_server {
+                        attachment.source_socket = None;
+                    } else if attachment.source_socket.is_none() {
+                        attachment.source_socket = Some(self.source.clone());
+                    }
                 }
                 // A shell also waits behind an attachment, a chooser or a view.
                 match library::existing_shell_socket(directory, &leaf.id) {
@@ -105,7 +121,12 @@ mod tests {
             session: "notes".into(),
             source_socket: Some("/tmp/other".into()),
         }));
-        let binding = Binding::new("main", Path::new("/tmp/default")).unwrap();
+        let binding = Binding {
+            profile_id: "main".into(),
+            profile_server: None,
+            source: "/tmp/default".into(),
+            resolved_source: None,
+        };
         let library = tempfile::tempdir().unwrap();
         let space = &mut layout.workspaces[0];
         let shells = binding.apply(space, library.path()).unwrap();
@@ -120,5 +141,40 @@ mod tests {
         assert_eq!(sockets, [Some("/tmp/default"), Some("/tmp/other")]);
         // A folder that is gone is not kept for the profile's shell.
         assert_eq!(leaves[0].cwd, None);
+    }
+
+    #[test]
+    fn a_session_on_the_profiles_own_server_follows_it_whatever_the_spelling() {
+        let folder = tempfile::tempdir().unwrap();
+        let server = folder.path().join("profile.sock");
+        std::fs::write(&server, b"").unwrap();
+        let alias = folder.path().join("alias.sock");
+        std::os::unix::fs::symlink(&server, &alias).unwrap();
+        let mut layout = agent_interface_core::Layout::initial("/tmp".into());
+        layout.attach(Some(Attachment {
+            session: "worker".into(),
+            source_socket: Some(alias.to_str().unwrap().into()),
+        }));
+        assert!(layout.split(agent_interface_core::Direction::Right, "/tmp".into(), true));
+        layout.attach(Some(Attachment {
+            session: "notes".into(),
+            source_socket: None,
+        }));
+        let binding = Binding {
+            profile_id: "main".into(),
+            profile_server: resolve_path(&server).ok(),
+            source: "/tmp/default".into(),
+            resolved_source: None,
+        };
+        let library = tempfile::tempdir().unwrap();
+        let space = &mut layout.workspaces[0];
+        binding.apply(space, library.path()).unwrap();
+        let sockets: Vec<_> = space.tabs[0]
+            .tree
+            .leaves()
+            .iter()
+            .map(|leaf| leaf.attachment.as_ref().unwrap().source_socket.clone())
+            .collect();
+        assert_eq!(sockets, [None, Some("/tmp/default".into())]);
     }
 }

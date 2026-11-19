@@ -920,7 +920,7 @@ impl Browser {
                 let directory = crate::library::library_directory(directory.as_deref())
                     .map_err(|error| error.to_string())?;
                 let source = source.ok_or("This window's tmux server could not be found.")?;
-                let binding = crate::adoption::Binding::new(profile_id, &source)?;
+                let binding = crate::adoption::Binding::new(&connection, &source)?;
                 shells = binding.apply(space, &directory)?;
             }
             Ok::<_, String>((base, proposed, shells))
