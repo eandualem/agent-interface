@@ -324,7 +324,7 @@ const MESSAGE_LIMIT: usize = 300;
 
 /// Setup's `message` as the app keeps it: plain text on one line, with
 /// control characters, Unicode's direction controls and zero-width
-/// characters taken out, at most [`MESSAGE_LIMIT`] characters.
+/// characters taken out, at most 300 characters.
 pub fn one_line(message: &str) -> String {
     let plain: String = message
         .chars()
