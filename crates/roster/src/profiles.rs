@@ -668,7 +668,7 @@ impl Connection {
     }
 
     // Every request carries the tuple, including requests after a successful probe.
-    // Future content adapters must use this connection rather than legacy configuration.
+    // Content adapters use this connection for every request.
     pub(crate) fn response(
         &self,
         path: &str,

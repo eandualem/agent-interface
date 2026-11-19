@@ -443,8 +443,7 @@ impl Conversation {
         conversation
     }
 
-    /// Open the discussion named by an explicit recorded link. There is no
-    /// guessed source path, responsible agent or one-way feedback fallback.
+    /// Open the discussion named by an explicit recorded link.
     pub fn about_reference(
         target: ReferenceTarget,
         visible: Rc<Cell<bool>>,

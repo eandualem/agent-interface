@@ -1,4 +1,4 @@
-//! Content read through one verified connection. No desktop actions or local files.
+//! Content read through one verified connection. It only reads.
 
 use super::{Api, DocumentRevision, ReportPage, ReportQuery, documents, reports};
 use crate::profiles::{Connection, Identity};
@@ -12,7 +12,7 @@ pub enum Request {
     Tags,
     /// Policy layers with catalog identities and provider-owned base/swarm text.
     Policies,
-    /// Skill catalog and provider previews, without reading local files.
+    /// Skill catalog and provider previews.
     Skills,
     /// Token usage on the captured profile.
     Usage(super::Range),
@@ -38,7 +38,7 @@ impl Request {
     }
 }
 
-/// Retained content without legacy URL-based action authority.
+/// Retained content, each from the connection that read it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Data {
     /// Team observation from the originating connection.
@@ -53,7 +53,7 @@ pub enum Data {
     Usage(super::Usage),
     /// Deliveries, events and state history from the originating connection.
     Activity(super::Activity),
-    /// A feed page or a single report/answer. Item provider URLs stay empty.
+    /// A feed page or a single report/answer.
     Reports(ReportPage),
     /// Size- and digest-checked HTML from the originating connection.
     Document(DocumentRevision),
@@ -82,8 +82,7 @@ pub struct Read {
 }
 
 /// Read on an I/O worker, retaining the same connection for every chained GET.
-/// Pagination and later detail requests must use this same connection. No
-/// environment, legacy configuration, local runtime files or actions are read.
+/// Pagination and later detail requests must use this same connection.
 pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool) -> Read {
     let observation = match request {
         Request::Team => Some(super::bound::Request::Team),
@@ -146,7 +145,7 @@ pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool)
 }
 
 /// Read one agent card section on the same verified connection, into an agent
-/// already inspected under its saved registration. No local files are read.
+/// already inspected under its saved registration.
 pub fn agent_part(
     connection: &Connection,
     part: &super::Part,

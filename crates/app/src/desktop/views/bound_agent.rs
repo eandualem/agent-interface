@@ -190,9 +190,8 @@ impl Card {
             .expect("validated registration");
         let poll = cx.spawn(async move |this, cx| {
             loop {
-                // The pace of the unbound agent view: its libraries change
-                // rarely. Waking every three seconds lets a section change
-                // take its own pace at once.
+                // An agent's libraries change rarely. Waking every three
+                // seconds lets a section change take its own pace at once.
                 let Ok(()) = this.update(cx, |card, cx| {
                     let every = match card.section {
                         AgentSection::Skills | AgentSection::Policies => 30,

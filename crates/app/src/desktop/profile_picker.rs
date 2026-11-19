@@ -159,7 +159,7 @@ impl ProfilePicker {
         self.name.read(cx).focus.clone()
     }
     /// The caller supplies the already resolved executable and captured caller
-    /// context. No ambient provider or Default profile is selected implicitly.
+    /// context. Nothing, not even the Default profile, is selected implicitly.
     /// With `change`, it chooses the profile of the workspace of that name.
     pub fn new(
         client: Client,

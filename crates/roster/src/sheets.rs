@@ -26,7 +26,7 @@ pub enum Error {
     ProviderChanged,
     /// The provider refused the original profile or lifecycle binding.
     BindingRefused,
-    /// No authenticated private local provider is configured.
+    /// The profile connection could not complete a read.
     Unavailable,
     /// Invalid or oversized client input, before any request.
     Invalid,
@@ -58,7 +58,7 @@ impl Error {
             Self::BindingRefused => {
                 "The original profile binding was refused. Keep the draft and reconnect to that profile."
             }
-            Self::Unavailable => "Sheets requires an authenticated private Backbone connection.",
+            Self::Unavailable => "Backbone could not be reached for Sheets.",
             Self::Invalid => {
                 "This request is invalid or exceeds the supported size. The draft is unchanged."
             }
@@ -136,7 +136,7 @@ impl Client {
                 crate::profiles::Error::BindingRequired
                 | crate::profiles::Error::BindingMismatch => Error::BindingRefused,
                 _ if mutation => Error::Unknown,
-                // An oversized reply, not a missing connection.
+                // An oversized reply, not an unreachable profile.
                 crate::profiles::Error::Invalid => Error::Unreadable,
                 _ => Error::Unavailable,
             })?;

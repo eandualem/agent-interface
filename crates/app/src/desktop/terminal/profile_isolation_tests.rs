@@ -109,7 +109,7 @@ fn equal_terminal_ids_keep_streams_and_input_isolated_when_one_profile_stops() {
                     }),
                 },
                 directory: None,
-                // Even an available same-name legacy target must not receive I/O.
+                // Even an available same-name target on the window's own server must not receive I/O.
                 source: Ok(foreign_socket),
             },
         )
@@ -230,7 +230,7 @@ fn bound_shell_attaches_to_the_provider_session_and_never_creates_one() {
                     attachment: None,
                 },
                 directory: None,
-                source: Err("A bound shell must not use the legacy source.".into()),
+                source: Err("A bound shell must not use the window's own source.".into()),
             },
         )
     };

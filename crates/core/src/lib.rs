@@ -33,7 +33,7 @@ pub struct Workspace {
     pub icon: Option<String>,
     /// Optional named native icon, which takes precedence over `icon`.
     pub symbol: Option<String>,
-    /// Optional stable provider profile ID. None preserves legacy/standalone routing.
+    /// Optional stable provider profile ID. None is a workspace without a profile: tmux only.
     /// This is a lookup key, never an authenticated connection or credential.
     pub profile_id: Option<String>,
     /// Tabs in saved order.
