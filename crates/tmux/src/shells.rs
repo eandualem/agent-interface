@@ -55,7 +55,16 @@ impl Environment {
     /// Capture the creating window's context without changing the process environment.
     /// SHELL and the working directory fall back as below; PATH is not searched.
     pub fn capture() -> io::Result<Self> {
-        let variables: BTreeMap<_, _> = std::env::vars_os()
+        Self::from_variables(std::env::vars_os(), std::env::current_dir()?)
+    }
+
+    /// As [`Self::capture`], from these variables and working directory.
+    fn from_variables(
+        all: impl IntoIterator<Item = (OsString, OsString)>,
+        current: PathBuf,
+    ) -> io::Result<Self> {
+        let variables: BTreeMap<_, _> = all
+            .into_iter()
             .filter(|(name, _)| {
                 COMMAND_ENV
                     .iter()
@@ -75,7 +84,7 @@ impl Environment {
         Ok(Self {
             variables,
             // An app opened from the Dock or Finder runs in "/"; use home instead.
-            cwd: Some(std::env::current_dir()?)
+            cwd: Some(current)
                 .filter(|cwd| cwd.as_os_str() != "/")
                 .unwrap_or_else(|| home.clone()),
             home,

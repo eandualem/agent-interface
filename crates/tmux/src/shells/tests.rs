@@ -424,14 +424,47 @@ fn a_second_creator_waits_for_the_first_creators_lock() {
 }
 
 #[test]
-fn a_missing_shell_falls_back_to_bin_sh() {
-    let mut variables = BTreeMap::new();
-    assert_eq!(login_shell(&variables), Path::new("/bin/sh"));
-    variables.insert("SHELL".into(), "/nonexistent/shell".into());
-    assert_eq!(login_shell(&variables), Path::new("/bin/sh"));
-    let present = std::env::current_exe().unwrap();
-    variables.insert("SHELL".into(), present.clone().into_os_string());
-    assert_eq!(login_shell(&variables), present);
+fn a_shell_created_with_an_invalid_shell_variable_runs_bin_sh() {
+    let server = TmuxServer::start().unwrap();
+    let socket = server
+        .run(&["display-message", "-p", "#{socket_path}"])
+        .unwrap();
+    let socket = PathBuf::from(socket.trim());
+    let root = server.address().0;
+    // Keep the login shell away from the runner's profile and ENV files.
+    server
+        .run(&["set-environment", "-g", "HOME", root.to_str().unwrap()])
+        .unwrap();
+    for name in ["ENV", "BASH_ENV", "ZDOTDIR"] {
+        server.run(&["set-environment", "-gu", name]).unwrap();
+    }
+    let mut variables: Vec<(OsString, OsString)> = std::env::vars_os()
+        .filter(|(name, _)| name != "SHELL" && name != "HOME")
+        .filter(|(name, _)| !CONTEXT.iter().any(|context| name == context))
+        .collect();
+    variables.push(("SHELL".into(), root.join("missing-shell").into()));
+    variables.push(("HOME".into(), root.as_os_str().to_owned()));
+    let environment = Environment::from_variables(variables, root.to_owned()).unwrap();
+    ensure(
+        &socket,
+        &[Request {
+            id: "000000000001".into(),
+            cwd: None,
+        }],
+        &environment,
+    )
+    .unwrap();
+    let start = server
+        .run(&[
+            "display-message",
+            "-p",
+            "-t",
+            "=terminal-000000000001:",
+            "#{pane_start_command}",
+        ])
+        .unwrap();
+    assert!(start.contains("/bin/sh -l -i"), "{start}");
+    assert!(!start.contains("missing-shell"), "{start}");
 }
 
 #[test]
@@ -478,8 +511,10 @@ fn an_exited_ordinary_shell_is_kept_rather_than_restarted() {
         assert!(Instant::now() < deadline, "the shell did not exit");
         thread::sleep(Duration::from_millis(20));
     }
+    let exited = pid(&server, "000000000001");
     ensure(&socket, &request(), &environment).unwrap();
     assert_eq!(dead(), "1");
+    assert_eq!(pid(&server, "000000000001"), exited);
     let sessions = server
         .run(&["list-sessions", "-F", "#{session_name}"])
         .unwrap();
