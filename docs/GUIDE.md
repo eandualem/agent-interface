@@ -1,8 +1,9 @@
 # Use Agent Interface
 
 Start with the [installation guide](INSTALL.md), which covers source builds
-and native packages. Terminal sessions require tmux 3.4 or newer. Agent views
-connect to a running Agent Backbone.
+and native packages. Terminal sessions require tmux 3.4 or newer. Agents and
+their views belong to a workspace with a profile, served by a running Agent
+Backbone; a workspace without a profile holds terminals only.
 
 If no library exists, the first launch creates one empty workspace. Add a tab
 with **+**, Command-T on macOS, or Ctrl+Shift+T on Linux, then choose **Open
@@ -169,7 +170,7 @@ menu to close the whole window. Ordinary shells keep running; external sessions
 retain their own tmux lifetime policy.
 
 The agent roster refreshes immediately, then two seconds after each completed
-request, and at once when the Rust Backbone service reports a changed state. Team and agent views refresh three seconds after each read. A rotating
+request, and at once when Agent Backbone reports a changed state. Team and agent views refresh three seconds after each read. A rotating
 ring marks working or starting agents; labels distinguish starting, working,
 blocked, needs you, idle and unknown. Failed requests show unavailable or stale
 data, rather than treating the last successful state as current. These are
@@ -274,7 +275,7 @@ scales down only while another client keeps the window larger.
 
 ## Rename and save changes
 
-Changes saved by the Python app refresh automatically. Double-click the workspace
+Changes saved to the library elsewhere refresh automatically. Double-click the workspace
 name or the active tab's name to rename it. An inactive tab must first be selected.
 Command-R renames the active tab; Command-Shift-R renames the workspace. The tab's
 **⋯**, or right-clicking any tab, opens options to rename it, move it up/down or
@@ -323,8 +324,7 @@ pill at the right end of the reader's toolbar. Choose it, or press **C**, to ope
 as a card beside the record; choose the card's minimize button, or press **C**
 or Esc in the message field, to close it again, keeping the draft. Enter adds a
 paragraph and **⌘↵** sends. The app sets no length limit; Agent Backbone sets
-its own (4,000 characters in 0.5.1, 64,000 in later versions), and a longer
-message shows **Not sent** with that reason. Each message includes a
+its own, and a longer message shows **Not sent** with that reason. Each message includes a
 reference to the exact record being read, and the app checks that the author
 is still registered before sending. A message shows **Sending…** until Agent
 Backbone answers, then the time it was sent; **Not sent** offers **Retry**,

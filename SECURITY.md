@@ -1,7 +1,7 @@
 # Security
 
 Agent Interface is a desktop client for your tmux sessions and
-[Agent Backbone](https://github.com/eandualem/agent-backbone). It runs under
+Agent Backbone. It runs under
 your account. This page describes its responsibilities, reporting process,
 and known limits.
 
@@ -46,7 +46,7 @@ document capabilities. It opens no network listener and runs no daemon of its ow
 | Terminal output | Printed bytes are parsed as terminal data. Output does not automatically open links, run commands in the app, or access the clipboard. An allocated operating system command (OSC) sequence is discarded at 1 MiB, matching tmux's default input limit, so an unfinished sequence cannot keep growing the parser's memory. This is terminal robustness, not an agent execution policy. |
 | Paste and dropped files | Text goes to the selected pane, with bracketed paste when enabled. Multiline paste is refused when that mode cannot be verified; a single paste is limited to 4 MiB. These safeguards help prevent unintended input. |
 | tmux | Commands target numeric pane and window IDs, with quoted shell arguments. Ordinary shells use a tmux socket in a private directory owned by your account. |
-| Agent Backbone | Credential-bearing requests use a Unix socket owned by your account, with a 0600 socket in a 0700 directory. Both ends check peer identity. There is no network fallback for these requests. This distinguishes accounts, not programs running as the same account. |
+| Agent Backbone | Requests use a Unix socket owned by your account, with a 0600 socket in a 0700 directory. Both ends check peer identity. There is no network fallback for these requests. This distinguishes accounts, not programs running as the same account. |
 | HTML documents | The document view has no network access, navigation, downloads, new windows or file chooser. WebRTC is disabled. On Linux, clipboard access is disabled and WebKit's process sandbox must be active. The view refuses to open if these settings cannot be applied. These restrictions belong to the embedded document capability, not to your terminal sessions. |
 | Links | Clicking an app-provided report or document link can open an `http` or `https` URL in your browser. |
 | Setup | Setup installs only what you choose to install. For Git and tmux it runs Apple's command line tools installer or Homebrew on macOS, and on Linux the distribution's package manager behind the desktop's password prompt. For an agent tool it runs that tool's official installation command in a shell under your account: a downloaded install script for most tools, or an `npm` global install for Gemini CLI. |

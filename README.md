@@ -28,7 +28,7 @@ which one needs you, and read their reports and documents beside the work.
 
 ## One system for agent work
 
-Agent Interface and [Agent Backbone](https://github.com/eandualem/agent-backbone)
+Agent Interface and Agent Backbone
 work together. Backbone turns agents across CLIs and projects into one team, with
 names, safe messages, live state and continuity. Agent Interface is where you work
 with that team.
@@ -62,19 +62,18 @@ flowchart LR
 You need macOS or Linux and tmux 3.4 or newer (`brew install tmux` on macOS).
 On Linux, install the [runtime libraries](docs/INSTALL.md#runtime-prerequisites) first.
 
-**1. Install Agent Interface and Agent Backbone.** The installer downloads the
-compiled app from the [latest release](https://github.com/eandualem/agent-interface/releases),
-checks its checksum, and installs the latest compatible published Backbone.
-It supplies uv and Python when needed; no Rust or manual Python installation is required.
+**1. Install Agent Interface.** The installer downloads the compiled app from the
+[latest release](https://github.com/eandualem/agent-interface/releases) and checks
+its checksum. No Rust installation is required. It does not install Agent
+Backbone yet; see [connecting Agent Backbone](docs/INSTALL.md#connect-agent-backbone).
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/install.sh | sh
 ```
 
-**2. Open Agent Interface.** Native onboarding creates your first profile,
-signs you in to an agent tool and starts your first agent, its guide. Existing Backbone
-configuration is preserved; see [connection guidance](docs/INSTALL.md#connect-agent-backbone)
-if you manage that installation independently.
+**2. Open Agent Interface.** With Agent Backbone installed, native onboarding
+creates your first profile, signs you in to an agent tool and starts your first
+agent, its guide.
 
 The [installation guide](docs/INSTALL.md) covers package architectures, manual
 downloads, Windows 11 / WSL setup, updates and removal.
@@ -109,8 +108,8 @@ same computer as the app. Rich HTML Documents render on macOS and Linux, includi
 Not yet implemented: terminal input methods, key-release events and selection
 across history pages.
 
-Agent Interface reimplements [tmux-workspaces](https://github.com/eandualem/tmux-workspaces)
-in Rust and opens its saved schema-v2 libraries. It needs no Python runtime.
+Agent Interface began as a Rust reimplementation of
+[tmux-workspaces](https://github.com/eandualem/tmux-workspaces).
 
 ## Licence
 
