@@ -68,7 +68,6 @@ pub(super) struct Form {
     runtime: Option<String>,
     model: Option<String>,
     greeting: bool,
-    prepared: Option<(Prepared, Arc<Controller>)>,
     /// What Submit asks the Rust service to start.
     served: Option<setup::Request>,
     error: Option<&'static str>,
@@ -149,7 +148,6 @@ impl Form {
             runtime: None,
             model: None,
             greeting: true,
-            prepared: None,
             served: None,
             error: None,
             ticket: Ticket::default(),
@@ -271,9 +269,6 @@ impl Form {
             State::Ready { controller, .. } => controller.clone(),
             _ => None,
         }
-    }
-    pub fn take_prepared(&mut self) -> Option<(Prepared, Arc<Controller>)> {
-        self.prepared.take()
     }
     /// What Submit asks the Rust service to start, for `setup::Pane::served`.
     pub fn take_served(&mut self) -> Option<setup::Request> {
@@ -651,22 +646,13 @@ impl Form {
             self.start_guide(cx);
             return;
         }
-        if self.profile.served() {
-            let request_id = uuid::Uuid::now_v7().simple().to_string();
-            let Some(request) = self.served_request(request_id, cx) else {
-                return;
-            };
-            self.served = Some(request);
-            self.finish(Event::Submit, cx);
-            return;
-        }
-        let Some(prepared) = self.prepare(&uuid::Uuid::now_v7().simple().to_string(), cx) else {
+        // Add agent starts with the Rust service's own start; a profile it
+        // doesn't serve takes none from this app.
+        let request_id = uuid::Uuid::now_v7().simple().to_string();
+        let Some(request) = self.served_request(request_id, cx) else {
             return;
         };
-        let Some(controller) = self.controller() else {
-            return;
-        };
-        self.prepared = Some((prepared, controller));
+        self.served = Some(request);
         self.finish(Event::Submit, cx);
     }
     /// Back from earlier setups: the choices stay, but a start that stopped
