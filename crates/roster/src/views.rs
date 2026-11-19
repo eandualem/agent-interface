@@ -89,8 +89,8 @@ pub enum Part {
     Skills,
     /// What it receives at its next start.
     Policies,
-    /// Its usage over a range.
-    Usage(Range),
+    /// Its usage over the last 24 hours.
+    Usage,
 }
 
 /// A recent period ending now.
@@ -255,9 +255,9 @@ fn read_part(api: &Api<'_>, name: &str, part: &Part, agent: &mut Agent) {
             );
         }
         Part::Policies => agent.brief = Some(instructions(api, name)),
-        Part::Usage(range) => {
+        Part::Usage => {
             agent.usage = Some(
-                api.get(&usage_path(*range))
+                api.get(&usage_path(Range::Day))
                     .and_then(|body| Usage::decode(&body))
                     .map(|usage| usage.of(name)),
             );

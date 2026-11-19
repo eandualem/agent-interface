@@ -12,7 +12,7 @@ use agent_interface_roster::{
         Connection, Error as ProfileError,
         runtime_context::{self, Permissions, Target},
     },
-    views::{Agent, Part, Range, content},
+    views::{Agent, Part, content},
 };
 use gpui::{Context, Task, Window, div, prelude::*, px};
 use std::{cell::Cell, rc::Rc, time::Duration};
@@ -63,7 +63,7 @@ impl Reader {
         let part = match section {
             AgentSection::Skills => Part::Skills,
             AgentSection::Policies => Part::Policies,
-            AgentSection::Usage => Part::Usage(Range::Day),
+            AgentSection::Usage => Part::Usage,
             _ => Part::Card,
         };
         // A section's own read failing leaves the card; the section says why.
