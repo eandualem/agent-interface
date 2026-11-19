@@ -1,0 +1,232 @@
+//! Local checkouts of a GitHub repository among the folders the app knows:
+//! a folder matches when its origin remote is that repository.
+
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+    time::Instant,
+};
+
+use super::git;
+
+/// The most folders looked at for one Document.
+pub const LIMIT: usize = 64;
+
+/// A folder's checkout: its working tree's top level, the Git directory its
+/// worktrees share, and its origin remote.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Checkout {
+    top: PathBuf,
+    /// The common Git directory, the same for every worktree of a clone.
+    common: PathBuf,
+    origin: Option<String>,
+}
+
+/// The checkouts that `folders` are in, one per clone, in the folders' order.
+/// Folders that are not in a checkout are left out, and so are partial
+/// clones, which Git would fill in from the network.
+pub fn checkouts(folders: &[PathBuf], deadline: Instant) -> Vec<Checkout> {
+    let mut seen = HashSet::new();
+    let mut found: Vec<Checkout> = Vec::new();
+    let folders = folders
+        .iter()
+        .filter(|folder| seen.insert(*folder))
+        .take(LIMIT);
+    for folder in folders {
+        if Instant::now() >= deadline {
+            break;
+        }
+        if !folder.is_absolute() || !folder.is_dir() {
+            continue;
+        }
+        let Some(out) = git::run(
+            folder,
+            &[
+                "rev-parse",
+                "--path-format=absolute",
+                "--show-toplevel",
+                "--git-common-dir",
+            ],
+            64 * 1024,
+            deadline,
+        ) else {
+            continue;
+        };
+        let out = String::from_utf8_lossy(&out);
+        let mut lines = out.lines();
+        let (Some(top), Some(common)) = (lines.next(), lines.next()) else {
+            continue;
+        };
+        let common = PathBuf::from(common);
+        if found.iter().any(|checkout| checkout.common == common) {
+            continue;
+        }
+        let top = PathBuf::from(top);
+        // The origin as stored, not as `url.*.insteadOf` would rewrite it.
+        let config = git::run(
+            &top,
+            &[
+                "config",
+                "-z",
+                "--get-regexp",
+                r"^(remote\.origin\.url|extensions\.partialclone|remote\..*\.(promisor|partialclonefilter))$",
+            ],
+            64 * 1024,
+            deadline,
+        )
+        .unwrap_or_default();
+        let mut origin = None;
+        let mut partial = false;
+        for entry in config
+            .split(|&byte| byte == 0)
+            .filter(|entry| !entry.is_empty())
+        {
+            match String::from_utf8_lossy(entry).split_once('\n') {
+                Some(("remote.origin.url", url)) => {
+                    origin.get_or_insert_with(|| url.trim().to_owned());
+                }
+                _ => partial = true,
+            }
+        }
+        if !partial {
+            found.push(Checkout {
+                top,
+                common,
+                origin,
+            });
+        }
+    }
+    found
+}
+
+impl Checkout {
+    /// Whether its origin is the GitHub repository `repo` (`owner/name`).
+    pub fn is(&self, repo: &str) -> bool {
+        self.origin
+            .as_deref()
+            .is_some_and(|url| is_remote(url, repo))
+    }
+
+    /// Its working tree's top level, where it is read.
+    pub fn top(&self) -> &Path {
+        &self.top
+    }
+
+    /// The Git directory its worktrees share, which names the clone.
+    pub fn common(&self) -> &Path {
+        &self.common
+    }
+}
+
+/// Whether `url` names the GitHub repository `repo` (`owner/name`), in its
+/// HTTPS or SSH form, ignoring case, a `.git` suffix and a final `/`.
+pub fn is_remote(url: &str, repo: &str) -> bool {
+    let url = url.trim();
+    let scheme = ["https://", "http://", "ssh://", "git://"]
+        .into_iter()
+        .find(|scheme| {
+            url.get(..scheme.len())
+                .is_some_and(|start| start.eq_ignore_ascii_case(scheme))
+        });
+    let (authority, path) = match scheme {
+        Some(scheme) => match url[scheme.len()..].split_once('/') {
+            Some(parts) => parts,
+            None => return false,
+        },
+        // `user@host:path`; a local path has a `/` before any `:`.
+        None => match url.split_once(':') {
+            Some((authority, path)) if !authority.contains('/') => (authority, path),
+            _ => return false,
+        },
+    };
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    let host = host.split_once(':').map_or(host, |(host, _)| host);
+    let path = path.trim_start_matches('/').trim_end_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    host.eq_ignore_ascii_case("github.com") && path.eq_ignore_ascii_case(repo)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::code_figures::git::tests::{git, repository};
+    use std::time::Duration;
+
+    #[test]
+    fn remotes_match_in_every_github_form() {
+        for url in [
+            "https://github.com/owner/name",
+            "https://github.com/owner/name.git",
+            "https://github.com/owner/name/",
+            "HTTPS://GitHub.com/Owner/Name.git",
+            "https://user:token@github.com/owner/name.git",
+            "ssh://git@github.com/owner/name.git",
+            "ssh://git@github.com:22/owner/name",
+            "git@github.com:owner/name.git",
+            "git@github.com:/owner/name",
+            "github.com:owner/name",
+            " git@github.com:owner/name.git\n",
+        ] {
+            assert!(is_remote(url, "owner/name"), "{url}");
+        }
+        for url in [
+            "https://gitlab.com/owner/name.git",
+            "https://github.com.example.com/owner/name",
+            "https://examplegithub.com/owner/name",
+            "https://github.com/owner/name-other",
+            "https://github.com/owner/nam",
+            "https://github.com/other/owner/name",
+            "git@github.com:owner/name/extra",
+            "/srv/github.com:owner/name",
+            "file:///github.com/owner/name",
+            "github.com",
+            "",
+        ] {
+            assert!(!is_remote(url, "owner/name"), "{url}");
+        }
+    }
+
+    #[test]
+    fn folders_resolve_to_one_checkout_per_clone() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let (main, other, plain) = (root.join("main"), root.join("other"), root.join("plain"));
+        for dir in [&main, &other, &plain] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        repository(&main, "git@github.com:owner/name.git");
+        repository(&other, "https://github.com/someone/else");
+        let partial = root.join("partial");
+        std::fs::create_dir(&partial).unwrap();
+        repository(&partial, "git@github.com:owner/name.git");
+        git(&partial, &["config", "remote.origin.promisor", "true"]);
+        let worktree = root.join("worktree");
+        git(
+            &main,
+            &["worktree", "add", "-q", worktree.to_str().unwrap()],
+        );
+        let mut folders = vec![plain.clone(); 70];
+        folders.extend([
+            partial,
+            root.join("missing"),
+            PathBuf::from("relative"),
+            main.join("sub"),
+            worktree.clone(),
+            main.clone(),
+            other.clone(),
+        ]);
+        std::fs::create_dir(main.join("sub")).unwrap();
+        assert_eq!(checkouts(&folders, Instant::now()), vec![]);
+        let found = checkouts(&folders, Instant::now() + Duration::from_secs(10));
+        // Repeated folders count once. The partial clone is left out, and the
+        // worktree shares its clone with `main`, so only the first is kept.
+        assert_eq!(
+            found.iter().map(Checkout::top).collect::<Vec<_>>(),
+            [main.as_path(), other.as_path()]
+        );
+        assert!(found[0].is("owner/name") && !found[0].is("someone/else"));
+        assert!(found[1].is("someone/else"));
+    }
+}
