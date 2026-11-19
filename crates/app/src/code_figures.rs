@@ -259,7 +259,7 @@ mod tests {
         assert!(out.starts_with(&format!("{before}<figure data-backbone-diff=")));
         assert!(out.ends_with("</figure><p>End</p>"));
         assert!(out.contains(
-            r#"<details open class="ai-git"><summary>The <b>fix</b></summary><div class="ai-git-head">a.txt</div><div class="ai-git-scroll">"#
+            r#"<details open dir="ltr" class="ai-git"><summary dir="auto">The <b>fix</b></summary><div class="ai-git-head">a.txt</div><div class="ai-git-scroll">"#
         ));
         assert!(out.contains(r#"<td class="ai-git-s">+</td><td class="ai-git-t">TWO</td>"#));
         assert!(out.contains("<summary>a.txt · lines 2–2</summary>"));
@@ -360,13 +360,16 @@ mod tests {
                 r#"<figure data-backbone-code="1" data-repo="{repo}" data-commit="{second}" data-path="a.txt" data-lines="{lines}"></figure>"#
             )
         };
-        let html = format!(
-            "{}{}",
-            excerpt("owner/name", "1"),
-            excerpt("Owner/Name", "2-3")
-        );
-        let out = transform(&html, std::slice::from_ref(&dir), &later()).unwrap();
-        assert!(out.contains("lines 1–1") && out.contains("lines 2–3"));
+        let folders = std::slice::from_ref(&dir);
+        let out = transform(&excerpt("owner/name", "1"), folders, &later()).unwrap();
+        assert!(out.contains("lines 1–1"));
+        // With the file's contents gone from the checkout, only the first
+        // excerpt's read can give the second, under another case of the name.
+        let blob = git(&dir, &["rev-parse", &format!("{second}:a.txt")]);
+        let object = dir.join(".git/objects").join(&blob[..2]).join(&blob[2..]);
+        std::fs::remove_file(object).unwrap();
+        let out = transform(&excerpt("Owner/Name", "2-3"), folders, &later()).unwrap();
+        assert!(out.contains("lines 2–3"));
         let clone = checkout::checkouts(&[dir], &later())[0].common().to_owned();
         let cache = CACHE.lock().unwrap_or_else(|error| error.into_inner());
         assert_eq!(

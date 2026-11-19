@@ -35,7 +35,10 @@ pub fn diff(files: &[File], caption: Option<&str>, limit: usize) -> Option<Strin
         table(&mut out, &file.rows, limit)?;
     } else {
         let count = format!("{} files changed", files.len());
-        details(&mut out, "ai-git", caption.unwrap_or(&count));
+        view(&mut out, "ai-git", caption);
+        if caption.is_none() {
+            let _ = write!(out, "{count}</summary>");
+        }
         // A captioned diff with no files says so under its caption.
         if caption.is_some() && files.is_empty() {
             let _ = write!(out, r#"<div class="ai-git-head">{count}</div>"#);
@@ -102,10 +105,26 @@ pub fn code(
 fn open(out: &mut String, caption: Option<&str>, header: &str) {
     match caption {
         Some(caption) => {
-            details(out, "ai-git", caption);
+            view(out, "ai-git", Some(caption));
             let _ = write!(out, r#"<div class="ai-git-head">{header}</div>"#);
         }
-        None => details(out, "ai-git ai-git-file", header),
+        None => {
+            view(out, "ai-git ai-git-file", None);
+            let _ = write!(out, "{header}</summary>");
+        }
+    }
+}
+
+/// Open a view's outer `<details open>`, left to right as code is in a page
+/// of any direction, and its summary: a caption keeps its own direction.
+/// The summary is closed here only for a caption.
+fn view(out: &mut String, class: &str, caption: Option<&str>) {
+    let _ = write!(out, r#"<details open dir="ltr" class="{class}"><summary"#);
+    match caption {
+        Some(caption) => {
+            let _ = write!(out, r#" dir="auto">{caption}</summary>"#);
+        }
+        None => out.push('>'),
     }
 }
 
@@ -226,7 +245,7 @@ mod tests {
         ];
         let html = diff(&[file("src/<a>.rs", rows)], None, ANY).unwrap();
         assert!(html.starts_with(
-            r#"<details open class="ai-git ai-git-file"><summary>src/&lt;a&gt;.rs</summary>"#
+            r#"<details open dir="ltr" class="ai-git ai-git-file"><summary>src/&lt;a&gt;.rs</summary>"#
         ));
         assert!(html.contains(r#"<td colspan="4">@@ -1,2 +1,2 @@ fn &lt;a&gt;</td>"#));
         assert!(html.contains(r#"<tr class="ai-git-same"><td class="ai-git-n">1</td><td class="ai-git-n">1</td><td class="ai-git-s"> </td><td class="ai-git-t">same</td></tr>"#));
@@ -247,21 +266,19 @@ mod tests {
         renamed.from = Some("old.rs".into());
         renamed.status = 'R';
         let html = diff(&[file("a.rs", vec![]), renamed.clone()], None, ANY).unwrap();
-        assert!(html.starts_with(r#"<details open class="ai-git"><summary>2 files changed</summary><details open class="ai-git-file"><summary>a.rs (mode changed)</summary></details>"#));
+        assert!(html.starts_with(r#"<details open dir="ltr" class="ai-git"><summary>2 files changed</summary><details open class="ai-git-file"><summary>a.rs (mode changed)</summary></details>"#));
         assert!(html.contains("<summary>old.rs → new.rs (renamed)</summary>"));
         assert!(html.contains("Binary file"));
         let html = diff(&[renamed], Some("The <em>move</em>"), ANY).unwrap();
         assert!(html.starts_with(
-            r#"<details open class="ai-git"><summary>The <em>move</em></summary><div class="ai-git-head">old.rs → new.rs (renamed)</div><div"#
+            r#"<details open dir="ltr" class="ai-git"><summary dir="auto">The <em>move</em></summary><div class="ai-git-head">old.rs → new.rs (renamed)</div><div"#
         ));
         assert_eq!(html.matches("<details").count(), 1);
         assert!(html.ends_with("</details>"));
         let none = diff(&[], Some("cap"), ANY).unwrap();
-        assert!(
-            none.contains(
-                r#"<summary>cap</summary><div class="ai-git-head">0 files changed</div>"#
-            )
-        );
+        assert!(none.contains(
+            r#"<summary dir="auto">cap</summary><div class="ai-git-head">0 files changed</div>"#
+        ));
         assert!(
             diff(&[], None, ANY)
                 .unwrap()
@@ -286,6 +303,19 @@ mod tests {
     }
 
     #[test]
+    fn a_view_reads_left_to_right_in_a_page_of_any_direction() {
+        // A right-to-left caption keeps its own direction.
+        let html = code("a.rs", "x\n", None, Some("שלום"), ANY).unwrap();
+        assert!(html.starts_with(
+            r#"<details open dir="ltr" class="ai-git"><summary dir="auto">שלום</summary>"#
+        ));
+        let lone = diff(&[file("a.rs", vec![])], None, ANY).unwrap();
+        assert!(
+            lone.starts_with(r#"<details open dir="ltr" class="ai-git ai-git-file"><summary>a.rs"#)
+        );
+    }
+
+    #[test]
     fn code_is_numbered_from_its_first_line() {
         let text = "one\ntwo\nthree\n";
         let html = code("a.rs", text, Some((2, 9)), None, ANY).unwrap();
@@ -295,7 +325,7 @@ mod tests {
         assert!(!html.contains(">one<"));
         let whole = code("a.rs", text, None, Some("cap"), ANY).unwrap();
         assert!(whole.starts_with(
-            r#"<details open class="ai-git"><summary>cap</summary><div class="ai-git-head">a.rs</div>"#
+            r#"<details open dir="ltr" class="ai-git"><summary dir="auto">cap</summary><div class="ai-git-head">a.rs</div>"#
         ));
         assert_eq!(whole.matches("<details").count(), 1);
         assert_eq!(whole.matches("<tr>").count(), 3);

@@ -817,7 +817,8 @@ not be read is never remembered.
   clone is still a candidate and still has the commits. Nothing is
   written to a checkout.
 - **The view.** Each pointer becomes `<details open>`, so it collapses and
-  expands without a script. For one file or a code reference, its summary is
+  expands without a script. It reads left to right as code does, in a page
+  of any direction; a caption keeps its own direction. For one file or a code reference, its summary is
   the caption with the file's header under it, or else the header (`old → new`
   for a rename; a file with no lines to show, a binary one included, is
   marked added, deleted or renamed, or else mode changed); a diff of several
