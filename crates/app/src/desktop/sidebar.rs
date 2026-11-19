@@ -108,9 +108,9 @@ impl Browser {
         }
     }
 
-    /// The state of the agent an attachment shows. Agent Backbone's agents
-    /// run on this window's source server, so another server's session with
-    /// the same name is not that agent.
+    /// The state of the agent an attachment shows. A profile's agents run on
+    /// its tmux server, so a same-name session on another server is not that
+    /// agent.
     pub(super) fn attachment_state(
         &self,
         attachment: &agent_interface_core::Attachment,

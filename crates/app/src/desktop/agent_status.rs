@@ -647,7 +647,8 @@ mod tests {
         })
     }
 
-    /// One verified connection's key, for the tests that key sources by origin.
+    /// One verified connection's key, for the tests that key sources by origin
+    /// and connection.
     fn key() -> ConnectionKey {
         static KEY: std::sync::LazyLock<ConnectionKey> = std::sync::LazyLock::new(|| {
             let (_directory, connection, server) =

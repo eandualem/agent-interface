@@ -143,7 +143,9 @@ pub(super) enum Section {
 pub(super) enum Target {
     /// A skill, whose SKILL.md snapshot is read when opened.
     Skill(String),
-    /// A policy, by its listed path; the listed text shows while its snapshot is read.
+    /// A policy, by its listed path. In Policies, a catalog policy's text is read
+    /// from its snapshot and a base or swarm layer shows its listed text; an
+    /// agent's brief shows the text Backbone listed in it.
     Policy(String),
 }
 
@@ -152,7 +154,8 @@ pub(super) struct Open {
     pub target: Target,
     bound_skill: Option<bound_skills::Open>,
     bound_policy: Option<bound_policies::Open>,
-    /// The skill or policy text once read.
+    /// The text the reader shows: a snapshot's once read, or a policy's listed
+    /// text.
     pub text: Option<Result<std::sync::Arc<str>, &'static str>>,
 }
 
@@ -254,7 +257,8 @@ impl ViewPane {
         Self::new_with(view, directory, Default::default(), None, window, cx)
     }
 
-    /// An explicit bound reader; startup does not enable profile selection yet.
+    /// A view in a workspace with a profile, reading through its verified
+    /// connection.
     pub fn new_bound(
         view: View,
         connection: Connection,
@@ -652,8 +656,9 @@ impl ViewPane {
         }
     }
 
-    /// Open `target` in the reader, reading its snapshot off the UI thread: a
-    /// skill's SKILL.md, or a policy's text, whose listed copy shows meanwhile.
+    /// Open `target` in the reader. A skill's SKILL.md and a catalog policy's
+    /// text are read from their snapshots off the UI thread; any other policy
+    /// shows the text Backbone listed with it.
     fn open(&mut self, target: Target, cx: &mut Context<Self>) {
         if let Target::Policy(path) = &target
             && let Some(Data::Policies(library)) = &self.data

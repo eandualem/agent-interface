@@ -1,7 +1,7 @@
 //! The new-pane chooser: what an empty pane offers before anything runs.
 //!
-//! Buttons open a terminal, the Reports & updates sections or the other
-//! Backbone views. Under a filter, the sessions list shows Backbone agents
+//! Buttons open a terminal and, in a workspace with a profile, the Reports &
+//! updates sections or the other Backbone views. Under a filter, the sessions list shows Backbone agents
 //! first, needing you first, then the other tmux sessions; the other lists show
 //! what a pane can display instead of a terminal. Nothing is created until a choice is made, and the owner makes
 //! it from the [`NewPaneEvent`] this emits.

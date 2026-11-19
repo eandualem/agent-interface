@@ -369,8 +369,9 @@ fn open_browser(
     )
 }
 
-/// Another native window retains the originating status observation, including
-/// standalone mode, without resolving a different provider during creation.
+/// Open a native window. Another window takes the originating window's verified
+/// profile connections and profile client, without resolving a different
+/// provider during creation.
 fn open_browser_with_status(
     directory: Option<PathBuf>,
     source: Result<PathBuf, String>,
