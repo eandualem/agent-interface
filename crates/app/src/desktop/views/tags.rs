@@ -49,12 +49,12 @@ fn cards(pane: &ViewPane, library: &TagLibrary, cx: &mut Context<ViewPane>) -> A
         &t.text.status,
     )
     .child("Tags are how a team is organised in Backbone. An agent tagged")
-    .child(code("coder python"))
+    .child(code("coder rust"))
     .child("gets everything tagged")
     .child(div().flex().child(code("all")).child(","))
     .child(code("coder"))
     .child("and")
-    .child(div().flex().child(code("python")).child(","))
+    .child(div().flex().child(code("rust")).child(","))
     .child("and nothing else.");
     let mut rows = div().gap(px(t.space.s8)).pt(px(t.space.s12));
     for card in library.cards() {

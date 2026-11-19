@@ -1,4 +1,4 @@
-//! Ordinary-shell creation using the Python-compatible library lock and environment.
+//! Ordinary-shell creation using the library's shell lock and environment.
 //! Call on a worker, and only for explicitly eligible ordinary leaves.
 
 use std::{

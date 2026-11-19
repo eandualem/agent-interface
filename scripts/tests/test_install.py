@@ -52,15 +52,14 @@ class InstallTests(unittest.TestCase):
         path.write_text("#!/bin/sh\n" + body + "\n")
         path.chmod(0o755)
 
-    def package(self, version="0.0.0", target="x86_64-unknown-linux-gnu", extra=None, legacy_mac=False, legacy=False):
+    def package(self, version="0.0.0", target="x86_64-unknown-linux-gnu", extra=None):
         archive = self.root / "app.tar.gz"
         mac = target.endswith("apple-darwin")
-        name = "tmux-workspaces" if legacy else "agent-interface"
-        bundle = "tmux-workspaces.app" if legacy_mac else "Agent Interface.app"
-        root = bundle + "/Contents" if mac else name
+        name = "agent-interface"
+        root = "Agent Interface.app/Contents" if mac else name
         resources = root + "/Resources" if mac else root
         executable = root + ("/MacOS" if mac else "/bin") + "/" + name
-        files = {resources + "/INSTALLER": "io.github.eandualem." + name + "\n",
+        files = {resources + "/INSTALLER": APP_ID + "\n",
                  resources + "/TARGET": target + "\n",
                  executable: f"#!/bin/sh\necho '{name} {version}'\n"}
         if not mac:
@@ -207,7 +206,7 @@ exec "$@"
         self.assertEqual(shortcut.read_text(), "[Desktop Entry]\nName=Another installation\n")
         self.assertFalse((self.root / "system-actions").exists())
 
-    def mock_download(self, archive, prefix="tmux-workspaces", missing_status="404"):
+    def mock_download(self, archive, prefix="agent-interface", missing_status="404"):
         self.env.update(TEST_ARCHIVE=str(archive), TEST_PREFIX=prefix,
                         TEST_DOWNLOADS=str(self.root / "downloads"), TEST_MISSING_STATUS=missing_status)
         self.command("curl", '''
@@ -232,47 +231,29 @@ esac
 if [ "$write_status" = true ]; then printf 200; fi
 ''')
 
-    def test_download_legacy_linux_then_update_to_renamed_release(self):
-        archive = self.package("0.1.0", legacy=True)
-        self.mock_download(archive)
-        self.install(None)
-        self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "tmux-workspaces 0.1.0")
-        self.assertIn(f"Icon={self.destination}/agent-interface.png\n", self.launcher.read_text())
-        self.assertTrue((self.destination / "agent-interface.png").is_file())
-        self.assertIn("StartupWMClass=io.github.eandualem.tmux-workspaces\n", self.launcher.read_text())
-        self.assertEqual((self.root / "downloads").read_text().splitlines(), [
-            "agent-interface-x86_64-unknown-linux-gnu.tar.gz.sha256",
-            "tmux-workspaces-x86_64-unknown-linux-gnu.tar.gz.sha256",
-            "tmux-workspaces-x86_64-unknown-linux-gnu.tar.gz"])
-        requests = (self.root / "downloads.args").read_text().splitlines()
-        self.assertIn("--progress-bar", requests[3])
-        archive = self.package("0.1.1")
-        self.mock_download(archive, prefix="agent-interface")
+    def test_download_installs_the_latest_release(self):
+        self.mock_download(self.package("0.1.1"))
         self.install(None)
         self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "agent-interface 0.1.1")
+        self.assertIn(f"Icon={self.destination}/agent-interface.png\n", self.launcher.read_text())
+        self.assertTrue((self.destination / "agent-interface.png").is_file())
         self.assertIn("StartupWMClass=io.github.eandualem.agent-interface\n", self.launcher.read_text())
+        self.assertEqual((self.root / "downloads").read_text().splitlines(), [
+            "agent-interface-x86_64-unknown-linux-gnu.tar.gz.sha256",
+            "agent-interface-x86_64-unknown-linux-gnu.tar.gz"])
+        requests = (self.root / "downloads.args").read_text().splitlines()
+        self.assertIn("--progress-bar", requests[2])
 
-    def test_download_legacy_mac_then_update_to_renamed_release(self):
-        self.command("uname", 'case "$1" in -s) echo Darwin;; -m) echo arm64;; esac')
-        self.command("codesign", "exit 0")
-        archive = self.package("0.1.0", target="aarch64-apple-darwin", legacy=True)
-        self.mock_download(archive)
-        self.install(None)
-        destination = self.home / "Applications/Agent Interface.app/Contents/MacOS"
-        self.assertEqual(subprocess.check_output([destination / "tmux-workspaces", "--version"], text=True).strip(), "tmux-workspaces 0.1.0")
-        self.install(self.package("0.1.1", target="aarch64-apple-darwin"))
-        self.assertEqual(subprocess.check_output([destination / "agent-interface", "--version"], text=True).strip(), "agent-interface 0.1.1")
-
-    def test_download_failure_does_not_fall_back_or_change_installation(self):
+    def test_checksum_failure_does_not_change_installation(self):
         self.install(self.package("0.1.1"))
-        self.mock_download(self.package("0.1.0", legacy=True), missing_status="500")
+        self.mock_download(self.package("0.1.0"), prefix="missing", missing_status="500")
         self.install(None, success=False)
         self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "agent-interface 0.1.1")
         self.assertEqual((self.root / "downloads").read_text().splitlines(), ["agent-interface-x86_64-unknown-linux-gnu.tar.gz.sha256"])
 
-    def test_legacy_download_checksum_failure_preserves_installation(self):
+    def test_download_checksum_mismatch_preserves_installation(self):
         self.install(self.package("0.1.1"))
-        archive = self.package("0.1.0", legacy=True)
+        archive = self.package("0.1.0")
         with archive.open("ab") as stream:
             stream.write(b"corrupt")
         self.mock_download(archive)
@@ -485,16 +466,6 @@ sys.exit(0 if outcome in ('ok', 'corrupt') else int(outcome))
         self.assertEqual(outside.read_text(), 'preserve')
         self.assertFalse((self.root / 'transfers').exists())
 
-    def test_transitional_link_is_restored_after_update_failure(self):
-        self.install(self.package("0.1.0", legacy=True))
-        before = self.launcher.read_bytes()
-        self.command("mv", 'for last do :; done\ncase "$last" in *.desktop)\n'
-                     'case "$*" in *launcher.*) echo partial > "$last"; exit 1;; esac;; esac\n'
-                     'exec /bin/mv "$@"')
-        self.install(self.package("0.1.1"), success=False)
-        self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "tmux-workspaces 0.1.0")
-        self.assertEqual(self.launcher.read_bytes(), before)
-
     def test_install_update_and_preserve_data(self):
         library = self.home / ".local/share/agent-interface/layouts.db"
         library.parent.mkdir(parents=True)
@@ -511,45 +482,6 @@ sys.exit(0 if outcome in ('ok', 'corrupt') else int(outcome))
         import shlex
         path = shlex.split(entry)[0].replace("\\$", "$").replace("%%", "%")
         self.assertEqual(Path(path).resolve(), self.link.resolve())
-
-    def legacy_linux_install(self):
-        old = self.home / ".local/lib/tmux-workspaces"
-        binary = old / "bin/tmux-workspaces"
-        binary.parent.mkdir(parents=True)
-        binary.write_text("#!/bin/sh\necho 'tmux-workspaces 0.1.0'\n")
-        binary.chmod(0o755)
-        (old / "INSTALLER").write_text("io.github.eandualem.tmux-workspaces\n")
-        link = self.home / ".local/bin/tmux-workspaces"
-        link.parent.mkdir(parents=True)
-        link.symlink_to(binary)
-        launcher = self.launcher.with_name("io.github.eandualem.tmux-workspaces.desktop")
-        launcher.parent.mkdir(parents=True)
-        launcher.write_text("[Desktop Entry]\nX-TmuxWorkspaces-Installer=1\n")
-        library = self.home / ".local/share/tmux-workspaces/layouts.db"
-        library.parent.mkdir(parents=True)
-        library.write_bytes(b"existing workspace")
-        return old, link, launcher, library
-
-    def test_linux_rename_retires_owned_launchers_and_preserves_library(self):
-        old, link, launcher, library = self.legacy_linux_install()
-        self.install(self.package())
-        for retired in (old, link, launcher):
-            self.assertFalse(retired.exists())
-            self.assertFalse(retired.is_symlink())
-        self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "agent-interface 0.0.0")
-        self.assertEqual(library.read_bytes(), b"existing workspace")
-
-    def test_linux_rename_failure_restores_old_install_and_launchers(self):
-        old, link, launcher, library = self.legacy_linux_install()
-        self.command("rm", 'for last do :; done\ncase "$last" in *tmux-workspaces.desktop) exit 1;; esac\nexec /bin/rm "$@"')
-        self.install(self.package(), success=False)
-        self.assertTrue(old.exists())
-        self.assertTrue(launcher.exists())
-        self.assertEqual(subprocess.check_output([link, "--version"], text=True).strip(), "tmux-workspaces 0.1.0")
-        self.assertEqual(library.read_bytes(), b"existing workspace")
-        self.assertFalse(self.destination.exists())
-        self.assertFalse(self.link.is_symlink())
-        self.assertFalse(self.launcher.exists())
 
     def test_reject_corrupt_wrong_target_and_unsafe_archive(self):
         archive = self.package()
@@ -569,34 +501,22 @@ sys.exit(0 if outcome in ('ok', 'corrupt') else int(outcome))
         self.install(self.package(), success=False)
         self.assertEqual((self.destination / "mine").read_text(), "preserve")
 
-    def test_mac_rename_update_and_rollback(self):
+    def test_mac_update_and_rollback(self):
         self.command("uname", 'case "$1" in -s) echo Darwin;; -m) echo arm64;; esac')
         self.command("codesign", "exit 0")
         destination = self.home / "Applications/Agent Interface.app"
-        legacy = self.home / "Applications/tmux-workspaces.app"
-        self.install(self.package(target="aarch64-apple-darwin", legacy_mac=True))
-        destination.rename(legacy)
-        # Failed replacement restores the old bundle under its original name.
-        self.command("mv", 'case "$1" in */"Agent Interface.app") exit 1;; esac\nexec /bin/mv "$@"')
+        binary = destination / "Contents/MacOS/agent-interface"
+        self.install(self.package(target="aarch64-apple-darwin"))
+        # A failed replacement restores the previous bundle.
+        self.command("mv", 'case "$1" in */.agent-interface-stage.*/"Agent Interface.app") exit 1;; esac\n'
+                     'exec /bin/mv "$@"')
         self.install(self.package("0.0.1", target="aarch64-apple-darwin"), success=False)
-        self.assertTrue(legacy.exists())
-        self.assertFalse(destination.exists())
+        self.assertEqual(subprocess.check_output([binary, "--version"], text=True).strip(), "agent-interface 0.0.0")
         (self.tools / "mv").unlink()
         self.install(self.package("0.0.1", target="aarch64-apple-darwin"))
-        self.assertFalse(legacy.exists())
-        binary = destination / "Contents/MacOS/agent-interface"
         self.assertEqual(subprocess.check_output([binary, "--version"], text=True).strip(), "agent-interface 0.0.1")
         self.install(self.package("0.0.2", target="aarch64-apple-darwin"))
         self.assertEqual(subprocess.check_output([binary, "--version"], text=True).strip(), "agent-interface 0.0.2")
-
-    def test_mac_preserves_unmanaged_legacy_app(self):
-        self.command("uname", 'case "$1" in -s) echo Darwin;; -m) echo arm64;; esac')
-        legacy = self.home / "Applications/tmux-workspaces.app"
-        legacy.mkdir(parents=True)
-        (legacy / "mine").write_text("preserve")
-        self.install(self.package(target="aarch64-apple-darwin"), success=False)
-        self.assertEqual((legacy / "mine").read_text(), "preserve")
-        self.assertFalse((self.home / "Applications/Agent Interface.app").exists())
 
     def test_rollback_after_launcher_failure(self):
         self.install(self.package())

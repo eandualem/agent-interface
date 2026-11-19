@@ -1,4 +1,4 @@
-//! In-memory equivalents of the Python workspace model operations. These do
+//! In-memory workspace model operations. These do
 //! not persist records or start/stop processes. Rename operations normalize
 //! proposed names; creation methods expect caller-validated values.
 
@@ -61,8 +61,8 @@ impl NameEdit {
 
     /// Apply to the same selected identity only if its original name still matches.
     /// The caller first refreshes shared data and cancels on a reconciliation
-    /// conflict. Empty input is reported before checking the target, matching the
-    /// Python editor. This does not refresh, persist or change terminal processes.
+    /// conflict. Empty input is reported before checking the target. This does
+    /// not refresh, persist or change terminal processes.
     #[must_use = "empty names keep editing; changed targets cancel the editor"]
     pub fn apply(&self, layout: &mut Layout, input: &str) -> RenameOutcome {
         let Some(name) = rename_value(input) else {
@@ -93,7 +93,7 @@ impl NameEdit {
 }
 
 fn rename_value(value: &str) -> Option<String> {
-    // Python str.strip additionally treats these four separators as whitespace.
+    // The four information separators also count as surrounding whitespace.
     let name: String = value
         .trim_matches(|ch: char| ch.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&ch))
         .chars()
@@ -312,7 +312,7 @@ impl Layout {
 
     /// Rename the selected workspace, even when it has no tabs. Trim surrounding
     /// whitespace, remove non-printing characters and keep at most 80 Unicode
-    /// scalar values, as in the Python name form. An empty result does nothing.
+    /// scalar values. An empty result does nothing.
     /// This changes only the name; persistence validation remains the caller's job.
     pub fn rename_workspace(&mut self, value: &str) -> bool {
         let (Some(name), Some(space)) = (rename_value(value), self.workspace_mut()) else {

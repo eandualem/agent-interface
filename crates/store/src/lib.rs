@@ -1,4 +1,4 @@
-//! Access to the Python-compatible schema-v2 `layouts.db` library.
+//! Access to the schema-v2 `layouts.db` library.
 //! Opening is read-only by default. Explicit writable access requires an existing
 //! initialized library. First-run creation is explicit and never replaces an
 //! existing database, migrates a library or starts a shell.
@@ -145,8 +145,8 @@ impl Store {
         }
     }
 
-    /// Read and validate the current arrangement. Legacy-only libraries require
-    /// initialization by the Python tool; malformed records are never repaired.
+    /// Read and validate the current arrangement. A library without the
+    /// arrangement table is refused; malformed records are never repaired.
     pub fn load(&self) -> Result<Document, Error> {
         // Schema and row must come from the same snapshot. Saving already owns
         // an immediate transaction; ordinary reads start their own transaction.
@@ -161,9 +161,7 @@ impl Store {
             [], |row| row.get::<_, bool>(0),
         ))?;
         if !initialized {
-            return Err(self.failure(
-                "terminal_layout table is missing; open this library once with the Python tool",
-            ));
+            return Err(self.failure("terminal_layout table is missing"));
         }
         let stored = self.read(|| {
             // Dedicated PRAGMA statements cannot resolve database-defined

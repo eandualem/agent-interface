@@ -30,7 +30,7 @@ impl Store {
             .connection
             .busy_timeout(Duration::from_secs(5))
             .map_err(|error| store.failure(error))?;
-        // Bundled SQLite enables this by default; Python's connection does not.
+        // Bundled SQLite enables this by default; other SQLite writers may not.
         // REPLACE must not cascade deletes into unrelated extension tables.
         store
             .connection

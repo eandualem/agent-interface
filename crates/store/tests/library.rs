@@ -578,7 +578,7 @@ fn missing_legacy_malformed_and_oversized_databases_are_not_initialized_or_repai
             .load()
             .unwrap_err()
             .detail
-            .contains("open this library once")
+            .contains("terminal_layout table is missing")
     );
     assert!(!db.table_exists(None, "terminal_layout").unwrap());
     db.execute_batch("CREATE TABLE terminal_layout (id INTEGER PRIMARY KEY, value TEXT)")

@@ -40,7 +40,7 @@ def wait_for(check, label):
 with tempfile.TemporaryDirectory(prefix="document-smoke-") as directory:
     root = Path(directory)
     env = {k: v for k, v in os.environ.items()
-           if k != "TMUX" and not k.startswith(("BACKBONE_", "AGENT_INTERFACE_", "TMUX_WORKSPACES_"))}
+           if k != "TMUX" and not k.startswith(("BACKBONE_", "AGENT_INTERFACE_"))}
     env.pop("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", None)
     env.update(HOME=str(root), XDG_CONFIG_HOME=str(root / "config"),
                XDG_DATA_HOME=str(root / "data"), XDG_STATE_HOME=str(root / "state"),
