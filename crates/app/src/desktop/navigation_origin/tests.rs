@@ -247,6 +247,8 @@ fn stale_jump_panes_do_not_select_foreign_bindings_or_partially_change_selection
 
 #[test]
 fn moved_view_refreshes_events_and_survives_source_workspace_deletion() {
+    let (_a_dir, a, a_server) = provider("a", vec![]);
+    a_server.join().unwrap();
     let path = std::path::Path::new("layouts.db");
     let base = Document::parse(
         r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[],"selected":""}],"selected":"000000000001","focus":false}"#.into(),
@@ -263,11 +265,18 @@ fn moved_view_refreshes_events_and_survives_source_workspace_deletion() {
     model.add_workspace("Destination".into());
     let destination = model.selected.clone();
     model.choose_workspace(&source);
+    // Both workspaces belong to the same profile, whose agent the pane shows.
+    for space in &mut model.workspaces {
+        space.profile_id = Some(a.identity().profile_id.clone());
+    }
     let mut browser = Browser {
         layout: Some(WindowLayout::new(base.with_model(&model, path).unwrap())),
         source: Some(Ok("/fixture-socket".into())),
         ..Browser::default()
     };
+    for space in &model.workspaces {
+        browser.workspace_profiles.bind(space, a.clone());
+    }
     let mut events = ViewEvents::default();
     let old = events
         .refresh(browser.pane_navigation_origin(&pane))
@@ -291,8 +300,7 @@ fn moved_view_refreshes_events_and_survives_source_workspace_deletion() {
     model.choose_workspace(&source);
     assert!(model.delete_workspace());
     assert!(events.accepts(&fresh, browser.pane_navigation_origin(&pane).as_ref()));
-    // A workspace without a profile has no agents to go to.
-    assert!(!browser.select_agent_target(&AgentTarget {
+    assert!(browser.select_agent_target(&AgentTarget {
         origin: fresh.as_ref().clone(),
         name: "worker".into()
     }));
@@ -306,6 +314,11 @@ fn moved_view_refreshes_events_and_survives_source_workspace_deletion() {
     events
         .refresh(browser.pane_navigation_origin(&pane))
         .unwrap();
+    // In a workspace without a profile the same pane is no agent to go to.
+    assert!(!browser.select_agent_target(&AgentTarget {
+        origin: browser.navigation_origin(&third).unwrap(),
+        name: "worker".into()
+    }));
     assert!(
         browser
             .layout

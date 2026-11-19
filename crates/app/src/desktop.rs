@@ -4176,6 +4176,43 @@ mod tests {
     }
 
     #[test]
+    fn agent_state_lookup_omits_offline_and_unavailable_states() {
+        let (_directory, connection, server) = crate::roster::content::tests::provider("a", vec![]);
+        server.join().unwrap();
+        let mut model = Layout::initial("/".into());
+        model.workspaces[0].profile_id = Some(connection.identity().profile_id.clone());
+        let raw = r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[],"selected":""}],"selected":"000000000001","focus":false}"#;
+        let path = std::path::Path::new("layouts.db");
+        let base = Document::parse(raw.into(), path).unwrap();
+        let mut browser = Browser {
+            layout: Some(WindowLayout::new(base.with_model(&model, path).unwrap())),
+            ..Browser::default()
+        };
+        browser
+            .workspace_profiles
+            .bind(&model.workspaces[0], connection.clone());
+        let mut snapshot = agent_interface_roster::Snapshot::default();
+        snapshot.update(br#"{"items":[{"name":"worker","state":"busy"},{"name":"idle","state":""},{"name":"gone","state":"offline"}]}"#);
+        let roster = agent_status::LiveAgents::default();
+        roster.update(snapshot.clone());
+        browser.workspace_rosters.insert(
+            model.workspaces[0].id.clone(),
+            (connection.connection_key(), roster.clone()),
+        );
+        let states = browser.agent_states().unwrap();
+        assert_eq!(states.len(), 2);
+        assert_eq!(states["worker"], components::AgentState::Working);
+        assert_eq!(
+            states["idle"],
+            components::AgentState::from_runtime("unknown")
+        );
+        snapshot.update(b"invalid");
+        snapshot.observed_at = std::time::Instant::now().checked_sub(agent_status::TOLERANCE);
+        roster.update(snapshot);
+        assert!(browser.agent_states().is_none());
+    }
+
+    #[test]
     fn refresh_keeps_local_navigation_and_read_errors_keep_the_last_good_layout() {
         let path = std::path::Path::new("layouts.db");
         let raw = r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[{"id":"000000000002","name":"First","tree":{"id":"000000000003","agent":null},"focus":"000000000003"}],"selected":"000000000002"}],"selected":"000000000001","focus":false}"#;
