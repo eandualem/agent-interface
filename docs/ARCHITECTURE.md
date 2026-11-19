@@ -794,10 +794,13 @@ not be read is never remembered.
   `GIT_NO_REPLACE_OBJECTS=1` (a commit ID names that commit, never a local
   replacement), and `GIT_NO_LAZY_FETCH=1` with `-c protocol.allow=never` and
   an empty `GIT_ALLOW_PROTOCOL`, so no transport runs and nothing is fetched.
-  A file over 16 MiB is shown as binary (`core.bigFileThreshold=16m`), so
-  Git never holds two such versions to compare line by line. One case stays
-  unbounded by that setting: Git's rename detection still reads both
-  versions of a large file renamed with changes.
+  A file over 16 MiB is shown as binary (`core.bigFileThreshold=16m`): Git
+  compares two regular files over that size by size alone, but reads any
+  other changed blob whole, and finding renames reads blobs too. So a diff
+  is first listed with `--raw -z --no-renames --no-abbrev`, which reads no
+  blob, and one `git rev-list --filter=blob:limit=…` names the listed blobs
+  over 16 MiB; a diff that would make Git read one is not read, so rename
+  detection never sees one.
   A diff is read with `--no-ext-diff --no-textconv`, so no configured program
   runs, and `--submodule=short`, which overrides `diff.submodule`, so Git
   never reads inside a submodule. Its file list comes from
@@ -811,8 +814,8 @@ not be read is never remembered.
   references Git 2.31 or later; with older Git a pointer is shown as its
   author wrote it. Git 2.31 does not honour `GIT_CONFIG_GLOBAL`, so there the
   user's own global configuration applies.
-  A file is read with
-  `git cat-file blob`. Each command stops after 3 seconds or 4 MiB of output,
+  A file is read with `git cat-file blob`, once `git cat-file -s` says it is
+  at most 4 MiB. Each command stops after 3 seconds or 4 MiB of output,
   no command starts after a page's 8 seconds, and a diff or code view holds at
   most 20,000 rows, counted while it is read and drawn. Commits do not change,
   so answers are kept for the session, up to 64 MiB, by the clone that gave
@@ -836,10 +839,12 @@ not be read is never remembered.
   content policy is unchanged.
 - **Nothing to show.** A pointer with no matching checkout or commit, a code
   pointer's path missing at that commit, a diff that touches a submodule, a
-  diff that would make Git read a file over 16 MiB (one added, deleted,
-  grown past that size or changed to or from a link; Git compares two
-  regular files over 16 MiB by size alone and shows them as binary), a
-  code pointer to a file over 4 MiB, a binary file at a code pointer, a path or text that is not UTF-8 or holds a
+  diff that changes more than 2,000 files, a diff with a file over 16 MiB on
+  either side unless both sides are regular files over that size, which Git
+  compares by size alone and shows as binary (so one added, deleted,
+  renamed, grown past or shrunk from that size, or changed to or from a
+  link, as a rename is a deletion and an addition there), a code pointer
+  to a file over 4 MiB, a binary file at a code pointer, a path or text that is not UTF-8 or holds a
   NUL byte, a read that is too large or too slow, or a view past 32 MiB of
   views on the page stays exactly as authored. A diff's `data-paths` only
   filter it: a listed path with no change is not shown, and a diff with no

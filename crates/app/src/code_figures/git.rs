@@ -21,6 +21,9 @@ const TIMEOUT: Duration = Duration::from_secs(3);
 const BIG: usize = 16 * 1024 * 1024;
 /// The most rows read from one diff, and lines shown from one file.
 pub const ROW_LIMIT: usize = 20_000;
+/// The most files one diff may change, so that their object IDs fit on one
+/// command line.
+const CHANGE_LIMIT: usize = 2_000;
 
 /// The standard output of `git -C dir args…`, when it succeeds before
 /// `until` (and within 3 s) and writes at most `limit` bytes. Cancelling
@@ -261,12 +264,17 @@ pub fn diff(
         };
         changes.push([(old_mode, old), (new_mode, new)]);
     }
-    let ids: Vec<&str> = changes
+    if changes.len() > CHANGE_LIMIT {
+        return None;
+    }
+    let mut ids: Vec<&str> = changes
         .iter()
         .flatten()
         .filter(|&&(mode, _)| matches!(mode, "100644" | "100755" | "120000"))
         .map(|&(_, id)| id)
         .collect();
+    ids.sort_unstable();
+    ids.dedup();
     if !ids.is_empty() {
         // Git lists each blob of at least the limit as `~` and its ID.
         let limit = format!("--filter=blob:limit={}", BIG + 1);
@@ -279,7 +287,7 @@ pub fn diff(
         ];
         let list = [&list[..], &["--filter-print-omitted"][..], &ids[..]].concat();
         let listed = String::from_utf8(run(top, &list, OUTPUT_LIMIT, until)?).ok()?;
-        let big: Vec<&str> = listed
+        let big: std::collections::HashSet<&str> = listed
             .lines()
             .filter_map(|line| line.strip_prefix('~'))
             .collect();
@@ -692,6 +700,27 @@ pub(super) mod tests {
         }
         // A file over the output limit is not read at all.
         assert_eq!(file(dir.path(), &commits[0], "four.txt", &later()), None);
+    }
+
+    #[test]
+    fn a_diff_of_more_files_than_the_limit_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q"]);
+        let mut commits = Vec::new();
+        for files in [0, CHANGE_LIMIT, CHANGE_LIMIT + 1] {
+            for n in 0..files {
+                fs::write(dir.path().join(format!("{n}.txt")), "").unwrap();
+            }
+            git(dir.path(), &["add", "-A"]);
+            git(dir.path(), &["commit", "-qm", "files", "--allow-empty"]);
+            commits.push(git(dir.path(), &["rev-parse", "HEAD"]));
+        }
+        let read = |head: &str| diff(dir.path(), &commits[0], head, None, &later());
+        assert_eq!(
+            read(&commits[1]).map(|files| files.len()),
+            Some(CHANGE_LIMIT)
+        );
+        assert_eq!(read(&commits[2]), None);
     }
 
     #[test]

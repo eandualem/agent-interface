@@ -243,6 +243,7 @@ mod tests {
         assert!(
             view.contains("all: initial !important") && view.contains("all: revert !important")
         );
+        let mut closed = None;
         for rule in view
             .split('}')
             .map(str::trim)
@@ -263,6 +264,18 @@ mod tests {
                 }
             }
             list.push(&selectors[from..]);
+            let declarations: Vec<&str> = body
+                .split(';')
+                .map(str::trim)
+                .filter(|d| !d.is_empty())
+                .collect();
+            if list
+                .iter()
+                .any(|selector| selector.contains(":not([open])"))
+            {
+                let selectors: Vec<&str> = list.iter().map(|selector| selector.trim()).collect();
+                assert!(closed.replace((selectors, declarations.clone())).is_none());
+            }
             for selector in list {
                 // The prefix is the view's classes, and only those.
                 let rest = selector.trim().strip_prefix(".ai-git.ai-git");
@@ -274,21 +287,34 @@ mod tests {
                     "{selector}"
                 );
                 // A reset of a closed details' content would show it, so a
-                // rule for that slot names the state it is for, and the one
-                // for a closed details only hides it.
+                // rule for that slot names the state it is for.
                 if selector.contains("::details-content") {
-                    let closed = selector.contains(":not([open])::details-content");
+                    let state = ["[open]::details-content", ":not([open])::details-content"];
                     assert!(
-                        closed || selector.contains("[open]::details-content"),
+                        state.iter().any(|state| selector.contains(state)),
                         "{selector}"
                     );
-                    assert!(!closed || !body.contains("all:"), "{selector}");
                 }
             }
-            for declaration in body.split(';').map(str::trim).filter(|d| !d.is_empty()) {
+            for declaration in declarations {
                 assert!(declaration.ends_with("!important"), "{declaration}");
             }
         }
+        // A closed details' content is hidden, whatever a document says, and
+        // nothing else is set there.
+        assert_eq!(
+            closed,
+            Some((
+                vec![
+                    ".ai-git.ai-git:not([open])::details-content",
+                    ".ai-git.ai-git details:not([open])::details-content",
+                ],
+                vec![
+                    "content-visibility: hidden !important",
+                    "display: block !important",
+                ],
+            ))
+        );
     }
 
     #[test]
