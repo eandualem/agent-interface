@@ -229,8 +229,9 @@ and `${XDG_CONFIG_HOME:-~/.config}/agent-interface` on macOS and Linux alike, ar
 preserved. It refuses to overwrite an installation it does not recognize; move
 that installation yourself if you want to replace it.
 
-The app opens only these folders, unless `--data-dir` or
-`AGENT_INTERFACE_DATA_DIR` names another library folder.
+The app opens these folders unless you choose another library folder:
+**Open Library…** (Command-O, or Ctrl+Shift+O on Linux), **Open another** in
+Settings, `--data-dir` or `AGENT_INTERFACE_DATA_DIR`.
 
 The installer retains one archive in a hidden download cache so interrupted
 installs and repeated attempts can reuse it. Include that cache when removing

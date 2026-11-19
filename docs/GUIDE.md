@@ -77,7 +77,7 @@ status symbol.
 The navigation panel on the left shows the current workspace (click it for the
 workspace menu), a **Jump** field (Command-K) that finds tabs, panes, agents and
 commands across every workspace, the tabs with a thumbnail of each layout, and,
-with Agent Backbone installed, the **AGENTS** section: agents needing you first,
+in a workspace with a profile, the **AGENTS** section: agents needing you first,
 each with a state symbol. Click an agent to show the tab holding its session.
 An agent running swarms shows the number of swarm members beside its name
 instead of listing them separately. Click the arrow to list each swarm with its
@@ -304,8 +304,8 @@ and key-release events are not yet wired into the product UI.
 
 ## Read reports and interactive artifacts
 
-In an empty pane, choose **Reports & updates** to read Agent Backbone's
-authored reports and retained answers. **Recent updates** shows report history;
+In a workspace with a profile, choose **Reports & updates** in an empty pane to
+read Agent Backbone's authored reports and retained answers. **Recent updates** shows report history;
 **Responses** shows questions, answers and their next actions. **Waiting on
 you** shows owner blockers from each agent's latest report. A report's age does
 not resolve its blocker, and an answer's action text is not a pending approval.
@@ -479,8 +479,8 @@ inspect the results and send feedback. Documents hold the longer explanation,
 Reports record progress, and Responses answer specific questions; link to the
 workbook from those artifacts so readers can inspect the underlying data.
 
-Open **Reports & updates → Sheets**, choose a workbook, then a tab. Agent Backbone
-must support Sheets and be configured through its normal private local connection.
+Open **Reports & updates → Sheets**, choose a workbook, then a tab. The workspace's
+profile must be served by an Agent Backbone that supports Sheets.
 The grid is read-only. Select a cell or use Shift-click or Shift-arrow to select a
 range. Arrow keys and Tab move the selection. Row and column paging keep large
 workbooks bounded; labels retain canonical A1 coordinates under saved views.

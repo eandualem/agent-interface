@@ -84,8 +84,11 @@ downloads, Windows 11 / WSL setup, updates and removal.
    running tmux session to attach it.
 2. Split the pane with **⌘D**, or **⌘⇧D** to split below (Ctrl+Shift+D and
    Ctrl+Shift+E on Linux).
-3. In an empty pane, choose a view such as **Team** or **Reports & updates**.
-4. Once an agent's session is in a tab, click the agent in the sidebar to go there.
+3. In a workspace with an Agent Backbone profile (see
+   [Connect Agent Backbone](docs/INSTALL.md#connect-agent-backbone)), choose a
+   view such as **Team** or **Reports & updates** in an empty pane.
+4. In a workspace with a profile, once an agent's session is in a tab, click the
+   agent in the sidebar to go there.
 
 The [user guide](docs/GUIDE.md) covers every view, shortcut and setting.
 
