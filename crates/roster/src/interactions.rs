@@ -11,7 +11,7 @@ const PAGES: usize = 20;
 /// Why the history cannot currently be read. No response body is exposed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// No authenticated private provider, or transport failure.
+    /// Backbone could not provide the history: it answered with an unexpected status.
     Unavailable,
     /// The provider does not implement interaction history.
     Unsupported,
