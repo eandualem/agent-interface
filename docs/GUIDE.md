@@ -195,11 +195,13 @@ A workspace without a profile has **Choose profile…** in its menu. One whose
 profile cannot be reached has **Change profile…**, in its menu and on its
 **Workspace profile unavailable** screen. Pick a ready profile; the workspace
 keeps its tabs and panes, and panes attached to that profile's agents show
-them. In a workspace that had no profile, panes attached to your own tmux
-sessions keep their server, which the profile's panes do not connect to, even
-when a session has the name of one of the profile's agents. Such a pane says
-its session belongs to a different profile socket; choose **Detach** to return
-it to its chooser. The session keeps running in tmux. Ordinary shells become
+them. In a workspace that had no profile, a pane follows the profile when its
+session is on the profile's tmux server, whether or not it is an agent's. A
+pane whose session is on another tmux server keeps that server, which the
+profile's panes do not connect to, even when the session has the name of one
+of the profile's agents. Such a pane says its session belongs to a different
+profile socket; choose **Detach** to return it to its chooser. The session
+keeps running in tmux. Ordinary shells become
 shells of the profile; the shells they showed keep running, and the app says
 how to list them when their panes close.
 
