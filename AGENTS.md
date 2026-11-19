@@ -55,7 +55,7 @@ server.
 ## Models and swarms
 
 - Implementation code is written by you, or by a swarm's one coder running
-  Claude Code with `claude-opus-5-5` at `xhigh` effort. No other model writes
+  Claude Code with `claude-opus-5-5` at `high` effort. No other model writes
   implementation code.
 - A swarm's coordinator runs Claude Code with `claude-opus-5-5` at `high`
   effort. It designs and directs the work; it writes no implementation code
