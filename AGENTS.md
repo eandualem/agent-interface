@@ -54,9 +54,9 @@ server.
 
 ## Models and swarms
 
-- Implementation code is written by you, or by a swarm's one coder running
-  Claude Code with `claude-opus-5-5` at `high` effort. No other model writes
-  implementation code.
+- Implementation code is written by the repository's main agent, or by a
+  swarm's one coder, which runs Claude Code with `claude-opus-5-5` at `high`
+  effort. No one else writes implementation code.
 - A swarm's coordinator runs Claude Code with `claude-opus-5-5` at `high`
   effort. It designs and directs the work; it writes no implementation code
   and never reviews.
