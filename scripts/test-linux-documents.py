@@ -43,6 +43,10 @@ with tempfile.TemporaryDirectory(prefix="document-smoke-") as directory:
     env = {k: v for k, v in os.environ.items()
            if k != "TMUX" and not k.startswith(("BACKBONE_", "AGENT_INTERFACE_"))}
     env.pop("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", None)
+    # The app's interactive login shell reads a file ENV or BASH_ENV names
+    # after .profile, which could put another `backbone` first again.
+    env.pop("ENV", None)
+    env.pop("BASH_ENV", None)
     env.update(HOME=str(root), XDG_CONFIG_HOME=str(root / "config"),
                XDG_DATA_HOME=str(root / "data"), XDG_STATE_HOME=str(root / "state"),
                TMUX_TMPDIR=str(root / "tmux"), LIBGL_ALWAYS_SOFTWARE="1")
