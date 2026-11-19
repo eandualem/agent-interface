@@ -1,16 +1,11 @@
 use super::*;
-use agent_interface_roster::profiles::{Identity, setup::Action};
 
 fn snapshot() -> Snapshot {
     Snapshot {
         key: "key-a".into(),
         revision: 7,
         phase: Phase::Submitted,
-        identity: Identity {
-            profile_id: "profile-a".into(),
-            installation_id: "install-a".into(),
-            lifecycle_id: "life-a".into(),
-        },
+        profile_id: "0a1b2c3d4e5f".into(),
         agent_name: "worker".into(),
         runtime: Some("codex".into()),
         request_id: "request-a".into(),
@@ -20,7 +15,7 @@ fn snapshot() -> Snapshot {
 }
 fn event(s: &Snapshot) -> Event {
     Event {
-        identity: s.identity.clone(),
+        profile_id: s.profile_id.clone(),
         request_id: s.request_id.clone(),
         action: Action::FirstAgent,
         sequence: 1,
@@ -31,6 +26,7 @@ fn event(s: &Snapshot) -> Event {
         cancelled: false,
         ready_agent: None,
         launch_id: None,
+        message: None,
     }
 }
 #[test]
@@ -69,7 +65,7 @@ fn progress_requires_original_key_tuple_request_and_newer_revision() {
     };
     assert!(progress_matches(Some(&s), None, &s.key, &p));
     assert!(!progress_matches(Some(&s), Some(&p), &s.key, &p));
-    p.event.identity.lifecycle_id = "life-b".into();
+    p.event.profile_id = "0a1b2c3d4e60".into();
     assert!(!progress_matches(Some(&s), None, &s.key, &p));
     p.event = event(&s);
     p.revision = s.revision;
@@ -99,33 +95,235 @@ fn readonly_reload_remains_available_when_record_cannot_be_restored() {
     assert!(!Command::Retry.allowed(Some(&s)));
     // Nothing further can happen on this request, so it offers no provider action.
     assert!(!Command::Cancel.allowed(Some(&s)));
-    assert_eq!(status(&s), "Agent not added");
-    let retryable = |code: &str| {
-        let mut s = snapshot();
-        let mut result = event(&s);
-        result.code = Some(code.into());
-        result.retry = Some("same_request".into());
+    // A code that doesn't say the agent wasn't added: not known.
+    assert_eq!(status(&s), "Not known whether it was added");
+}
+
+/// A saved request whose latest result, of the first agent or of its
+/// cancellation, is `code` with `retry`.
+fn answered(cancel: bool, status: &str, code: &str, retry: &str) -> Snapshot {
+    let mut s = snapshot();
+    let mut result = event(&s);
+    result.step = None;
+    result.status = status.into();
+    result.code = Some(code.into());
+    result.retry = Some(retry.into());
+    if cancel {
+        result.action = Action::CancelFirstAgent;
+        s.phase = Phase::CancelPending;
+        s.cancellation_result = Some(result);
+    } else {
         s.first_result = Some(result);
-        s
-    };
-    let timeout = retryable("launch_timeout");
-    assert_eq!(status(&timeout), "Needs attention");
-    assert!(Command::Retry.allowed(Some(&timeout)));
-    assert!(
-        outcome(&timeout)
-            .unwrap()
-            .contains("has not reported ready")
+    }
+    s
+}
+
+#[test]
+fn every_answer_s_words_agree_with_its_status_and_buttons() {
+    // Every code setup gives a first agent or its cancellation, and one it
+    // doesn't know. Those the app has words of its own for show them;
+    // every other shows setup's message.
+    let own = [
+        "cancellation_unsafe",
+        "agent_conflict",
+        "runtime_missing",
+        "invalid_request",
+        "service_unavailable",
+    ];
+    let codes = [
+        "agent_ready",
+        "request_cancelled",
+        "starter_conflict",
+        "launch_failed",
+        "installation_conflict",
+        "request_conflict",
+        "request_expired",
+        "outcome_unknown",
+        "setup_failed",
+        "operator_required",
+        "new_code",
+    ];
+    for cancel in [false, true] {
+        for given in ["completed", "failed", "action_required", "paused"] {
+            for code in own.into_iter().chain(codes) {
+                for retry in ["same_request", "new_request", "none", "later"] {
+                    let row = format!("cancel {cancel}: {given} {code} {retry}");
+                    let mut s = answered(cancel, given, code, retry);
+                    // What the decoder confirms of these, and nothing else.
+                    let result = if cancel {
+                        s.cancellation_result.as_mut()
+                    } else {
+                        s.first_result.as_mut()
+                    }
+                    .unwrap();
+                    result.message = Some("the profile's words".into());
+                    if given == "completed" && code == "request_cancelled" && cancel {
+                        result.cancelled = true;
+                    }
+                    if given == "completed" && code == "agent_ready" && !cancel {
+                        result.ready_agent = Some("worker".into());
+                    }
+                    let line = status(&s);
+                    let Some((text, shown)) = outcome(&s) else {
+                        assert!(
+                            matches!(line, "Agent started" | "Safely cancelled"),
+                            "{row}"
+                        );
+                        assert!(s.closed(), "{row}");
+                        continue;
+                    };
+                    assert_eq!(shown, code, "{row}");
+                    // Setup's words only where the app has none of its own.
+                    assert_eq!(
+                        text.starts_with("the profile's words"),
+                        !own.contains(&code),
+                        "{row}: {text}"
+                    );
+                    let (again, again_cancel) = (
+                        Command::Retry.allowed(Some(&s)),
+                        Command::RetryCancel.allowed(Some(&s)),
+                    );
+                    // Only a final retry closes it; a cancellation's leaves the
+                    // original as it was, unless it is too old to run now.
+                    let last = matches!(retry, "new_request" | "none");
+                    assert_eq!(
+                        s.closed(),
+                        last && (!cancel || code == "request_expired"),
+                        "{row}"
+                    );
+                    // The same request or cancellation only where its retry
+                    // says so; the original from a cancellation that didn't
+                    // cancel it.
+                    assert_eq!(
+                        text.contains("same request"),
+                        !cancel && again,
+                        "{row}: {text}"
+                    );
+                    assert_eq!(
+                        !cancel && again,
+                        !cancel && retry == "same_request",
+                        "{row}"
+                    );
+                    assert_eq!(
+                        text.contains("same cancellation"),
+                        again_cancel,
+                        "{row}: {text}"
+                    );
+                    assert_eq!(again_cancel, cancel && retry == "same_request", "{row}");
+                    assert_eq!(
+                        text.contains("send it again"),
+                        cancel && again && !again_cancel,
+                        "{row}: {text}"
+                    );
+                    // A cancellation that didn't confirm says only that, and
+                    // to look at the agent first.
+                    assert!(!text.contains("isn't cancelled"), "{row}: {text}");
+                    assert_eq!(
+                        text.contains("isn't confirmed"),
+                        cancel && again && !again_cancel && code != "cancellation_unsafe",
+                        "{row}: {text}"
+                    );
+                    assert_eq!(
+                        text.contains("Look at the agent first"),
+                        code == "cancellation_unsafe" || (cancel && again && !again_cancel),
+                        "{row}: {text}"
+                    );
+                    // A new request only where one may follow, and look first
+                    // wherever what came of it isn't known.
+                    assert_eq!(
+                        text.contains("start again"),
+                        s.closed() && retry == "new_request",
+                        "{row}: {text}"
+                    );
+                    assert_eq!(
+                        text.contains("look at the workspace")
+                            || text.contains("Look at the workspace"),
+                        !again && !again_cancel && !(s.closed() && retry == "new_request"),
+                        "{row}: {text}"
+                    );
+                    // No word that the agent wasn't added, or was.
+                    for claim in [
+                        "not added",
+                        "wasn't added",
+                        "nothing was sent",
+                        "never ran",
+                        "nothing changed",
+                        "was added",
+                    ] {
+                        assert!(!text.contains(claim), "{row}: {text}");
+                    }
+                    // Open or closed, as the status line and buttons say.
+                    if s.closed() {
+                        assert_eq!(line, "Not known whether it was added", "{row}");
+                        assert!(
+                            !again && !again_cancel && !Command::Cancel.allowed(Some(&s)),
+                            "{row}"
+                        );
+                    } else {
+                        assert_eq!(line, "Needs attention", "{row}");
+                        assert_eq!(Command::Cancel.allowed(Some(&s)), !cancel, "{row}");
+                    }
+                }
+            }
+        }
+    }
+    // A cancellation's final answer that didn't cancel leaves the original
+    // open, unless it is too old to run now, which closes it.
+    for (code, retry, open) in [
+        ("cancellation_unsafe", "none", true),
+        ("request_conflict", "new_request", true),
+        ("invalid_request", "new_request", true),
+        ("request_expired", "none", false),
+    ] {
+        let s = answered(true, "failed", code, retry);
+        assert_eq!(Command::Retry.allowed(Some(&s)), open, "{code}");
+        assert_eq!(s.closed(), !open, "{code}");
+    }
+    // The guide's main button, as rendered: the same request while it may
+    // be sent again, a new one only once it is closed, and no button while
+    // it is open with nothing it may send.
+    for (retry, button) in [
+        ("same_request", Some(("Try again", Then::Replay))),
+        ("none", Some(("Start a new request", Then::Fresh))),
+        ("new_request", Some(("Start a new request", Then::Fresh))),
+        ("later", None),
+    ] {
+        let s = answered(false, "action_required", "outcome_unknown", retry);
+        assert_eq!(main_button(None, Some(&s)), button, "{retry}");
+    }
+    let mut saved = snapshot();
+    saved.phase = Phase::Prepared;
+    assert_eq!(
+        main_button(None, Some(&saved)),
+        Some(("Try again", Then::Replay))
     );
-    assert!(agent_waiting(&timeout));
-    assert!(agent_waiting(&retryable("runtime_permission")));
-    assert!(!agent_waiting(&retryable("runtime_missing")));
-    assert!(!agent_waiting(&s));
-    assert!(outcome(&retryable("agent_ready")).is_none());
-    assert!(
-        outcome(&retryable("something_new"))
-            .unwrap()
-            .contains("something_new")
+    assert_eq!(
+        main_button(None, None),
+        Some(("Start a new request", Then::Fresh))
     );
+    // Add agent's, as it always was: Try again, the same start while what
+    // came of it isn't known, else a new one.
+    for (answer, then) in [
+        (Some(Answer::Unknown(None)), Then::Replay),
+        (Some(Answer::Unknown(Some("why".into()))), Then::Replay),
+        (Some(Answer::Stopped("guide is taken".into())), Then::Fresh),
+        (None, Then::Fresh),
+    ] {
+        assert_eq!(main_button(Some(&answer), None), Some(("Try again", then)));
+    }
+    // Setup said nothing: the app says so, never an empty line.
+    let s = answered(false, "failed", "new_code", "none");
+    assert!(
+        outcome(&s)
+            .unwrap()
+            .0
+            .starts_with("Setup said nothing more.")
+    );
+    // Started: its terminal is the next step.
+    let mut s = answered(false, "completed", "agent_ready", "none");
+    s.first_result.as_mut().unwrap().ready_agent = Some("worker".into());
+    assert!(started(&s) && outcome(&s).is_none() && s.closed());
+    assert_eq!(status(&s), "Agent started");
 }
 
 #[test]
@@ -422,35 +620,20 @@ fn an_unreachable_profile_keeps_an_unresolved_start_and_its_request_id() {
 }
 
 #[test]
-fn an_unresolved_start_is_the_same_request_while_what_it_sends_is_the_same() {
-    use std::path::{Path, PathBuf};
-    let (_directory, profile, _server) = served_socket(Vec::new());
-    let start = |name: &str, dir: &str, model: Option<&str>, watch: Option<&str>| {
-        Start::new(name, Path::new(dir), "claude", model, watch).unwrap()
-    };
-    let held = Request {
-        connection: None,
-        profile,
-        start: start("guide", "/a", Some("opus"), Some("acme/app")),
-        create: Some(PathBuf::from("/a")),
-        request_id: "019a7c105c407a108b203c40d5e6f708".into(),
-    };
-    let made = PathBuf::from("/a");
-    // The tool and model chosen again, or an edit typed back: the same start.
-    assert!(same(
-        &held,
-        &start("guide", "/a", Some("opus"), Some("acme/app")),
-        Some(&made)
-    ));
-    // A real difference is a new request.
-    for other in [
-        start("guide", "/a", None, Some("acme/app")),
-        start("guide", "/a", Some("sonnet"), Some("acme/app")),
-        start("guide-2", "/a", Some("opus"), Some("acme/app")),
-        start("guide", "/b", Some("opus"), Some("acme/app")),
-        start("guide", "/a", Some("opus"), None),
+fn a_fresh_start_sends_only_its_open_request_until_it_is_closed() {
+    assert_eq!(saved_open(None), None);
+    // Saved and never sent: it is sent.
+    let mut saved = snapshot();
+    saved.phase = Phase::Prepared;
+    assert_eq!(saved_open(Some(&saved)), Some(true));
+    for (retry, again) in [
+        ("same_request", Some(true)),
+        // Open, but not sent again: no Try again, and no new request.
+        ("later", Some(false)),
+        ("new_request", None),
+        ("none", None),
     ] {
-        assert!(!same(&held, &other, Some(&made)));
+        let s = answered(false, "action_required", "outcome_unknown", retry);
+        assert_eq!(saved_open(Some(&s)), again, "{retry}");
     }
-    assert!(!same(&held, &held.start, None));
 }

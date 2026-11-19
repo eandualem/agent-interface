@@ -1,0 +1,17 @@
+{
+  "schema_version": 3,
+  "request_id": "019a8f3f1a2b7c3d8e4f5a6b7c8d9e0f",
+  "action": "first_agent",
+  "profile_id": "0a1b2c3d4e5f",
+  "agent": {
+    "name": "guide",
+    "directory": "/home/user/projects/site",
+    "create_directory": true,
+    "runtime": "codex",
+    "model": null,
+    "brief": {
+      "template": "orchestrator-v1"
+    }
+  },
+  "start_greeting": true
+}

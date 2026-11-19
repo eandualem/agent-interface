@@ -43,9 +43,12 @@ enum State {
     /// Saved requests could not be checked, so new choices wait for recovery.
     Unchecked(Arc<Controller>),
     Ready {
-        controller: Arc<Controller>,
+        /// The setup journal, which a guide's start is saved in; Add agent
+        /// starts with the service's own start and opens none.
+        controller: Option<Arc<Controller>>,
         catalog: Catalog,
-        /// Open requests, offered for recovery without blocking other agents.
+        /// Open first-agent requests of this profile: while there is one, a
+        /// guide makes no new request.
         pending: usize,
     },
     Failed,
@@ -64,9 +67,7 @@ pub(super) struct Form {
     project: Option<PathBuf>,
     runtime: Option<String>,
     model: Option<String>,
-    hooks: bool,
     greeting: bool,
-    prepared: Option<(Prepared, Arc<Controller>)>,
     /// What Submit asks the Rust service to start.
     served: Option<setup::Request>,
     error: Option<&'static str>,
@@ -74,7 +75,7 @@ pub(super) struct Form {
     finished: bool,
     /// The name last filled in from the folder, kept until the person edits it.
     folder_name: Option<String>,
-    /// Model, instructions and hooks are open.
+    /// Model, instructions and greeting are open.
     more: bool,
     /// What leaving the form is called where it is shown.
     skip: &'static str,
@@ -96,8 +97,9 @@ pub(super) struct Form {
     accounts: BTreeMap<String, Authentication>,
     /// The guide's start, while it runs or after it stopped.
     start: Option<(Entity<setup::Pane>, Vec<Subscription>)>,
-    /// The tools and open setups were read again after the start stopped.
-    refreshed: bool,
+    /// The revision of the start's saved request after which the tools and
+    /// open setups were last read again.
+    refreshed: Option<u64>,
     /// Something was changed since the start stopped, so Try again sends the
     /// new choices rather than the same request.
     changed: bool,
@@ -145,9 +147,7 @@ impl Form {
             project: None,
             runtime: None,
             model: None,
-            hooks: true,
             greeting: true,
-            prepared: None,
             served: None,
             error: None,
             ticket: Ticket::default(),
@@ -163,7 +163,7 @@ impl Form {
             connection: None,
             accounts: BTreeMap::new(),
             start: None,
-            refreshed: false,
+            refreshed: None,
             changed: false,
             picked: false,
             focus: cx.focus_handle(),
@@ -175,6 +175,14 @@ impl Form {
     /// and the chosen tool, in place until the new read arrives.
     fn load(&mut self, keep: bool, cx: &mut Context<Self>) {
         if self.finished {
+            return;
+        }
+        // Setup schema 3 is the Rust service's: an earlier provider takes none.
+        if !self.profile.served() {
+            self.state = State::Failed;
+            self.error = Some(
+                "This profile runs on an earlier Agent Backbone service, which this app no longer adds agents to.",
+            );
             return;
         }
         if !keep {
@@ -189,9 +197,10 @@ impl Form {
         let directory = self.library.clone();
         let expected = self.profile.expected_identity();
         let served = self.profile.served();
+        let setup = self.guide;
         let work = cx.background_executor().spawn(async move {
             let identity = expected.map_err(|_| "This profile has no ready instance for setup.")?;
-            load_choices(client, directory, &identity, served, &|| {
+            load_choices(client, directory, &identity, served, setup, &|| {
                 worker.load(Ordering::Acquire)
             })
         });
@@ -207,8 +216,12 @@ impl Form {
                         // installed, else the one asked for, else a signed-in
                         // one, else any that can run, else none.
                         if let State::Ready { catalog, .. } = &state {
+                            let setup = form.guide;
                             let ready = |id: &String| {
-                                catalog.items().iter().any(|r| &r.id == id && eligible(r))
+                                catalog
+                                    .items()
+                                    .iter()
+                                    .any(|r| &r.id == id && eligible(r, setup))
                             };
                             let before = form.runtime.clone();
                             let kept = before.clone().filter(ready);
@@ -218,7 +231,7 @@ impl Form {
                                 .filter(ready)
                                 .or(kept)
                                 .or_else(|| form.prefer.clone().filter(ready))
-                                .or_else(|| first_choice(catalog));
+                                .or_else(|| first_choice(catalog, setup));
                             // After a start, another tool is another request:
                             // Try again sends what the screen now shows.
                             if form.start.is_some() && form.runtime != before {
@@ -252,14 +265,10 @@ impl Form {
     }
     pub fn controller(&self) -> Option<Arc<Controller>> {
         match &self.state {
-            State::Unchecked(controller) | State::Ready { controller, .. } => {
-                Some(controller.clone())
-            }
+            State::Unchecked(controller) => Some(controller.clone()),
+            State::Ready { controller, .. } => controller.clone(),
             _ => None,
         }
-    }
-    pub fn take_prepared(&mut self) -> Option<(Prepared, Arc<Controller>)> {
-        self.prepared.take()
     }
     /// What Submit asks the Rust service to start, for `setup::Pane::served`.
     pub fn take_served(&mut self) -> Option<setup::Request> {
@@ -272,7 +281,7 @@ impl Form {
         catalog
             .items()
             .iter()
-            .find(|r| Some(&r.id) == self.runtime.as_ref() && eligible(r))
+            .find(|r| Some(&r.id) == self.runtime.as_ref() && eligible(r, self.guide))
     }
     /// Make this a profile's first agent, its guide: named "guide", with a
     /// folder of its own, both shown and editable in place. `first` is set
@@ -287,6 +296,8 @@ impl Form {
         self.guide = true;
         self.first = first;
         self.connection = connection;
+        // Read again as a guide's: its start is saved before it runs.
+        self.load(false, cx);
         self.name = cx.new(|cx| NameField::bare(GUIDE, window, cx));
         self._fields.push(
             cx.subscribe(&self.name, |form: &mut Self, _, event: &NameEvent, cx| {
@@ -333,7 +344,7 @@ impl Form {
                         .items()
                         .iter()
                         .find(|r| {
-                            eligible(r)
+                            eligible(r, form.guide)
                                 && form.accounts.get(&r.id) == Some(&Authentication::Authenticated)
                         })
                         .map(|r| r.id.clone())
@@ -366,7 +377,7 @@ impl Form {
         let ready: Vec<String> = catalog
             .items()
             .iter()
-            .filter(|r| eligible(r))
+            .filter(|r| eligible(r, self.guide))
             .map(|r| r.id.clone())
             .collect();
         if ready.is_empty() {
@@ -431,43 +442,26 @@ impl Form {
         if self.busy(cx) {
             return;
         }
-        // A served start is decided by what would be sent, not by whether
-        // anything was touched: the same request, still unresolved, is asked
-        // about again under its ID.
-        let again = if self.profile.served() {
-            match (&self.start, self.served_start(cx)) {
-                (Some((pane, _)), Some((start, create))) => {
-                    pane.update(cx, |pane, cx| pane.retry_same(&start, create.as_ref(), cx))
-                }
-                _ => false,
+        // While the request a start saved is open, Try again sends that
+        // request, whatever was changed since; a new one only once it is
+        // closed, or cancelled or forgotten under Earlier setups.
+        if let Some((pane, _)) = &self.start
+            && pane.read(cx).saved_open().is_some()
+        {
+            if pane.update(cx, |pane, cx| pane.retry(cx)) {
+                cx.notify();
             }
-        } else {
-            !self.changed
-                && self
-                    .start
-                    .as_ref()
-                    .is_some_and(|(pane, _)| pane.update(cx, |pane, cx| pane.retry(cx)))
-        };
-        if again {
-            cx.notify();
             return;
         }
-        let request_id = uuid::Uuid::now_v7().simple().to_string();
-        let pane = if self.profile.served() {
-            let Some(request) = self.served_request(request_id, cx) else {
-                return;
-            };
-            let skip = self.skip;
-            cx.new(|cx| setup::Pane::served(request, skip, cx))
-        } else {
-            let Some(prepared) = self.prepare(&request_id, cx) else {
-                return;
-            };
-            let Some(controller) = self.controller() else {
-                return;
-            };
-            cx.new(|cx| setup::Pane::from_prepared(controller, prepared, self.skip, cx))
+        // Saved before it runs, so a lost answer is asked about again under
+        // the same request.
+        let Some(prepared) = self.prepare(&uuid::Uuid::now_v7().simple().to_string(), cx) else {
+            return;
         };
+        let Some(controller) = self.controller() else {
+            return;
+        };
+        let pane = cx.new(|cx| setup::Pane::from_prepared(controller, prepared, self.skip, cx));
         let subscriptions = vec![
             cx.subscribe(&pane, |form, _, open: &Open, cx| {
                 form.finished = true;
@@ -475,16 +469,18 @@ impl Form {
                 cx.emit(Event::Opened(open.clone()));
             }),
             cx.observe(&pane, |form: &mut Self, pane, cx| {
-                // A start that stopped may leave its request open: show it
-                // under Earlier setups.
-                if pane.read(cx).failure().is_some() && !form.refreshed {
-                    form.refreshed = true;
+                // After each result a start stops on, read the open setups
+                // again: one left open shows under Earlier setups, and one
+                // closed frees Start.
+                let settled = pane.read(cx).settled();
+                if read_again(form.refreshed, settled) {
+                    form.refreshed = settled;
                     form.load(true, cx);
                 }
                 cx.notify()
             }),
         ];
-        self.refreshed = false;
+        self.refreshed = None;
         self.start = Some((pane, subscriptions));
         self.changed = false;
         self.error = None;
@@ -529,7 +525,6 @@ impl Form {
                 brief: self
                     .custom_brief
                     .then(|| self.brief.read(cx).value().trim()),
-                hooks: self.hooks,
                 greeting: self.greeting,
             },
         )
@@ -581,11 +576,20 @@ impl Form {
 
     /// Whether Start can send what the screen shows.
     fn can_start(&self, cx: &Context<Self>) -> bool {
-        if self.profile.served() {
-            self.served_start(cx).is_some()
-        } else {
-            self.prepare("validation", cx).is_some()
-        }
+        let saved_open = self
+            .start
+            .as_ref()
+            .and_then(|(pane, _)| pane.read(cx).saved_open());
+        let held = self.guide && matches!(self.state, State::Ready { pending, .. } if pending > 0);
+        may_start(saved_open, held, || {
+            if self.profile.served() && !self.guide {
+                self.served_start(cx).is_some()
+            } else {
+                // Any request ID of the form setup takes.
+                self.prepare(&uuid::Uuid::now_v7().simple().to_string(), cx)
+                    .is_some()
+            }
+        })
     }
 
     fn choose_folder(&mut self, cx: &mut Context<Self>) {
@@ -629,29 +633,21 @@ impl Form {
         self.folder_name = Some(name);
     }
     fn submit(&mut self, expected: &Arc<std::sync::atomic::AtomicBool>, cx: &mut Context<Self>) {
-        if !self.ticket.accepts(expected) {
+        // Enter and a click pass the same gate as the button shows.
+        if !self.ticket.accepts(expected) || !self.can_start(cx) {
             return;
         }
         if self.guide {
             self.start_guide(cx);
             return;
         }
-        if self.profile.served() {
-            let request_id = uuid::Uuid::now_v7().simple().to_string();
-            let Some(request) = self.served_request(request_id, cx) else {
-                return;
-            };
-            self.served = Some(request);
-            self.finish(Event::Submit, cx);
-            return;
-        }
-        let Some(prepared) = self.prepare(&uuid::Uuid::now_v7().simple().to_string(), cx) else {
+        // Add agent starts with the Rust service's own start; a profile it
+        // doesn't serve takes none from this app.
+        let request_id = uuid::Uuid::now_v7().simple().to_string();
+        let Some(request) = self.served_request(request_id, cx) else {
             return;
         };
-        let Some(controller) = self.controller() else {
-            return;
-        };
-        self.prepared = Some((prepared, controller));
+        self.served = Some(request);
         self.finish(Event::Submit, cx);
     }
     /// Back from earlier setups: the choices stay, but a start that stopped
@@ -662,7 +658,7 @@ impl Form {
             return;
         }
         self.start = None;
-        self.refreshed = false;
+        self.refreshed = None;
         self.load(true, cx);
     }
 
@@ -688,13 +684,22 @@ fn load_choices(
     directory: PathBuf,
     identity: &agent_interface_roster::profiles::Identity,
     served: bool,
+    setup: bool,
     live: &dyn Fn() -> bool,
 ) -> Result<State, &'static str> {
-    let journal = journal::Journal::open(&directory.join("profile-setup"))
-        .map_err(|_| "Private setup storage is unavailable.")?;
-    let controller = Arc::new(Controller::new(journal, &client));
-    let Ok(pending) = controller.pending(identity, live) else {
-        return Ok(State::Unchecked(controller));
+    // A guide's start is saved in the setup journal first, so it waits for
+    // a read of it; Add agent starts with the service's own start and needs
+    // no journal at all.
+    let (controller, pending) = if setup {
+        let journal = journal::Journal::open(&directory.join("profile-setup"))
+            .map_err(|_| "Private setup storage is unavailable.")?;
+        let controller = Arc::new(Controller::new(journal, &client));
+        let Ok(pending) = controller.pending(&identity.profile_id, live) else {
+            return Ok(State::Unchecked(controller));
+        };
+        (Some(controller), pending.len())
+    } else {
+        (None, 0)
     };
     let catalog = if served {
         client.served_runtimes(identity, live)
@@ -707,7 +712,7 @@ fn load_choices(
     Ok(State::Ready {
         controller,
         catalog,
-        pending: pending.len(),
+        pending,
     })
 }
 struct Selection<'a> {
@@ -719,7 +724,6 @@ struct Selection<'a> {
     model: Option<&'a str>,
     /// Own instructions; `None` is the coordinating brief a fresh install starts with.
     brief: Option<&'a str>,
-    hooks: bool,
     greeting: bool,
 }
 fn freeze(
@@ -734,7 +738,7 @@ fn freeze(
     let runtime = catalog
         .items()
         .iter()
-        .find(|r| r.id == choice.runtime && eligible(r))?;
+        .find(|r| r.id == choice.runtime && eligible(r, true))?;
     if choice
         .model
         .is_some_and(|model| !runtime.models.iter().any(|m| m == model))
@@ -744,11 +748,6 @@ fn freeze(
     Prepared::first_agent(
         request_id,
         profile,
-        if choice.hooks {
-            vec![runtime.id.clone()]
-        } else {
-            Vec::new()
-        },
         Agent {
             name: choice.name.into(),
             directory: choice.project.into(),
@@ -769,9 +768,14 @@ fn freeze(
     )
     .ok()
 }
+/// Whether the open setups are read again: after each result a start stops
+/// on, which its saved revision tells apart from the last one read after.
+fn read_again(last: Option<u64>, settled: Option<u64>) -> bool {
+    settled.is_some() && settled != last
+}
 /// Tools that can't take a brief silently: Agent Backbone sends it as the
 /// agent's first turn, and the default brief asks it to greet.
-const BRIEF_AS_FIRST_TURN: [&str; 2] = ["gemini", "antigravity"];
+const BRIEF_AS_FIRST_TURN: [&str; 1] = ["antigravity"];
 /// The name a profile's first agent starts with.
 const GUIDE: &str = "guide";
 /// A typed name as an agent name: spaces as hyphens.
@@ -820,10 +824,10 @@ fn choose_tool(runtime: &mut Option<String>, model: &mut Option<String>, clicked
     *model = None;
     true
 }
-/// The tool a guide starts on when nothing else says: a signed-in one, else
-/// any that can run.
-fn first_choice(catalog: &Catalog) -> Option<String> {
-    let ready = || catalog.items().iter().filter(|r| eligible(r));
+/// The tool a form starts on when nothing else says: a signed-in one, else
+/// any that can run. `setup`: the agent starts through setup.
+fn first_choice(catalog: &Catalog, setup: bool) -> Option<String> {
+    let ready = || catalog.items().iter().filter(|r| eligible(r, setup));
     ready()
         .find(|r| r.authentication == Authentication::Authenticated)
         .or_else(|| ready().next())
@@ -845,7 +849,7 @@ fn guide_card(
             false,
             installable.then_some("Install"),
         ),
-        None if !eligible(runtime) => (
+        None if !eligible(runtime, true) => (
             "Needs an update",
             false,
             false,
@@ -855,12 +859,20 @@ fn guide_card(
         None => ("Sign in when it starts", false, false, None),
     }
 }
-fn eligible(runtime: &Runtime) -> bool {
+/// Whether an agent can start in `runtime`. Through setup (`setup`), as a
+/// guide starts: setup starts Claude Code, Codex and Antigravity only. Else
+/// through the service's start, as Add agent starts one.
+fn eligible(runtime: &Runtime, setup: bool) -> bool {
+    if setup {
+        return runtime.available && SETUP_RUNTIMES.contains(&runtime.id.as_str());
+    }
     runtime.id != "shell"
         && runtime.available
         && runtime.setup_supported
         && runtime.setup_compatibility.compatible
 }
+/// The tools setup starts a first agent in.
+const SETUP_RUNTIMES: [&str; 3] = ["claude", "codex", "antigravity"];
 /// What a tool's card says about it: whether the agent can start signed in.
 fn card_state(value: Authentication) -> &'static str {
     match value {
@@ -1023,7 +1035,7 @@ impl Render for Form {
                 body = body.child(card);
                 // The same cards onboarding's first agent uses.
                 let mut tools = div().w_full().grid().grid_cols(2).gap(px(t.space.s8));
-                for runtime in catalog.items().iter().filter(|r| eligible(r)) {
+                for runtime in catalog.items().iter().filter(|r| eligible(r, false)) {
                     let id = runtime.id.clone();
                     let expected = ticket.clone();
                     tools = tools.child(
@@ -1031,19 +1043,19 @@ impl Render for Form {
                             .on_click(cx.listener(move |form, _, _, cx| {
                                 if form.finished || !form.ticket.accepts(&expected) { return; }
                                 let State::Ready { catalog, .. } = &form.state else { return; };
-                                if catalog.items().iter().any(|r| r.id == id && eligible(r)) { choose_tool(&mut form.runtime, &mut form.model, &id); cx.notify(); }
+                                if catalog.items().iter().any(|r| r.id == id && eligible(r, false)) { choose_tool(&mut form.runtime, &mut form.model, &id); cx.notify(); }
                             })),
                     );
                 }
                 body = body.child(line(
                     "Runs in",
-                    if catalog.items().iter().any(eligible) {
+                    if catalog.items().iter().any(|r| eligible(r, false)) {
                         tools.into_any_element()
                     } else {
                         note("No tool in this profile can set up an agent yet.".into()).into_any_element()
                     },
                 ));
-                // The Rust service takes no instructions, hooks or greeting yet.
+                // The Rust service's Add agent takes no instructions or greeting.
                 let served = self.profile.served();
                 if !served {
                 body = body.child(line(
@@ -1060,7 +1072,7 @@ impl Render for Form {
                 body = body.child(
                     div().id("setup-more").flex().items_center().gap(px(t.space.s6)).cursor_pointer().text_color(c.muted)
                         .child(ui::icon(if self.more { "chevron-down" } else { "chevron-right" }, t.size.icon, c.muted))
-                        .child(ui::text(div(), &t.text.meta).child(if served { "Model and repository" } else { "Model, hooks and greeting" }))
+                        .child(ui::text(div(), &t.text.meta).child(if served { "Model and repository" } else { "Model and greeting" }))
                         .on_click(cx.listener(|form, _, _, cx| { form.more = !form.more; cx.notify(); })),
                 );
                 if self.more {
@@ -1099,16 +1111,16 @@ impl Render for Form {
                             .into_any_element(),
                         ));
                     }
-                    for (hooks, value, label, words) in (!served).then_some([(true, self.hooks, "Hooks", "Install this tool's hooks"), (false, self.greeting, "Greeting", "Send the agent's greeting")]).into_iter().flatten() {
+                    if !served {
                         let expected = ticket.clone();
                         body = body.child(line(
-                            label,
+                            "Greeting",
                             div().flex().items_center().gap(px(t.space.s8))
-                                .child(ui::switch(label, value).on_click(cx.listener(move |form, _, _, cx| {
+                                .child(ui::switch("Greeting", self.greeting).on_click(cx.listener(move |form, _, _, cx| {
                                     if form.finished || !form.ticket.accepts(&expected) { return; }
-                                    if hooks { form.hooks = !form.hooks; } else { form.greeting = !form.greeting; } cx.notify();
+                                    form.greeting = !form.greeting; cx.notify();
                                 })))
-                                .child(note(words.into()))
+                                .child(note("Send the agent's greeting".into()))
                                 .into_any_element(),
                         ));
                     }
@@ -1263,7 +1275,11 @@ impl Form {
             State::Ready { catalog, .. } => {
                 let mut grid = div().w_full().grid().grid_cols(2).gap(px(t.space.s8));
                 let mut shown = 0;
-                for runtime in catalog.items().iter().filter(|r| r.id != "shell") {
+                for runtime in catalog
+                    .items()
+                    .iter()
+                    .filter(|r| SETUP_RUNTIMES.contains(&r.id.as_str()))
+                {
                     let signed_in = self
                         .accounts
                         .get(&runtime.id)
@@ -1277,7 +1293,7 @@ impl Form {
                     }
                     shown += 1;
                     let id = runtime.id.clone();
-                    let ready = eligible(runtime);
+                    let ready = eligible(runtime, true);
                     let expected = ticket.clone();
                     grid = grid.child(
                         ui::tool_card(
@@ -1364,28 +1380,36 @@ impl Form {
             );
         }
         if self.more {
-            body = body.child(self.more_options(window, cx));
+            body = body.child(self.more_options(cx));
         }
         // Start, and what it is doing.
         let tool = self.runtime().is_some();
         let ready = self.can_start(cx);
-        let start = if busy {
-            format!("Starting {name}…")
-        } else if failure.is_some() {
-            "Try again".to_owned()
-        } else if !tool {
-            "Choose a tool".to_owned()
-        } else if valid {
-            format!("Start {name}")
-        } else {
-            "Start guide".to_owned()
-        };
+        let again = failure.as_ref().map(|_| {
+            self.start
+                .as_ref()
+                .and_then(|(pane, _)| pane.read(cx).again_label())
+        });
+        let start = start_label(busy, again, tool, valid, &name);
         let status = self
             .start
             .as_ref()
             .filter(|_| busy)
             .map(|(pane, _)| setup::stage(pane.read(cx).step(), &name));
-        let problem = failure.or(install_failed).or(self.error.map(str::to_owned));
+        let problem = failure
+            .map(|failure| {
+                match self.start.as_ref().and_then(|(pane, _)| pane.read(cx).saved_open()) {
+                    Some(true) if self.changed => format!(
+                        "{failure} Try again sends it as it was; to change it, cancel or forget it under Earlier setups."
+                    ),
+                    Some(false) => format!(
+                        "{failure} It can't be sent again: cancel or forget it under Earlier setups."
+                    ),
+                    _ => failure,
+                }
+            })
+            .or(install_failed)
+            .or(self.error.map(str::to_owned));
         let expected = ticket.clone();
         let tail =
             div()
@@ -1393,15 +1417,15 @@ impl Form {
                 .flex()
                 .flex_col()
                 .pt(px(t.space.s20))
-                .child(
+                .children(start.map(|start| {
                     ui::setup_button("setup-choice-submit", start, ready, busy).on_click(
                         cx.listener(move |form, _, _, cx| {
                             if ready {
                                 form.submit(&expected, cx)
                             }
                         }),
-                    ),
-                )
+                    )
+                }))
                 .children(status.map(|status| {
                     div()
                         .pt(px(t.space.s10))
@@ -1482,10 +1506,9 @@ impl Form {
             .child(tail)
     }
 
-    /// Folder, instructions, model, hooks and greeting, in one group. Under
-    /// the Rust service: folder, model and a watched repository.
-    fn more_options(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
-        let served = self.profile.served();
+    /// Folder, instructions, model and greeting, in one group: what setup
+    /// takes for a first agent.
+    fn more_options(&self, cx: &mut Context<Self>) -> gpui::Div {
         let (t, c) = (tokens(), colors());
         let ticket = self.ticket.0.clone();
         let row = |label: &'static str, control: gpui::AnyElement| {
@@ -1568,35 +1591,33 @@ impl Form {
                     )
                     .into_any_element(),
             ));
-        if !served {
-            group = group.child(row(
-                "Instructions",
-                ui::segments()
-                    .child(
-                        ui::segment(
-                            "brief-coordinating",
-                            "Coordinating agent",
-                            !self.custom_brief,
-                        )
-                        .on_click(cx.listener(|form, _, _, cx| {
-                            form.custom_brief = false;
+        group = group.child(row(
+            "Instructions",
+            ui::segments()
+                .child(
+                    ui::segment(
+                        "brief-coordinating",
+                        "Coordinating agent",
+                        !self.custom_brief,
+                    )
+                    .on_click(cx.listener(|form, _, _, cx| {
+                        form.custom_brief = false;
+                        form.changed = true;
+                        cx.notify();
+                    })),
+                )
+                .child(
+                    ui::segment("brief-own", "My own", self.custom_brief).on_click(cx.listener(
+                        |form, _, _, cx| {
+                            form.custom_brief = true;
                             form.changed = true;
                             cx.notify();
-                        })),
-                    )
-                    .child(
-                        ui::segment("brief-own", "My own", self.custom_brief).on_click(
-                            cx.listener(|form, _, _, cx| {
-                                form.custom_brief = true;
-                                form.changed = true;
-                                cx.notify();
-                            }),
-                        ),
-                    )
-                    .into_any_element(),
-            ));
-        }
-        if self.custom_brief && !served {
+                        },
+                    )),
+                )
+                .into_any_element(),
+        ));
+        if self.custom_brief {
             group = group.child(self.brief.clone());
         }
         if let Some(runtime) = self.runtime() {
@@ -1633,60 +1654,62 @@ impl Form {
             }
             group = group.child(row("Model", models.into_any_element()));
         }
-        if served {
-            let typed = self.repository.read(cx).value().trim().to_owned();
-            group = group.child(row(
-                "Repository",
-                ui::field_frame(self.repository.read(cx).focus.is_focused(window))
-                    .flex_1()
-                    .child(div().flex_1().min_w_0().child(self.repository.clone()))
-                    .into_any_element(),
-            ));
-            group = group.child(if typed.is_empty() || repository(&typed) {
-                quiet("Optional: a GitHub repository it watches, as owner/name")
-            } else {
-                ui::text(div().text_color(c.attention_text), &t.text.meta)
-                    .child("Use owner/name, such as acme/app")
-            });
-            return group;
-        }
-        for (hooks, value, label, words) in [
-            (true, self.hooks, "Hooks", "Install this tool's hooks"),
-            (
-                false,
-                self.greeting,
-                "Greeting",
-                "The guide says hello first",
-            ),
-        ] {
-            let expected = ticket.clone();
-            group = group.child(row(
-                label,
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(t.space.s8))
-                    .child(
-                        ui::switch(label, value).on_click(cx.listener(move |form, _, _, cx| {
-                            if form.finished || !form.ticket.accepts(&expected) {
-                                return;
-                            }
-                            if hooks {
-                                form.hooks = !form.hooks;
-                            } else {
-                                form.greeting = !form.greeting;
-                            }
-                            form.changed = true;
-                            cx.notify();
-                        })),
-                    )
-                    .child(quiet(words))
-                    .into_any_element(),
-            ));
-        }
+        let expected = ticket.clone();
+        group = group.child(row(
+            "Greeting",
+            div()
+                .flex()
+                .items_center()
+                .gap(px(t.space.s8))
+                .child(ui::switch("Greeting", self.greeting).on_click(cx.listener(
+                    move |form, _, _, cx| {
+                        if form.finished || !form.ticket.accepts(&expected) {
+                            return;
+                        }
+                        form.greeting = !form.greeting;
+                        form.changed = true;
+                        cx.notify();
+                    },
+                )))
+                .child(quiet("The guide says hello first"))
+                .into_any_element(),
+        ));
         group
     }
 }
 
+/// Whether Start may run, for its button and for Enter alike: a start's
+/// open request is sent again, or nothing is; another open request of the
+/// profile, `held`, holds a guide back until it is finished, cancelled or
+/// forgotten under Earlier setups, as admission would refuse it anyway;
+/// else the choices must make a request, which only then is tried.
+fn may_start(saved_open: Option<bool>, held: bool, preparable: impl FnOnce() -> bool) -> bool {
+    match saved_open {
+        Some(sendable) => sendable,
+        None => !held && preparable(),
+    }
+}
+/// The Start button's words, or none: after a start stopped, `again` is
+/// the button its saved request offers, none while it is open with
+/// nothing it may send.
+fn start_label(
+    busy: bool,
+    again: Option<Option<&'static str>>,
+    tool: bool,
+    valid: bool,
+    name: &str,
+) -> Option<String> {
+    Some(if busy {
+        format!("Starting {name}…")
+    } else if let Some(again) = again {
+        again?.to_owned()
+    } else if !tool {
+        "Choose a tool".to_owned()
+    } else if valid {
+        format!("Start {name}")
+    } else {
+        "Start guide".to_owned()
+    })
+}
 #[cfg(test)]
 mod tests;
