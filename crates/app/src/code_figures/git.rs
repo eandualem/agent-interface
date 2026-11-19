@@ -193,6 +193,19 @@ pub enum Row {
     Binary,
 }
 
+/// What both diff passes are given. `--submodule=short` overrides any
+/// `diff.submodule` setting, so Git never reads inside a submodule.
+const DIFF: [&str; 6] = [
+    "diff",
+    "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--submodule=short",
+    "-M",
+];
+/// The file list alone: with any patch option Git would write patches too.
+const LIST: [&str; 3] = ["--raw", "-z", "--ignore-submodules=none"];
+
 /// `git diff BASE HEAD` of the two commits' trees, limited to `paths`. A
 /// diff that touches a submodule is not read.
 pub fn diff(
@@ -206,26 +219,12 @@ pub fn diff(
     // not from whatever the checkout has; a Git without this option answers
     // nothing.
     let attributes = format!("--attr-source={head}");
-    let mut args = vec![
-        &*attributes,
-        "diff",
-        "--no-color",
-        "--no-ext-diff",
-        "--no-textconv",
-        "-M",
-        "-U3",
-    ];
     let mut tail = vec![base, head, "--"];
     tail.extend(paths.unwrap_or_default().iter().map(String::as_str));
     // The file list, with exact names, then the patch in the same order.
     let raw = run(
         top,
-        &[
-            &args[..],
-            &["--raw", "-z", "--ignore-submodules=none"][..],
-            &tail[..],
-        ]
-        .concat(),
+        &[&[&*attributes][..], &DIFF[..], &LIST[..], &tail[..]].concat(),
         OUTPUT_LIMIT,
         until,
     )?;
@@ -234,8 +233,12 @@ pub fn diff(
     if entries.iter().any(|entry| entry.submodule) {
         return None;
     }
-    args.extend(tail);
-    let patch = run(top, &args, OUTPUT_LIMIT, until)?;
+    let patch = run(
+        top,
+        &[&[&*attributes][..], &DIFF[..], &["-U3"][..], &tail[..]].concat(),
+        OUTPUT_LIMIT,
+        until,
+    )?;
     // Git calls a file binary only from its first bytes.
     if patch.contains(&0) {
         return None;
@@ -596,6 +599,62 @@ pub(super) mod tests {
         }
         let files = diff(dir.path(), &commits[0], &commits[1], None, &later()).unwrap();
         assert_eq!(files[0].rows, vec![Row::Binary]);
+    }
+
+    #[test]
+    fn nothing_runs_inside_a_submodule() {
+        let root = tempfile::tempdir().unwrap();
+        let (sub, top) = (root.path().join("sub"), root.path().join("top"));
+        for dir in [&sub, &top] {
+            fs::create_dir(dir).unwrap();
+            git(dir, &["init", "-q"]);
+        }
+        fs::write(sub.join("a.txt"), "1\n").unwrap();
+        fs::write(sub.join(".gitattributes"), "* diff=marker\n").unwrap();
+        git(&sub, &["add", "-A"]);
+        git(&sub, &["commit", "-qm", "one"]);
+        let source = sub.to_str().unwrap();
+        let add = [
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            source,
+            "sub",
+        ];
+        git(&top, &add);
+        git(&top, &["commit", "-qm", "add"]);
+        let first = git(&top, &["rev-parse", "HEAD"]);
+        fs::write(top.join("sub/a.txt"), "2\n").unwrap();
+        git(&top.join("sub"), &["commit", "-qam", "two"]);
+        git(&top, &["add", "sub"]);
+        git(&top, &["commit", "-qm", "bump"]);
+        let second = git(&top, &["rev-parse", "HEAD"]);
+        // The checkout asks for submodule diffs, and the submodule names a
+        // driver that would leave a mark.
+        let marker = root.path().join("marker");
+        git(&top, &["config", "diff.submodule", "diff"]);
+        let driver = format!("touch {}; cat", marker.display());
+        git(
+            &top.join("sub"),
+            &["config", "diff.marker.textconv", &driver],
+        );
+        git(
+            &top.join("sub"),
+            &["config", "diff.marker.command", &driver],
+        );
+        let list = [
+            &DIFF[..],
+            &LIST[..],
+            &[first.as_str(), second.as_str(), "--"][..],
+        ]
+        .concat();
+        let raw = run(&top, &list, OUTPUT_LIMIT, &later()).unwrap();
+        // Raw records only: a patch, the submodule's own included, has lines.
+        assert!(!raw.is_empty() && !raw.contains(&b'\n'));
+        assert_eq!(diff(&top, &first, &second, None, &later()), None);
+        assert!(!marker.exists());
     }
 
     #[test]

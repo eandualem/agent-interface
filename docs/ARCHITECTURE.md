@@ -795,9 +795,11 @@ not be read is never remembered.
   unbounded by that setting: Git's rename detection still reads both
   versions of a large file renamed with changes.
   A diff is read with `--no-ext-diff --no-textconv`, so no configured program
-  runs: its file list from `--raw -z --ignore-submodules=none`, then its lines
-  from the patch, which is not read when the list holds a submodule, since a
-  submodule's patch can run Git inside it. Attributes, such as which files
+  runs, and `--submodule=short`, which overrides `diff.submodule`, so Git
+  never reads inside a submodule. Its file list comes from
+  `--raw -z --ignore-submodules=none` with no patch option, so that pass
+  writes no patch; its lines come from the patch, which is not read when the
+  list holds a submodule. Attributes, such as which files
   are binary, come from the new commit (`--attr-source`), not from the
   checkout's files or system or user attribute files (`GIT_ATTR_NOSYSTEM=1`,
   `core.attributesFile=/dev/null`); the clone's own configuration still

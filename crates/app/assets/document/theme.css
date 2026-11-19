@@ -64,10 +64,16 @@ table.ai-git-lines {
   tab-size: 4; vertical-align: top;
 }
 .ai-git-lines td.ai-git-t { width: 100%; }
-.ai-git-lines td:is(.ai-git-n, .ai-git-s) { color: var(--ai-muted); text-align: right; }
+.ai-git-lines td:is(.ai-git-n, .ai-git-s) { text-align: right; }
 .ai-git-lines td.ai-git-s { padding: 0 2px; }
 .ai-git-lines tr.ai-git-add { background: var(--ai-diff-add); }
-.ai-git-lines tr.ai-git-add td.ai-git-s { color: var(--ai-diff-add-sign); }
 .ai-git-lines tr.ai-git-remove { background: var(--ai-diff-remove); }
-.ai-git-lines tr.ai-git-remove td.ai-git-s { color: var(--ai-diff-remove-sign); }
-.ai-git-lines tr:is(.ai-git-hunk, .ai-git-remark) td { color: var(--ai-muted); background: var(--ai-surface); }
+.ai-git-lines tr:is(.ai-git-hunk, .ai-git-remark) td { background: var(--ai-surface); }
+/* The view's colours, which win over the link colour the rule for links
+   above forces on everything inside a link. */
+.ai-git.ai-git, .ai-git.ai-git :is(summary, div, td) { color: var(--ai-text) !important; }
+.ai-git.ai-git .ai-git-lines :is(td.ai-git-n, td.ai-git-s, tr.ai-git-hunk td, tr.ai-git-remark td) {
+  color: var(--ai-muted) !important;
+}
+.ai-git.ai-git .ai-git-lines tr.ai-git-add td.ai-git-s { color: var(--ai-diff-add-sign) !important; }
+.ai-git.ai-git .ai-git-lines tr.ai-git-remove td.ai-git-s { color: var(--ai-diff-remove-sign) !important; }
