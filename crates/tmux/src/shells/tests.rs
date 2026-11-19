@@ -366,3 +366,59 @@ fn fifo_lock_is_rejected_without_waiting_for_a_reader() {
     );
     assert!(start.elapsed() < Duration::from_secs(1));
 }
+
+#[test]
+fn a_second_creator_waits_for_the_first_creators_lock() {
+    let server = TmuxServer::start().unwrap();
+    let socket = server
+        .run(&["display-message", "-p", "#{socket_path}"])
+        .unwrap();
+    let socket = PathBuf::from(socket.trim());
+    let root = server.address().0;
+    let shell = root.join("idle-shell");
+    std::fs::write(&shell, "#!/bin/sh\nwhile :; do sleep 60; done\n").unwrap();
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut environment = Environment::capture().unwrap();
+    environment.shell = shell;
+    environment.home = root.to_owned();
+    environment.cwd = root.to_owned();
+    for name in CONTEXT {
+        environment.variables.remove(OsStr::new(name));
+    }
+    // flock conflicts between open file descriptions, so this one stands in
+    // for another window that is creating shells.
+    let held = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .mode(0o600)
+        .open(format!("{}.viewer-lock", socket.display()))
+        .unwrap();
+    held.lock().unwrap();
+    let creator = thread::spawn({
+        let socket = socket.clone();
+        let request = Request {
+            id: "000000000001".into(),
+            cwd: None,
+        };
+        move || ensure(&socket, &[request], &environment)
+    });
+    thread::sleep(Duration::from_millis(300));
+    assert!(!creator.is_finished());
+    assert!(
+        server
+            .run(&["has-session", "-t", "=terminal-000000000001"])
+            .is_err()
+    );
+    held.unlock().unwrap();
+    creator.join().unwrap().unwrap();
+    let sessions = server
+        .run(&["list-sessions", "-F", "#{session_name}"])
+        .unwrap();
+    assert_eq!(
+        sessions
+            .lines()
+            .filter(|name| *name == "terminal-000000000001")
+            .count(),
+        1
+    );
+}
