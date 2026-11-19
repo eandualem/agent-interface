@@ -114,14 +114,12 @@ fn resolve(
                 .map(PathBuf::from)
         })
         .unwrap_or_else(|| {
-            let root = PathBuf::from(
+            PathBuf::from(
                 env("XDG_DATA_HOME")
                     .filter(|p| !p.is_empty())
                     .unwrap_or_else(|| "~/.local/share".into()),
-            );
-            expand_home(&root, env, user_home)
-                .unwrap_or(root)
-                .join("agent-interface")
+            )
+            .join("agent-interface")
         });
     let expanded = expand_home(&selected, env, user_home).ok_or_else(|| Error {
         path: selected.join("layouts.db"),
@@ -230,12 +228,12 @@ pub(crate) fn resolve_path(path: &Path) -> io::Result<PathBuf> {
     Ok(result)
 }
 
-pub(crate) fn expand_home(
+fn expand_home(
     path: &Path,
     env: &impl Fn(&str) -> Option<OsString>,
     user_home: &impl Fn(Option<&OsStr>) -> Option<PathBuf>,
 ) -> Option<PathBuf> {
-    // pathlib removes "." components before expanding the first component.
+    // "." components are dropped before the first component is expanded.
     let mut components = path.components().filter(|part| *part != Component::CurDir);
     let Some(Component::Normal(first)) = components.next() else {
         return Some(path.to_owned());
