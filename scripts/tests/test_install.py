@@ -98,7 +98,17 @@ class InstallTests(unittest.TestCase):
 printf '%s\\n' "$*" >> "$TEST_SYSTEM_ACTIONS"
 case "$1" in
     -v) exit 0;;
-    apt-get) [ "$2" != update ] || { sleep "${TEST_APT_SECONDS:-0}"; exit "${TEST_APT_STATUS:-0}"; }; exit 0;;
+    apt-get)
+        # With TEST_TICKS, the refresh ends once run_step has printed an update.
+        if [ "$2" = update ] && [ -n "${TEST_TICKS:-}" ]; then
+            i=0
+            until [ -e "$TEST_TICKS.second" ]; do
+                i=$((i + 1)); [ "$i" -le 400 ] || exit 98
+                /bin/sleep 0.05
+            done
+        fi
+        [ "$2" != update ] || exit "${TEST_APT_STATUS:-0}"
+        exit 0;;
     install)
         if [ "${TEST_FAIL_SHORTCUT:-}" = yes ]; then exit 1; fi
         shift; exec /usr/bin/install "$@";;
@@ -188,9 +198,21 @@ exec "$@"
         self.install(self.package("0.0.1"))
         self.assertNotIn("apt-get", (self.root / "system-actions").read_text())
 
+    def heartbeat_ticks(self):
+        # run_step's first five-second tick passes at once. Its second tick
+        # marks that the first update was printed; the package refresh ends
+        # only then, so no wall-clock wait decides the outcome.
+        self.env["TEST_TICKS"] = str(self.root / "tick")
+        self.command("sleep", '''
+if [ "$1" = 5 ] && [ -n "${TEST_TICKS:-}" ]; then
+    if [ ! -e "$TEST_TICKS.first" ]; then : > "$TEST_TICKS.first"; exit 0; fi
+    : > "$TEST_TICKS.second"
+fi
+exec /bin/sleep "$@"''')
+
     def test_slow_package_step_reports_elapsed_time_and_cleans_up_progress(self):
         self.wsl()
-        self.env["TEST_APT_SECONDS"] = "6"
+        self.heartbeat_ticks()
         result = self.install(self.package())
         step = "Refreshing Ubuntu package information"
         self.assertIn(f"{step}: still running (5s elapsed)", result.stderr)
@@ -201,7 +223,8 @@ exec "$@"
 
     def test_failed_package_step_reports_failure_and_cleans_up_progress(self):
         self.wsl()
-        self.env.update(TEST_APT_SECONDS="6", TEST_APT_STATUS="1")
+        self.heartbeat_ticks()
+        self.env["TEST_APT_STATUS"] = "1"
         result = self.install(self.package(), success=False)
         step = "Refreshing Ubuntu package information"
         self.assertIn(f"{step}: still running (5s elapsed)", result.stderr)
