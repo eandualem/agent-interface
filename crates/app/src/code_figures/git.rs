@@ -312,64 +312,61 @@ fn rows(section: &[u8], room: usize) -> Option<Vec<Row>> {
     let mut in_hunk = false;
     let section = section.strip_suffix(b"\n").unwrap_or(section);
     for line in section.split(|&byte| byte == b'\n').skip(1) {
+        // Text that is not UTF-8 is not shown at all.
+        let text = || String::from_utf8(line[1.min(line.len())..].to_vec()).ok();
+        let line_row = |sign, old, new| {
+            Some(Row::Line {
+                sign,
+                old,
+                new,
+                text: text()?,
+            })
+        };
+        let row = if line.starts_with(b"@@ ") {
+            let header = String::from_utf8(line.to_vec()).ok()?;
+            (old, new) = starts(&header);
+            in_hunk = true;
+            Row::Hunk(header)
+        } else if !in_hunk {
+            if !line.starts_with(b"Binary files ") {
+                continue;
+            }
+            Row::Binary
+        } else {
+            match line.first() {
+                Some(b'+') => {
+                    new += 1;
+                    line_row('+', None, Some(new - 1))?
+                }
+                Some(b'-') => {
+                    old += 1;
+                    line_row('-', Some(old - 1), None)?
+                }
+                Some(b'\\') => Row::Remark(String::from_utf8(line.to_vec()).ok()?),
+                // A context line; an empty one is how `diff.suppressBlankEmpty`
+                // writes it.
+                first => {
+                    old += 1;
+                    new += 1;
+                    let text = if first.is_some() {
+                        text()?
+                    } else {
+                        String::new()
+                    };
+                    Row::Line {
+                        sign: ' ',
+                        old: Some(old - 1),
+                        new: Some(new - 1),
+                        text,
+                    }
+                }
+            }
+        };
+        // Only a line that makes a row counts towards the budget.
         if rows.len() >= room {
             return None;
         }
-        // Text that is not UTF-8 is not shown at all.
-        let text = || String::from_utf8(line[1.min(line.len())..].to_vec()).ok();
-        if line.starts_with(b"@@ ") {
-            let header = String::from_utf8(line.to_vec()).ok()?;
-            let (from, to) = starts(&header);
-            (old, new) = (from, to);
-            rows.push(Row::Hunk(header));
-            in_hunk = true;
-        } else if !in_hunk {
-            if line.starts_with(b"Binary files ") {
-                rows.push(Row::Binary);
-            }
-        } else if let Some(&sign) = line.first() {
-            match sign {
-                b'+' => {
-                    rows.push(Row::Line {
-                        sign: '+',
-                        old: None,
-                        new: Some(new),
-                        text: text()?,
-                    });
-                    new += 1;
-                }
-                b'-' => {
-                    rows.push(Row::Line {
-                        sign: '-',
-                        old: Some(old),
-                        new: None,
-                        text: text()?,
-                    });
-                    old += 1;
-                }
-                b'\\' => rows.push(Row::Remark(String::from_utf8(line.to_vec()).ok()?)),
-                _ => {
-                    rows.push(Row::Line {
-                        sign: ' ',
-                        old: Some(old),
-                        new: Some(new),
-                        text: text()?,
-                    });
-                    old += 1;
-                    new += 1;
-                }
-            }
-        } else {
-            // An empty context line, as `diff.suppressBlankEmpty` writes it.
-            rows.push(Row::Line {
-                sign: ' ',
-                old: Some(old),
-                new: Some(new),
-                text: String::new(),
-            });
-            old += 1;
-            new += 1;
-        }
+        rows.push(row);
     }
     Some(rows)
 }
@@ -605,6 +602,13 @@ pub(super) mod tests {
         let read = |count| files(entries(raw).unwrap(), patch(count).as_bytes());
         assert!(read(ROW_LIMIT - 1).is_some());
         assert_eq!(read(ROW_LIMIT), None);
+        // A file with no rows after a full budget still fits.
+        let raw = b":100644 100644 0000000 1111111 M\0x\0:100644 100755 2222222 2222222 M\0y\0";
+        let patch = format!(
+            "{}diff --git a/y b/y\nold mode 100644\nnew mode 100755\n",
+            patch(ROW_LIMIT - 1)
+        );
+        assert!(files(entries(raw).unwrap(), patch.as_bytes()).is_some());
     }
 
     #[test]

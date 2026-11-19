@@ -18,13 +18,24 @@ use crate::desktop::{
     design::{colors, tokens},
 };
 
+/// A revision as served: its ID and the digest of its stored HTML.
+type Revision = (u64, String);
+
+fn revision(document: &DocumentRevision) -> Revision {
+    (
+        document.metadata.id,
+        document.metadata.content_sha256.clone(),
+    )
+}
+
 #[derive(Default)]
 pub(super) struct State {
     pub loaded: Option<DocumentRevision>,
-    /// The loaded revision as the page is served: with views of Git diffs
-    /// and code in place of its pointers, once Git has been read.
-    served: Option<Arc<str>>,
-    serving: Option<Task<()>>,
+    /// The page served for a revision: with views of Git diffs and code in
+    /// place of its pointers, once Git has been read.
+    served: Option<(Revision, Arc<str>)>,
+    /// The revision whose page is being made, and the work making it.
+    serving: Option<(Revision, Task<()>)>,
     pub surface: Rc<RefCell<Surface>>,
     pub error: Option<String>,
 }
@@ -37,14 +48,55 @@ impl State {
         self.serving = None;
         self.error = None;
     }
+
+    /// Load `document`, and say whether its page has yet to be made. A
+    /// changed revision drops the last one's page and its work at once; the
+    /// same revision read again keeps them.
+    fn load(&mut self, document: &DocumentRevision) -> bool {
+        let key = revision(document);
+        self.loaded = Some(document.clone());
+        let known = |entry: Option<&Revision>| entry == Some(&key);
+        if known(self.served.as_ref().map(|(served, _)| served))
+            || known(self.serving.as_ref().map(|(serving, _)| serving))
+        {
+            return false;
+        }
+        if self.served.take().is_some() {
+            self.surface.borrow_mut().clear();
+        }
+        self.serving = None;
+        true
+    }
+
+    /// Serve `page` for `key`, if that revision is still the one loaded.
+    fn finish(&mut self, key: Revision, page: Arc<str>) -> bool {
+        if self.loaded.as_ref().map(revision) != Some(key.clone()) {
+            return false;
+        }
+        self.surface.borrow_mut().clear();
+        self.served = Some((key, page));
+        true
+    }
+
+    /// The page to show: the one served for the revision loaded.
+    fn page(&self) -> Option<&Arc<str>> {
+        let (key, page) = self.served.as_ref()?;
+        (self.loaded.as_ref().map(revision).as_ref() == Some(key)).then_some(page)
+    }
 }
 
 /// How long a Document waits for Git before it is served as stored.
 const GIT_WAIT: Duration = Duration::from_secs(8);
 
-/// Serve the loaded revision's `html` once Git has been read for its
-/// pointers on a thread of its own, or as stored after [`GIT_WAIT`].
-pub(super) fn serve(pane: &mut ViewPane, html: Arc<str>, cx: &mut Context<ViewPane>) {
+/// Load `document` and, when it is a revision not yet served, make its page
+/// on a thread of its own once Git has been read for its pointers, or serve
+/// it as stored after [`GIT_WAIT`].
+pub(super) fn serve(pane: &mut ViewPane, document: &DocumentRevision, cx: &mut Context<ViewPane>) {
+    if !pane.documents.load(document) {
+        return;
+    }
+    let key = revision(document);
+    let html = document.html.clone();
     // Workspace folders first, so many agents cannot use up the folders read.
     let mut folders = (pane.folders)(cx);
     folders.extend(pane.agents.folders());
@@ -57,7 +109,8 @@ pub(super) fn serve(pane: &mut ViewPane, html: Arc<str>, cx: &mut Context<ViewPa
         .spawn(move || {
             let _ = done.send(crate::code_figures::transform(&stored, &folders, deadline));
         });
-    pane.documents.serving = Some(cx.spawn(async move |pane, cx| {
+    let made = key.clone();
+    let task = cx.spawn(async move |pane, cx| {
         let wait = std::pin::pin!(cx.background_executor().timer(GIT_WAIT));
         // A late answer is dropped; what it read stays cached for next time.
         let served: Arc<str> = match futures::future::select(served, wait).await {
@@ -65,14 +118,12 @@ pub(super) fn serve(pane: &mut ViewPane, html: Arc<str>, cx: &mut Context<ViewPa
             _ => html,
         };
         let _ = pane.update(cx, |pane, cx| {
-            if pane.documents.served.as_ref() != Some(&served) {
-                // A refreshed page whose views changed is built again.
-                pane.documents.surface.borrow_mut().clear();
-                pane.documents.served = Some(served);
+            if pane.documents.finish(made, served) {
                 cx.notify();
             }
         });
-    }));
+    });
+    pane.documents.serving = Some((key, task));
 }
 
 pub(super) fn selected(pane: &ViewPane) -> Option<&DocumentMetadata> {
@@ -241,7 +292,7 @@ pub(super) fn reader(pane: &ViewPane, cx: &mut Context<ViewPane>) -> AnyElement 
             .text_color(c.attention_text)
             .child(error.clone())
             .into_any_element()
-    } else if let (Some(_), Some(html)) = (&pane.documents.loaded, &pane.documents.served) {
+    } else if let Some(html) = pane.documents.page() {
         let surface = pane.documents.surface.clone();
         let html = html.clone();
         let theme = super::reading::document_script();
@@ -279,7 +330,12 @@ pub(super) fn reader(pane: &ViewPane, cx: &mut Context<ViewPane>) -> AnyElement 
     } else {
         div()
             .p(px(t.space.s16))
-            .child(pane.error.unwrap_or("Reading document…"))
+            // A loaded revision is being read from Git: a failed poll's stale
+            // error is not about it.
+            .child(match pane.documents.loaded {
+                Some(_) => "Reading document…",
+                None => pane.error.unwrap_or("Reading document…"),
+            })
             .into_any_element()
     };
     let content = div()
@@ -313,4 +369,66 @@ pub(super) fn reader(pane: &ViewPane, cx: &mut Context<ViewPane>) -> AnyElement 
         .children(newer)
         .child(div().flex_1().min_h_0().child(body));
     super::reports::reader_frame(pane, toolbar, content, cx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn document(id: u64, html: &str) -> DocumentRevision {
+        DocumentRevision {
+            metadata: DocumentMetadata {
+                id,
+                document_id: "a".repeat(32),
+                author_id: "b".repeat(32),
+                author_name: "worker".into(),
+                agent_name: None,
+                title: "Title".into(),
+                created_at: "2026-11-19T00:00:00Z".into(),
+                content_bytes: html.len(),
+                content_sha256: format!("{id:0>64}"),
+                supersedes_id: None,
+                superseded_by: None,
+            },
+            html: html.into(),
+        }
+    }
+
+    #[test]
+    fn a_changed_document_never_shows_the_last_page() {
+        let mut state = State::default();
+        let (one, two) = (document(1, "<p>one</p>"), document(2, "<p>two</p>"));
+        assert!(state.load(&one));
+        assert!(state.finish(revision(&one), "first".into()));
+        assert_eq!(state.page().map(|page| &**page), Some("first"));
+        assert!(state.load(&two));
+        assert_eq!(state.page(), None);
+        // A late page for the first revision is not served for the second.
+        assert!(!state.finish(revision(&one), "first".into()));
+        assert_eq!(state.page(), None);
+    }
+
+    #[test]
+    fn the_same_revision_read_again_keeps_its_work() {
+        let mut state = State::default();
+        let one = document(1, "<p>one</p>");
+        assert!(state.load(&one));
+        state.serving = Some((revision(&one), Task::ready(())));
+        assert!(!state.load(&one));
+        assert!(state.finish(revision(&one), "first".into()));
+        assert!(!state.load(&one));
+        assert_eq!(state.page().map(|page| &**page), Some("first"));
+    }
+
+    #[test]
+    fn leaving_the_reader_drops_the_work_and_its_page() {
+        let mut state = State::default();
+        let one = document(1, "<p>one</p>");
+        assert!(state.load(&one));
+        state.serving = Some((revision(&one), Task::ready(())));
+        state.clear();
+        assert!(state.serving.is_none());
+        assert!(!state.finish(revision(&one), "late".into()));
+        assert_eq!(state.page(), None);
+    }
 }

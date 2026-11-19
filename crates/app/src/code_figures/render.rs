@@ -38,6 +38,10 @@ pub fn diff(files: &[File], caption: Option<&str>, limit: usize) -> Option<Strin
     } else {
         let count = format!("{} files changed", files.len());
         details(&mut out, "ai-git", caption.unwrap_or(&count));
+        // A captioned diff with no files says so under its caption.
+        if caption.is_some() && files.is_empty() {
+            let _ = write!(out, r#"<div class="ai-git-head">{count}</div>"#);
+        }
         for file in files {
             details(&mut out, "ai-git-file", &header(file));
             table(&mut out, &file.rows, limit)?;
@@ -250,6 +254,17 @@ mod tests {
         ));
         assert_eq!(html.matches("<details").count(), 1);
         assert!(html.ends_with("</details>"));
+        let none = diff(&[], Some("cap"), ANY).unwrap();
+        assert!(
+            none.contains(
+                r#"<summary>cap</summary><div class="ai-git-head">0 files changed</div>"#
+            )
+        );
+        assert!(
+            diff(&[], None, ANY)
+                .unwrap()
+                .contains("<summary>0 files changed</summary>")
+        );
     }
 
     #[test]

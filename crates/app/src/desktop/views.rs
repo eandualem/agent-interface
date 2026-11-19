@@ -431,9 +431,8 @@ impl ViewPane {
                         match update {
                             Ok(mut data) => {
                                 if let Data::Document(document) = &data {
-                                    pane.documents.loaded = Some(document.clone());
                                     pane.documents.error = None;
-                                    documents::serve(pane, document.html.clone(), cx);
+                                    documents::serve(pane, document, cx);
                                 }
                                 if let Data::Reports(page) = &data {
                                     pane.reports.observe(page);
@@ -514,6 +513,7 @@ impl ViewPane {
         self.plans_shown(false, cx);
         self.interactions_shown(false, cx);
         self.shown = Shown::Records;
+        self.documents.clear();
         self.reports.open = None;
         self.reports.query = query;
         self.reports.previous.clear();
@@ -537,7 +537,7 @@ impl ViewPane {
         if !source.belongs_to(&self.agents) {
             return;
         }
-        self.documents.surface.borrow_mut().clear();
+        self.documents.clear();
         match &self.plans {
             Some(_) => self.plans_shown(true, cx),
             None => {
@@ -563,7 +563,7 @@ impl ViewPane {
             return;
         }
         self.interactions_shown(false, cx);
-        self.documents.surface.borrow_mut().clear();
+        self.documents.clear();
         self.plans_shown(false, cx);
         if self.sheets.is_none() {
             let sheets = cx.new(|cx| sheets::Sheets::new(source, window, cx));
@@ -591,7 +591,7 @@ impl ViewPane {
         if !source.belongs_to(&self.agents) {
             return;
         }
-        self.documents.surface.borrow_mut().clear();
+        self.documents.clear();
         self.plans_shown(false, cx);
         if self.interactions.is_none() {
             let visible = self.visible.clone();

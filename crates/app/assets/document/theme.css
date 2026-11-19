@@ -60,7 +60,8 @@ table.ai-git-lines {
   margin: 0; width: 100%; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 .ai-git-lines td {
-  border: 0 !important; padding: 0 8px; white-space: pre; tab-size: 4; vertical-align: top;
+  border: 0 !important; border-radius: 0 !important; padding: 0 8px; white-space: pre;
+  tab-size: 4; vertical-align: top;
 }
 .ai-git-lines td.ai-git-t { width: 100%; }
 .ai-git-lines td:is(.ai-git-n, .ai-git-s) { color: var(--ai-muted); text-align: right; }
