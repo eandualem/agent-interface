@@ -264,7 +264,15 @@ mod tests {
             }
             list.push(&selectors[from..]);
             for selector in list {
-                assert!(selector.trim().starts_with(".ai-git.ai-git"), "{selector}");
+                // The prefix is the view's classes, and only those.
+                let rest = selector.trim().strip_prefix(".ai-git.ai-git");
+                let after = rest.map(|rest| rest.chars().next());
+                assert!(
+                    after.is_some_and(
+                        |c| c.is_none_or(|c| c.is_whitespace() || ":[>+~.".contains(c))
+                    ),
+                    "{selector}"
+                );
             }
             for declaration in body.split(';').map(str::trim).filter(|d| !d.is_empty()) {
                 assert!(declaration.ends_with("!important"), "{declaration}");

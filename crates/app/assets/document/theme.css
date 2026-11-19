@@ -50,9 +50,13 @@ hr { border: 0 !important; height: 1px; background-color: var(--ai-line) !import
    browser's own, then the rules below apply, all of them important and
    above any rule of a document's that is not, so a document reaches in only
    with a rule that ranks higher (important, or with an ID). The author's
-   markup inside a caption stays the author's. */
+   markup inside a caption stays the author's. 'all' leaves out direction,
+   unicode-bidi and custom properties, so the first two are set here too. */
 .ai-git.ai-git {
   all: initial !important;
+  /* What its dir="ltr" gives it. */
+  direction: ltr !important;
+  unicode-bidi: isolate !important;
   /* What the view took from the page before: the theme's own html, :root
      and body rules. */
   font-family: system-ui !important;
@@ -68,11 +72,26 @@ hr { border: 0 !important; height: 1px; background-color: var(--ai-line) !import
   background: var(--ai-background) !important;
   color: var(--ai-text) !important;
 }
-.ai-git.ai-git :where(:not(.ai-git-caption *)) {
+.ai-git.ai-git :where(:not(.ai-git > summary.ai-git-caption *)) {
   all: revert !important;
+  direction: ltr !important;
+  unicode-bidi: revert !important;
   -webkit-user-select: text !important;
   user-select: text !important;
 }
+/* A caption reads in the direction of its own text, as dir="auto" sets it. */
+.ai-git.ai-git > summary.ai-git-caption { unicode-bidi: isolate !important; }
+.ai-git.ai-git > summary.ai-git-caption:dir(rtl) { direction: rtl !important; }
+/* A document adds no text to the view, and its disclosure markers are the
+   browser's. */
+.ai-git.ai-git::before,
+.ai-git.ai-git::after,
+.ai-git.ai-git :where(:not(.ai-git > summary.ai-git-caption *))::before,
+.ai-git.ai-git :where(:not(.ai-git > summary.ai-git-caption *))::after {
+  content: none !important;
+}
+.ai-git.ai-git summary::marker { all: revert !important; }
+.ai-git.ai-git summary::-webkit-details-marker { all: revert !important; }
 .ai-git.ai-git summary {
   padding: 6px 10px !important;
   cursor: pointer !important;
