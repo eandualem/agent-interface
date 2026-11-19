@@ -416,9 +416,7 @@ impl LiveAgents {
 
 /// Keys describe origin, never the selected view or an agent's name.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum Origin {
-    Bound(Identity),
-}
+struct Origin(Identity);
 
 /// Windows and their child views own sources. The registry only deduplicates
 /// live owners, so closing the last view releases its poller and cached state.
@@ -445,9 +443,7 @@ impl Sources {
     }
 }
 
-enum Worker {
-    Bound(crate::roster::BoundRosterSource),
-}
+struct Worker(crate::roster::BoundRosterSource);
 
 /// Joining a bounded in-flight request must never block the UI thread.
 #[derive(Default)]
@@ -471,11 +467,11 @@ struct Source {
 
 impl LiveAgents {
     pub fn belongs_to(&self, identity: &Identity) -> bool {
-        self.0.origin.as_ref() == Some(&Origin::Bound(identity.clone()))
+        self.0.origin.as_ref() == Some(&Origin(identity.clone()))
     }
 
     fn update_bound(&self, mut update: crate::roster::BoundRosterUpdate) -> bool {
-        if self.0.origin.as_ref() != Some(&Origin::Bound(update.identity)) {
+        if self.0.origin.as_ref() != Some(&Origin(update.identity)) {
             return false;
         }
         let runs = {
@@ -504,7 +500,7 @@ impl LiveAgents {
     }
 
     fn take_update(&self) -> Option<bool> {
-        let Worker::Bound(source) = self.0.roster.0.as_ref()?;
+        let Worker(source) = self.0.roster.0.as_ref()?;
         source.take_update().map(|update| self.update_bound(update))
     }
 }
@@ -512,9 +508,9 @@ impl LiveAgents {
 /// Only an already-verified connection can start a bound source. Selection and
 /// workspace persistence are not enabled by this ownership primitive.
 pub(super) fn start_bound(connection: Connection, cx: &mut App) -> Option<LiveAgents> {
-    let origin = Origin::Bound(connection.identity().clone());
+    let origin = Origin(connection.identity().clone());
     start(origin, Some(connection.connection_key()), cx, move |wake| {
-        crate::roster::BoundRosterSource::start(connection, wake).map(Worker::Bound)
+        crate::roster::BoundRosterSource::start(connection, wake).map(Worker)
     })
 }
 
@@ -644,7 +640,7 @@ mod tests {
     }
 
     fn origin(profile: &str, lifecycle: &str) -> Origin {
-        Origin::Bound(Identity {
+        Origin(Identity {
             profile_id: profile.into(),
             installation_id: "installation".into(),
             lifecycle_id: lifecycle.into(),
@@ -673,7 +669,7 @@ mod tests {
     }
 
     fn observation(origin: &Origin, state: &str) -> crate::roster::BoundRosterUpdate {
-        let Origin::Bound(identity) = origin;
+        let Origin(identity) = origin;
         let mut snapshot = Snapshot::default();
         snapshot.update(
             &serde_json::to_vec(&serde_json::json!({
@@ -914,7 +910,7 @@ mod tests {
         old_server.join().unwrap();
         new_server.join().unwrap();
         assert_eq!(old_connection.identity(), new_connection.identity());
-        let origin = Origin::Bound(old_connection.identity().clone());
+        let origin = Origin(old_connection.identity().clone());
         let mut sources = Sources::default();
         let old = acquire_key(
             &mut sources,

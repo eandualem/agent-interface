@@ -262,12 +262,9 @@ fn plural(count: usize, one: &'static str, many: &'static str) -> &'static str {
 }
 
 fn open_record(pane: &mut ViewPane, item: ReportItem, cx: &mut Context<ViewPane>) {
-    seen::mark(
-        &item,
-        pane.connection
-            .as_ref()
-            .map(|connection| connection.identity()),
-    );
+    if let Some(connection) = &pane.connection {
+        seen::mark(&item, connection.identity());
+    }
     pane.documents.clear();
     pane.reports.open = Some(item);
     pane.refetch(false, cx);
@@ -614,12 +611,10 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                     ui::record_row(
                         id,
                         index == 0,
-                        !seen::is_seen(
-                            item,
-                            pane.connection
-                                .as_ref()
-                                .map(|connection| connection.identity()),
-                        ),
+                        !pane
+                            .connection
+                            .as_ref()
+                            .is_some_and(|connection| seen::is_seen(item, connection.identity())),
                         mark(item, &pane.agents).unwrap_or_else(|| div()),
                         item.author.clone(),
                         line(summary),
@@ -635,12 +630,10 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                 } => ui::question_row(
                     id,
                     index == 0,
-                    !seen::is_seen(
-                        item,
-                        pane.connection
-                            .as_ref()
-                            .map(|connection| connection.identity()),
-                    ),
+                    !pane
+                        .connection
+                        .as_ref()
+                        .is_some_and(|connection| seen::is_seen(item, connection.identity())),
                     item.author.clone(),
                     line(question),
                     line(answer),
@@ -704,22 +697,19 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                     };
                     let open = (*item).clone();
                     let mut tags = Vec::new();
-                    if !seen::is_seen(
-                        item,
-                        pane.connection
-                            .as_ref()
-                            .map(|connection| connection.identity()),
-                    ) {
-                        let label = if seen::is_update(
-                            item,
-                            pane.connection
-                                .as_ref()
-                                .map(|connection| connection.identity()),
-                        ) {
-                            "updated"
-                        } else {
-                            "new"
-                        };
+                    if !pane
+                        .connection
+                        .as_ref()
+                        .is_some_and(|connection| seen::is_seen(item, connection.identity()))
+                    {
+                        let label =
+                            if pane.connection.as_ref().is_some_and(|connection| {
+                                seen::is_update(item, connection.identity())
+                            }) {
+                                "updated"
+                            } else {
+                                "new"
+                            };
                         tags.push(ui::tag(label, ui::Tone::Tag));
                     }
                     shelf = shelf.child(

@@ -749,7 +749,7 @@ impl Interactions {
             let target = super::conversation::ReferenceTarget {
                 kind,
                 id,
-                connection: Some(self.source.connection().clone()),
+                connection: self.source.connection().clone(),
             };
             let c = cx
                 .new(|cx| Conversation::about_reference(target, self.visible.clone(), window, cx));
@@ -778,7 +778,7 @@ impl Interactions {
         let target = super::conversation::ReferenceTarget {
             kind: agent_interface_roster::conversations::Kind::Interaction,
             id: item.id.clone(),
-            connection: Some(self.source.connection().clone()),
+            connection: self.source.connection().clone(),
         };
         let visible = self.visible.clone();
         let focus = self.agent.clone().unwrap_or_default();

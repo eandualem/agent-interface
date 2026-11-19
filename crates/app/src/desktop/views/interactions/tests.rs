@@ -115,11 +115,11 @@ fn bound_interaction_navigation_and_discussions_keep_the_snapshot_origin() {
     );
     for (kind, id) in [(Kind::Interaction, id), (Kind::Document, "7")] {
         let target = super::super::conversation::ReferenceTarget {
-            connection: Some(source_a.connection().clone()),
+            connection: source_a.connection().clone(),
             kind,
             id: id.into(),
         };
-        let client = target.bound_client().unwrap().unwrap();
+        let client = target.bound_client().unwrap();
         assert_eq!(client.identity(), a.identity());
         assert!(client.show(&Page::Newest).unwrap().entries.is_empty());
     }

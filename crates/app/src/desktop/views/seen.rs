@@ -76,13 +76,13 @@ fn lock() -> std::sync::MutexGuard<'static, Seen> {
 }
 
 /// Keys for one revision of a record, then for the record across revisions.
-fn keys(item: &ReportItem, origin: Option<&Identity>) -> (String, Option<String>) {
+fn keys(item: &ReportItem, origin: &Identity) -> (String, Option<String>) {
     let (kind, thing) = match &item.content {
         ReportContent::Progress { .. } => ("report", None),
         ReportContent::Response { .. } => ("response", None),
         ReportContent::Document(metadata) => ("document", Some(metadata.document_id.clone())),
     };
-    let base = format!("{}|{kind}", origin.map(origin_key).unwrap_or_default());
+    let base = format!("{}|{kind}", origin_key(origin));
     (
         format!("{base}|{}", item.id),
         thing.map(|thing| format!("{base}-thing|{thing}")),
@@ -120,17 +120,17 @@ pub(super) fn mark_keys(keys: &[String]) {
 }
 
 /// Whether the person has opened `item`.
-pub(super) fn is_seen(item: &ReportItem, origin: Option<&Identity>) -> bool {
+pub(super) fn is_seen(item: &ReportItem, origin: &Identity) -> bool {
     lock().contains(&keys(item, origin).0)
 }
 
 /// Whether `item` is a newer revision of a record the person has opened.
-pub(super) fn is_update(item: &ReportItem, origin: Option<&Identity>) -> bool {
+pub(super) fn is_update(item: &ReportItem, origin: &Identity) -> bool {
     keys(item, origin).1.is_some_and(|thing| known(&thing))
 }
 
 /// Remember that the person opened `item`.
-pub(super) fn mark(item: &ReportItem, origin: Option<&Identity>) {
+pub(super) fn mark(item: &ReportItem, origin: &Identity) {
     let (revision, thing) = keys(item, origin);
     mark_keys(
         &[Some(revision), thing]
@@ -199,10 +199,10 @@ mod tests {
             ..a.clone()
         };
         let mut seen = Seen::default();
-        let bound = keys(&item, Some(&a)).0;
+        let bound = keys(&item, &a).0;
         assert!(!seen.contains(&bound));
         seen.keys.push_back(bound.clone());
         assert!(seen.contains(&bound));
-        assert!(!seen.contains(&keys(&item, Some(&restored)).0));
+        assert!(!seen.contains(&keys(&item, &restored).0));
     }
 }

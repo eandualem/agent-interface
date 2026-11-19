@@ -81,8 +81,8 @@ impl Source {
         agents.belongs_to(self.identity())
     }
 
-    fn connect(&self) -> Result<Client, api::Error> {
-        Ok(Client::bound(self.0.clone()))
+    fn connect(&self) -> Client {
+        Client::bound(self.0.clone())
     }
 
     fn identity(&self) -> &Identity {
@@ -223,7 +223,7 @@ impl Sheets {
         self.begin(cx);
         let source = self.source.clone();
         let work = cx.background_executor().spawn(async move {
-            let client = source.connect()?;
+            let client = source.connect();
             let records = client.list_all()?;
             Ok::<_, api::Error>((client, records))
         });
@@ -680,21 +680,18 @@ mod tests {
         assert!(!source_a.belongs_to(&crate::desktop::agent_status::LiveAgents::default()));
         let worker = std::thread::spawn({
             let source_a = source_a.clone();
-            move || source_a.connect().unwrap().list_all().unwrap()
+            move || source_a.connect().list_all().unwrap()
         });
         reading.recv_timeout(Duration::from_secs(5)).unwrap();
-        let records_b = source_b.connect().unwrap().list_all().unwrap();
+        let records_b = source_b.connect().list_all().unwrap();
         std::fs::write(a.credential_reference(), "BACKBONE_API_KEY=rotated\n").unwrap();
         release.send(()).unwrap();
         let records_a = worker.join().unwrap();
         assert_eq!(records_a[0].title, "a");
         assert_eq!(records_b[0].title, "b");
         assert_eq!(records_a[0].sheet_id, records_b[0].sheet_id);
-        assert_eq!(source_a.connect().unwrap().identity(), &origin_a);
-        assert_eq!(
-            source_a.connect().unwrap().list_all().unwrap()[0].title,
-            "a-refresh"
-        );
+        assert_eq!(source_a.connect().identity(), &origin_a);
+        assert_eq!(source_a.connect().list_all().unwrap()[0].title, "a-refresh");
         let keys_a = seen_keys(&records_a[0], source_a.identity());
         assert_ne!(keys_a, seen_keys(&records_b[0], source_b.identity()));
         let restored = Identity {

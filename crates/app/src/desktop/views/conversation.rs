@@ -332,24 +332,19 @@ const CLOSED_POLL: Duration = Duration::from_secs(25);
 
 /// A recorded artifact link, already bound to the provider which supplied it.
 pub(super) struct ReferenceTarget {
-    pub connection: Option<Connection>,
+    pub connection: Connection,
     pub kind: Kind,
     pub id: String,
 }
 
 impl ReferenceTarget {
-    pub fn bound_client(&self) -> Result<Option<stored::Client>, stored::Error> {
-        self.connection
-            .as_ref()
-            .map(|connection| {
-                stored::Client::new(
-                    connection.clone(),
-                    connection.identity(),
-                    self.kind,
-                    self.id.clone(),
-                )
-            })
-            .transpose()
+    pub fn bound_client(&self) -> Result<stored::Client, stored::Error> {
+        stored::Client::new(
+            self.connection.clone(),
+            self.connection.identity(),
+            self.kind,
+            self.id.clone(),
+        )
     }
 }
 
@@ -471,7 +466,7 @@ impl Conversation {
         conversation.open = true;
         conversation.anchor = Some(format!("{} {}", target.kind.name(), target.id));
         let bound = match target.bound_client() {
-            Ok(client) => client,
+            Ok(client) => Some(client),
             Err(error) => {
                 conversation.read_error = Some(error);
                 conversation.blocked = true;
@@ -511,7 +506,7 @@ impl Conversation {
             agent_interface_roster::library_snapshots::Kind::Policy => Kind::Policy,
         };
         let target = ReferenceTarget {
-            connection: Some(snapshot.artifact.connection().clone()),
+            connection: snapshot.artifact.connection().clone(),
             kind,
             id: snapshot.artifact.id().to_owned(),
         };
@@ -570,7 +565,7 @@ impl Conversation {
             ..Default::default()
         });
         let bound = match target.bound_client() {
-            Ok(client) => client,
+            Ok(client) => Some(client),
             Err(error) => {
                 conversation.read_error = Some(error);
                 conversation.blocked = true;

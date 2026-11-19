@@ -45,12 +45,9 @@ fn open(pane: &mut ViewPane, metadata: DocumentMetadata, cx: &mut Context<ViewPa
         conversation_id: None,
         content: ReportContent::Document(metadata),
     };
-    super::seen::mark(
-        &item,
-        pane.connection
-            .as_ref()
-            .map(|connection| connection.identity()),
-    );
+    if let Some(connection) = &pane.connection {
+        super::seen::mark(&item, connection.identity());
+    }
     pane.documents.clear();
     pane.reports.open = Some(item);
     pane.refetch(false, cx);
