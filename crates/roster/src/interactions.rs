@@ -102,16 +102,14 @@ impl Client {
 
     /// Read one record and its evidence pages on the same captured connection.
     pub fn detail(&self, id: &str) -> Result<Interaction, Error> {
-        detail_using(&Api(&self.connection), id)
+        detail_using(self, id)
     }
 }
 
-struct Api<'a>(&'a crate::profiles::Connection);
-
-impl Api<'_> {
+impl Client {
     fn get<T: serde::de::DeserializeOwned>(&self, path: &str, detail: bool) -> Result<T, Error> {
         let response = self
-            .0
+            .connection
             .response(path, None, LIMIT)
             .map_err(Error::Connection)?;
         decoded(response.status, &response.body, detail)
@@ -187,9 +185,8 @@ fn read_using(
     until: &str,
     agent: Option<&str>,
 ) -> Result<Snapshot, Error> {
-    let api = &Api(&client.connection);
     let bounds = format!("since={}&until={}", quote(since)?, quote(until)?);
-    let summary: Summary = api.get(&format!("/api/interactions/summary?{bounds}"), false)?;
+    let summary: Summary = client.get(&format!("/api/interactions/summary?{bounds}"), false)?;
     validate_coverage(&summary.coverage)?;
     for item in &summary.items {
         validate_actor(&item.agent)?;
@@ -210,7 +207,7 @@ fn read_using(
             quote(agent)?,
             quote(&summary.snapshot)?
         );
-        let mut all: InteractionPage = api.get(&path, false)?;
+        let mut all: InteractionPage = client.get(&path, false)?;
         validate_page(&all)?;
         let mut cursors = HashSet::new();
         let mut count = 1;
@@ -224,7 +221,7 @@ fn read_using(
                 return Err(Error::Unreadable);
             }
             let page: InteractionPage =
-                api.get(&format!("{path}&cursor={}", quote(&cursor)?), false)?;
+                client.get(&format!("{path}&cursor={}", quote(&cursor)?), false)?;
             validate_page(&page)?;
             if page.snapshot != all.snapshot || page.snapshot != summary.snapshot {
                 return Err(Error::Unreadable);
@@ -245,7 +242,7 @@ fn read_using(
     } else {
         None
     };
-    let (states, state_error) = match state_spans(api, &bounds, agent) {
+    let (states, state_error) = match state_spans(client, &bounds, agent) {
         Ok(page) => (Some(page), None),
         Err(
             error @ Error::Connection(
@@ -263,12 +260,12 @@ fn read_using(
     })
 }
 
-fn state_spans(api: &Api<'_>, bounds: &str, agent: Option<&str>) -> Result<StateSpanPage, Error> {
+fn state_spans(client: &Client, bounds: &str, agent: Option<&str>) -> Result<StateSpanPage, Error> {
     let mut path = format!("/api/interactions/state-spans?{bounds}&limit=500");
     if let Some(agent) = agent {
         path.push_str(&format!("&agent_id={}", quote(agent)?));
     }
-    let mut all: StateSpanPage = api.get(&path, false)?;
+    let mut all: StateSpanPage = client.get(&path, false)?;
     validate_states(&all)?;
     path.push_str(&format!("&snapshot={}", quote(&all.snapshot)?));
     let mut cursors = HashSet::new();
@@ -279,7 +276,8 @@ fn state_spans(api: &Api<'_>, bounds: &str, agent: Option<&str>) -> Result<State
         if !cursors.insert(cursor.clone()) {
             return Err(Error::Unreadable);
         }
-        let page: StateSpanPage = api.get(&format!("{path}&cursor={}", quote(&cursor)?), false)?;
+        let page: StateSpanPage =
+            client.get(&format!("{path}&cursor={}", quote(&cursor)?), false)?;
         validate_states(&page)?;
         if page.snapshot != all.snapshot {
             return Err(Error::Unreadable);
@@ -317,9 +315,9 @@ fn validate_states(page: &StateSpanPage) -> Result<(), Error> {
     Ok(())
 }
 
-fn detail_using(api: &Api<'_>, id: &str) -> Result<Interaction, Error> {
+fn detail_using(client: &Client, id: &str) -> Result<Interaction, Error> {
     let path = id_path(id)?;
-    let mut item: Interaction = api.get(&path, true)?;
+    let mut item: Interaction = client.get(&path, true)?;
     validate_record(&item)?;
     if item.id != id {
         return Err(Error::Unreadable);
@@ -332,7 +330,7 @@ fn detail_using(api: &Api<'_>, id: &str) -> Result<Interaction, Error> {
         if !cursors.insert(cursor.clone()) {
             return Err(Error::Unreadable);
         }
-        let page: AttemptPage = api.get(
+        let page: AttemptPage = client.get(
             &format!("{path}/attempts?limit=200&cursor={}", quote(&cursor)?),
             true,
         )?;
@@ -350,7 +348,7 @@ fn detail_using(api: &Api<'_>, id: &str) -> Result<Interaction, Error> {
         if !cursors.insert(cursor.clone()) {
             return Err(Error::Unreadable);
         }
-        let page: EventPage = api.get(
+        let page: EventPage = client.get(
             &format!("{path}/events?limit=200&cursor={}", quote(&cursor)?),
             true,
         )?;
