@@ -396,7 +396,7 @@ impl ViewPane {
                             return;
                         }
                         match update {
-                            Ok(mut data) => {
+                            Ok(data) => {
                                 if let Data::Document(document) = &data {
                                     pane.documents.loaded = Some(document.clone());
                                     pane.documents.error = None;
@@ -404,9 +404,7 @@ impl ViewPane {
                                 if let Data::Reports(page) = &data {
                                     pane.reports.observe(page);
                                 }
-                                // A section whose own read failed keeps its
-                                // last data, so an open document stays open.
-                                pane.error = agent::keep_section(pane.data.as_ref(), &mut data);
+                                pane.error = None;
                                 pane.data = Some(data);
                             }
                             // Keep the last data and say it is stale.
@@ -1170,12 +1168,16 @@ impl Render for ViewPane {
                             .flex()
                             .flex_col()
                             .child(ui::view_header(about.icon, ViewPane::title(&self.view)))
-                            .when(self.view.kind == ViewKind::Usage, |el| {
-                                el.child(usage::toolbar(self, cx))
-                            })
-                            .when(self.view.kind == ViewKind::Reports, |el| {
-                                el.child(reports::refresh_toolbar(self, cx))
-                            })
+                            // Without a worker, as with no profile, the controls
+                            // would fetch nothing.
+                            .when(
+                                self.source.is_some() && self.view.kind == ViewKind::Usage,
+                                |el| el.child(usage::toolbar(self, cx)),
+                            )
+                            .when(
+                                self.source.is_some() && self.view.kind == ViewKind::Reports,
+                                |el| el.child(reports::refresh_toolbar(self, cx)),
+                            )
                             .child(state)
                             .into_any_element()
                     }
@@ -1294,27 +1296,6 @@ mod tests {
         assert_eq!(ago(7_300.0), "2h");
         assert_eq!(ago(-5.0), "0s");
         assert_eq!(line("a\nb"), "a b");
-    }
-
-    #[test]
-    fn a_failed_section_read_keeps_the_last_section() {
-        use agent_interface_roster::views::{Agent, Instructions};
-        let agent = |brief| {
-            Data::Agent(Box::new(Agent {
-                name: "worker".into(),
-                brief: Some(brief),
-                ..Agent::default()
-            }))
-        };
-        let last = agent(Ok(Instructions::default()));
-        let mut new = agent(Err(views::UNAVAILABLE));
-        assert_eq!(
-            agent::keep_section(Some(&last), &mut new),
-            Some(views::UNAVAILABLE)
-        );
-        assert_eq!(new, last);
-        let mut first = agent(Err(views::UNAVAILABLE));
-        assert_eq!(agent::keep_section(None, &mut first), None);
     }
 
     #[test]

@@ -8,8 +8,8 @@ use agent_interface_roster::{
     Background, Waiting,
     profiles::runs::{Run, Runs},
     views::{
-        Agent, Data, Instructions, Loadout, LocalSkill, Process, Reason, Received, Usage,
-        epoch_seconds, now,
+        Agent, Instructions, Loadout, LocalSkill, Process, Reason, Received, Usage, epoch_seconds,
+        now,
     },
 };
 use gpui::{AnyElement, Context, Div, SharedString, div, prelude::*, px};
@@ -97,31 +97,6 @@ pub(super) fn targets(pane: &ViewPane, agent: &Agent) -> Vec<Target> {
             .unwrap_or_default(),
         _ => Vec::new(),
     }
-}
-
-/// When a refresh's section read failed but the last data had that section,
-/// keep the last section and return the failure to show as stale.
-pub(super) fn keep_section(last: Option<&Data>, new: &mut Data) -> Option<&'static str> {
-    fn keep<T: Clone>(
-        last: &Option<Result<T, &'static str>>,
-        new: &mut Option<Result<T, &'static str>>,
-    ) -> Option<&'static str> {
-        let (Some(Ok(kept)), Some(Err(error))) = (last, &new) else {
-            return None;
-        };
-        let error = *error;
-        *new = Some(Ok(kept.clone()));
-        Some(error)
-    }
-    let (Some(Data::Agent(last)), Data::Agent(new)) = (last, new) else {
-        return None;
-    };
-    if last.name != new.name {
-        return None;
-    }
-    keep(&last.skills, &mut new.skills)
-        .or(keep(&last.brief, &mut new.brief))
-        .or(keep(&last.usage, &mut new.usage))
 }
 
 fn loaded<'a, T>(part: &'a Option<Result<T, &'static str>>) -> Option<&'a T> {
