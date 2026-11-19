@@ -788,6 +788,10 @@ revision, stops that work, a running Git command included.
   `GIT_NO_REPLACE_OBJECTS=1` (a commit ID names that commit, never a local
   replacement), and `GIT_NO_LAZY_FETCH=1` with `-c protocol.allow=never` and
   an empty `GIT_ALLOW_PROTOCOL`, so no transport runs and nothing is fetched.
+  A file over 16 MiB is shown as binary (`core.bigFileThreshold=16m`), so
+  Git never holds two such versions to compare line by line. One case stays
+  unbounded by that setting: Git's rename detection still reads both
+  versions of a large file renamed with changes.
   A diff is read with `--no-ext-diff --no-textconv`, so no configured program
   runs: its file list from `--raw -z --ignore-submodules=none`, then its lines
   from the patch, which is not read when the list holds a submodule, since a

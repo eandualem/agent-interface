@@ -280,13 +280,31 @@ mod tests {
         let cancel = until.clone();
         let started = Instant::now();
         let stopper = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(200));
+            use std::os::unix::fs::OpenOptionsExt;
+            // A writer can open the file without waiting only once Git has
+            // it open to read: Git is running and waiting on it.
+            let opened = Instant::now();
+            let writer = loop {
+                let open = std::fs::OpenOptions::new()
+                    .write(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(&fifo);
+                match open {
+                    Ok(writer) => break writer,
+                    Err(_) if opened.elapsed() < Duration::from_secs(5) => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("Git never read the file: {error}"),
+                }
+            };
             cancel.cancel();
+            // Held open, so Git is still waiting when it is stopped.
+            writer
         });
         assert_eq!(transform(&html, &[dir], &until), None);
         // Well before the 3 s a single command may take.
         assert!(started.elapsed() < Duration::from_secs(2));
-        stopper.join().unwrap();
+        drop(stopper.join().unwrap());
     }
 
     #[test]

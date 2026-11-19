@@ -112,12 +112,7 @@ fn shim_runs(git: Option<&Path>, tools: &[Option<std::path::PathBuf>]) -> bool {
 /// `git -C dir args…` as every read runs it: no inherited Git environment,
 /// and no system or user configuration or attribute files.
 fn command(dir: &Path, args: &[&str]) -> Command {
-    let mut command = Command::new("git");
-    for (name, _) in std::env::vars_os() {
-        if name.to_string_lossy().starts_with("GIT_") {
-            command.env_remove(name);
-        }
-    }
+    let mut command = git_alone();
     command
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -134,11 +129,26 @@ fn command(dir: &Path, args: &[&str]) -> Command {
         .arg(dir)
         .args(["-c", "core.pager=cat", "-c", "protocol.allow=never"])
         .args(["-c", "core.attributesFile=/dev/null"])
+        // A larger file is shown as binary, so Git never holds two of them
+        // to compare line by line.
+        .args(["-c", "core.bigFileThreshold=16m"])
         .arg("--literal-pathspecs")
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    command
+}
+
+/// `git`, with no inherited Git environment to choose another repository,
+/// index or configuration.
+fn git_alone() -> Command {
+    let mut command = Command::new("git");
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(name);
+        }
+    }
     command
 }
 
@@ -411,7 +421,7 @@ pub(super) mod tests {
 
     /// Run Git for a test fixture, with no user or system configuration.
     pub fn git(dir: &Path, args: &[&str]) -> String {
-        let output = Command::new("git")
+        let output = git_alone()
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_AUTHOR_NAME", "Test")
@@ -573,6 +583,22 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn a_file_over_the_big_file_threshold_is_shown_as_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q"]);
+        let big = "x\n".repeat(9 * 1024 * 1024);
+        let mut commits = Vec::new();
+        for text in [big.clone(), big.replacen('x', "y", 1)] {
+            fs::write(dir.path().join("big.txt"), text).unwrap();
+            git(dir.path(), &["add", "-A"]);
+            git(dir.path(), &["commit", "-qm", "big"]);
+            commits.push(git(dir.path(), &["rev-parse", "HEAD"]));
+        }
+        let files = diff(dir.path(), &commits[0], &commits[1], None, &later()).unwrap();
+        assert_eq!(files[0].rows, vec![Row::Binary]);
+    }
+
+    #[test]
     fn a_diff_touching_a_submodule_is_not_read() {
         let dir = tempfile::tempdir().unwrap();
         git(dir.path(), &["init", "-q"]);
@@ -639,6 +665,7 @@ pub(super) mod tests {
         for flag in [
             "protocol.allow=never",
             "core.attributesFile=/dev/null",
+            "core.bigFileThreshold=16m",
             "--literal-pathspecs",
         ] {
             assert!(args.contains(&OsStr::new(flag)), "{flag}");

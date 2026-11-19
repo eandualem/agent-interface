@@ -120,13 +120,17 @@ pub fn find(html: &str, until: &Until) -> Vec<Found> {
             if until.passed() {
                 return Vec::new();
             }
+            // At most a step: back to the start of a character it splits.
             let mut to = (from + STEP).min(end);
             while !html.is_char_boundary(to) {
-                to += 1;
+                to -= 1;
             }
             queue.push_back(StrTendril::from_slice(&html[from..to]));
             let _ = tokenizer.feed(&queue);
             from = to;
+        }
+        if until.passed() {
+            return Vec::new();
         }
         for event in tokenizer.sink.events.take() {
             scan.event(event, end);

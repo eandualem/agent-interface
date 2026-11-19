@@ -178,6 +178,8 @@ fn escape(text: &str, out: &mut String) {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&#39;"),
+            // A literal CR would reach the page as a line break.
+            '\r' => out.push_str("&#13;"),
             _ => out.push(c),
         }
     }
@@ -265,6 +267,22 @@ mod tests {
                 .unwrap()
                 .contains("<summary>0 files changed</summary>")
         );
+    }
+
+    #[test]
+    fn a_carriage_return_is_kept_as_one() {
+        let crlf = Row::Line {
+            sign: '+',
+            old: None,
+            new: Some(1),
+            text: "windows\r".into(),
+        };
+        let html = diff(&[file("a.txt", vec![crlf])], None, ANY).unwrap();
+        assert!(html.contains(r#"<td class="ai-git-t">windows&#13;</td>"#));
+        let html = code("a.txt", "one\r\nlone\rcr\n", None, None, ANY).unwrap();
+        assert!(html.contains(r#"<td class="ai-git-t">one</td>"#));
+        assert!(html.contains(r#"<td class="ai-git-t">lone&#13;cr</td>"#));
+        assert!(!html.contains('\r'));
     }
 
     #[test]
