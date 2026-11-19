@@ -777,22 +777,29 @@ mod tests {
     }
 
     /// First run's `initialize` against a real Agent Backbone service: the
-    /// request first run builds, sent and read as first run does. Ignored by
-    /// default. Run it by name against a private trial whose service is
-    /// already up, with `PATH` (the trial's `backbone` first), `HOME`,
-    /// `BACKBONE_DIR` and `TMUX_TMPDIR` all the trial's own. Only `service`
-    /// differs from what first run sends: the trial's service was started by
-    /// hand, so no login service is installed.
+    /// request first run builds, sent and read as first run does, and then
+    /// the check first run waits on, that the Default profile answers.
+    /// Ignored by default. Run it by name against a private trial whose
+    /// service is already up, with `PATH` (the trial's `backbone` first),
+    /// `HOME`, `BACKBONE_DIR` and `TMUX_TMPDIR` all the trial's own under
+    /// `/tmp`, and `TMUX` unset. Only `service` differs from what first run
+    /// sends: the trial's service was started by hand, so no login service
+    /// is installed.
     #[test]
     #[ignore = "needs a private trial of a real Agent Backbone service"]
     fn initialize_against_a_real_service() {
-        let home = PathBuf::from(std::env::var_os("HOME").unwrap())
-            .canonicalize()
-            .unwrap();
-        assert!(
-            home.starts_with("/tmp") || home.starts_with("/private/tmp"),
-            "HOME must be a disposable temporary folder"
-        );
+        // Nothing of a person's own: every place the service is told to use
+        // is a temporary one, and no tmux client is inherited.
+        for name in ["HOME", "BACKBONE_DIR", "TMUX_TMPDIR"] {
+            let place = PathBuf::from(std::env::var_os(name).unwrap_or_else(|| panic!("{name}")))
+                .canonicalize()
+                .unwrap();
+            assert!(
+                place.starts_with("/tmp") || place.starts_with("/private/tmp"),
+                "{name} must be a disposable temporary folder"
+            );
+        }
+        assert!(std::env::var_os("TMUX").is_none(), "TMUX must be unset");
         let path_env = std::env::var("PATH").unwrap();
         let backbone = std::env::split_paths(&path_env)
             .map(|directory| directory.join("backbone"))
@@ -817,6 +824,19 @@ mod tests {
             answer.code.as_str(),
             "initialized" | "existing_preserved"
         ));
+
+        // What first run waits for after that answer.
+        let client = crate::profiles::Client::new(backbone, path_env.into()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let answers = loop {
+            let answers = super::super::probe::answers(Some(client.clone()));
+            if answers == super::super::probe::Backbone::Running || Instant::now() >= deadline {
+                break answers;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        };
+        println!("the Default profile: {answers:?}");
+        assert_eq!(answers, super::super::probe::Backbone::Running);
     }
 
     #[test]

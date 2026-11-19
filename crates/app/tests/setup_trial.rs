@@ -1,31 +1,44 @@
 //! Runs the app's own first-agent setup against a real Agent Backbone service.
 //! Ignored by default: run it by name against a private trial whose service is
-//! up and has its Default profile, with `PATH` (the trial's `backbone` first),
-//! `HOME`, `BACKBONE_DIR` and `TMUX_TMPDIR` all the trial's own.
+//! up and has only its Default profile, with `PATH` (the trial's `backbone`
+//! first), `HOME`, `BACKBONE_DIR` and `TMUX_TMPDIR` all the trial's own under
+//! `/tmp`, and `TMUX` unset.
 //!
-//! The agent comes from the environment: `TRIAL_AGENT_DIR` (its folder,
-//! created by setup), `TRIAL_RUNTIME` (default `codex`), `TRIAL_MODEL` (left
-//! out when unset) and `TRIAL_AGENT_NAME` (default `guide`).
+//! The agent comes from the environment: `TRIAL_AGENT_DIR` (its folder under
+//! `/tmp`, created by setup), `TRIAL_RUNTIME` (`codex`, the default, or
+//! `claude`), `TRIAL_MODEL` (sent as null when unset) and `TRIAL_AGENT_NAME`
+//! (default `guide`).
+//!
+//! The request is prepared and run as the guide's own code does it, without
+//! the guide's journal: saving, restoring and admitting a request are the
+//! journal's own tests. The greeting is always asked for, as the guide asks
+//! for it with the default brief in these two tools.
 
 use agent_interface_app::profiles::{Client, setup::Setup};
-use agent_interface_roster::profiles::{
-    Kind,
-    setup::{Action, Agent, Brief, Prepared},
-};
-use std::path::PathBuf;
+use agent_interface_roster::profiles::setup::{Action, Agent, Brief, Prepared};
+use std::path::{Component, Path, PathBuf};
 
 fn live() -> bool {
     true
 }
 
+fn temporary(path: &Path) -> bool {
+    path.starts_with("/tmp") || path.starts_with("/private/tmp")
+}
+
+/// The trial's client. Nothing of a person's own: every place the service is
+/// told to use is a temporary one, and no tmux client is inherited.
 fn client() -> Client {
-    let home = PathBuf::from(std::env::var_os("HOME").unwrap())
-        .canonicalize()
-        .unwrap();
-    assert!(
-        home.starts_with("/tmp") || home.starts_with("/private/tmp"),
-        "HOME must be a disposable temporary folder"
-    );
+    for name in ["HOME", "BACKBONE_DIR", "TMUX_TMPDIR"] {
+        let place = PathBuf::from(std::env::var_os(name).unwrap_or_else(|| panic!("{name}")))
+            .canonicalize()
+            .unwrap();
+        assert!(
+            temporary(&place),
+            "{name} must be a disposable temporary folder"
+        );
+    }
+    assert!(std::env::var_os("TMUX").is_none(), "TMUX must be unset");
     let path = std::env::var_os("PATH").unwrap();
     let executable = std::env::split_paths(&path)
         .map(|directory| directory.join("backbone"))
@@ -41,24 +54,57 @@ fn first_agent_on_the_default_profile() {
     let client = client();
     let variable = |name: &str| std::env::var(name).ok();
     let name = variable("TRIAL_AGENT_NAME").unwrap_or_else(|| "guide".into());
+    let directory = PathBuf::from(variable("TRIAL_AGENT_DIR").expect("TRIAL_AGENT_DIR"));
+    assert!(
+        temporary(&directory)
+            && directory
+                .components()
+                .all(|part| part != Component::ParentDir),
+        "TRIAL_AGENT_DIR must be a folder under /tmp"
+    );
+    let runtime = variable("TRIAL_RUNTIME").unwrap_or_else(|| "codex".into());
+    assert!(
+        ["claude", "codex"].contains(&runtime.as_str()),
+        "TRIAL_RUNTIME must be claude or codex"
+    );
+    let model = variable("TRIAL_MODEL");
 
-    // The profile first run uses: the one the registry lists as the default.
-    let item = client
-        .list(&live)
-        .expect("list")
-        .into_iter()
-        .find(|item| item.kind == Kind::LegacyDefault)
-        .expect("the Default profile");
-    println!("profile: {item:?}");
+    // The trial's one profile, so no other can be taken for it.
+    let items = client.list(&live).expect("list");
+    println!("profiles: {items:?}");
+    let [item] = items.as_slice() else {
+        panic!("the trial must have exactly one profile");
+    };
     let profile = client.show(&item.profile_id, &live).expect("show");
-    println!("connect before the agent ok: {}", profile.connect().is_ok());
+    profile.connect().expect("handshake before the agent");
+
+    // As the guide chooses: a tool the profile's catalog has on this
+    // machine, and a model that tool advertises.
+    let catalog = client
+        .served_runtimes(&profile.expected_identity().expect("identity"), &live)
+        .expect("catalog");
+    let listed = catalog
+        .items()
+        .iter()
+        .find(|listed| listed.id == runtime)
+        .expect("the runtime in the profile's catalog");
+    println!(
+        "runtime {} available={} models={:?}",
+        listed.id, listed.available, listed.models
+    );
+    assert!(listed.available);
+    assert!(
+        model
+            .as_ref()
+            .is_none_or(|model| listed.models.contains(model))
+    );
 
     let agent = Agent {
         name: name.clone(),
-        directory: PathBuf::from(variable("TRIAL_AGENT_DIR").expect("TRIAL_AGENT_DIR")),
+        directory,
         create_directory: true,
-        runtime: variable("TRIAL_RUNTIME").unwrap_or_else(|| "codex".into()),
-        model: variable("TRIAL_MODEL"),
+        runtime,
+        model,
         brief: Brief::Template {
             template: "orchestrator-v1".into(),
         },
@@ -80,9 +126,13 @@ fn first_agent_on_the_default_profile() {
     assert_eq!(result.code.as_deref(), Some("agent_ready"));
     assert_eq!(result.ready_agent.as_deref(), Some(name.as_str()));
 
-    // What the window does next: read the roster over the profile's connection.
+    // The agent is in the roster the window reads over the profile's connection.
     let profile = client.show(&item.profile_id, &live).expect("show");
-    let roster = profile.connect().expect("handshake").roster();
-    println!("roster read ok: {}", roster.is_ok());
-    assert!(roster.is_ok());
+    let roster = profile
+        .connect()
+        .expect("handshake")
+        .roster()
+        .expect("roster");
+    println!("roster: {:?}", roster.states);
+    assert!(roster.states.contains_key(&name));
 }
