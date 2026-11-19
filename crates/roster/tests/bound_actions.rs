@@ -295,6 +295,23 @@ fn conversations_keep_delayed_sends_retries_pagination_and_markers_on_original_b
     server_b.join().unwrap();
 }
 
+#[test]
+fn feedback_on_an_oversized_record_is_refused_before_sending() {
+    // One byte over the author lookup's limit for an answer.
+    let limit = 4 * 1024 * 1024;
+    let oversized = json!({"x": "a".repeat(limit + 1 - r#"{"x":""}"#.len())});
+    assert_eq!(oversized.to_string().len(), limit + 1);
+    let (_dir, connection, server) = provider("a", vec![Step::get("/api/responses/7", oversized)]);
+    let client = feedback::Client::new(connection.clone(), connection.identity(), item()).unwrap();
+    assert_eq!(
+        client.send("Feedback"),
+        feedback::Outcome::Refused(
+            "Could not verify the author. Your feedback has not been sent.".into()
+        )
+    );
+    server.join().unwrap();
+}
+
 fn item() -> ReportItem {
     ReportItem {
         id: 7,

@@ -32,8 +32,8 @@ impl Origin {
         matches!(self, Self::Bound(_))
     }
 
-    /// A workspace without a profile offers no Backbone views; one saved
-    /// there opens asking for a profile.
+    /// Whether the new-pane chooser offers `kind` here: no view without a
+    /// profile, and Artifacts only for a profile that shows them.
     pub fn allows_view(&self, kind: ViewKind) -> bool {
         self.connection().is_some_and(|connection| {
             kind != ViewKind::Artifacts || shows_artifacts(connection.kind())

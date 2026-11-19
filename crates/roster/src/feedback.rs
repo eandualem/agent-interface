@@ -115,7 +115,7 @@ fn send_using(connection: &Connection, item: &ReportItem, text: &str) -> Outcome
         4 * 1024 * 1024
     };
     let body = match fetch(connection, &path, None, limit) {
-        Ok(body) if body.len() <= limit => body,
+        Ok(body) => body,
         Err(Error::Refused(404)) => {
             return refused("This record is no longer available. Your feedback has not been sent.");
         }
