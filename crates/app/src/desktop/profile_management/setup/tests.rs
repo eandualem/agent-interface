@@ -150,6 +150,7 @@ fn each_code_says_what_happened_by_what_may_follow_it() {
         "failed request_cancelled new_request: was cancelled",
         "action_required outcome_unknown same_request: isn't known yet",
         "action_required outcome_unknown none: never runs again",
+        "action_required outcome_unknown new_request: only a new request can follow",
         "failed setup_failed same_request: before it changed anything",
         "failed operator_required none: not one of your agents",
         "failed invalid_request new_request: were refused",
@@ -193,6 +194,15 @@ fn each_code_says_what_happened_by_what_may_follow_it() {
     assert_eq!(
         status(&answered(false, "failed", "agent_conflict", "new_request")),
         "Agent not added"
+    );
+    assert_eq!(
+        status(&answered(
+            false,
+            "action_required",
+            "outcome_unknown",
+            "new_request"
+        )),
+        "Not known whether it was added"
     );
     let unknown = answered(false, "action_required", "outcome_unknown", "later");
     assert!(!outcome(&unknown).unwrap().contains("never runs again"));

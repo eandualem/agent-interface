@@ -121,13 +121,15 @@ const KNOWN: &[&str] = &[
 /// the app doesn't know.
 fn unknown_whether_added(s: &Snapshot) -> bool {
     s.first_result.as_ref().is_some_and(|e| {
-        e.retry.as_deref() == Some("none")
-            && e.code.as_deref().is_some_and(|code| {
-                matches!(
-                    code,
-                    "outcome_unknown" | "request_expired" | "agent_conflict"
-                ) || !KNOWN.contains(&code)
-            })
+        let (code, retry) = (e.code.as_deref(), e.retry.as_deref());
+        (code == Some("outcome_unknown") && retry == Some("new_request"))
+            || (retry == Some("none")
+                && code.is_some_and(|code| {
+                    matches!(
+                        code,
+                        "outcome_unknown" | "request_expired" | "agent_conflict"
+                    ) || !KNOWN.contains(&code)
+                }))
     })
 }
 /// The agent's CLI runs. Its terminal may still ask for a sign-in, trust or
@@ -172,6 +174,9 @@ fn outcome(s: &Snapshot) -> Option<String> {
         ("outcome_unknown", Some("same_request")) if cancel => "The request may be running now, or the profile's records couldn't be read. Send the cancellation again.".into(),
         ("outcome_unknown", Some("same_request")) => format!(
             "What came of it isn't known yet. Try again: it asks about the same request, so {name} isn't added twice."
+        ),
+        ("outcome_unknown", Some("new_request")) => format!(
+            "What came of it isn't known, and only a new request can follow it. Look at the workspace, then start {name} again if it isn't there."
         ),
         ("outcome_unknown", Some("none")) => format!(
             "The profile doesn't know whether {name} was added, and this request never runs again. Look at the workspace before adding it again."
