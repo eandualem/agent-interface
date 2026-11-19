@@ -219,11 +219,21 @@ mod tests {
             socket
         );
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(create_socket_in(&parent, uzers::get_current_uid(), "fixture.sock").is_err());
+        assert_eq!(
+            create_socket_in(&parent, uzers::get_current_uid(), "fixture.sock")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
         assert_eq!(parent.symlink_metadata().unwrap().mode() & 0o777, 0o755);
         let link = root.path().join("link");
         std::os::unix::fs::symlink(&parent, &link).unwrap();
-        assert!(create_socket_in(&link, uzers::get_current_uid(), "fixture.sock").is_err());
+        assert_eq!(
+            create_socket_in(&link, uzers::get_current_uid(), "fixture.sock")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
     }
 
     #[test]
@@ -329,9 +339,19 @@ mod tests {
             existing_socket_in(&directory, uid, &name).unwrap(),
             Some(socket.clone())
         );
-        assert!(existing_socket_in(&directory, uid.wrapping_add(1), &name).is_err());
+        assert_eq!(
+            existing_socket_in(&directory, uid.wrapping_add(1), &name)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o750)).unwrap();
-        assert!(existing_socket_in(&directory, uid, &name).is_err());
+        assert_eq!(
+            existing_socket_in(&directory, uid, &name)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
         let alias = fixture.path().join("alias");
         std::os::unix::fs::symlink(&directory, &alias).unwrap();
