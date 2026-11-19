@@ -1086,6 +1086,9 @@ mod tests {
         assert!(origin.agent_view(&member).is_none());
         member.registration_id = Some("invalid".into());
         assert!(origin.agent_view(&member).is_none());
+        // A registration a profile accepts still opens no agent view without one.
+        member.registration_id = Some("abcdef1234567890abcdef1234567890".into());
+        assert!(origin.agent_view(&member).is_some());
         assert!(
             Origin::Standalone { socket: None }
                 .agent_view(&member)
