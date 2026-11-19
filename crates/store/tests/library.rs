@@ -233,6 +233,7 @@ fn transactional_edits_merge_and_conflicts_reset_before_an_explicit_retry() {
         "123456789012345678901234567890"
     );
     assert!(!db.is_busy());
+    // The row of another table that references the layout row survives the saves.
     assert_eq!(
         db.query_row("SELECT value FROM extension_row", [], |r| r
             .get::<_, String>(0))
