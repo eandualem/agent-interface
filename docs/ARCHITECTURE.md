@@ -239,7 +239,7 @@ shells can supply PATH too. Standard installation directories, including
 OpenCode's `~/.opencode/bin`, are appended without overriding the shell's PATH
 order. The shell has an eight-second deadline; its output goes to a temporary
 file instead of a pipe, with positional reads limited to 256 KiB. Backbone
-counts as answering when a profile it serves lists, shows, connects and
+counts as answering when the first profile it serves lists, shows, connects and
 returns its roster; these reads change nothing. The scene waits on the icon at its
 handoff until the check has answered, and the tagline then reads "Getting
 things ready…".
