@@ -382,7 +382,7 @@ struct Restarts {
     /// Whether the pane saw its session end since it first saw the listed
     /// restart.
     ended: bool,
-    /// Whether it attached a session after that end: a new session.
+    /// Whether it attached a session after that end: the replacement.
     renewed: bool,
 }
 
@@ -412,11 +412,9 @@ impl Restarts {
                 self.failed = None;
                 RestartStep::Nothing
             }
-            // Since it saw the restart, the pane saw its session end and then
-            // attached a new one. The restart is over.
-            (None, Some(_)) if self.renewed => RestartStep::Nothing,
-            // Otherwise its own inspection says how it ended, whatever the
-            // roster says of the agent and whatever the terminal has noticed.
+            // Its own inspection says how it ended, whatever the roster says of
+            // the agent and whatever the terminal has noticed. The answer only
+            // decides what a pane whose session ended shows.
             (None, Some(restart)) => match restart.id {
                 Some(id) => {
                     self.left = Left::Asking {
@@ -461,6 +459,9 @@ impl Restarts {
         // A later restart than the one that left says nothing of it.
         let answer = answer.filter(|answer| answer.id == Some(id));
         match answer.and_then(|answer| answer.phase.as_deref()) {
+            // The pane already attached a session after the old one ended:
+            // that is the replacement, so the restart is over.
+            Some("ready") if self.renewed => RestartStep::Nothing,
             Some("ready") => {
                 self.left = Left::Ready {
                     restart,
@@ -525,22 +526,23 @@ impl Restarts {
         }
         // A session attached: no ended one is shown any more.
         self.quiet = false;
-        // Only a session that came after an end is a new one, as is one an
-        // attempt begun after a ready answer reached: the replacement.
-        // Another attach, such as the first one, may still be the old
-        // session, so a read under way or an answer it gave stays.
-        let replacement = matches!(self.left, Left::Ready { tried: true, .. });
-        self.renewed |= self.ended;
-        if self.ended || replacement {
+        // A ready restart ends at the next attach. An attach after an end is
+        // a new session, which ends a read under way and a kept failure; any
+        // other, such as the first one, may still be the old session, so
+        // they stay.
+        if matches!(self.left, Left::Ready { .. }) || self.ended {
             self.left = Left::Nothing;
+        }
+        if self.ended {
+            self.renewed = true;
             self.failed = None;
         }
     }
 
-    /// The person starts the agent: a failure kept from its restart is over.
+    /// The person starts the agent: the reason kept from its restart is
+    /// over. An ended session stays quiet until the next attach.
     fn launched(&mut self) {
         self.failed = None;
-        self.quiet = false;
     }
 
     /// The pane's session ended.
@@ -747,8 +749,12 @@ impl LiveTerminal {
             return;
         };
         let before = self.restarts.clone();
-        let gone =
-            self.error.is_some() || self.view.as_ref().is_some_and(|view| view.read(cx).ended());
+        // Only a session this pane attached can have ended; an attach that
+        // never reached one says nothing.
+        let gone = self
+            .view
+            .as_ref()
+            .is_some_and(|view| self.error.is_some() || view.read(cx).ended());
         let step = self.restarts.list(&seen, gone);
         self.restart_step(step, cx);
         if self.restarts != before {
@@ -997,7 +1003,12 @@ impl LiveTerminal {
         reconnect: bool,
         cx: &mut Context<Self>,
     ) {
-        self.closed = None;
+        let switching = std::mem::take(&mut self.switching);
+        // A switch to another window keeps hearing whether the session it
+        // shows ends; its new view replaces this once it is ready.
+        if !switching {
+            self.closed = None;
+        }
         // Keep the old client attached until its replacement is ready. A source
         // with destroy-unattached enabled must not disappear during navigation.
         if let Some(view) = &self.view {
@@ -1006,7 +1017,6 @@ impl LiveTerminal {
         // Retain the last output and error while retrying, instead of flashing
         // an empty Connecting panel on every automatic attempt.
         self.connecting = true;
-        let switching = std::mem::take(&mut self.switching);
         self.restarts.attempting(switching);
         let target = self.target.clone();
         let opened_shell = environment.is_some();
@@ -2459,10 +2469,9 @@ mod tests {
     }
 
     #[test]
-    fn only_a_session_that_ended_and_came_back_is_a_new_one() {
+    fn every_restart_leaving_the_list_is_read_and_a_window_switch_changes_nothing() {
         let fresh = frames("stream-agent-restart-fresh");
-        // A pane opened while the restart is listed: its first attach is no
-        // new session, so the drop is read.
+        // A pane opened while the restart is listed, then its first attach.
         let mut restarts = Restarts::default();
         restarts.list(&seen(0, false, listed(&fresh[1])), false);
         restarts.connected(false);
@@ -2470,8 +2479,7 @@ mod tests {
             restarts.list(&seen(1, false, None), false),
             RestartStep::Inspect(12)
         );
-        // Another restart listed in its place is a new sighting: an end and
-        // an attach seen for the first one say nothing of it.
+        // Another restart listed in its place is read by its own number.
         let mut restarts = Restarts::default();
         restarts.connected(false);
         restarts.list(&seen(0, false, listed(&fresh[1])), false);
@@ -2486,8 +2494,8 @@ mod tests {
             restarts.list(&seen(2, false, None), false),
             RestartStep::Inspect(13)
         );
-        // Showing another window of the same session is no new session and
-        // changes nothing, even after an end was seen.
+        // Showing another window of the same session changes nothing, even
+        // after an end was seen.
         let mut restarts = Restarts::default();
         restarts.connected(false);
         restarts.list(&seen(0, false, listed(&fresh[1])), false);
@@ -2544,18 +2552,32 @@ mod tests {
 
     #[test]
     fn an_attach_that_fails_without_reaching_its_session_is_no_end() {
-        let fresh = frames("stream-agent-restart-fresh");
+        let failed = frames("stream-agent-restart-failed");
+        let reason = failed[1].result.as_ref().unwrap().reason.clone();
         // The first attach fails before it reaches tmux, as when the
         // workspace profile is unavailable; the same session then attaches.
+        // The read under way and its failed answer stay.
         let mut restarts = Restarts::default();
-        restarts.list(&seen(0, false, listed(&fresh[1])), false);
+        restarts.list(&seen(0, false, listed(&failed[0])), false);
+        assert_eq!(
+            restarts.list(&seen(1, false, None), false),
+            RestartStep::Inspect(14)
+        );
         restarts.attempting(false);
         restarts.attach_failed(false);
         restarts.connected(false);
-        assert_eq!(
-            restarts.list(&seen(1, false, None), false),
-            RestartStep::Inspect(12)
-        );
+        restarts.inspected(14, Some(&failed[1]), None);
+        restarts.disconnected();
+        assert_eq!(stopped(&restarts, true), not_running(reason));
+        // A pane that never attached: its attach error during the restart
+        // latches nothing, so once the restart is over it shows as today.
+        let mut restarts = Restarts::default();
+        restarts.list(&seen(0, false, listed(&failed[0])), false);
+        restarts.attempting(false);
+        restarts.attach_failed(false);
+        restarts.list(&seen(1, false, None), false);
+        restarts.inspected(14, None, None);
+        assert_eq!(stopped(&restarts, false).error.as_deref(), Some(PIPE));
     }
 
     #[test]
@@ -2594,36 +2616,63 @@ mod tests {
         restarts.disconnected();
         assert_eq!(stopped(&restarts, false), today);
         assert_eq!(stopped(&restarts, true), not_running(None));
+        // A launch from the stopped pane of a failed restart: until a session
+        // attaches, the old session's end stays quiet and its reason is gone.
+        let mut restarts = Restarts::default();
+        restarts.connected(false);
+        restarts.list(&seen(0, false, listed(&failed[0])), false);
+        restarts.list(&seen(1, true, None), true);
+        restarts.disconnected();
+        restarts.inspected(14, Some(&failed[1]), None);
+        restarts.launched();
+        assert_eq!(stopped(&restarts, true), not_running(None));
+        assert_eq!(stopped(&restarts, false).error, None);
+        assert!(drawn(&restarts, Some(PIPE), true, None, true, false).quiet_end);
+        restarts.connected(false);
+        assert!(!live(&restarts).quiet_end);
     }
 
     #[test]
-    fn a_restart_that_leaves_the_list_after_a_new_session_attached_is_over() {
+    fn a_restart_that_leaves_the_list_after_its_replacement_attached_is_still_read() {
         let fresh = frames("stream-agent-restart-fresh");
-        let today = Drawn {
-            ended: Some(Ended {
-                error: Some(PIPE.into()),
-                message: "Waiting for this session. Reconnecting automatically.".into(),
-                reason: None,
-                launch: false,
-            }),
-            pending: false,
-            quiet_end: false,
+        let failed = frames("stream-agent-restart-failed");
+        // The replacement attached while the list still said starting.
+        let reattached = |frames: &[Restart]| {
+            let mut restarts = Restarts::default();
+            restarts.connected(false);
+            restarts.list(&seen(0, false, listed(&frames[0])), false);
+            restarts.disconnected();
+            restarts.list(&seen(1, false, listed(&frames[0])), true);
+            restarts.connected(false);
+            restarts
         };
-        // The new session attached while the list still said starting.
-        let mut restarts = Restarts::default();
-        restarts.connected(false);
-        restarts.list(&seen(0, false, listed(&fresh[1])), false);
-        restarts.disconnected();
-        restarts.list(&seen(1, false, listed(&fresh[3])), true);
-        restarts.connected(false);
+        // A ready answer: the attached session is the replacement, so the
+        // restart is over and a later end shows as today.
+        let mut restarts = reattached(&fresh);
         assert_eq!(
-            restarts.list(&seen(2, false, listed(&fresh[4])), false),
+            restarts.list(&seen(2, false, None), false),
+            RestartStep::Inspect(12)
+        );
+        assert_eq!(
+            restarts.inspected(12, Some(&fresh[4]), Some(at(2))),
             RestartStep::Nothing
         );
-        assert!(!restarts.under_way());
-        // A later end of that session is shown as today.
+        let shown = live(&restarts);
+        assert!(!shown.pending && shown.ended.is_none() && !restarts.under_way());
         restarts.disconnected();
-        assert_eq!(drawn(&restarts, Some(PIPE), true, None, true, false), today);
+        assert_eq!(stopped(&restarts, false).error.as_deref(), Some(PIPE));
+        // A failed answer after the replacement died: the stopped pane with
+        // the service's reason, and no pipe.
+        let mut restarts = reattached(&failed);
+        assert_eq!(
+            restarts.list(&seen(2, true, None), false),
+            RestartStep::Inspect(14)
+        );
+        restarts.disconnected();
+        restarts.inspected(14, Some(&failed[1]), None);
+        let reason = failed[1].result.as_ref().unwrap().reason.clone();
+        assert_eq!(stopped(&restarts, true), not_running(reason));
+        assert_eq!(stopped(&restarts, false).error, None);
     }
 
     #[test]
@@ -2656,22 +2705,24 @@ mod tests {
         );
         assert_eq!(stopped(&restarts, true), not_running(Some(reason.into())));
         // An inspection the service refuses, as when it fails or times out,
-        // is today's pane.
-        let (_directory, connection, server) = provider(
-            "refused",
-            vec![Reply {
-                status: 500,
-                ..Reply::ok("/api/agents/builder/inspect", serde_json::json!({}))
-            }],
-        );
-        let mut restarts = Restarts::default();
-        restarts.list(&seen(0, false, listed(&frames[0])), true);
-        restarts.list(&seen(1, true, None), true);
-        let answer = latest_restart(connection, "builder");
-        server.join().unwrap();
-        assert_eq!(answer, None);
-        restarts.inspected(14, answer.as_ref(), None);
-        assert_eq!(stopped(&restarts, true), not_running(None));
+        // is today's pane, as is a forgotten agent's, which is not found.
+        for status in [500, 404] {
+            let (_directory, connection, server) = provider(
+                "refused",
+                vec![Reply {
+                    status,
+                    ..Reply::ok("/api/agents/builder/inspect", serde_json::json!({}))
+                }],
+            );
+            let mut restarts = Restarts::default();
+            restarts.list(&seen(0, false, listed(&frames[0])), true);
+            restarts.list(&seen(1, true, None), true);
+            let answer = latest_restart(connection, "builder");
+            server.join().unwrap();
+            assert_eq!(answer, None, "{status}");
+            restarts.inspected(14, answer.as_ref(), None);
+            assert_eq!(stopped(&restarts, true), not_running(None), "{status}");
+        }
     }
 
     #[test]

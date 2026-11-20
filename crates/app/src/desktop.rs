@@ -2732,9 +2732,23 @@ impl Render for Browser {
             {
                 if let Some(terminal) = self.terminals.get(&leaf.id) {
                     // A hidden pane follows its agent's restart too, so it
-                    // does not miss the restart leaving the list.
+                    // does not miss the restart leaving the list, while it
+                    // still holds the connection that roster comes from.
                     let hidden = !leaves.iter().any(|drawn| drawn.id == leaf.id);
-                    let status = hidden.then(|| self.pane_agent(leaf)).flatten();
+                    let current = self
+                        .pane_connection(&leaf.id)
+                        .ok()
+                        .flatten()
+                        .map(|connection| connection.connection_key());
+                    let held = terminal
+                        .read(cx)
+                        .target
+                        .connection
+                        .as_ref()
+                        .map(|connection| connection.connection_key());
+                    let status = (hidden && current.is_some() && held == current)
+                        .then(|| self.pane_agent(leaf))
+                        .flatten();
                     terminal.update(cx, |terminal, cx| {
                         terminal.set_cwd(leaf);
                         if let Some((_, status, agents)) = status {
