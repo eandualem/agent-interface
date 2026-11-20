@@ -12,7 +12,7 @@ use crate::profiles::{
     Client, Error,
     selection::{Selected, Selection},
 };
-use agent_interface_roster::profiles::{Item, Kind, State};
+use agent_interface_roster::profiles::{Item, State};
 use gpui::{
     Context, Entity, EventEmitter, FocusHandle, ScrollHandle, SharedString, Subscription, Window,
     div, prelude::*, px,
@@ -144,7 +144,6 @@ pub(super) struct ProfilePicker {
     closed: bool,
     pub focus: FocusHandle,
     scroll: ScrollHandle,
-    has_bound_workspaces: bool,
     /// The name of the workspace whose profile this chooses, instead of
     /// making a new workspace.
     change: Option<String>,
@@ -163,7 +162,6 @@ impl ProfilePicker {
     /// With `change`, it chooses the profile of the workspace of that name.
     pub fn new(
         client: Client,
-        has_bound_workspaces: bool,
         change: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -181,7 +179,6 @@ impl ProfilePicker {
             closed: false,
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
-            has_bound_workspaces,
             change,
         };
         picker.refresh(cx);
@@ -207,7 +204,6 @@ impl ProfilePicker {
         cx.spawn(async move |this, cx| {
             let result = read.await;
             let _ = this.update(cx, |picker, cx| {
-                let result = first_run(result, picker.has_bound_workspaces);
                 if !picker.closed && picker.catalog.complete(&ticket, result) {
                     picker.on_new = picker.catalog.focused.is_none() && picker.change.is_none();
                     picker.reveal_focus();
@@ -324,24 +320,10 @@ impl ProfilePicker {
         {
             return ("Didn't start".into(), true);
         }
-        match (&item.state, &item.kind) {
-            (State::Ready, Kind::LegacyDefault) => ("Your own sign-ins".into(), false),
-            (State::Ready, _) => ("".into(), false),
-            (State::Creating, _) => ("Creating…".into(), false),
-            (State::Failed, _) => ("Didn't finish".into(), true),
+        match item.state {
+            State::Ready => ("".into(), false),
+            State::Failed => ("Didn't finish".into(), true),
         }
-    }
-}
-
-/// An absent registry is a fresh machine, unless a saved workspace needs a profile:
-/// then the registry was lost, and showing an empty list would hide that.
-fn first_run(
-    result: Result<Vec<Item>, Error>,
-    has_bound_workspaces: bool,
-) -> Result<Vec<Item>, Error> {
-    match result {
-        Err(Error::RegistryAbsent) if !has_bound_workspaces => Ok(Vec::new()),
-        other => other,
     }
 }
 
@@ -364,7 +346,6 @@ pub(super) fn message(error: &Error) -> &'static str {
             | ProfileError::RegistrationChanged,
         ) => "The profile could not be reached or authenticated. Its service may be stopped.",
         Error::Unavailable => "The profile discovery command is unavailable.",
-        Error::RegistryAbsent => "The profile registry is missing.",
         Error::Invalid | Error::TooLarge | Error::Profile(ProfileError::Invalid) => {
             "The provider returned invalid profile information."
         }
@@ -489,12 +470,7 @@ impl Render for ProfilePicker {
             rows = rows.child(
                 ui::row(SharedString::from(format!("profile-{id}")), selected)
                     .when(!ready, |row| row.cursor_default().opacity(0.65))
-                    .child(ui::profile_mark(
-                        &id,
-                        &item.display_name,
-                        item.kind == Kind::LegacyDefault,
-                        t.size.profile_mark,
-                    ))
+                    .child(ui::profile_mark(&item.display_name, t.size.profile_mark))
                     .child(
                         div()
                             .flex_1()
@@ -566,13 +542,12 @@ impl Render for ProfilePicker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_interface_roster::profiles::Kind;
     fn item(id: &str, state: State) -> Item {
         Item {
             profile_id: id.into(),
             display_name: "same label".into(),
-            kind: Kind::Isolated,
             state,
+            reason: None,
         }
     }
     #[test]
@@ -596,25 +571,12 @@ mod tests {
     }
 
     #[test]
-    fn absent_registry_is_first_run_only_without_bound_workspaces() {
-        assert!(first_run(Err(Error::RegistryAbsent), false).is_ok_and(|items| items.is_empty()));
-        assert_eq!(
-            first_run(Err(Error::RegistryAbsent), true).err(),
-            Some(Error::RegistryAbsent)
-        );
-        assert_eq!(
-            first_run(Err(Error::CommandFailed), false).err(),
-            Some(Error::CommandFailed)
-        );
-    }
-
-    #[test]
     fn refresh_invalidates_stale_rows_results_and_readiness_without_using_labels() {
         let mut catalog = Catalog::default();
         let first = catalog.begin();
         assert!(catalog.complete(
             &first,
-            Ok(vec![item("a", State::Ready), item("b", State::Creating)])
+            Ok(vec![item("a", State::Ready), item("b", State::Failed)])
         ));
         assert!(catalog.can_choose("a"));
         assert_eq!(catalog.focused.as_deref(), Some("a"));
@@ -642,7 +604,7 @@ mod tests {
         let mut items = (0..40)
             .map(|index| item(&format!("p-{index}"), State::Ready))
             .collect::<Vec<_>>();
-        items[20].state = State::Creating;
+        items[20].state = State::Failed;
         assert!(catalog.complete(&large, Ok(items)));
         for _ in 0..20 {
             catalog.navigate(1);

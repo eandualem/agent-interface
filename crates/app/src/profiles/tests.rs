@@ -2,12 +2,14 @@ use super::*;
 use serde_json::{Value, json};
 use std::{fs, os::unix::fs::PermissionsExt};
 
-fn fixture() -> Value {
-    serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../roster/tests/fixtures/profiles-v1.json"
-    )))
-    .unwrap()
+/// `profile_id` as the Rust service lists it while serving it.
+fn entry(profile_id: &str) -> Value {
+    json!({
+        "state": "serving", "protocol_version": 1, "profile_id": profile_id,
+        "display_name": "Work", "instance_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d",
+        "machine": {"id": "5f2c9e0d1b7a4e38"}, "socket": "/run/profile/api.sock",
+        "tmux_socket": "/run/profile/tmux.sock", "credential_reference": {"type": "socket"}
+    })
 }
 
 fn stub(script: &str) -> (tempfile::TempDir, Client) {
@@ -39,11 +41,10 @@ fn stub(script: &str) -> (tempfile::TempDir, Client) {
 
 #[test]
 fn discovery_only_lists_and_shows_records_without_connecting_or_mutating() {
-    let fixture = fixture();
-    let list = &fixture["discovery"]["list"];
-    let ready = &fixture["discovery"]["show_ready"];
-    let mut creating = fixture["discovery"]["show_creating"].clone();
-    creating["profile_id"] = json!("-opaque;id");
+    let list = json!({"profiles": [entry("profile-a")]});
+    let ready = entry("profile-a");
+    let failed = json!({"state": "failed", "profile_id": "-opaque;id", "display_name": "Work",
+        "code": "start_failed", "reason": "The profile's folder cannot be read."});
     let script = format!(
         r#"
 printf '%s\n' "$*" >> "$CAPTURE"
@@ -57,7 +58,7 @@ FIXTURE
 FIXTURE
 ;;
   'profiles show --json -- -opaque;id') /bin/cat <<'FIXTURE'
-{creating}
+{failed}
 FIXTURE
 ;;
   *) exit 9;;
@@ -70,79 +71,18 @@ esac
     assert_eq!(items[0].profile_id, "profile-a");
     let profile = client.show("profile-a", &|| true).unwrap();
     assert_eq!(profile.item().state, profiles::State::Ready);
+    let failed = client.show("-opaque;id", &|| true).unwrap();
+    assert_eq!(failed.item().state, profiles::State::Failed);
     assert_eq!(
-        client.show("-opaque;id", &|| true).unwrap().item().state,
-        profiles::State::Creating
+        failed.item().reason.as_deref(),
+        Some("The profile's folder cannot be read.")
     );
     assert_eq!(
         fs::read_to_string(directory.path().join("calls")).unwrap(),
         "profiles list --json\nprofiles show --json -- profile-a\nprofiles show --json -- -opaque;id\n"
     );
-    // The canonical ready fixture points at nonexistent example paths. Showing
-    // it succeeds because discovery neither reads credentials nor connects.
-}
-
-#[test]
-fn only_a_valid_absent_registry_refusal_is_distinguished() {
-    let refusal = |code: &str| {
-        format!(
-            r#"echo '{{"schema_version":1,"error":{{"code":"{code}","message":"x"}}}}'; exit 1"#
-        )
-    };
-    let list = |script: &str| stub(script).1.list(&|| true).err();
-    assert_eq!(
-        list(&refusal("registry_absent")),
-        Some(Error::RegistryAbsent)
-    );
-    assert_eq!(
-        list(&refusal("registry_unavailable")),
-        Some(Error::CommandFailed)
-    );
-    assert_eq!(list("exit 1"), Some(Error::CommandFailed));
-}
-
-#[test]
-fn runtime_observations_use_original_tuple_and_never_fall_back_to_legacy() {
-    let wire = &fixture()["runtime_catalog"]["catalog"];
-    let identity = profiles::Identity {
-        profile_id: "profile-a".into(),
-        installation_id: "installation-a".into(),
-        lifecycle_id: "lifecycle-a1".into(),
-    };
-    let (directory, client) = stub(&format!(
-        r#"
-printf '%s\n' "$@" >> "$CAPTURE"
-/bin/cat <<'FIXTURE'
-{wire}
-FIXTURE
-"#
-    ));
-    let catalog = client.runtimes(&identity, &|| true).unwrap();
-    assert_eq!(catalog.identity(), &identity);
-    assert_eq!(
-        fs::read_to_string(directory.path().join("calls")).unwrap(),
-        "runtimes\n--json\n--check-setup\n--profile=profile-a\n--expected-installation-id=installation-a\n--expected-lifecycle-id=lifecycle-a1\n"
-    );
-    let mut other = identity.clone();
-    other.lifecycle_id = "another".into();
-    assert!(matches!(
-        client.runtimes(&other, &|| true),
-        Err(Error::Profile(profiles::Error::BindingMismatch))
-    ));
-    let (directory, client) = stub("printf call >> \"$CAPTURE\"; exit 2");
-    assert!(matches!(
-        client.runtimes(&identity, &|| true),
-        Err(Error::CommandFailed)
-    ));
-    assert_eq!(
-        fs::read_to_string(directory.path().join("calls")).unwrap(),
-        "call"
-    );
-    let (_directory, client) = stub(r#"printf '{"schema_version":1,"items":[]}'"#);
-    assert!(matches!(
-        client.runtimes(&identity, &|| true),
-        Err(Error::Profile(profiles::Error::Unsupported))
-    ));
+    // The entry points at nonexistent example paths. Showing it succeeds
+    // because discovery never connects.
 }
 
 #[test]
@@ -153,7 +93,7 @@ if [ "$BACKBONE_AGENT" = fixture-agent ]; then
   printf refused > "$CAPTURE"
   exit 7
 fi
-printf '{"schema_version":1,"items":[]}'
+printf '{"profiles":[]}'
 "#,
     );
     client
@@ -164,13 +104,13 @@ printf '{"schema_version":1,"items":[]}'
         fs::read_to_string(directory.path().join("calls")).unwrap(),
         "refused"
     );
-    let (_directory, client) = stub(r#"printf '{"schema_version":1,"items":[]}'; exit 2"#);
+    let (_directory, client) = stub(r#"printf '{"profiles":[]}'; exit 2"#);
     assert!(matches!(client.list(&|| true), Err(Error::CommandFailed)));
 }
 
 #[test]
 fn discovery_rejects_wrong_profiles_and_invalid_or_oversized_output() {
-    let ready = &fixture()["discovery"]["show_ready"];
+    let ready = entry("profile-a");
     let (_directory, client) = stub(&format!("/bin/cat <<'FIXTURE'\n{ready}\nFIXTURE"));
     let shown = client.show("another-profile", &|| true);
     assert!(
@@ -182,7 +122,10 @@ fn discovery_rejects_wrong_profiles_and_invalid_or_oversized_output() {
         client.show("two words", &|| true),
         Err(Error::Invalid)
     ));
-    let (_directory, client) = stub(r#"printf '{"schema_version":999,"items":[]}'"#);
+    let mut later = entry("profile-a");
+    later["protocol_version"] = json!(2);
+    let later = json!({"profiles": [later]});
+    let (_directory, client) = stub(&format!("/bin/cat <<'FIXTURE'\n{later}\nFIXTURE"));
     assert!(matches!(
         client.list(&|| true),
         Err(Error::Profile(profiles::Error::Unsupported))
@@ -234,7 +177,7 @@ fn discovery_cleans_wrapper_children_on_cancellation_timeout_and_success() {
 /bin/sh -c 'printf "%s" "$$" > "$CAPTURE.pid"; while :; do printf x >> "$CAPTURE.beats"; /bin/sleep 0.01; done' &
 "#.to_owned() + if mode == "success" {
             r#"while [ ! -s "$CAPTURE.beats" ]; do /bin/sleep 0.01; done
-printf '{"schema_version":1,"items":[]}'
+printf '{"profiles":[]}'
 "#
         } else { "wait\n" };
         let (directory, client) = stub(&script);

@@ -8,6 +8,9 @@ struct Fixture {
     journal: PathBuf,
 }
 impl Fixture {
+    /// A stand-in for the service's `profiles create`: it counts each call,
+    /// runs `extra`, exits with `$ROOT/exit` when that is there and otherwise
+    /// prints `$ROOT/reply`.
     fn new(extra: &str) -> Self {
         let root = tempfile::tempdir().unwrap();
         let directory = root.path().canonicalize().unwrap();
@@ -16,18 +19,10 @@ impl Fixture {
             &executable,
             format!(
                 r#"#!/bin/sh
-# A create first lists the profiles to tell which service this is; this
-# provider is the earlier one, and only its lifecycle commands are counted.
-if [ "$2" = list ]; then
-    printf '{{"schema_version":1,"items":[]}}\n'
-    exit 0
-fi
 printf '%s\n' "$2" >> "$ROOT/calls"
-if [ "$2" = apply ]; then
-    /bin/cat "$4" >> "$ROOT/bodies"
-    printf '\n' >> "$ROOT/bodies"
-fi
+printf '%s\n' "$*" >> "$ROOT/arguments"
 {extra}
+if [ -f "$ROOT/exit" ]; then exit "$(/bin/cat "$ROOT/exit")"; fi
 /bin/cat "$ROOT/reply"
 "#
             ),
@@ -43,45 +38,50 @@ fi
                 ("ROOT".into(), directory.as_os_str().into()),
             ],
         };
-        Self {
+        let fixture = Self {
             root,
             client,
             journal: directory.join("journal"),
-        }
+        };
+        fixture.made();
+        fixture
     }
     fn controller(&self) -> Controller {
         Controller::new(journal::Journal::open(&self.journal).unwrap(), &self.client)
     }
-    fn reply(&self, status: &str, lifecycle: &str) {
-        fs::write(self.root.path().join("reply"), serde_json::to_vec(&serde_json::json!({
-            "schema_version":1,"request_id":"request-a","action":"create","profile_id":"profile-a",
-            "installation_id":"installation-a","lifecycle_id":lifecycle,"status":status,
-            "error": if status == "failed" { serde_json::json!({"code":"failed","message":"Fixture failure"}) } else { serde_json::Value::Null }
-        })).unwrap()).unwrap();
+    /// The service made the profile and serves it.
+    fn made(&self) {
+        fs::write(
+            self.root.path().join("reply"),
+            serde_json::to_vec(&serde_json::json!({
+                "state": "serving", "protocol_version": 1, "profile_id": "0a1b2c3d4e5f",
+                "display_name": "Example", "instance_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d",
+                "machine": {"id": "5f2c9e0d1b7a4e38"}, "socket": "/run/profile/api.sock",
+                "tmux_socket": "/run/profile/tmux.sock", "credential_reference": {"type": "socket"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    fn exit(&self, code: u8) {
+        fs::write(self.root.path().join("exit"), code.to_string()).unwrap();
     }
     fn calls(&self) -> String {
         fs::read_to_string(self.root.path().join("calls")).unwrap_or_default()
     }
 }
 fn intent() -> Prepared {
-    Prepared::create("request-a", "Example", "baseline-a").unwrap()
+    Prepared::create("request-a", "Example").unwrap()
 }
+/// Unreadable output on the first call only.
+const LOST_ONCE: &str =
+    "if [ ! -f \"$ROOT/once\" ]; then : > \"$ROOT/once\"; printf invalid; exit 0; fi";
 
 #[test]
-fn maximum_lifecycle_id_and_large_escaped_receipt_recover_after_lost_reply() {
-    let fixture = Fixture::new("if [ \"$2\" = apply ]; then printf invalid; exit 0; fi");
+fn a_maximum_request_id_recovers_after_a_lost_reply() {
+    let fixture = Fixture::new(LOST_ONCE);
     let request_id = "x".repeat(agent_interface_roster::profiles::operations::REQUEST_ID_LIMIT);
-    let escaped = "\\".repeat((super::super::OUTPUT_LIMIT - 4096) / 2);
-    let prepared = Prepared::create(&request_id, &escaped, "baseline-a").unwrap();
-    let reply = serde_json::to_vec(&serde_json::json!({
-        "schema_version":1,"request_id":request_id,"action":"create",
-        "profile_id":escaped,"installation_id":"installation-a",
-        "lifecycle_id":"lifecycle-a","status":"succeeded","error":null,
-    }))
-    .unwrap();
-    assert!(prepared.bytes().len() <= super::super::OUTPUT_LIMIT);
-    assert!(reply.len() <= super::super::OUTPUT_LIMIT);
-    fs::write(fixture.root.path().join("reply"), reply).unwrap();
+    let prepared = Prepared::create(&request_id, "Example").unwrap();
     let controller = fixture.controller();
     let saved = controller.enqueue(prepared).unwrap();
     assert!(matches!(
@@ -95,7 +95,7 @@ fn maximum_lifecycle_id_and_large_escaped_receipt_recover_after_lost_reply() {
         fixture.controller().read(&saved.key).unwrap().terminal,
         Some(receipt)
     );
-    assert_eq!(fixture.calls(), "apply\noperation\n");
+    assert_eq!(fixture.calls(), "create\ncreate\n");
 }
 
 #[test]
@@ -114,7 +114,7 @@ fn intent_is_durable_before_execution_and_duplicate_ids_cannot_replace_it() {
     assert_eq!(controller.read(&saved.key).unwrap(), saved);
     assert_eq!(fixture.calls(), "");
     assert_eq!(
-        controller.enqueue(Prepared::create("request-a", "Replacement", "other").unwrap()),
+        controller.enqueue(Prepared::create("request-a", "Replacement").unwrap()),
         Err(Error::Storage(journal::Error::Conflict))
     );
     assert_eq!(
@@ -134,8 +134,8 @@ fn intent_is_durable_before_execution_and_duplicate_ids_cannot_replace_it() {
 }
 
 #[test]
-fn restart_defaults_to_lookup_and_terminal_receipts_disable_all_commands() {
-    let fixture = Fixture::new("if [ \"$2\" = apply ]; then printf invalid; exit 0; fi");
+fn restart_asks_again_and_terminal_receipts_disable_all_commands() {
+    let fixture = Fixture::new(LOST_ONCE);
     let controller = fixture.controller();
     let key = controller.enqueue(intent()).unwrap().key;
     assert!(matches!(
@@ -145,9 +145,8 @@ fn restart_defaults_to_lookup_and_terminal_receipts_disable_all_commands() {
     drop(controller);
     let restored = fixture.controller();
     assert_eq!(restored.read(&key).unwrap().phase, Phase::Submitted);
-    assert_eq!(fixture.calls(), "apply\n");
+    assert_eq!(fixture.calls(), "create\n");
     assert_eq!(restored.submit(&key, &|| true), Err(Error::WrongPhase));
-    fixture.reply("succeeded", "lifecycle-a1");
     let receipt = restored.refresh(&key, &|| true).unwrap();
     assert_eq!(receipt.status, Status::Succeeded);
     assert_eq!(
@@ -161,55 +160,27 @@ fn restart_defaults_to_lookup_and_terminal_receipts_disable_all_commands() {
     ] {
         assert_eq!(result, Err(Error::Completed));
     }
-    assert_eq!(fixture.calls(), "apply\noperation\n");
+    assert_eq!(fixture.calls(), "create\ncreate\n");
 }
 
 #[test]
-fn explicit_retry_retains_exact_bytes_and_original_id_after_unknown_outcome() {
+fn explicit_retry_keeps_the_original_id_after_an_unknown_outcome() {
     let fixture = Fixture::new("");
     let controller = fixture.controller();
-    let original = intent().bytes().to_vec();
     let key = controller.enqueue(intent()).unwrap().key;
-    fs::write(fixture.root.path().join("reply"), b"unknown").unwrap();
+    fixture.exit(4);
     assert!(controller.submit(&key, &|| true).is_err());
-    fixture.reply("failed", "lifecycle-a1");
+    // A request the service could not read is refused on any repeat.
+    fixture.exit(2);
     assert_eq!(
         fixture.controller().retry(&key, &|| true).unwrap().status,
         Status::Failed
     );
-    let body = String::from_utf8(original).unwrap();
+    let arguments = fs::read_to_string(fixture.root.path().join("arguments")).unwrap();
+    let sent: Vec<_> = arguments.lines().collect();
     assert_eq!(
-        fs::read_to_string(fixture.root.path().join("bodies")).unwrap(),
-        format!("{body}\n{body}\n")
-    );
-    assert_eq!(fixture.calls(), "apply\napply\n");
-}
-
-#[test]
-fn reservations_survive_restart_and_reject_a_replacement_receipt() {
-    let fixture = Fixture::new("");
-    fixture.reply("pending", "lifecycle-a1");
-    let controller = fixture.controller();
-    let key = controller.enqueue(intent()).unwrap().key;
-    assert_eq!(
-        controller.submit(&key, &|| true).unwrap().status,
-        Status::Pending
-    );
-    fixture.reply("succeeded", "replacement");
-    let restored = fixture.controller();
-    assert_eq!(
-        restored.refresh(&key, &|| true),
-        Err(Error::Client(super::super::Error::Profile(
-            agent_interface_roster::profiles::Error::BindingMismatch
-        )))
-    );
-    let saved = restored.read(&key).unwrap();
-    assert_eq!(saved.identity.unwrap().lifecycle_id, "lifecycle-a1");
-    assert!(saved.terminal.is_none());
-    fixture.reply("succeeded", "lifecycle-a1");
-    assert_eq!(
-        restored.refresh(&key, &|| true).unwrap().status,
-        Status::Succeeded
+        sent,
+        ["profiles create --starter core-v1 --request-id request-a --json -- Example"; 2]
     );
 }
 
@@ -236,7 +207,6 @@ fn invalid_envelopes_fail_before_any_command() {
 #[test]
 fn storage_failure_after_provider_success_never_returns_terminal_authority() {
     let fixture = Fixture::new("/bin/chmod 755 \"$ROOT/journal\"");
-    fixture.reply("succeeded", "lifecycle-a1");
     let controller = fixture.controller();
     let key = controller.enqueue(intent()).unwrap().key;
     assert_eq!(
@@ -248,14 +218,13 @@ fn storage_failure_after_provider_success_never_returns_terminal_authority() {
     assert_eq!(saved.phase, Phase::Submitted);
     assert!(saved.terminal.is_none());
     assert!(saved.identity.is_none());
-    assert_eq!(fixture.calls(), "apply\n");
+    assert_eq!(fixture.calls(), "create\n");
 }
 
 #[test]
 fn concurrent_first_submission_is_refused_and_stale_results_cannot_overwrite_progress() {
     use std::{cell::Cell, sync::mpsc, time::Duration};
     let fixture = Fixture::new("");
-    fixture.reply("pending", "lifecycle-a1");
     let controller = fixture.controller();
     let key = controller.enqueue(intent()).unwrap().key;
     let other = fixture.controller();
@@ -280,18 +249,16 @@ fn concurrent_first_submission_is_refused_and_stale_results_cannot_overwrite_pro
     release.send(()).unwrap();
     let stale = worker.join().unwrap();
     assert_eq!(duplicate, Err(Error::WrongPhase));
-    assert_eq!(fresh.unwrap().status, Status::Pending);
+    let fresh = fresh.unwrap();
+    assert_eq!(fresh.status, Status::Succeeded);
     assert_eq!(stale, Err(Error::Storage(journal::Error::Conflict)));
-    let saved = controller.read(&key).unwrap();
-    assert_eq!(saved.identity.unwrap().lifecycle_id, "lifecycle-a1");
-    assert!(saved.terminal.is_none());
-    assert_eq!(fixture.calls(), "operation\napply\n");
+    assert_eq!(controller.read(&key).unwrap().terminal, Some(fresh));
+    assert_eq!(fixture.calls(), "create\ncreate\n");
 }
 
 #[test]
 fn recovery_confirms_a_terminal_record_left_by_a_post_rename_failure() {
     let fixture = Fixture::new("");
-    fixture.reply("succeeded", "lifecycle-a1");
     let controller = fixture.controller();
     let key = controller.enqueue(intent()).unwrap().key;
     let mut stored = controller.load(&key).unwrap();
@@ -308,5 +275,5 @@ fn recovery_confirms_a_terminal_record_left_by_a_post_rename_failure() {
     let recovered = fixture.controller();
     assert_eq!(recovered.read(&key).unwrap().terminal, Some(receipt));
     assert_eq!(recovered.retry(&key, &|| true), Err(Error::Completed));
-    assert_eq!(fixture.calls(), "apply\n");
+    assert_eq!(fixture.calls(), "create\n");
 }

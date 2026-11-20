@@ -11,7 +11,6 @@ use std::time::Instant;
 
 use serde_json::value::RawValue;
 
-mod configuration;
 pub mod conversations;
 pub mod feedback;
 pub mod interactions;

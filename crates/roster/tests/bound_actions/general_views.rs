@@ -16,7 +16,7 @@ fn prefix(path: &'static str, reply: Value) -> Step {
 }
 
 #[test]
-fn general_view_chains_keep_original_identity_and_credentials() {
+fn general_view_chains_keep_original_identity() {
     let (arrived, reading) = mpsc::channel();
     let (release, delayed) = mpsc::channel();
     let (_dir_a, a, server_a) = provider(
@@ -72,7 +72,6 @@ fn general_view_chains_keep_original_identity_and_credentials() {
     let read_b = bound::read(&b, &Request::Team, &|| true);
     assert_eq!(read_b.identity, *b.identity());
     assert!(format!("{:?}", read_b.result).contains("sentinel-b"));
-    fs::write(a.credential_reference(), "BACKBONE_API_KEY=rotated\n").unwrap();
     release.send(()).unwrap();
     let read_a = worker.join().unwrap();
     assert_eq!(read_a.identity, *a.identity());

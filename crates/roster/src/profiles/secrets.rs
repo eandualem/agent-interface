@@ -64,9 +64,6 @@ pub fn is_value(value: &str) -> bool {
 impl Connection {
     /// The profile's secrets, by name. Runs on an I/O worker.
     pub fn secrets(&self) -> Result<Vec<Secret>, AddError> {
-        if !self.served {
-            return Err(Error::Unsupported.into());
-        }
         let response = self.response(SECRETS, None, RESPONSE_LIMIT)?;
         answer::<List>(&response).map(|list| list.secrets)
     }
@@ -104,9 +101,6 @@ impl Connection {
         body: Option<Vec<u8>>,
         request_id: &str,
     ) -> Result<Change, AddError> {
-        if !self.served {
-            return Err(Error::Unsupported.into());
-        }
         if !is_name(name) {
             return Err(Error::Invalid.into());
         }

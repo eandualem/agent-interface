@@ -95,10 +95,12 @@ impl Attempt {
     /// cancelled before completion. No service or account sign-in commands are run.
     pub fn run(self) -> Completion {
         let live = || self.live.load(Ordering::Acquire);
+        let mut reason = None;
         let result = self
             .client
             .show(&self.profile_id, &live)
             .and_then(|profile| {
+                reason.clone_from(&profile.item().reason);
                 if !live() {
                     return Err(Error::Cancelled);
                 }
@@ -115,6 +117,7 @@ impl Attempt {
             profile_id: self.profile_id,
             live: self.live,
             result,
+            reason,
         }
     }
 }
@@ -125,6 +128,15 @@ pub struct Completion {
     profile_id: String,
     live: Arc<AtomicBool>,
     result: Result<Selected, Error>,
+    reason: Option<String>,
+}
+
+impl Completion {
+    /// The service's sentence on why it does not serve the profile, when the
+    /// attempt read one.
+    pub fn reason(&self) -> Option<&str> {
+        self.reason.as_deref()
+    }
 }
 
 #[cfg(test)]

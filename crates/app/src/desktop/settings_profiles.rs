@@ -6,7 +6,7 @@ use super::{
     profile_management::{Back, Management, Open},
 };
 use crate::profiles::Client;
-use agent_interface_roster::profiles::{Item, Kind, State};
+use agent_interface_roster::profiles::{Item, State};
 use gpui::{App, Context, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 
 enum List {
@@ -172,11 +172,9 @@ impl Render for Profiles {
                 let mut card = ui::group_card();
                 for (index, item) in items.iter().enumerate() {
                     let id = item.profile_id.clone();
-                    let state: SharedString = match (&item.state, &item.kind) {
-                        (State::Ready, Kind::LegacyDefault) => "Your own sign-ins".into(),
-                        (State::Ready, _) => "".into(),
-                        (State::Creating, _) => "Creating…".into(),
-                        (State::Failed, _) => "Didn't finish".into(),
+                    let state: SharedString = match item.state {
+                        State::Ready => "".into(),
+                        State::Failed => "Didn't finish".into(),
                     };
                     card =
                         card.child(
@@ -184,13 +182,8 @@ impl Render for Profiles {
                                 SharedString::from(format!("settings-profile-{id}")),
                                 index == 0,
                                 Some(
-                                    ui::profile_mark(
-                                        &id,
-                                        &item.display_name,
-                                        item.kind == Kind::LegacyDefault,
-                                        t.size.profile_mark,
-                                    )
-                                    .into_any_element(),
+                                    ui::profile_mark(&item.display_name, t.size.profile_mark)
+                                        .into_any_element(),
                                 ),
                                 item.display_name.clone(),
                                 div().text_color(c.muted).child(state),

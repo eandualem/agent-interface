@@ -1,5 +1,5 @@
 use super::*;
-use agent_interface_roster::profiles::operations::Receipt;
+use agent_interface_roster::profiles::operations::{Prepared, Receipt};
 
 #[test]
 fn superseded_and_closed_controls_cannot_accept_delayed_results() {
@@ -28,7 +28,7 @@ fn unknown_storage_and_submission_never_enable_replacement_submission() {
         key: "key".into(),
         revision: 1,
         phase: Phase::Prepared,
-        action: Action::Start,
+        action: Action::Create,
         request_id: "request-a".into(),
         identity: None,
         terminal: None,
@@ -66,7 +66,7 @@ fn history_reads_one_page_and_preserves_individual_invalid_record_failures() {
     );
     for i in 0..35 {
         controller
-            .enqueue(Prepared::create(&format!("request-{i}"), "Example", "baseline").unwrap())
+            .enqueue(Prepared::create(&format!("request-{i}"), "Example").unwrap())
             .unwrap();
     }
     let ids = controller.ids().unwrap();

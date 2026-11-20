@@ -556,7 +556,7 @@ fn an_unknown_start_is_not_headed_as_a_failure() {
         heading("guide", Some(&Answer::Stopped("guide is taken".into()))),
         "guide didn't start"
     );
-    // The earlier provider's starts keep their heading.
+    // A start read from the journal keeps its heading.
     assert_eq!(heading("guide", None), "guide didn't start");
 }
 

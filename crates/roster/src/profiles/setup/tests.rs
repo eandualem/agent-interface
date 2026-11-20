@@ -91,18 +91,6 @@ fn the_body_is_the_services_fixture_and_its_cancellation_changes_only_the_action
         assert_eq!(body, service(fixture));
     }
     assert_eq!(prepared.profile_id(), PROFILE);
-    // A profile the Rust service doesn't serve takes no setup request.
-    let fixture: Value = serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/profiles-v1.json"
-    )))
-    .unwrap();
-    let earlier =
-        Profile::parse(&serde_json::to_vec(&fixture["discovery"]["show_ready"]).unwrap()).unwrap();
-    assert_eq!(
-        Prepared::first_agent(ID, &earlier, guide(), true).err(),
-        Some(Error::Unsupported)
-    );
 }
 
 #[test]
@@ -428,10 +416,10 @@ fn values_this_app_does_not_know_are_kept_and_malformed_ones_poison() {
             "step {field}: {value}"
         );
     }
-    let mut earlier = ready();
-    earlier["schema_version"] = json!(2);
+    let mut other = ready();
+    other["schema_version"] = json!(4);
     let mut stream = prepared(guide()).stream(Action::FirstAgent);
-    assert_eq!(stream.push(&line(&earlier)), Err(Error::Unsupported));
+    assert_eq!(stream.push(&line(&other)), Err(Error::Unsupported));
     assert!(stream.finish().is_err());
 }
 

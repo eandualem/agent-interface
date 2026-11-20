@@ -40,7 +40,7 @@ const OUTPUT_LIMIT: usize = 256 * 1024;
 /// Whether Agent Backbone is set up and answering.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Backbone {
-    /// No Backbone database at its data directory.
+    /// No `backbone` command, or no profile served yet.
     NotSetUp,
     /// Set up, but the last request failed.
     Unreachable(&'static str),
@@ -223,32 +223,40 @@ fn path_lookup(path_env: &str, home: Option<&Path>) -> (Vec<(&'static str, PathB
     (found, path_env)
 }
 
-/// Whether Agent Backbone's Default profile answers, read through its
+/// Whether a profile Agent Backbone serves answers, read through its
 /// verified connection with a client already found, so the login shell is
-/// not asked again. Blocks for a moment; call off the UI thread.
+/// not asked again. First run makes the Default profile. Blocks for a
+/// moment; call off the UI thread.
 pub fn answers(client: Option<crate::profiles::Client>) -> Backbone {
-    use agent_interface_roster::profiles::Kind;
-    const UNANSWERED: &str = "The Default profile is not answering";
+    use agent_interface_roster::profiles::State;
+    const UNANSWERED: &str = "No Agent Backbone profile is answering";
     let live = || true;
     let Some(client) = client else {
         return Backbone::NotSetUp;
     };
     let items = match client.list(&live) {
         Ok(items) => items,
-        Err(crate::profiles::Error::RegistryAbsent) => return Backbone::NotSetUp,
         Err(_) => return Backbone::Unreachable("Backbone did not list its profiles"),
     };
-    let Some(default) = items.iter().find(|item| item.kind == Kind::LegacyDefault) else {
+    let served: Vec<_> = items
+        .iter()
+        .filter(|item| item.state == State::Ready)
+        .collect();
+    if served.is_empty() {
         return Backbone::NotSetUp;
-    };
-    let roster = client
-        .show(&default.profile_id, &live)
-        .ok()
-        .and_then(|profile| profile.connect().ok())
-        .and_then(|connection| connection.roster().ok());
-    match roster {
-        Some(_) => Backbone::Running,
-        None => Backbone::Unreachable(UNANSWERED),
+    }
+    let answered = served.iter().any(|item| {
+        client
+            .show(&item.profile_id, &live)
+            .ok()
+            .and_then(|profile| profile.connect().ok())
+            .and_then(|connection| connection.roster().ok())
+            .is_some()
+    });
+    if answered {
+        Backbone::Running
+    } else {
+        Backbone::Unreachable(UNANSWERED)
     }
 }
 

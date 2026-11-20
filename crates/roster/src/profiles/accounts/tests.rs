@@ -198,20 +198,7 @@ fn an_answer_about_another_profile_cli_or_session_is_refused() {
 }
 
 #[test]
-fn a_profile_the_rust_service_does_not_serve_is_never_asked() {
-    let (connection, server) = served(Vec::new());
-    let mut earlier = connection.clone();
-    earlier.served = false;
-    let unsupported = Some(Failure::Connection(Error::Unsupported));
-    assert_eq!(earlier.stored_login("codex").err(), unsupported);
-    assert_eq!(earlier.start_sign_in("codex").err(), unsupported);
-    assert_eq!(earlier.check_sign_in("codex").err(), unsupported);
-    // Only the connection's own identity read reached the service.
-    assert_eq!(server.join().unwrap().len(), 1);
-}
-
-#[test]
-fn the_older_sign_in_uses_the_services_route_and_keeps_a_refusals_status() {
+fn a_sign_in_session_uses_the_services_route_and_keeps_a_refusals_status() {
     let unstarted = refusal(
         "shell_unavailable",
         "The terminal session could not be started.",
@@ -233,7 +220,7 @@ fn the_older_sign_in_uses_the_services_route_and_keeps_a_refusals_status() {
 }
 
 #[test]
-fn the_older_status_read_uses_the_services_route_and_keeps_a_refusals_status() {
+fn the_status_read_uses_the_services_route_and_keeps_a_refusals_status() {
     let unknown = refusal(
         "invalid_request",
         "\"gemini\" is not claude, codex or antigravity",

@@ -55,15 +55,11 @@ impl Browser {
         let model = layout.model();
         if self.profile_content_unavailable() {
             let origin = self.selected_navigation_origin();
-            let start_origin = origin.clone();
             let change_origin = origin.clone();
-            let failure = self.profile_failure().filter(|_| !self.profile_starting);
+            let failure = self.profile_failure();
+            let reason = failure.and(self.profile_reason());
             let (title, note) = match failure {
                 Some(failure) => ("Workspace profile unavailable", failure),
-                None if self.profile_starting => (
-                    "Starting this profile’s service…",
-                    "This can take a moment.",
-                ),
                 None => (
                     "Connecting to this workspace’s profile…",
                     "This can take a moment.",
@@ -72,14 +68,7 @@ impl Browser {
             return area
                 .child(
                     ui::empty_state(ui::empty_tile("unplug", c.selected, c.text_2), title, note)
-                        .when(failure.is_some() && self.profile_can_start(), |state| {
-                            state.child(
-                                ui::button("start-profile", "Start service", ui::Button::Primary)
-                                    .on_click(cx.listener(move |browser, _, _, cx| {
-                                        browser.start_profile_service(start_origin.as_ref(), cx)
-                                    })),
-                            )
-                        })
+                        .when_some(reason, |state, reason| state.child(ui::group_note(reason)))
                         .when(failure.is_some(), |state| {
                             state.child(
                                 ui::button(

@@ -1,10 +1,7 @@
-//! Profile contract r2: explicit discovery and a pinned local connection.
+//! Agent Backbone profiles: explicit discovery and a pinned local connection.
 
 use std::{
-    fs::OpenOptions,
     hash::{Hash, Hasher},
-    io::Read,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -26,7 +23,7 @@ mod stream;
 
 use crate::{RESPONSE_LIMIT, Snapshot, transport::local};
 
-/// A registered provider instance. Display names and baseline versions are not identity.
+/// A served profile. Display names are not identity.
 /// The Rust service has no installation or generation of its own: for its profiles
 /// both of those fields hold the machine's ID, which stays the same across restarts.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize)]
@@ -85,124 +82,55 @@ pub struct AddedSkill {
     pub warnings: Vec<String>,
 }
 
-/// Registry classification; it does not confer legacy connection eligibility.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Kind {
-    /// The original installation, registered in place. A profile of the Rust
-    /// service counts as one while its agents use the person's own sign-ins.
-    LegacyDefault,
-    /// A separately provisioned profile.
-    Isolated,
-}
-
-/// Registry provisioning state, independent of whether the service is running.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// Whether the service serves the profile, independent of its agents.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum State {
-    /// Not ready for content connections.
-    Creating,
-    /// Provisioned; still requires an authenticated identity handshake.
+    /// Served; still requires an authenticated identity handshake.
     Ready,
-    /// Provisioning failed and needs explicit recovery.
+    /// The service could not start serving it.
     Failed,
 }
 
-/// Discovery metadata. `Ready` describes provisioning, not service availability.
-#[derive(Clone, Debug, Deserialize)]
+/// Discovery metadata. `Ready` describes the listing, not a verified connection.
+#[derive(Clone, Debug)]
 pub struct Item {
     /// Stable profile identity, never inferred from its name.
     pub profile_id: String,
     /// Human-readable label, not request authority.
     pub display_name: String,
-    /// How the profile was provisioned.
-    pub kind: Kind,
-    /// Whether a connection binding may be present.
+    /// Whether a connection binding is present.
     pub state: State,
+    /// Why the service does not serve the profile: its own sentence for a
+    /// person, shown as given. Its wording may change at any time.
+    pub reason: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct Catalog {
-    items: Vec<Item>,
-}
-
-/// Decode a successful registry list. A registry command error must not call this.
+/// Decode a successful `profiles list`. A command error must not call this.
 pub fn list(bytes: &[u8]) -> Result<Vec<Item>, Error> {
-    if served(bytes, "profiles") {
-        return served::list(bytes);
+    if bytes.len() > RESPONSE_LIMIT {
+        return Err(Error::Invalid);
     }
-    let catalog: Catalog = parse(bytes)?;
-    let mut ids = std::collections::HashSet::new();
-    for item in &catalog.items {
-        validate_item(item)?;
-        if !ids.insert(&item.profile_id) {
-            return Err(Error::Invalid);
-        }
-    }
-    Ok(catalog.items)
+    served::list(bytes)
 }
 
-/// The only profile in the Rust service's list that it serves with its home
-/// here. Any other list, or none or several such profiles, gives none.
-pub fn home(bytes: &[u8]) -> Option<Item> {
-    // A list that is refused as a whole names no home.
-    list(bytes).ok()?;
-    served(bytes, "profiles")
-        .then(|| served::home(bytes))
-        .flatten()
-}
-
-/// Whether a list came from the Rust service, which makes a profile from
-/// `profiles create` and serves it at once, with nothing to start.
-pub fn served_list(bytes: &[u8]) -> bool {
-    served(bytes, "profiles")
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum Endpoint {
-    Unix { path: PathBuf },
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum Credential {
-    Dotenv {
-        path: PathBuf,
-        key: String,
-    },
-    /// The owner-only socket is the credential; no key is read or sent.
-    #[serde(skip)]
-    Socket,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Tmux {
     socket_path: PathBuf,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
 struct Binding {
     installation_id: String,
     lifecycle_id: String,
-    endpoint: Endpoint,
-    credential_reference: Credential,
+    /// The owner-only socket, which is the credential: no key is read or sent.
+    socket: PathBuf,
     tmux: Tmux,
-    /// The Rust service's run, new at each of its starts. It is checked when
+    /// The service's run, new at each of its starts. It is checked when
     /// connecting and never kept as identity.
-    #[serde(skip)]
-    instance: Option<String>,
+    instance: String,
 }
 
-#[derive(Deserialize)]
-struct Record {
-    #[serde(flatten)]
-    item: Item,
-    // Raw JSON distinguishes a required null from a missing binding field.
-    binding: Box<serde_json::value::RawValue>,
-}
-
-/// An atomic registry record; only `connect` can turn it into a verified connection.
+/// One entry of the service's profile list; only `connect` can turn it into a verified connection.
 #[derive(Clone, Debug)]
 pub struct Profile {
     item: Item,
@@ -210,41 +138,12 @@ pub struct Profile {
 }
 
 impl Profile {
-    /// Decode a bounded registry show reply and validate its binding consistency.
+    /// Decode a bounded `profiles show` reply and validate its binding.
     pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
-        if served(bytes, "state") {
-            return served::show(bytes);
-        }
-        let record: Record = parse(bytes)?;
-        validate_item(&record.item)?;
-        let binding: Option<Binding> =
-            serde_json::from_str(record.binding.get()).map_err(|_| Error::Invalid)?;
-        if (record.item.state == State::Ready) != binding.is_some() {
+        if bytes.len() > RESPONSE_LIMIT {
             return Err(Error::Invalid);
         }
-        if let Some(binding) = &binding {
-            let Endpoint::Unix { path } = &binding.endpoint;
-            let Credential::Dotenv {
-                path: credential,
-                key,
-            } = &binding.credential_reference
-            else {
-                return Err(Error::Invalid);
-            };
-            if !valid_id(&binding.installation_id)
-                || !valid_id(&binding.lifecycle_id)
-                || !path.is_absolute()
-                || !credential.is_absolute()
-                || !binding.tmux.socket_path.is_absolute()
-                || key != "BACKBONE_API_KEY"
-            {
-                return Err(Error::Invalid);
-            }
-        }
-        Ok(Self {
-            item: record.item,
-            binding,
-        })
+        served::show(bytes)
     }
 
     /// Read metadata without probing or starting the provider.
@@ -252,15 +151,8 @@ impl Profile {
         &self.item
     }
 
-    /// Whether the Rust service serves this profile, so it is running now.
-    pub fn served(&self) -> bool {
-        self.binding
-            .as_ref()
-            .is_some_and(|binding| binding.instance.is_some())
-    }
-
-    /// Capture registry identity metadata without reading credentials or probing
-    /// the provider. This expectation alone does not authorize a connection.
+    /// Capture the entry's identity without probing the provider. This
+    /// expectation alone does not authorize a connection.
     pub fn expected_identity(&self) -> Result<Identity, Error> {
         let binding = self.binding.as_ref().ok_or(Error::NotReady)?;
         Ok(Identity {
@@ -270,30 +162,21 @@ impl Profile {
         })
     }
 
-    /// Read only the named credential, then authenticate and verify the exact provider.
+    /// Authenticate and verify the exact service on the profile's socket.
     /// Runs on an I/O worker; does not discover or start a service.
     pub fn connect(&self) -> Result<Connection, Error> {
         let binding = self.binding.as_ref().ok_or(Error::NotReady)?;
-        let (path, key) = match &binding.credential_reference {
-            Credential::Dotenv { path, .. } => (path.clone(), credential(path)?),
-            Credential::Socket => Default::default(),
-        };
-        let Endpoint::Unix { path: socket } = &binding.endpoint;
         let connection = Connection {
             identity: Identity {
                 profile_id: self.item.profile_id.clone(),
                 installation_id: binding.installation_id.clone(),
                 lifecycle_id: binding.lifecycle_id.clone(),
             },
-            kind: self.item.kind.clone(),
-            socket: socket.clone(),
+            socket: binding.socket.clone(),
             tmux: binding.tmux.clone(),
-            credential_reference: path,
-            key,
-            served: binding.instance.is_some(),
             connection_key: ConnectionKey(Arc::new(())),
         };
-        connection.handshake(binding.instance.as_deref())?;
+        connection.handshake(Some(&binding.instance))?;
         Ok(connection)
     }
 }
@@ -316,18 +199,12 @@ impl Hash for ConnectionKey {
     }
 }
 
-/// Immutable identity, endpoint and credential snapshot for one connection's work.
-/// Intentionally has no Debug implementation because it holds a credential.
+/// Immutable identity and endpoint snapshot for one connection's work.
 #[derive(Clone)]
 pub struct Connection {
     identity: Identity,
-    kind: Kind,
     socket: PathBuf,
     tmux: Tmux,
-    credential_reference: PathBuf,
-    key: String,
-    /// Whether this is the Rust service, whose handshake has its own shape.
-    served: bool,
     connection_key: ConnectionKey,
 }
 
@@ -338,39 +215,19 @@ impl Connection {
         self.connection_key.clone()
     }
 
-    /// Whether `other` verified the same identity, endpoints and credential, so
-    /// either can stand in for the other without using an older credential.
+    /// Whether `other` verified the same identity and endpoints, so either can
+    /// stand in for the other.
     pub fn same_snapshot(&self, other: &Self) -> bool {
-        self.identity == other.identity
-            && self.kind == other.kind
-            && self.socket == other.socket
-            && self.tmux == other.tmux
-            && self.credential_reference == other.credential_reference
-            && self.key == other.key
-            && self.served == other.served
-    }
-
-    /// Whether this connection is to the Rust service, which has a push stream.
-    pub fn served(&self) -> bool {
-        self.served
+        self.identity == other.identity && self.socket == other.socket && self.tmux == other.tmux
     }
 
     /// The authenticated identity retained by every operation on this connection.
     pub fn identity(&self) -> &Identity {
         &self.identity
     }
-    /// How this profile was provisioned, from the record that was connected.
-    pub fn kind(&self) -> &Kind {
-        &self.kind
-    }
     /// The tmux socket confirmed by the provider handshake.
     pub fn tmux_socket(&self) -> &Path {
         &self.tmux.socket_path
-    }
-    /// The original credential locator; this connection never re-reads it.
-    /// Empty when the socket itself is the credential.
-    pub fn credential_reference(&self) -> &Path {
-        &self.credential_reference
     }
 
     /// Read the roster on this verified binding without re-reading configuration.
@@ -399,13 +256,10 @@ impl Connection {
     /// which lives on this connection's tmux socket. The provider owns the shell's
     /// environment and tmux server; the name is opaque. Runs on an I/O worker.
     pub fn ensure_shell(&self, shell_id: &str, cwd: Option<&str>) -> Result<String, Error> {
+        // The socket is pinned, so the profile alone tells a foreign reply.
         #[derive(Deserialize)]
         struct Reply {
             profile_id: String,
-            // The Rust service names its run instead of these two; its socket
-            // is pinned, so the profile alone tells a foreign reply.
-            installation_id: Option<String>,
-            lifecycle_id: Option<String>,
             shell_id: String,
             session: String,
         }
@@ -421,13 +275,7 @@ impl Connection {
         }
         successful(&response)?;
         let reply: Reply = parse(&response.body)?;
-        let same = |field: &Option<String>, expected: &String| {
-            self.served || field.as_ref() == Some(expected)
-        };
-        if reply.profile_id != self.identity.profile_id
-            || !same(&reply.installation_id, &self.identity.installation_id)
-            || !same(&reply.lifecycle_id, &self.identity.lifecycle_id)
-        {
+        if reply.profile_id != self.identity.profile_id {
             return Err(Error::BindingMismatch);
         }
         if reply.shell_id != shell_id || reply.session.is_empty() {
@@ -436,107 +284,40 @@ impl Connection {
         Ok(reply.session)
     }
 
-    /// Ask the provider for a session that signs a CLI account in for `runtime`
+    /// Ask the service for a session that signs a CLI account in for `runtime`
     /// inside this profile, and return its name on this connection's tmux socket.
-    /// A repeat reuses the session while it is live. The Rust service answers
-    /// in its own shape, read by [`Connection::start_sign_in`], and a refusal
-    /// keeps its status. Runs on an I/O worker.
+    /// A repeat reuses the session while it is live; see
+    /// [`Connection::start_sign_in`]. A refusal keeps its status. Runs on an I/O
+    /// worker.
     pub fn sign_in_session(&self, runtime: &str) -> Result<String, Error> {
-        if self.served {
-            return self
-                .start_sign_in(runtime)
-                .map(|started| started.session)
-                .map_err(accounts::Failure::error);
-        }
-        #[derive(Deserialize)]
-        struct Reply {
-            #[serde(flatten)]
-            identity: Identity,
-            runtime: String,
-            session: String,
-        }
-        let body = serde_json::to_vec(&serde_json::json!({
-            "schema_version": 1,
-            "runtime": runtime,
-        }))
-        .map_err(|_| Error::Invalid)?;
-        let response =
-            self.response("/api/profile/accounts/sign-in", Some(body), RESPONSE_LIMIT)?;
-        if response.status == 404 {
-            return Err(Error::Unsupported);
-        }
-        successful(&response)?;
-        let reply: Reply = parse(&response.body)?;
-        if reply.identity != self.identity {
-            return Err(Error::BindingMismatch);
-        }
-        if reply.runtime != runtime || reply.session.is_empty() {
-            return Err(Error::Invalid);
-        }
-        Ok(reply.session)
+        self.start_sign_in(runtime)
+            .map(|started| started.session)
+            .map_err(accounts::Failure::error)
     }
 
-    /// Read whether `runtime` holds a stored sign-in in this profile. A stored
-    /// sign-in doesn't prove the account works. The Rust service answers in its
-    /// own shape, read by [`Connection::stored_login`]. Runs on an I/O worker.
+    /// Read whether `runtime` holds a stored sign-in in this profile, as
+    /// [`Connection::stored_login`] reads it. A stored sign-in doesn't prove the
+    /// account works. Runs on an I/O worker.
     pub fn account_status(&self, runtime: &str) -> Result<runtime_catalog::Authentication, Error> {
-        if self.served {
-            use runtime_catalog::Authentication;
-            return self
-                .stored_login(runtime)
-                .map(|stored| match stored.storage {
-                    accounts::Storage::Present => Authentication::Authenticated,
-                    accounts::Storage::Missing => Authentication::NotAuthenticated,
-                    accounts::Storage::Unavailable => Authentication::Unavailable,
-                })
-                .map_err(accounts::Failure::error);
-        }
-        #[derive(Deserialize)]
-        struct Reply {
-            runtime: String,
-            authentication: runtime_catalog::Authentication,
-        }
-        let path = format!(
-            "/api/profile/accounts/status?runtime={}",
-            crate::views::encode(runtime)
-        );
-        let response = self.response(&path, None, RESPONSE_LIMIT)?;
-        if response.status == 404 {
-            return Err(Error::Unsupported);
-        }
-        successful(&response)?;
-        let reply: Reply = parse(&response.body)?;
-        if reply.runtime != runtime {
-            return Err(Error::Invalid);
-        }
-        Ok(reply.authentication)
+        use runtime_catalog::Authentication;
+        self.stored_login(runtime)
+            .map(|stored| match stored.storage {
+                accounts::Storage::Present => Authentication::Authenticated,
+                accounts::Storage::Missing => Authentication::NotAuthenticated,
+                accounts::Storage::Unavailable => Authentication::Unavailable,
+            })
+            .map_err(accounts::Failure::error)
     }
 
     /// Start this stopped agent, continuing its saved conversation or opening a new
     /// one. The provider's start route takes the name only, so a replacement under
-    /// the same name would start instead. `defaults` go with the request when
-    /// the agent's runtime advertises support. Runs on an I/O worker.
-    pub fn start_agent(
-        &self,
-        name: &str,
-        resume: bool,
-        defaults: Option<crate::lifecycle::TerminalDefaults>,
-    ) -> crate::lifecycle::Outcome {
-        use crate::lifecycle::{Outcome, start_outcome, supports_defaults};
+    /// the same name would start instead. Runs on an I/O worker.
+    pub fn start_agent(&self, name: &str, resume: bool) -> crate::lifecycle::Outcome {
+        use crate::lifecycle::{Outcome, start_outcome};
         if !crate::valid_agent(name) {
             return Outcome::Refused("This session is not a registered agent.".into());
         }
-        let mut body = serde_json::json!({ "resume": resume, "wait": false });
-        let read = |path: &str| {
-            self.response(path, None, RESPONSE_LIMIT)
-                .ok()
-                .filter(|response| (200..300).contains(&response.status))
-                .map(|response| response.body)
-        };
-        if let Some(defaults) = defaults.filter(|_| supports_defaults(read, name)) {
-            body["terminal_defaults"] =
-                serde_json::to_value(defaults).expect("terminal colours JSON");
-        }
+        let body = serde_json::json!({ "resume": resume, "wait": false });
         let Ok(body) = serde_json::to_vec(&body) else {
             return Outcome::Unknown;
         };
@@ -556,8 +337,7 @@ impl Connection {
     /// `registration` is still its durable registration. The provider checks it
     /// under the agent's lifecycle lock and refuses to remove a running agent, so
     /// the stop comes first. A forgotten agent is refused as `RegistrationChanged`;
-    /// a 404 from an older provider, which doesn't check the registration, counts
-    /// as removed. Runs on an I/O worker.
+    /// a 404 counts as removed. Runs on an I/O worker.
     pub fn remove_agent(&self, name: &str, registration: &str) -> Result<(), Error> {
         if !crate::valid_agent(name) || !runtime_context::valid_registration(registration) {
             return Err(Error::Invalid);
@@ -575,7 +355,7 @@ impl Connection {
         let response = local::profile_delete(
             self.socket.to_str().ok_or(Error::Invalid)?,
             &format!("/api/agents/{name}?{query}"),
-            (&self.key, &self.identity),
+            &self.identity.profile_id,
             RESPONSE_LIMIT,
             Duration::from_secs(15),
         )
@@ -586,19 +366,7 @@ impl Connection {
     /// Copy the skill folder at `path` into this profile's store for every agent
     /// in the profile, leaving the folder in place. Runs on an I/O worker.
     pub fn add_skill(&self, path: &Path) -> Result<AddedSkill, AddError> {
-        let body = if self.served {
-            served::skill(path)?
-        } else {
-            serde_json::json!({
-                "path": path.to_str().ok_or(Error::Invalid)?,
-                "name": null,
-                "tags": ["all"],
-                "replace": false,
-                "mode": "copy",
-                "actor": "app",
-            })
-        };
-        let body = serde_json::to_vec(&body).map_err(|_| Error::Invalid)?;
+        let body = serde_json::to_vec(&served::skill(path)?).map_err(|_| Error::Invalid)?;
         let response = self.response("/api/skills", Some(body), RESPONSE_LIMIT)?;
         added(&response)?;
         Ok(serde_json::from_slice(&response.body).map_err(|_| Error::Invalid)?)
@@ -635,39 +403,22 @@ impl Connection {
         Ok(reply.record.id)
     }
 
-    /// Verify again on the same binding, never by re-resolving registry or environment.
+    /// Verify again on the same binding, never by reading the profile list again.
     pub fn verify(&self) -> Result<(), Error> {
         self.handshake(None)
     }
 
     fn handshake(&self, instance: Option<&str>) -> Result<(), Error> {
-        #[derive(Deserialize)]
-        struct Reply {
-            #[serde(flatten)]
-            identity: Identity,
-            baseline_version: String,
-            tmux: Tmux,
-        }
         let response = self.response("/api/profile", None, RESPONSE_LIMIT)?;
         if response.status == 404 {
             return Err(Error::Unsupported);
         }
         successful(&response)?;
-        if self.served {
-            return served::verify(&response.body, &self.identity, instance);
-        }
-        let reply: Reply = parse(&response.body)?;
-        if reply.baseline_version.is_empty() {
-            return Err(Error::Invalid);
-        }
-        if reply.identity != self.identity || reply.tmux != self.tmux {
-            return Err(Error::BindingMismatch);
-        }
-        Ok(())
+        served::verify(&response.body, &self.identity, instance)
     }
 
-    // Every request carries the tuple, including requests after a successful probe.
-    // Content adapters use this connection for every request.
+    // Every request names the profile, including requests after a successful
+    // probe. Content adapters use this connection for every request.
     pub(crate) fn response(
         &self,
         path: &str,
@@ -693,7 +444,7 @@ impl Connection {
             let response = local::profile_response(
                 self.socket.to_str().ok_or(Error::Invalid)?,
                 path,
-                (&self.key, &self.identity),
+                &self.identity.profile_id,
                 body.clone(),
                 limit,
                 wait,
@@ -739,7 +490,7 @@ impl Connection {
             self.socket.to_str().ok_or(Error::Invalid)?,
             method,
             path,
-            (&self.key, &self.identity),
+            &self.identity.profile_id,
             body,
             request_id,
             RESPONSE_LIMIT,
@@ -769,16 +520,8 @@ fn added(response: &local::Response) -> Result<(), AddError> {
         return Ok(());
     }
     let refusal: serde_json::Value = serde_json::from_slice(&response.body).unwrap_or_default();
-    let detail = match &refusal["detail"] {
-        serde_json::Value::Array(errors) => errors
-            .first()
-            .map_or("", |error| error["msg"].as_str().unwrap_or_default()),
-        // The Rust service's reason is the message beside its code.
-        detail => detail
-            .as_str()
-            .or_else(|| detail["message"].as_str())
-            .unwrap_or_default(),
-    };
+    // The service's reason is the message beside its code.
+    let detail = refusal["detail"]["message"].as_str().unwrap_or_default();
     Err(if detail.is_empty() {
         AddError::Connection(Error::Refused(response.status))
     } else {
@@ -824,15 +567,6 @@ fn binding_refusal(response: &local::Response) -> Option<Error> {
     None
 }
 
-/// Whether this is the Rust service's output: it carries no `schema_version`,
-/// and `key` is the field its list or its single entry always has.
-fn served(bytes: &[u8], key: &str) -> bool {
-    type Fields = std::collections::HashMap<String, serde::de::IgnoredAny>;
-    bytes.len() <= RESPONSE_LIMIT
-        && serde_json::from_slice::<Fields>(bytes)
-            .is_ok_and(|fields| fields.contains_key(key) && !fields.contains_key("schema_version"))
-}
-
 fn schema(version: u32) -> Result<(), Error> {
     if version == 1 {
         Ok(())
@@ -868,33 +602,6 @@ fn validate_item(item: &Item) -> Result<(), Error> {
     } else {
         Ok(())
     }
-}
-
-fn credential(path: &Path) -> Result<String, Error> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
-        .map_err(|_| Error::Unavailable)?;
-    let metadata = file.metadata().map_err(|_| Error::Unavailable)?;
-    if !metadata.is_file()
-        || metadata.uid() != rustix::process::geteuid().as_raw()
-        || metadata.mode() & 0o777 != 0o600
-    {
-        return Err(Error::Unavailable);
-    }
-    let mut text = String::new();
-    file.take((RESPONSE_LIMIT + 1) as u64)
-        .read_to_string(&mut text)
-        .map_err(|_| Error::Unavailable)?;
-    if text.len() > RESPONSE_LIMIT {
-        return Err(Error::Unavailable);
-    }
-    let key = crate::configuration::dotenv_key(&text)
-        .filter(|key| !key.is_empty())
-        .ok_or(Error::Unavailable)?;
-    http::HeaderValue::from_str(&format!("Bearer {key}")).map_err(|_| Error::Unavailable)?;
-    Ok(key)
 }
 
 #[cfg(test)]

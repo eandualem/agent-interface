@@ -41,8 +41,6 @@ pub enum Error {
     Cancelled,
     /// The provider record was malformed, unsupported or for another profile.
     Profile(profiles::Error),
-    /// The provider reports that no profile registry exists on this machine.
-    RegistryAbsent,
 }
 
 /// A discovery operation's executable and operator context, captured together.
@@ -110,25 +108,6 @@ impl Client {
         profiles::list(&bytes).map_err(Error::Profile)
     }
 
-    /// The one profile the Rust service's list serves with its home here, if
-    /// it names exactly one; see [`profiles::home`]. Workspace routing does not
-    /// use it.
-    pub fn home(&self, live: &dyn Fn() -> bool) -> Result<Option<Item>, Error> {
-        let bytes = self.read(&["profiles", "list", "--json"], live, TIMEOUT)?;
-        // A list the app would refuse names no home either.
-        profiles::list(&bytes).map_err(Error::Profile)?;
-        Ok(profiles::home(&bytes))
-    }
-
-    /// Whether the provider is the Rust service, told by the shape of its list.
-    pub fn served(&self, live: &dyn Fn() -> bool) -> Result<bool, Error> {
-        let bytes = self.read(&["profiles", "list", "--json"], live, TIMEOUT)?;
-        // A list neither provider would write must stop the request, not
-        // select `profiles apply`.
-        profiles::list(&bytes).map_err(Error::Profile)?;
-        Ok(profiles::served_list(&bytes))
-    }
-
     /// Read one atomic record and reject a response for a different profile.
     /// A returned record still needs its authenticated connection handshake.
     pub fn show(&self, profile_id: &str, live: &dyn Fn() -> bool) -> Result<Profile, Error> {
@@ -144,39 +123,6 @@ impl Client {
             return Err(Error::Profile(profiles::Error::BindingMismatch));
         }
         Ok(profile)
-    }
-
-    /// Observe runtimes only in the retained profile context. Schema/flag errors
-    /// are final; there is no retry through the unbound legacy catalog.
-    pub fn runtimes(
-        &self,
-        identity: &profiles::Identity,
-        live: &dyn Fn() -> bool,
-    ) -> Result<profiles::runtime_catalog::Catalog, Error> {
-        for value in [
-            &identity.profile_id,
-            &identity.installation_id,
-            &identity.lifecycle_id,
-        ] {
-            validate_id(value)?;
-        }
-        // Joined option values preserve opaque IDs beginning with '-'.
-        let profile = format!("--profile={}", identity.profile_id);
-        let installation = format!("--expected-installation-id={}", identity.installation_id);
-        let lifecycle = format!("--expected-lifecycle-id={}", identity.lifecycle_id);
-        let bytes = self.read(
-            &[
-                "runtimes",
-                "--json",
-                "--check-setup",
-                &profile,
-                &installation,
-                &lifecycle,
-            ],
-            live,
-            TIMEOUT,
-        )?;
-        profiles::runtime_catalog::Catalog::parse(&bytes, identity).map_err(Error::Profile)
     }
 
     fn read(
@@ -248,19 +194,7 @@ impl Client {
                 .map_err(|_| Error::Unavailable)?;
                 if let Some(status) = status {
                     if status.exit_status() != Some(0) {
-                        // A refusal written before exit is already in the pipe.
-                        let mut chunk = [0; 4096];
-                        while bytes.len() < OUTPUT_LIMIT {
-                            match output.read(&mut chunk) {
-                                Ok(read) if read > 0 => bytes.extend_from_slice(&chunk[..read]),
-                                _ => break,
-                            }
-                        }
-                        return Err(if registry_absent(&bytes) {
-                            Error::RegistryAbsent
-                        } else {
-                            Error::CommandFailed
-                        });
+                        return Err(Error::CommandFailed);
                     }
                     exited = true;
                     // A completed wrapper may leave descendants holding stdout.
@@ -278,12 +212,6 @@ impl Client {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
-}
-
-fn registry_absent(bytes: &[u8]) -> bool {
-    serde_json::from_slice::<serde_json::Value>(bytes).is_ok_and(|value| {
-        value["schema_version"] == 1 && value["error"]["code"] == "registry_absent"
-    })
 }
 
 fn validate_id(profile_id: &str) -> Result<(), Error> {

@@ -21,13 +21,9 @@ impl Connection {
     /// so no cursor is kept: a stream that is opened again reads the states
     /// again.
     ///
-    /// Only the Rust service has the stream; any other connection is
-    /// `Unsupported`. A stream that ends while `live` is an error. Blocks its
+    /// A service without the stream is `Unsupported`. A stream that ends while `live` is an error. Blocks its
     /// caller, which is an I/O worker of its own.
     pub fn watch(&self, live: &dyn Fn() -> bool, changed: &mut dyn FnMut()) -> Result<(), Error> {
-        if !self.served {
-            return Err(Error::Unsupported);
-        }
         let mut frames = Frames::default();
         local::stream(
             self.socket.to_str().ok_or(Error::Invalid)?,

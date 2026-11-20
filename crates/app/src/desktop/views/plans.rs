@@ -1267,7 +1267,6 @@ mod tests {
         let read_b = source_b.read().unwrap();
         assert_eq!(read_b.members["worker"].runtime, "b");
         assert!(!source_a.accepts(&read_b));
-        std::fs::write(a.credential_reference(), "BACKBONE_API_KEY=rotated\n").unwrap();
         release.send(()).unwrap();
         let mut read_a = worker.join().unwrap().unwrap();
         assert!(source_a.accepts(&read_a));

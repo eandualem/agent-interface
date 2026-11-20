@@ -153,14 +153,11 @@ fn standing(reported: Option<Error>, error: Error) -> Error {
 
 /// Follow the connection's push stream on a worker of its own, asking the
 /// polling worker for a read at each change. The stream is opened again two
-/// seconds after it breaks. A connection without one gets no worker.
+/// seconds after it breaks, and not again once the service says it has none.
 fn watch(
     connection: Connection,
     refresh: mpsc::Sender<bool>,
 ) -> io::Result<Option<(Arc<AtomicBool>, JoinHandle<()>)>> {
-    if !connection.served() {
-        return Ok(None);
-    }
     let live = Arc::new(AtomicBool::new(true));
     let wanted = Arc::clone(&live);
     let worker = thread::Builder::new()

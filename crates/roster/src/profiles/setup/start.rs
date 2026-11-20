@@ -123,9 +123,6 @@ impl Connection {
             && request_id
                 .bytes()
                 .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
-        if !self.served() {
-            return Err(Error::Unsupported.into());
-        }
         if !spelled {
             return Err(Error::Invalid.into());
         }

@@ -1,5 +1,5 @@
-//! Provider-parsed permissions retained by connection and agent registration.
-//! Display paths are metadata only and are never read.
+//! An agent's card, inspected on its profile connection and kept to the
+//! agent's durable registration.
 
 use serde::Deserialize;
 
@@ -35,7 +35,7 @@ pub struct Target {
 pub struct Inspection {
     /// Card metadata from the bound provider.
     pub agent: Agent,
-    /// Retain this target for every subsequent inspection and permissions read.
+    /// Retain this target for every subsequent inspection.
     pub target: Target,
 }
 
@@ -110,46 +110,6 @@ impl Target {
         }
         Ok(result.agent)
     }
-
-    /// Read sanitized permission metadata for this exact retained target.
-    /// No local configuration, home directory or name-only fallback is consulted.
-    pub fn permissions(&self) -> Result<Permissions, Error> {
-        let body = get(
-            &self.connection,
-            &format!(
-                "/api/agents/{}/runtime-context?expected_registration_id={}",
-                self.name, self.registration
-            ),
-        )?;
-        self.decode(&body)
-    }
-
-    fn decode(&self, body: &[u8]) -> Result<Permissions, Error> {
-        #[derive(Deserialize)]
-        struct Reply {
-            #[serde(flatten)]
-            identity: Identity,
-            agent_name: String,
-            registration_id: String,
-            runtime: String,
-            permissions: Permissions,
-        }
-        let reply: Reply = super::parse(body).map_err(|error| match error {
-            super::Error::Unsupported => Error::Unsupported,
-            _ => Error::Invalid,
-        })?;
-        if reply.identity != *self.identity()
-            || reply.agent_name != self.name
-            || reply.runtime != self.runtime
-        {
-            return Err(Error::Invalid);
-        }
-        if reply.registration_id != self.registration {
-            return Err(Error::RegistrationChanged);
-        }
-        reply.permissions.validate()?;
-        Ok(reply.permissions)
-    }
 }
 
 fn get(connection: &Connection, path: &str) -> Result<Vec<u8>, Error> {
@@ -189,157 +149,4 @@ pub(super) fn valid_registration(value: &str) -> bool {
 
 fn label(value: &str) -> bool {
     !value.trim().is_empty() && !value.chars().any(char::is_control)
-}
-
-/// Whether the provider could inspect permissions in its own runtime context.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Status {
-    /// The provider completed permission inspection.
-    Available,
-    /// Runtime context or required configuration could not be inspected.
-    Unavailable,
-    /// This runtime does not support permission inspection.
-    Unsupported,
-}
-
-/// Provider-owned configuration scope, not filesystem authority.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Scope {
-    /// Runtime-wide settings.
-    Runtime,
-    /// Project settings.
-    Project,
-    /// Local project overrides.
-    ProjectLocal,
-}
-
-/// Outcome of the provider's bounded configuration read.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FileState {
-    /// Parsed successfully.
-    Read,
-    /// Not present in the provider's context.
-    Missing,
-    /// Present but malformed.
-    Invalid,
-    /// Could not be read completely.
-    Unreadable,
-}
-
-/// A relative display label. Consumers must never open this as a local path.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-pub struct File {
-    /// Configuration layer inspected by the provider.
-    pub scope: Scope,
-    /// Relative, display-only path within that layer.
-    pub display_path: String,
-    /// Provider inspection result.
-    pub state: FileState,
-}
-
-/// One sanitized runtime approval mode.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-pub struct Mode {
-    /// Runtime setting name.
-    pub name: String,
-    /// Provider-parsed setting value.
-    pub value: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-struct Diagnostic {
-    code: String,
-    message: String,
-}
-
-/// Sanitized permission data from the exact authenticated registration.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-pub struct Permissions {
-    /// Whether inspection completed, failed or is unsupported.
-    pub status: Status,
-    /// Display-only file observations.
-    pub files: Vec<File>,
-    /// Rules allowed without prompting.
-    pub allow: Vec<String>,
-    /// Rules always refused.
-    pub deny: Vec<String>,
-    /// Rules requiring confirmation.
-    pub ask: Vec<String>,
-    /// Other approval settings.
-    pub modes: Vec<Mode>,
-    error: Option<Diagnostic>,
-}
-
-impl Permissions {
-    /// What a provider without permission inspection supplies: nothing.
-    pub fn unsupported() -> Self {
-        Self {
-            status: Status::Unsupported,
-            files: Vec::new(),
-            allow: Vec::new(),
-            deny: Vec::new(),
-            ask: Vec::new(),
-            modes: Vec::new(),
-            error: None,
-        }
-    }
-
-    /// Fixed status explanation; raw provider diagnostic text is never displayed.
-    pub fn message(&self) -> Option<&'static str> {
-        match self.status {
-            Status::Available => None,
-            Status::Unavailable => Some("Runtime permission metadata is unavailable."),
-            Status::Unsupported => Some("Runtime permission inspection is unsupported."),
-        }
-    }
-
-    fn validate(&self) -> Result<(), Error> {
-        let valid_files = self.files.iter().all(|file| {
-            label(&file.display_path)
-                && !file.display_path.contains('\\')
-                && file.display_path.split('/').all(|part| {
-                    !part.is_empty() && part != "." && part != ".." && !part.contains(':')
-                })
-        });
-        let valid_values = self
-            .allow
-            .iter()
-            .chain(&self.deny)
-            .chain(&self.ask)
-            .all(|s| label(s))
-            && self
-                .modes
-                .iter()
-                .all(|mode| label(&mode.name) && label(&mode.value));
-        let valid_status = match self.status {
-            Status::Available => {
-                self.error.is_none()
-                    && self.files.iter().all(|file| {
-                        !matches!(file.state, FileState::Invalid | FileState::Unreadable)
-                    })
-            }
-            Status::Unavailable | Status::Unsupported => {
-                let code = if self.status == Status::Unavailable {
-                    "unavailable"
-                } else {
-                    "unsupported"
-                };
-                self.allow.is_empty()
-                    && self.deny.is_empty()
-                    && self.ask.is_empty()
-                    && self.modes.is_empty()
-                    && self.error.as_ref().is_some_and(|error| {
-                        error.code == code && Some(error.message.as_str()) == self.message()
-                    })
-            }
-        };
-        if valid_files && valid_values && valid_status {
-            Ok(())
-        } else {
-            Err(Error::Invalid)
-        }
-    }
 }

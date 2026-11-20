@@ -373,10 +373,9 @@ impl LiveTerminal {
         self.launching = true;
         self.launch_result = None;
         let name = agent.clone();
-        let defaults = defaults();
         let work = cx
             .background_executor()
-            .spawn(async move { connection.start_agent(&name, resume, Some(defaults)) });
+            .spawn(async move { connection.start_agent(&name, resume) });
         cx.spawn(async move |this, cx| {
             let result = work.await;
             let _ = this.update(cx, |terminal, cx| {
@@ -838,18 +837,6 @@ impl Render for LiveTerminal {
     }
 }
 
-/// Capture the palette when a launch is requested, before the worker starts.
-pub(super) fn defaults() -> agent_interface_roster::lifecycle::TerminalDefaults {
-    let terminal = design::terminal();
-    let rgb = |color: gpui::Rgba| {
-        [color.r, color.g, color.b].map(|channel| (channel * 255.0).round() as u8)
-    };
-    agent_interface_roster::lifecycle::TerminalDefaults::new(
-        rgb(terminal.text),
-        rgb(terminal.background),
-    )
-}
-
 /// The terminal font and colours from the current settings and design tokens.
 pub(super) fn appearance() -> Appearance {
     let (tokens, terminal) = (design::tokens(), design::terminal());
@@ -940,7 +927,7 @@ mod tests {
             .unwrap()
             .trim()
             .into();
-        let identity = json!({"schema_version":1,"profile_id":"profile-a","installation_id":"installation-a","lifecycle_id":"lifecycle-a","baseline_version":"fixture","tmux":{"socket_path":socket}});
+        let identity = json!({"protocol_version":1,"profile_id":"profile-a","instance_id":"instance-a","machine":{"id":"machine-a"}});
         let (_dir, connection, server) = provider_with_tmux(
             "a",
             (0..3)
@@ -987,7 +974,7 @@ mod tests {
             .unwrap()
             .trim()
             .into();
-        let identity = json!({"schema_version":1,"profile_id":"profile-a","installation_id":"installation-a","lifecycle_id":"lifecycle-a","baseline_version":"fixture","tmux":{"socket_path":socket}});
+        let identity = json!({"protocol_version":1,"profile_id":"profile-a","instance_id":"instance-a","machine":{"id":"machine-a"}});
         let (_dir, connection, server) = provider_with_tmux(
             "a",
             vec![

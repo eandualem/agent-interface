@@ -1,4 +1,4 @@
-//! Explicit lifecycle controls. Provider receipts never activate a workspace.
+//! A profile's page in Settings. Provider receipts never activate a workspace.
 
 use super::{
     components as ui,
@@ -10,13 +10,12 @@ use crate::profiles::{
     journal,
 };
 use agent_interface_roster::profiles::{
-    Connection, Kind, Profile, State,
-    operations::{Action, Prepared, Status},
-    runtime_catalog::{Authentication, Catalog},
+    Connection, Profile, State,
+    operations::{Action, Status},
+    runtime_catalog::Authentication,
 };
 use gpui::{Context, EventEmitter, FocusHandle, SharedString, Window, div, prelude::*, px};
 use std::{
-    collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     sync::{
         Arc,
@@ -32,10 +31,6 @@ mod setup;
 mod sign_in;
 
 const PAGE_SIZE: usize = 16;
-/// How many checks a sign-in opened from Settings gets, about five minutes.
-pub(super) const SIGN_IN_CHECKS: usize = 150;
-/// How often an open sign-in is checked. The provider's check is local and quick.
-const SIGN_IN_CHECK: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Each CLI's sign-in, one request each. An unanswered read can't be told from
 /// a signed-out CLI, so it's reported as unavailable. Runs on an I/O worker.
@@ -49,6 +44,7 @@ fn read_accounts(connection: &Connection, ids: Vec<String>) -> Vec<(String, Auth
         })
         .collect()
 }
+
 pub(super) struct Back;
 
 /// A session setup leaves waiting for the person, to open in a workspace.
@@ -122,17 +118,6 @@ pub(super) struct Management {
     ticket: Ticket,
     busy: bool,
     error: Option<controller::Error>,
-    /// The profile's tools and sign-ins, when its service answered.
-    accounts: Option<Catalog>,
-    /// The profile's connection, when its service answered.
-    connection: Option<Connection>,
-    /// What each CLI last reported about its sign-in.
-    signed: BTreeMap<String, Authentication>,
-    /// Sign-ins opened from here and not yet reported as finished.
-    signing: BTreeSet<String>,
-    /// Sign-ins opened here for each CLI, so a late read can't end a newer one.
-    sign_ins: BTreeMap<String, u64>,
-    watching: Option<gpui::Task<()>>,
     /// Lifecycle requests for this profile without a confirmed outcome.
     unfinished: usize,
     /// The ⋯ menu is open.
@@ -162,12 +147,6 @@ impl Management {
             ticket: Ticket::default(),
             busy: true,
             error: None,
-            accounts: None,
-            connection: None,
-            signed: BTreeMap::new(),
-            signing: BTreeSet::new(),
-            sign_ins: BTreeMap::new(),
-            watching: None,
             unfinished: 0,
             more: false,
             focus: cx.focus_handle(),
@@ -188,9 +167,6 @@ impl Management {
                     Ok(opened) => {
                         pane.directory = Some(opened.directory);
                         pane.controller = opened.controller;
-                        pane.accounts = opened.accounts;
-                        pane.connection = opened.connection;
-                        pane.signed = opened.signed;
                         pane.unfinished = opened.unfinished;
                         pane.complete(opened.page);
                         pane.served_panes(cx);
@@ -204,60 +180,8 @@ impl Management {
         pane
     }
 
-    /// Open a sign-in in the profile's workspace and show its result here.
-    fn sign_in(&mut self, runtime: String, cx: &mut Context<Self>) {
-        let Page::Detail(profile) = &self.page else {
-            return;
-        };
-        let Some(connection) = self.connection.clone() else {
-            return;
-        };
-        let profile_id = profile.item().profile_id.clone();
-        self.signing.insert(runtime.clone());
-        *self.sign_ins.entry(runtime.clone()).or_default() += 1;
-        cx.emit(Open::SignIn {
-            profile_id,
-            runtime,
-        });
-        if self.watching.is_none() {
-            self.watching = Some(cx.spawn(async move |this, cx| {
-                for _ in 0..SIGN_IN_CHECKS {
-                    cx.background_executor().timer(SIGN_IN_CHECK).await;
-                    let Ok(ids) = this.read_with(cx, |pane, _| pane.signing.clone()) else {
-                        return;
-                    };
-                    let connection = connection.clone();
-                    let read = cx
-                        .background_executor()
-                        .spawn(async move { read_accounts(&connection, ids.into_iter().collect()) })
-                        .await;
-                    let finished = this.update(cx, |pane, cx| {
-                        for (id, authentication) in read {
-                            if authentication == Authentication::Authenticated {
-                                pane.signing.remove(&id);
-                            }
-                            pane.signed.insert(id, authentication);
-                        }
-                        cx.notify();
-                        pane.signing.is_empty()
-                    });
-                    if finished.unwrap_or(true) {
-                        break;
-                    }
-                }
-                let _ = this.update(cx, |pane, cx| {
-                    pane.signing.clear();
-                    pane.watching = None;
-                    cx.notify();
-                });
-            }));
-        }
-        cx.notify();
-    }
-
     /// A sign-in pane for this profile closed: the Sign-in section reads that
-    /// CLI again, and a sign-in opened here reads it once more and stops
-    /// waiting for it, rather than until the checks run out.
+    /// CLI again.
     pub fn sign_in_ended(&mut self, profile_id: &str, runtime: &str, cx: &mut Context<Self>) {
         if self.profile_id.as_deref() != Some(profile_id) {
             return;
@@ -265,51 +189,13 @@ impl Management {
         if let Some((logins, _)) = &self.logins {
             logins.update(cx, |section, cx| section.sign_in_ended(runtime, cx));
         }
-        if !self.signing.contains(runtime) {
-            return;
-        }
-        let Some(connection) = self.connection.clone() else {
-            return;
-        };
-        let attempt = self.sign_ins.get(runtime).copied();
-        let runtime = runtime.to_owned();
-        let id = runtime.clone();
-        let read = cx
-            .background_executor()
-            .spawn(async move { read_accounts(&connection, vec![id]) });
-        cx.spawn(async move |this, cx| {
-            let read = read.await;
-            let _ = this.update(cx, |pane, cx| {
-                // Sign in was pressed again meanwhile: that attempt goes on.
-                if pane.sign_ins.get(&runtime).copied() != attempt {
-                    return;
-                }
-                // A read that failed says nothing yet: keep checking.
-                if read
-                    .iter()
-                    .any(|(_, status)| *status == Authentication::Unavailable)
-                {
-                    return;
-                }
-                pane.signed.extend(read);
-                pane.signing.remove(&runtime);
-                if pane.signing.is_empty() {
-                    pane.watching = None;
-                }
-                cx.notify();
-            });
-        })
-        .detach();
     }
 
-    /// The panes only a profile on the Rust service has.
+    /// A profile's Sign-in and Secrets panes.
     fn served_panes(&mut self, cx: &mut Context<Self>) {
         let Page::Detail(profile) = &self.page else {
             return;
         };
-        if !profile.served() {
-            return;
-        }
         let logins = cx.new(|cx| accounts::Section::new(profile.clone(), cx));
         let subscription = cx.subscribe(&logins, |_, _, open: &Open, cx| cx.emit(open.clone()));
         self.logins = Some((logins, subscription));
@@ -333,62 +219,6 @@ impl Management {
     fn back(&mut self, cx: &mut Context<Self>) {
         self.ticket.cancel();
         cx.emit(Back);
-    }
-    fn start(&mut self, action: Action, expected: &Arc<AtomicBool>, cx: &mut Context<Self>) {
-        if self.busy
-            || self.setup.is_some()
-            || self.choices.is_some()
-            || !self.ticket.accepts(expected)
-        {
-            return;
-        }
-        let Page::Detail(profile) = &self.page else {
-            return;
-        };
-        let Some(controller) = self.controller.clone() else {
-            return;
-        };
-        let request = uuid::Uuid::now_v7().simple().to_string();
-        let prepared = match action {
-            Action::Start => Prepared::start(&request, profile),
-            Action::Stop => Prepared::stop(&request, profile),
-            _ => return,
-        };
-        let prepared = match prepared {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                self.error = Some(controller::Error::Client(crate::profiles::Error::Profile(
-                    error,
-                )));
-                cx.notify();
-                return;
-            }
-        };
-        self.submit_prepared(prepared, controller, cx);
-    }
-    fn submit_prepared(
-        &mut self,
-        prepared: Prepared,
-        controller: Arc<Controller>,
-        cx: &mut Context<Self>,
-    ) {
-        let key = Controller::key(prepared.request_id());
-        // Retain the key before even enqueueing: a failed sync can be ambiguous.
-        self.page = Page::Operation {
-            key: key.clone(),
-            snapshot: None,
-        };
-        self.error = None;
-        self.busy = true;
-        let ticket = self.ticket.begin();
-        let worker = ticket.clone();
-        let work = cx.background_executor().spawn(async move {
-            let result = controller
-                .enqueue(prepared)
-                .and_then(|_| controller.submit(&key, &|| worker.load(Ordering::Acquire)));
-            (controller.read(&key), result.err())
-        });
-        self.observe_operation(ticket, work, cx);
     }
     fn setup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.setup.is_some() || self.choices.is_some() {
@@ -452,14 +282,8 @@ impl Management {
         let profile = profile.clone();
         let client = self.client.clone();
         self.ticket.begin();
-        let signed_in = self
-            .signed
-            .iter()
-            .find(|(_, status)| **status == Authentication::Authenticated)
-            .map(|(id, _)| id.clone());
-        let form = cx.new(|cx| {
-            choices::Form::new(client, directory, profile, "Cancel", signed_in, window, cx)
-        });
+        let form =
+            cx.new(|cx| choices::Form::new(client, directory, profile, "Cancel", window, cx));
         window.focus(&form.read(cx).focus.clone(), cx);
         let subscription = cx.subscribe_in(
             &form,
@@ -657,9 +481,6 @@ struct Opened {
     directory: PathBuf,
     controller: Option<Arc<Controller>>,
     page: Result<Page, controller::Error>,
-    accounts: Option<Catalog>,
-    connection: Option<Connection>,
-    signed: BTreeMap<String, Authentication>,
     unfinished: usize,
 }
 fn open_management(
@@ -685,9 +506,7 @@ fn open_management(
         },
         Err(error) => Err(*error),
     };
-    let live = || live.load(Ordering::Acquire);
-    let (mut accounts, mut unfinished) = (None, 0);
-    let (mut connection, mut signed) = (None, BTreeMap::new());
+    let mut unfinished = 0;
     if let (Ok(Page::Detail(profile)), Ok(controller)) = (&page, &controller) {
         let id = &profile.item().profile_id;
         unfinished = controller
@@ -699,30 +518,11 @@ fn open_management(
                 s.terminal.is_none() && s.identity.as_ref().is_some_and(|i| &i.profile_id == id)
             })
             .count();
-        accounts = profile
-            .expected_identity()
-            .ok()
-            .and_then(|identity| client.runtimes(&identity, &live).ok());
-        if profile.item().kind == Kind::Isolated
-            && let (Some(catalog), Ok(verified)) = (&accounts, profile.connect())
-        {
-            let ids = catalog
-                .items()
-                .iter()
-                .filter(|runtime| runtime.available && runtime.id != "shell")
-                .map(|runtime| runtime.id.clone())
-                .collect();
-            signed = read_accounts(&verified, ids).into_iter().collect();
-            connection = Some(verified);
-        }
     }
     Ok(Opened {
         directory,
         controller: controller.ok(),
         page,
-        accounts,
-        connection,
-        signed,
         unfinished,
     })
 }
@@ -761,15 +561,12 @@ fn history(
 fn action_label(action: Action) -> &'static str {
     match action {
         Action::Create => "Create profile",
-        Action::Start => "Start profile",
-        Action::Stop => "Stop profile",
     }
 }
 fn status(snapshot: &Snapshot) -> &'static str {
     match snapshot.terminal.as_ref().map(|receipt| receipt.status) {
         Some(Status::Succeeded) => "Succeeded",
         Some(Status::Failed) => "Failed",
-        Some(Status::Pending) => "Pending",
         None if snapshot.phase == Phase::Prepared => "Prepared, not submitted",
         None => "Outcome not yet confirmed",
     }
@@ -821,12 +618,7 @@ impl Render for Management {
                         .items_center()
                         .gap(px(t.space.s12))
                         .py(px(t.space.s8))
-                        .child(ui::profile_mark(
-                            &item.profile_id,
-                            &item.display_name,
-                            item.kind == Kind::LegacyDefault,
-                            t.size.slot,
-                        ))
+                        .child(ui::profile_mark(&item.display_name, t.size.slot))
                         .child(
                             div()
                                 .flex_1()
@@ -837,11 +629,9 @@ impl Render for Management {
                                     ui::text(div().text_color(c.text), &t.text.group_title)
                                         .child(item.display_name.clone()),
                                 )
-                                .child(meta(match (&item.state, &item.kind) {
-                                    (State::Creating, _) => "Being created".into(),
-                                    (State::Failed, _) => "Creation didn't finish".into(),
-                                    (_, Kind::LegacyDefault) => "Uses your own sign-ins".into(),
-                                    _ => "Its own accounts, agents, skills and policies".into(),
+                                .child(meta(match item.state {
+                                    State::Failed => "Creation didn't finish".into(),
+                                    State::Ready => "Its own agents, skills and policies".into(),
                                 })),
                         )
                         .child(ui::icon_button("management-more", "ellipsis").on_click(
@@ -853,16 +643,6 @@ impl Render for Management {
                 );
                 if self.more && !self.busy {
                     let mut menu = ui::menu();
-                    if ready {
-                        let ticket = ticket.clone();
-                        menu = menu.child(
-                            ui::menu_item("management-start", None, "Start profile", None)
-                                .on_click(cx.listener(move |pane, _, _, cx| {
-                                    pane.more = false;
-                                    pane.start(Action::Start, &ticket, cx)
-                                })),
-                        );
-                    }
                     if self.controller.is_some() {
                         menu = menu.child(
                             ui::menu_item("management-history", None, "Saved requests", None)
@@ -921,97 +701,18 @@ impl Render for Management {
                             ),
                     );
                 }
-                let title = if profile.served() {
-                    "Sign-in"
-                } else {
-                    "Accounts"
-                };
-                body = body.child(ui::group_title(title, ""));
+                body = body.child(ui::group_title("Sign-in", ""));
                 if let Some((section, _)) = &self.logins {
                     body = body.child(section.clone());
                 }
                 if let Some((pane, _)) = &self.sign_in {
                     body = body.child(pane.clone());
                 }
-                // On the Rust service the Sign-in section above stands in for the catalog.
-                match &self.accounts {
-                    _ if profile.served() => {}
-                    None => {
-                        body = body.child(ui::group_note("Start the profile to see its accounts."))
-                    }
-                    Some(catalog) => {
-                        let mut card = ui::group_card();
-                        for (index, runtime) in catalog
-                            .items()
-                            .iter()
-                            .filter(|r| r.id != "shell")
-                            .enumerate()
-                        {
-                            let waiting = self.signing.contains(&runtime.id);
-                            let signed = self.signed.get(&runtime.id).copied();
-                            let state = if !runtime.available {
-                                "Not installed"
-                            } else if waiting {
-                                "Waiting for sign-in"
-                            } else {
-                                match signed.unwrap_or(runtime.authentication) {
-                                    Authentication::Authenticated => "Signed in",
-                                    Authentication::NotAuthenticated => "Not signed in",
-                                    Authentication::NotApplicable => "No account needed",
-                                    _ => "Couldn't check",
-                                }
-                            };
-                            let can_sign_in = runtime.available
-                                && item.kind == Kind::Isolated
-                                && signed != Some(Authentication::Authenticated);
-                            let id = runtime.id.clone();
-                            card = card.child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(t.space.s10))
-                                    .h(px(t.size.group_row))
-                                    .px(px(t.space.s14))
-                                    .when(index > 0, |el| {
-                                        el.border_t(px(t.size.hairline)).border_color(c.line)
-                                    })
-                                    .when(!runtime.available, |el| el.opacity(0.6))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .text_color(c.text)
-                                            .child(runtime.display_name.clone()),
-                                    )
-                                    .child(meta(state.into()))
-                                    .when(can_sign_in, |el| {
-                                        el.child(
-                                            ui::button(
-                                                SharedString::from(format!("account-{id}")),
-                                                if waiting { "Sign in again" } else { "Sign in" },
-                                                ui::Button::Secondary,
-                                            )
-                                            .on_click(
-                                                cx.listener(move |pane, _, _, cx| {
-                                                    pane.sign_in(id.clone(), cx)
-                                                }),
-                                            ),
-                                        )
-                                    }),
-                            );
-                        }
-                        body = body.child(card);
-                    }
-                }
                 if let Some(section) = &self.secrets {
                     body = body.child(section.clone());
                 }
-                if ready
-                    && (item.kind == Kind::LegacyDefault
-                        || (self.directory.is_some() && item.kind == Kind::Isolated))
-                {
+                if ready {
                     let expected = ticket.clone();
-                    // A profile on the Rust service starts its agents itself, whatever its kind.
-                    let default = item.kind == Kind::LegacyDefault && !profile.served();
                     body = body.child(
                         div()
                             .flex()
@@ -1021,29 +722,13 @@ impl Render for Management {
                             .child(
                                 ui::button("new-agent-setup", "Add agent", ui::Button::Secondary)
                                     .on_click(cx.listener(move |pane, _, window, cx| {
-                                        // Default keeps its host environment, so the provider refuses its
-                                        // bound setup; a new profile, with its own guide, is the way on.
-                                        if default {
-                                            cx.defer(super::new_profile);
-                                        } else {
-                                            pane.choices(&expected, window, cx)
-                                        }
+                                        pane.choices(&expected, window, cx)
                                     })),
                             ),
                     );
                     if let Some((form, _)) = &self.choices {
                         body = body.child(form.clone());
                     }
-                }
-                if ready {
-                    let ticket = ticket.clone();
-                    body = body.child(
-                        div().flex().items_center().gap(px(t.space.s12)).pt(px(t.space.s20))
-                            .child(div().flex_1().min_w_0().child(meta("Stopping keeps everything. Start it again from ⋯ or one of its workspaces.".into())))
-                            .child(ui::button("Stop service", "Stop profile", ui::Button::Secondary)
-                                .flex_shrink_0()
-                                .on_click(cx.listener(move |pane, _, _, cx| pane.start(Action::Stop, &ticket, cx)))),
-                    );
                 }
             }
             Page::Operation { snapshot, .. } => {

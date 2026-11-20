@@ -143,7 +143,7 @@ fn decoded(listed: Json) -> Vec<Run> {
 }
 
 #[test]
-fn an_older_service_is_never_asked_and_one_without_runs_is_asked_once() {
+fn a_service_without_runs_is_asked_once() {
     let (connection, server) = served(vec![
         (200, fixture("runs")),
         (200, json!([[]])),
@@ -151,12 +151,6 @@ fn an_older_service_is_never_asked_and_one_without_runs_is_asked_once() {
         (404, json!({"detail": "Not Found"})),
     ]);
     let busy = roster(include_bytes!("fixtures/agents.json"));
-    // A profile the Rust service doesn't serve is never asked.
-    let mut earlier = connection.clone();
-    earlier.served = false;
-    assert_eq!(earlier.runs(), Err(Error::Unsupported));
-    assert_eq!(earlier.run(REVIEW), Err(Error::Unsupported));
-    follow(&mut Book::default(), &earlier, &busy);
     let mut book = Book::default();
     // An older service lists agents without counts.
     let older = roster(br#"{"items":[{"name":"worker","state":"busy"}]}"#);

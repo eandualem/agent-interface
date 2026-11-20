@@ -64,40 +64,7 @@ pub struct Catalog {
     items: Vec<Runtime>,
 }
 
-#[derive(Deserialize)]
-struct Wire {
-    #[serde(flatten)]
-    identity: Identity,
-    items: Vec<Runtime>,
-}
-
 impl Catalog {
-    /// Decode only successful schema-2 output for the exact expected tuple.
-    /// This does no filesystem, account or provider access.
-    pub fn parse(bytes: &[u8], expected: &Identity) -> Result<Self, Error> {
-        if bytes.len() > 1024 * 1024
-            || !valid_id(&expected.profile_id)
-            || !valid_id(&expected.installation_id)
-            || !valid_id(&expected.lifecycle_id)
-        {
-            return Err(Error::Invalid);
-        }
-        let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
-        match value
-            .get("schema_version")
-            .and_then(serde_json::Value::as_u64)
-        {
-            Some(2) => (),
-            Some(_) => return Err(Error::Unsupported),
-            None => return Err(Error::Invalid),
-        }
-        let wire: Wire = serde_json::from_value(value).map_err(|_| Error::Invalid)?;
-        if wire.identity != *expected {
-            return Err(Error::BindingMismatch);
-        }
-        Self::checked(wire.identity, wire.items)
-    }
-
     /// Decode the Rust service's `backbone runtimes --json` (schema 1) for the
     /// profile `expected`. It names no profile and runs no setup check: what
     /// it lists is this machine's, and a runtime is compatible when it is

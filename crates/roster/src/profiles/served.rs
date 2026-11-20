@@ -2,8 +2,7 @@
 //! its state, with the owner-only socket as the credential.
 
 use super::{
-    AddError, Binding, Credential, Endpoint, Error, Identity, Item, Kind, Profile, State, Tmux,
-    valid_id, validate_item,
+    AddError, Binding, Error, Identity, Item, Profile, State, Tmux, valid_id, validate_item,
 };
 use base64::Engine as _;
 use serde::Deserialize;
@@ -37,9 +36,6 @@ enum Entry {
         display_name: String,
         instance_id: String,
         machine: Machine,
-        /// Whether this machine is where the profile's agents live.
-        #[serde(default)]
-        home: bool,
         socket: PathBuf,
         tmux_socket: PathBuf,
         #[serde(rename = "credential_reference")]
@@ -48,6 +44,8 @@ enum Entry {
     Failed {
         profile_id: String,
         display_name: Option<String>,
+        #[serde(default)]
+        reason: Option<String>,
     },
     /// A state this app does not know; such a profile is not offered.
     #[serde(other)]
@@ -56,15 +54,15 @@ enum Entry {
 
 impl Entry {
     fn profile(self) -> Result<Option<Profile>, Error> {
-        let (profile_id, display_name, kind, binding) = match self {
+        let (profile_id, display_name, binding, reason) = match self {
             Self::Unknown => return Ok(None),
             Self::Failed {
                 profile_id,
                 display_name,
+                reason,
             } => {
                 let name = display_name.unwrap_or_else(|| profile_id.clone());
-                // Not the default: whatever asks for it must find a served one.
-                (profile_id, name, Kind::Isolated, None)
+                (profile_id, name, None, reason)
             }
             Self::Serving {
                 protocol_version,
@@ -89,26 +87,24 @@ impl Entry {
                 let binding = Binding {
                     installation_id: machine.id.clone(),
                     lifecycle_id: machine.id,
-                    endpoint: Endpoint::Unix { path: socket },
-                    credential_reference: Credential::Socket,
+                    socket,
                     tmux: Tmux {
                         socket_path: tmux_socket,
                     },
-                    instance: Some(instance_id),
+                    instance: instance_id,
                 };
-                // Agents of a served profile start with the person's own sign-ins.
-                (profile_id, display_name, Kind::LegacyDefault, Some(binding))
+                (profile_id, display_name, Some(binding), None)
             }
         };
         let item = Item {
             profile_id,
             display_name,
-            kind,
             state: if binding.is_some() {
                 State::Ready
             } else {
                 State::Failed
             },
+            reason,
         };
         validate_item(&item)?;
         Ok(Some(Profile { item, binding }))
@@ -132,23 +128,6 @@ pub(super) fn list(bytes: &[u8]) -> Result<Vec<Item>, Error> {
         }
     }
     Ok(items)
-}
-
-/// The profile this machine is home to, when the list serves exactly one.
-pub(super) fn home(bytes: &[u8]) -> Option<Item> {
-    #[derive(Deserialize)]
-    struct Catalog {
-        profiles: Vec<Entry>,
-    }
-    let catalog: Catalog = serde_json::from_slice(bytes).ok()?;
-    let mut homes = catalog
-        .profiles
-        .into_iter()
-        .filter(|entry| matches!(entry, Entry::Serving { home: true, .. }));
-    let (home, None) = (homes.next()?, homes.next()) else {
-        return None;
-    };
-    Some(home.profile().ok()??.item)
 }
 
 pub(super) fn show(bytes: &[u8]) -> Result<Profile, Error> {

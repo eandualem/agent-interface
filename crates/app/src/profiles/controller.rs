@@ -16,7 +16,7 @@ const LIMIT: usize = journal::LIMIT;
 pub enum Phase {
     /// Exact intent is durable, but this controller has not submitted it.
     Prepared,
-    /// Submission may have happened; recovery must look up the original request.
+    /// Submission may have happened; recovery asks again under the original request.
     Submitted,
 }
 
@@ -60,7 +60,7 @@ pub struct Snapshot {
     pub action: agent_interface_roster::profiles::operations::Action,
     /// The original provider idempotency key.
     pub request_id: String,
-    /// Original or reserved tuple; still requires the normal content handshake.
+    /// The new profile's identity; still requires the normal content handshake.
     pub identity: Option<Identity>,
     /// Validated terminal receipt, returned only after durable storage.
     pub terminal: Option<Receipt>,
@@ -157,8 +157,9 @@ impl Controller {
         self.invoke(key, Invocation::Submit, live)
     }
 
-    /// Read the original receipt after an uncertain/pending submission. This is
-    /// the default recovery action and never reissues the original mutation.
+    /// Ask again under the original request ID after an uncertain submission.
+    /// This is the default recovery action: the service answers the same ID
+    /// with its first result and makes nothing new.
     pub fn refresh(&self, key: &str, live: &dyn Fn() -> bool) -> Result<Receipt, Error> {
         self.invoke(key, Invocation::Refresh, live)
     }
@@ -213,7 +214,7 @@ impl Controller {
             return Err(Error::Client(super::Error::Cancelled));
         }
         // Claim a new revision for every invocation. A concurrent result can
-        // never overwrite another claim, reservation or terminal observation.
+        // never overwrite another claim or terminal observation.
         let bytes = encode(Phase::Submitted, &stored.operation)?;
         let claimed = self
             .journal

@@ -1,20 +1,23 @@
 use super::*;
-use profiles::{Profile, operations::Status};
+use profiles::operations::Status;
 use serde_json::Value;
 use std::{fs, os::unix::fs::PermissionsExt};
 
-fn fixture() -> Value {
-    serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../roster/tests/fixtures/profiles-v1.json"
-    )))
-    .unwrap()
+/// The service's answer to a create, as its `machine-profile-created`
+/// fixture has it.
+fn entry(name: &str) -> Value {
+    serde_json::json!({
+        "state": "serving", "protocol_version": 1, "backbone_version": "0.1.0",
+        "profile_id": "0a1b2c3d4e5f", "display_name": name,
+        "instance_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d",
+        "machine": {"id": "5f2c9e0d1b7a4e38", "name": "laptop"}, "home": true,
+        "socket": "/home/user/.local/share/backbone/profiles/0a1b2c3d4e5f/api.sock",
+        "tmux_socket": "/home/user/.local/share/backbone/profiles/0a1b2c3d4e5f/tmux.sock",
+        "credential_reference": {"type": "socket"}
+    })
 }
-fn start() -> Prepared {
-    let profile =
-        Profile::parse(&serde_json::to_vec(&fixture()["discovery"]["show_ready"]).unwrap())
-            .unwrap();
-    Prepared::start("operation-start-a", &profile).unwrap()
+fn create() -> Prepared {
+    Prepared::create("operation-create-a", "Work").unwrap()
 }
 fn stub(script: &str) -> (tempfile::TempDir, Client) {
     let dir = tempfile::tempdir().unwrap();
@@ -32,65 +35,44 @@ fn stub(script: &str) -> (tempfile::TempDir, Client) {
 }
 
 #[test]
-fn apply_and_lookup_keep_exact_request_and_original_caller() {
-    let success = &fixture()["lifecycle"]["succeeded"];
+fn a_create_keeps_its_original_caller() {
     let (dir, mut client) = stub(&format!(
         r#"
 printf '%s\n' "$*" >> "$CAPTURE"
 test "$BACKBONE_AGENT" = original || exit 9
-case "$2" in
-  apply) /bin/cat "$4" >> "$CAPTURE.body"; printf '\n' >> "$CAPTURE.body";;
-  operation) test "$*" = 'profiles operation --json -- operation-start-a' || exit 8;;
-  *) exit 7;;
-esac
 /bin/cat <<'FIXTURE'
-{success}
+{}
 FIXTURE
-"#
+"#,
+        entry("Work")
     ));
     client
         .environment
         .push(("BACKBONE_AGENT".into(), "original".into()));
-    let mut operation = Operation::new(&client, start());
+    let mut operation = Operation::new(&client, create());
     client
         .environment
         .push(("BACKBONE_AGENT".into(), "replacement".into()));
-    let body = operation.request_bytes().to_vec();
     assert_eq!(operation.apply(&|| true).unwrap().status, Status::Succeeded);
     assert_eq!(
-        operation.refresh(&|| true).unwrap().status,
-        Status::Succeeded
-    );
-    assert_eq!(operation.apply(&|| true).unwrap().status, Status::Succeeded);
-    let captured = fs::read_to_string(dir.path().join("calls.body")).unwrap();
-    assert_eq!(
-        captured,
-        format!("{0}\n{0}\n", String::from_utf8(body.clone()).unwrap())
-    );
-    assert_eq!(operation.request_bytes(), body);
-    assert_eq!(operation.request_id(), "operation-start-a");
-    assert_eq!(
-        fs::read_to_string(dir.path().join("calls"))
-            .unwrap()
-            .lines()
-            .count(),
-        3
+        fs::read_to_string(dir.path().join("calls")).unwrap(),
+        "profiles create --starter core-v1 --request-id operation-create-a --json -- Work\n"
     );
 }
 
 #[test]
-fn timeout_then_lookup_resolves_original_operation_without_resubmitting() {
-    let success = &fixture()["lifecycle"]["succeeded"];
+fn a_timeout_then_asking_again_resolves_the_original_request() {
     let (dir, client) = stub(&format!(
         r#"
 printf '%s\n' "$2" >> "$CAPTURE"
-if [ "$2" = apply ]; then exec /bin/sleep 5; fi
+if [ ! -f "$CAPTURE.once" ]; then : > "$CAPTURE.once"; exec /bin/sleep 5; fi
 /bin/cat <<'FIXTURE'
-{success}
+{}
 FIXTURE
-"#
+"#,
+        entry("Work")
     ));
-    let mut operation = Operation::new(&client, start());
+    let mut operation = Operation::new(&client, create());
     let original = operation.request_bytes().to_vec();
     assert_eq!(
         operation.apply_with_timeout(&|| true, Duration::from_secs(2)),
@@ -103,40 +85,13 @@ FIXTURE
     );
     assert_eq!(
         fs::read_to_string(dir.path().join("calls")).unwrap(),
-        "apply\noperation\n"
+        "create\ncreate\n"
     );
-}
-
-#[test]
-fn failed_receipts_are_retained_but_nonzero_success_and_foreign_receipts_are_not() {
-    let fixture = fixture();
-    let failed = &fixture["lifecycle"]["failed"];
-    let (_dir, client) = stub(&format!("/bin/cat <<'FIXTURE'\n{failed}\nFIXTURE\nexit 1"));
-    assert_eq!(
-        Operation::new(&client, start())
-            .apply(&|| true)
-            .unwrap()
-            .status,
-        Status::Failed
-    );
-    let success = &fixture["lifecycle"]["succeeded"];
-    let (_dir, client) = stub(&format!("/bin/cat <<'FIXTURE'\n{success}\nFIXTURE\nexit 1"));
-    let mut operation = Operation::new(&client, start());
-    assert_eq!(operation.apply(&|| true), Err(Error::CommandFailed));
-    let mut foreign = success.clone();
-    foreign["lifecycle_id"] = "replacement".into();
-    let (_dir, client) = stub(&format!("/bin/cat <<'FIXTURE'\n{foreign}\nFIXTURE"));
-    let mut operation = Operation::new(&client, start());
-    assert_eq!(
-        operation.apply(&|| true),
-        Err(Error::Profile(profiles::Error::BindingMismatch))
-    );
-    assert_eq!(operation.identity().unwrap().lifecycle_id, "lifecycle-a1");
 }
 
 #[test]
 fn service_descendants_do_not_hold_receipt_open_or_get_killed() {
-    let success = &fixture()["lifecycle"]["succeeded"];
+    let success = entry("Work");
     let (dir, client) = stub(&format!(
         r#"
 /bin/sh -c '/bin/sleep 0.2; printf "service output\n"; printf alive > "$CAPTURE.alive"; exec /bin/sleep 10' &
@@ -147,7 +102,7 @@ FIXTURE
 "#
     ));
     let started = Instant::now();
-    let mut operation = Operation::new(&client, start());
+    let mut operation = Operation::new(&client, create());
     let result = operation.apply_with_timeout(&|| true, Duration::from_secs(2));
     let pid: i32 = fs::read_to_string(dir.path().join("calls.pid"))
         .unwrap()
@@ -172,33 +127,10 @@ FIXTURE
 }
 
 #[test]
-fn leaving_a_running_start_lets_its_command_finish() {
-    // `$4` is the `--file` path; the command reads it only after the caller left.
-    let (dir, client) = stub("sleep 1; /bin/cat \"$4\" > \"$CAPTURE\"");
-    let capture = dir.path().join("calls");
-    let mut operation = Operation::new(&client, start());
-    let checks = std::cell::Cell::new(0);
-    let live = || {
-        checks.set(checks.get() + 1);
-        checks.get() < 5
-    };
-    assert_eq!(operation.apply(&live), Err(Error::Cancelled));
-    assert!(!capture.exists());
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while fs::read(&capture).ok().as_deref() != Some(operation.request_bytes()) {
-        assert!(
-            Instant::now() < deadline,
-            "the command did not read its request"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
-
-#[test]
 fn cancelled_and_oversized_invocations_preserve_original_request() {
     let (dir, client) =
         stub("printf called > \"$CAPTURE\"; exec /usr/bin/head -c 1048577 /dev/zero");
-    let mut operation = Operation::new(&client, start());
+    let mut operation = Operation::new(&client, create());
     let original = operation.request_bytes().to_vec();
     assert_eq!(operation.apply(&|| false), Err(Error::Cancelled));
     assert!(!dir.path().join("calls").exists());
@@ -208,16 +140,7 @@ fn cancelled_and_oversized_invocations_preserve_original_request() {
 
 #[test]
 fn the_rust_service_makes_a_profile_under_the_requests_own_id() {
-    // The service's answer, as its `machine-profile-created` fixture has it.
-    let entry = serde_json::json!({
-        "state": "serving", "protocol_version": 1, "backbone_version": "0.1.0",
-        "profile_id": "0a1b2c3d4e5f", "display_name": "-Work",
-        "instance_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d",
-        "machine": {"id": "5f2c9e0d1b7a4e38", "name": "laptop"}, "home": true,
-        "socket": "/home/user/.local/share/backbone/profiles/0a1b2c3d4e5f/api.sock",
-        "tmux_socket": "/home/user/.local/share/backbone/profiles/0a1b2c3d4e5f/tmux.sock",
-        "credential_reference": {"type": "socket"}
-    });
+    let entry = entry("-Work");
     let (dir, client) = stub(&format!(
         r#"
 printf '%s\n' "$*" >> "$CAPTURE"
@@ -237,7 +160,7 @@ esac
     let calls = dir.path().join("calls");
     let create =
         format!("profiles create --starter core-v1 --request-id {request} --json -- -Work");
-    let prepared = || Prepared::create(request, "-Work", "core-v1").unwrap();
+    let prepared = || Prepared::create(request, "-Work").unwrap();
 
     // No answer: the outcome is unknown, and asking again sends the same ID.
     fs::write(dir.path().join("calls.unknown"), "").unwrap();
@@ -263,7 +186,7 @@ esac
     );
     assert_eq!(
         fs::read_to_string(&calls).unwrap(),
-        format!("profiles list --json\n{create}\n").repeat(3)
+        format!("{create}\n").repeat(3)
     );
 
     // A refused repeat settles only when no profile has the name.

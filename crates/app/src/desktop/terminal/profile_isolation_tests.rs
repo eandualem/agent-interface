@@ -83,9 +83,8 @@ fn equal_terminal_ids_keep_streams_and_input_isolated_when_one_profile_stops() {
         .unwrap()
     );
     let make_target = |label: &str, own_socket: PathBuf, foreign_socket: PathBuf| {
-        let identity = json!({"schema_version":1,"profile_id":format!("profile-{label}"),
-            "installation_id":format!("installation-{label}"), "lifecycle_id":format!("lifecycle-{label}"),
-            "baseline_version":"fixture", "tmux":{"socket_path":own_socket}});
+        let identity = json!({"protocol_version":1,"profile_id":format!("profile-{label}"),
+            "instance_id":format!("instance-{label}"), "machine":{"id":format!("machine-{label}")}});
         let (directory, connection, server) = provider_with_tmux(
             label,
             (0..2)
@@ -234,11 +233,10 @@ fn bound_shell_attaches_to_the_provider_session_and_never_creates_one() {
             },
         )
     };
-    let identity = json!({"schema_version":1,"profile_id":"profile-a",
-        "installation_id":"installation-a","lifecycle_id":"lifecycle-a",
-        "baseline_version":"fixture","tmux":{"socket_path":socket}});
+    let identity = json!({"protocol_version":1,"profile_id":"profile-a",
+        "instance_id":"instance-a","machine":{"id":"machine-a"}});
     let shell = json!({"schema_version":1,"profile_id":"profile-a",
-        "installation_id":"installation-a","lifecycle_id":"lifecycle-a",
+        "instance_id":"instance-a",
         "shell_id":"123456abcdef","session":"fixture","created":true});
     let (_directory, provider, opened) = target(vec![
         Reply::ok("/api/profile", identity.clone()),

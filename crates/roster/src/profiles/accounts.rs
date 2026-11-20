@@ -144,9 +144,6 @@ impl Connection {
     /// service reads from metadata without running anything. Runs on an I/O
     /// worker.
     pub fn stored_login(&self, runtime: &str) -> Result<Stored, Failure> {
-        if !self.served {
-            return Err(Error::Unsupported.into());
-        }
         let path = format!("{STATUS}?runtime={}", crate::views::encode(runtime));
         let response = self.response(&path, None, RESPONSE_LIMIT)?;
         let reply: Status = answer(&response)?;
@@ -161,9 +158,6 @@ impl Connection {
     /// server, or find it running. Started is not signed in. Runs on an I/O
     /// worker.
     pub fn start_sign_in(&self, runtime: &str) -> Result<Started, Failure> {
-        if !self.served {
-            return Err(Error::Unsupported.into());
-        }
         let response = self.write("POST", SIGN_IN, Some(asked(runtime)?), None)?;
         let reply: SignIn = answer(&response)?;
         about(self, &reply.profile_id, &reply.runtime, runtime)?;
@@ -182,9 +176,6 @@ impl Connection {
     /// takes no request ID: while a check of the CLI runs, another is
     /// [`Failure::Running`]. Runs on an I/O worker.
     pub fn check_sign_in(&self, runtime: &str) -> Result<Checked, Failure> {
-        if !self.served {
-            return Err(Error::Unsupported.into());
-        }
         let body = asked(runtime)?;
         let response = self.write_within("POST", CHECK, Some(body), None, CHECK_WAIT)?;
         if running(&response) {

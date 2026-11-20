@@ -366,9 +366,7 @@ impl ViewPane {
             return pane;
         }
         if let Some(connection) = &pane.connection
-            && (pane.view.kind == ViewKind::Artifacts
-                && !super::chooser_source::shows_artifacts(connection.kind())
-                || !pane.agents.belongs_to(connection.identity()))
+            && !pane.agents.belongs_to(connection.identity())
         {
             pane.error = Some("This view is unavailable for the original profile.");
             return pane;

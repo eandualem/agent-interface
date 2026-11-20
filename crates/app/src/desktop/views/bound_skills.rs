@@ -165,7 +165,6 @@ mod tests {
         let artifact = open.artifact.clone();
         let job = thread::spawn(move || read(artifact, &ticket).unwrap());
         wait.recv_timeout(Duration::from_secs(5)).unwrap();
-        std::fs::write(a.credential_reference(), "BACKBONE_API_KEY=rotated\n").unwrap();
         let (other_record, other_team) = catalog(&b);
         let other = Open::capture(&b, Some(&other_record), &other_team);
         let other_snapshot = read(other.artifact.clone(), &other.ticket()).unwrap();

@@ -2,179 +2,22 @@ use super::*;
 use serde_json::{Value, json};
 use std::{
     fs,
-    io::Write,
+    io::{Read, Write},
     os::unix::{fs::PermissionsExt, net::UnixListener},
     thread,
     time::Instant,
 };
 
-fn fixture() -> Value {
-    serde_json::from_str(include_str!("../../tests/fixtures/profiles-v1.json")).unwrap()
-}
+const REG: &str = "1234567890abcdef1234567890abcdef";
 
 fn inspected(registration: Value) -> Value {
     json!({"name":"worker","known":true,"runtime":"codex","registration_id":registration,"recent_deliveries":[{"kind":"direct_message","outcome":"queued","preview":"fixture","created_at":"2026-11-02T07:00:00Z"}]})
 }
 
 #[test]
-fn retained_runtime_context_uses_canonical_permissions_and_original_registration() {
-    use super::runtime_context::{self as context, Status};
-    let fixtures = fixture();
-    let context_fixtures = &fixtures["runtime_context"];
-    let registration = context_fixtures["available"]["registration_id"].clone();
-    let (directory, listener, socket) = crate::transport::tests::local_listener();
-    let (profile, identity) = profile_at(directory.path(), &socket);
-    let mut replies = vec![(200, identity), (200, inspected(registration.clone()))];
-    for name in ["available", "missing", "invalid", "unreadable"] {
-        replies.push((200, context_fixtures[name].clone()));
-    }
-    // Unsupported metadata must still match the captured runtime.
-    let mut unsupported = context_fixtures["unsupported"].clone();
-    unsupported["runtime"] = json!("codex");
-    replies.push((200, unsupported));
-    replies.push((200, inspected(registration.clone())));
-    replies.push((
-        409,
-        context_fixtures["registration_changed"]["body"].clone(),
-    ));
-    replies.push((
-        409,
-        fixtures["http_errors"]["binding_mismatch"]["body"].clone(),
-    ));
-    replies.push((404, json!({})));
-    let server = serve(listener, replies);
-    let connection = profile.connect().unwrap();
-    let card = context::inspect(connection.clone(), "worker", None).unwrap();
-    assert_eq!(
-        card.target.registration_id(),
-        registration.as_str().unwrap()
-    );
-    assert_eq!(card.agent.received.len(), 1);
-    assert_eq!(card.agent.received[0].preview, "fixture");
-    fs::write(
-        connection.credential_reference(),
-        "BACKBONE_API_KEY=rotated\n",
-    )
-    .unwrap();
-    for expected in [
-        Status::Available,
-        Status::Unavailable,
-        Status::Unavailable,
-        Status::Unavailable,
-        Status::Unsupported,
-    ] {
-        let permissions = card.target.permissions().unwrap();
-        assert_eq!(permissions.status, expected);
-        assert_eq!(
-            permissions.message().is_none(),
-            expected == Status::Available
-        );
-    }
-    assert_eq!(card.target.refresh().unwrap().name, "worker");
-    assert_eq!(
-        card.target.refresh().err(),
-        Some(context::Error::RegistrationChanged)
-    );
-    assert_eq!(
-        card.target.permissions().err(),
-        Some(context::Error::Connection(Error::BindingMismatch))
-    );
-    assert_eq!(
-        card.target.permissions().err(),
-        Some(context::Error::Unsupported)
-    );
-    let requests = server.join().unwrap();
-    assert!(requests[1].starts_with("get /api/agents/worker/inspect http/1.1"));
-    for request in &requests[2..] {
-        assert!(request.lines().next().unwrap().contains(&format!(
-            "?expected_registration_id={} ",
-            registration.as_str().unwrap()
-        )));
-        assert!(request.contains("authorization: bearer fixture-original\r\n"));
-        assert!(request.contains("x-backbone-profile-id: profile-a\r\n"));
-        assert!(request.contains("x-backbone-installation-id: installation-a\r\n"));
-        assert!(request.contains("x-backbone-lifecycle-id: lifecycle-a1\r\n"));
-    }
-}
-
-#[test]
-fn runtime_context_rejects_foreign_targets_and_malformed_permission_metadata() {
-    use super::runtime_context as context;
-    let fixtures = fixture();
-    let available = &fixtures["runtime_context"]["available"];
-    let registration = available["registration_id"].as_str().unwrap();
-    let (directory, listener, socket) = crate::transport::tests::local_listener();
-    let (profile, identity) = profile_at(directory.path(), &socket);
-    let mut replies = vec![(200, identity), (200, inspected(json!(registration)))];
-    let mut expected = Vec::new();
-    for field in [
-        "profile_id",
-        "installation_id",
-        "lifecycle_id",
-        "agent_name",
-        "runtime",
-        "registration_id",
-    ] {
-        let mut wrong = available.clone();
-        wrong[field] = json!("other");
-        replies.push((200, wrong));
-        expected.push(if field == "registration_id" {
-            context::Error::RegistrationChanged
-        } else {
-            context::Error::Invalid
-        });
-    }
-    for path in [
-        "/private/config.toml",
-        "../config.toml",
-        "project/../../config.toml",
-        "C:\\config.toml",
-    ] {
-        let mut wrong = available.clone();
-        wrong["permissions"]["files"][0]["display_path"] = json!(path);
-        replies.push((200, wrong));
-        expected.push(context::Error::Invalid);
-    }
-    for field in ["allow", "deny", "ask", "modes", "files"] {
-        let mut wrong = available.clone();
-        wrong["permissions"][field] = json!("malformed");
-        replies.push((200, wrong));
-        expected.push(context::Error::Invalid);
-    }
-    for field in ["scope", "state"] {
-        let mut wrong = available.clone();
-        wrong["permissions"]["files"][0][field] = json!("unknown");
-        replies.push((200, wrong));
-        expected.push(context::Error::Invalid);
-    }
-    let mut invalid_available = available.clone();
-    invalid_available["permissions"]["files"][0]["state"] = json!("unreadable");
-    replies.push((200, invalid_available));
-    expected.push(context::Error::Invalid);
-    let mut raw_error = fixtures["runtime_context"]["missing"].clone();
-    raw_error["permissions"]["error"]["message"] = json!("private provider diagnostic");
-    replies.push((200, raw_error));
-    expected.push(context::Error::Invalid);
-    replies.push((200, json!({"schema_version":2,"replacement":true})));
-    expected.push(context::Error::Unsupported);
-    let server = serve(listener, replies);
-    let card = context::inspect(profile.connect().unwrap(), "worker", Some(registration)).unwrap();
-    for error in expected {
-        assert_eq!(card.target.permissions().err(), Some(error));
-    }
-    let requests = server.join().unwrap();
-    assert!(requests[1].starts_with(&format!(
-        "get /api/agents/worker/inspect?expected_registration_id={registration} "
-    )));
-}
-
-#[test]
 fn retained_inspection_cannot_replace_or_drop_registration() {
     use super::runtime_context as context;
-    let fixtures = fixture();
-    let registration = fixtures["runtime_context"]["available"]["registration_id"]
-        .as_str()
-        .unwrap();
+    let registration = REG;
     let (directory, listener, socket) = crate::transport::tests::local_listener();
     let (profile, identity) = profile_at(directory.path(), &socket);
     let mut missing = inspected(json!(registration));
@@ -231,25 +74,19 @@ fn same_named_agent_contexts_remain_with_their_profile() {
         let (mut profile, mut identity) = profile_at(directory.path(), &socket);
         profile.item.profile_id = format!("profile-{label}");
         identity["profile_id"] = json!(profile.item.profile_id);
-        let mut permissions = fixture()["runtime_context"]["available"].clone();
-        permissions["profile_id"] = json!(profile.item.profile_id);
-        permissions["permissions"]["allow"] = json!([format!("rule-{label}")]);
-        let registration = permissions["registration_id"].clone();
+        let mut agent = inspected(json!(REG));
+        agent["recent_deliveries"][0]["preview"] = json!(format!("from-{label}"));
         let server = serve(
             listener,
-            vec![
-                (200, identity),
-                (200, inspected(registration)),
-                (200, permissions),
-            ],
+            vec![(200, identity), (200, agent.clone()), (200, agent)],
         );
         let card = context::inspect(profile.connect().unwrap(), "worker", None).unwrap();
         profiles.push((directory, server, card));
     }
     let (_b_dir, b_server, b) = profiles.pop().unwrap();
     let (_a_dir, a_server, a) = profiles.pop().unwrap();
-    assert_eq!(b.target.permissions().unwrap().allow, ["rule-b"]);
-    assert_eq!(a.target.permissions().unwrap().allow, ["rule-a"]);
+    assert_eq!(b.target.refresh().unwrap().received[0].preview, "from-b");
+    assert_eq!(a.target.refresh().unwrap().received[0].preview, "from-a");
     for (server, label) in [(a_server, "a"), (b_server, "b")] {
         for request in server.join().unwrap() {
             assert!(request.contains(&format!("x-backbone-profile-id: profile-{label}\r\n")));
@@ -257,52 +94,19 @@ fn same_named_agent_contexts_remain_with_their_profile() {
     }
 }
 
-#[test]
-fn canonical_discovery_decodes_and_invalid_bindings_are_not_selectable() {
-    let fixture = fixture();
-    let bytes = |value: &Value| serde_json::to_vec(value).unwrap();
-    let future = br#"{"schema_version":2,"new_shape":true}"#;
-    assert_eq!(list(future).err(), Some(Error::Unsupported));
-    assert_eq!(Profile::parse(future).err(), Some(Error::Unsupported));
-    let items = list(&bytes(&fixture["discovery"]["list"])).unwrap();
-    assert_eq!(items.len(), 1);
-    let ready = Profile::parse(&bytes(&fixture["discovery"]["show_ready"])).unwrap();
-    assert_eq!(ready.item().profile_id, items[0].profile_id);
-    let creating = Profile::parse(&bytes(&fixture["discovery"]["show_creating"])).unwrap();
-    assert_eq!(creating.connect().err(), Some(Error::NotReady));
-
-    let mut invalid = fixture["discovery"]["show_ready"].clone();
-    invalid["schema_version"] = json!(2);
-    assert_eq!(
-        Profile::parse(&bytes(&invalid)).err(),
-        Some(Error::Unsupported)
-    );
-    invalid["schema_version"] = json!(1);
-    invalid["binding"] = Value::Null;
-    assert_eq!(Profile::parse(&bytes(&invalid)).err(), Some(Error::Invalid));
-    invalid.as_object_mut().unwrap().remove("binding");
-    assert_eq!(Profile::parse(&bytes(&invalid)).err(), Some(Error::Invalid));
-    invalid = fixture["discovery"]["show_ready"].clone();
-    invalid["binding"]["endpoint"]["kind"] = json!("tcp");
-    assert_eq!(Profile::parse(&bytes(&invalid)).err(), Some(Error::Invalid));
-    invalid = fixture["discovery"]["show_ready"].clone();
-    invalid["binding"]["credential_reference"]["path"] = json!("relative/.env");
-    assert_eq!(Profile::parse(&bytes(&invalid)).err(), Some(Error::Invalid));
+fn profile_at(directory: &Path, socket: &str) -> (Profile, Value) {
+    let mut entry = served_entry(socket);
+    entry["tmux_socket"] = json!(directory.join("tmux.sock"));
+    let profile = Profile::parse(&serde_json::to_vec(&entry).unwrap()).unwrap();
+    (profile, handshake(entry))
 }
 
-fn profile_at(directory: &Path, socket: &str) -> (Profile, Value) {
-    let mut fixture = fixture();
-    let credential = directory.join("profile.env");
-    fs::write(&credential, "BACKBONE_API_KEY=fixture-original\n").unwrap();
-    fs::set_permissions(&credential, fs::Permissions::from_mode(0o600)).unwrap();
-    let tmux = directory.join("tmux.sock");
-    let record = &mut fixture["discovery"]["show_ready"];
-    record["binding"]["endpoint"]["path"] = json!(socket);
-    record["binding"]["credential_reference"]["path"] = json!(credential);
-    record["binding"]["tmux"]["socket_path"] = json!(tmux);
-    let profile = Profile::parse(&serde_json::to_vec(record).unwrap()).unwrap();
-    fixture["identity"]["tmux"]["socket_path"] = json!(tmux);
-    (profile, fixture["identity"].clone())
+/// The service's `/api/profile` reply for a listed `entry`.
+fn handshake(mut entry: Value) -> Value {
+    for field in ["state", "socket", "tmux_socket", "credential_reference"] {
+        entry.as_object_mut().unwrap().remove(field);
+    }
+    entry
 }
 
 fn serve(listener: UnixListener, replies: Vec<(u16, Value)>) -> thread::JoinHandle<Vec<String>> {
@@ -361,27 +165,22 @@ fn serve_with_hook(
 }
 
 #[test]
-fn connection_pins_credentials_and_identity_through_followup_and_replacement() {
+fn connection_pins_identity_through_followup_and_replacement() {
     let (directory, listener, socket) = crate::transport::tests::local_listener();
     let (profile, identity) = profile_at(directory.path(), &socket);
-    let mismatch = fixture()["http_errors"]["binding_mismatch"]["body"].clone();
+    let mismatch = json!({"detail": {"code": "binding_mismatch", "message": "Profile binding does not match."}});
     let server = serve(
         listener,
         vec![(200, identity), (200, json!({})), (409, mismatch)],
     );
     let connection = profile.connect().unwrap();
-    assert_eq!(connection.identity().lifecycle_id, "lifecycle-a1");
+    assert_eq!(connection.identity().lifecycle_id, "5f2c9e0d1b7a4e38");
     assert_eq!(connection.tmux_socket(), directory.path().join("tmux.sock"));
-    fs::write(
-        connection.credential_reference(),
-        "BACKBONE_API_KEY=fixture-rotated\n",
-    )
-    .unwrap();
     let response = connection
         .response("/api/example", Some(vec![]), 1024)
         .unwrap();
     assert_eq!(response.status, 200);
-    // The same path now refuses the old instance. No unbound retry follows.
+    // The same path now refuses the connection. No unbound retry follows.
     assert_eq!(
         connection
             .response("/api/example", Some(vec![]), 1024)
@@ -392,10 +191,8 @@ fn connection_pins_credentials_and_identity_through_followup_and_replacement() {
     assert_eq!(requests.len(), 3);
     assert!(requests[1].starts_with("post /api/example "));
     for request in requests {
-        assert!(request.contains("authorization: bearer fixture-original\r\n"));
-        assert!(request.contains("x-backbone-profile-id: profile-a\r\n"));
-        assert!(request.contains("x-backbone-installation-id: installation-a\r\n"));
-        assert!(request.contains("x-backbone-lifecycle-id: lifecycle-a1\r\n"));
+        assert!(request.contains("x-backbone-profile-id: 0a1b2c3d4e5f\r\n"));
+        assert!(!request.contains("authorization"));
     }
 }
 
@@ -403,19 +200,19 @@ fn connection_pins_credentials_and_identity_through_followup_and_replacement() {
 fn bound_shell_request_carries_no_environment_and_checks_its_reply() {
     let (directory, listener, socket) = crate::transport::tests::local_listener();
     let (profile, identity) = profile_at(directory.path(), &socket);
-    let reply = |shell_id: &str, lifecycle: &str| {
-        json!({"schema_version": 1, "profile_id": identity["profile_id"],
-            "installation_id": identity["installation_id"], "lifecycle_id": lifecycle,
+    let reply = |shell_id: &str, profile: &Value| {
+        json!({"schema_version": 1, "profile_id": profile,
+            "instance_id": identity["instance_id"],
             "shell_id": shell_id, "session": "opaque-session", "created": true})
     };
-    let lifecycle = identity["lifecycle_id"].as_str().unwrap();
+    let own = &identity["profile_id"];
     let server = serve(
         listener,
         vec![
             (200, identity.clone()),
-            (200, reply("123456abcdef", lifecycle)),
-            (200, reply("123456abcdef", "lifecycle-other")),
-            (200, reply("foreign000000", lifecycle)),
+            (200, reply("123456abcdef", own)),
+            (200, reply("123456abcdef", &json!("1a2b3c4d5e6f"))),
+            (200, reply("foreign000000", own)),
             (503, json!({"detail": {"code": "shell_unavailable"}})),
             (404, json!({})),
         ],
@@ -429,109 +226,12 @@ fn bound_shell_request_carries_no_environment_and_checks_its_reply() {
     assert_eq!(ensure(None).err(), Some(Error::Unsupported));
     let requests = server.join().unwrap();
     assert!(requests[1].starts_with("post /api/profile/shells "));
-    assert!(requests[1].contains("x-backbone-lifecycle-id: "));
     let body = requests[1].rsplit("\r\n\r\n").next().unwrap();
     let keys: Value = serde_json::from_str(body).unwrap();
     assert_eq!(
         keys,
         json!({"schema_version": 1, "shell_id": "123456abcdef", "cwd": "/work"})
     );
-}
-
-#[test]
-fn shared_session_cases_decode_and_refusals_keep_their_status() {
-    let (directory, listener, socket) = crate::transport::tests::local_listener();
-    let (profile, identity) = profile_at(directory.path(), &socket);
-    let sessions = fixture()["sessions"].clone();
-    let tuple = |mut reply: Value| {
-        for key in ["profile_id", "installation_id", "lifecycle_id"] {
-            reply[key] = identity[key].clone();
-        }
-        reply
-    };
-    let refusal = |case: &Value| {
-        (
-            case["status"].as_u64().unwrap() as u16,
-            case["body"].clone(),
-        )
-    };
-    let mut foreign = tuple(sessions["sign_in_response"].clone());
-    foreign["lifecycle_id"] = json!("lifecycle-other");
-    let server = serve(
-        listener,
-        vec![
-            (200, identity.clone()),
-            (200, tuple(sessions["shell_response"].clone())),
-            (200, tuple(sessions["shell_reused"].clone())),
-            refusal(&sessions["shell_refusals"]["invalid_cwd"]),
-            refusal(&sessions["shell_refusals"]["shell_unavailable"]),
-            (200, tuple(sessions["sign_in_response"].clone())),
-            (200, tuple(sessions["sign_in_reused"].clone())),
-            refusal(&sessions["sign_in_refusals"]["runtime_unavailable"]),
-            refusal(&sessions["sign_in_refusals"]["shell_unavailable"]),
-            (200, foreign),
-            (404, json!({})),
-        ],
-    );
-    let connection = profile.connect().unwrap();
-    assert_eq!(connection.kind(), &Kind::Isolated);
-    let shell_id = sessions["shell_request"]["shell_id"].as_str().unwrap();
-    let shell = |cwd| connection.ensure_shell(shell_id, cwd);
-    let session = sessions["shell_response"]["session"].as_str().unwrap();
-    assert_eq!(shell(Some("/work")).as_deref(), Ok(session));
-    assert_eq!(shell(None).as_deref(), Ok(session));
-    assert_eq!(shell(None).err(), Some(Error::Refused(422)));
-    assert_eq!(shell(None).err(), Some(Error::Refused(503)));
-
-    let runtime = sessions["sign_in_request"]["runtime"].as_str().unwrap();
-    let session = sessions["sign_in_response"]["session"].as_str().unwrap();
-    let sign_in = || connection.sign_in_session(runtime);
-    assert_eq!(sign_in().as_deref(), Ok(session));
-    assert_eq!(sign_in().as_deref(), Ok(session));
-    assert_eq!(sign_in().err(), Some(Error::Refused(422)));
-    assert_eq!(sign_in().err(), Some(Error::Refused(503)));
-    assert_eq!(sign_in().err(), Some(Error::BindingMismatch));
-    assert_eq!(sign_in().err(), Some(Error::Unsupported));
-
-    let requests = server.join().unwrap();
-    assert!(requests[5].starts_with("post /api/profile/accounts/sign-in "));
-    let body = requests[5].rsplit("\r\n\r\n").next().unwrap();
-    let sent: Value = serde_json::from_str(body).unwrap();
-    assert_eq!(sent, sessions["sign_in_request"]);
-}
-
-#[test]
-fn account_status_reads_one_cli_and_refuses_another_answer() {
-    use runtime_catalog::Authentication;
-    let (directory, listener, socket) = crate::transport::tests::local_listener();
-    let (profile, identity) = profile_at(directory.path(), &socket);
-    let sessions = fixture()["sessions"].clone();
-    let reply = sessions["account_status_response"].clone();
-    let mut other = reply.clone();
-    other["runtime"] = json!("claude");
-    let server = serve(
-        listener,
-        vec![
-            (200, identity.clone()),
-            (200, reply),
-            (200, other),
-            (
-                422,
-                sessions["sign_in_refusals"]["runtime_unavailable"]["body"].clone(),
-            ),
-        ],
-    );
-    let connection = profile.connect().unwrap();
-    assert_eq!(
-        connection.account_status("codex"),
-        Ok(Authentication::Authenticated)
-    );
-    assert_eq!(connection.account_status("codex"), Err(Error::Invalid));
-    assert_eq!(connection.account_status("a&b#c"), Err(Error::Refused(422)));
-    let requests = server.join().unwrap();
-    let query = sessions["account_status_query"].as_str().unwrap();
-    assert!(requests[1].starts_with(&format!("get {query} ")));
-    assert!(requests[3].starts_with("get /api/profile/accounts/status?runtime=a%26b%23c "));
 }
 
 #[test]
@@ -553,23 +253,23 @@ fn starting_a_stopped_agent_uses_the_bound_route_and_reports_the_outcome() {
     );
     let connection = profile.connect().unwrap();
     assert!(matches!(
-        connection.start_agent("worker", false, None),
+        connection.start_agent("worker", false),
         Outcome::Accepted(_)
     ));
     assert_eq!(
-        connection.start_agent("worker", true, None),
+        connection.start_agent("worker", true),
         Outcome::AlreadyRunning
     );
     assert!(matches!(
-        connection.start_agent("worker", false, None),
+        connection.start_agent("worker", false),
         Outcome::Refused(_)
     ));
     assert!(matches!(
-        connection.start_agent("worker", true, None),
+        connection.start_agent("worker", true),
         Outcome::Refused(_)
     ));
     assert!(matches!(
-        connection.start_agent("../other", false, None),
+        connection.start_agent("../other", false),
         Outcome::Refused(_)
     ));
     let requests = server.join().unwrap();
@@ -581,7 +281,6 @@ fn starting_a_stopped_agent_uses_the_bound_route_and_reports_the_outcome() {
         std::io::ErrorKind::WouldBlock
     );
     assert!(requests[1].starts_with("post /api/agents/worker/start "));
-    assert!(requests[1].contains("x-backbone-lifecycle-id: "));
     let body = |request: &str| -> Value {
         serde_json::from_str(request.rsplit("\r\n\r\n").next().unwrap()).unwrap()
     };
@@ -632,19 +331,13 @@ fn an_unreadable_or_lost_start_reply_is_unknown_after_one_request() {
         vec![(200, identity), (200, json!("not json"))],
     );
     let connection = profile.connect().unwrap();
-    assert_eq!(
-        connection.start_agent("worker", false, None),
-        Outcome::Unknown
-    );
+    assert_eq!(connection.start_agent("worker", false), Outcome::Unknown);
     let requests = server.join().unwrap();
     assert_eq!(requests.len(), 2);
     assert!(requests[1].starts_with("post /api/agents/worker/start "));
     // The connection closes before any answer.
     let lost = crate::transport::tests::serve_on(listener, None, String::new(), Duration::ZERO);
-    assert_eq!(
-        connection.start_agent("worker", false, None),
-        Outcome::Unknown
-    );
+    assert_eq!(connection.start_agent("worker", false), Outcome::Unknown);
     assert!(
         lost.join()
             .unwrap()
@@ -655,78 +348,6 @@ fn an_unreadable_or_lost_start_reply_is_unknown_after_one_request() {
         probe.accept().unwrap_err().kind(),
         std::io::ErrorKind::WouldBlock
     );
-}
-
-#[test]
-fn a_bound_start_sends_terminal_colours_when_the_runtime_supports_them() {
-    use crate::lifecycle::{Outcome, TerminalDefaults};
-    let (directory, listener, socket) = crate::transport::tests::local_listener();
-    let (profile, identity) = profile_at(directory.path(), &socket);
-    let server = serve(
-        listener,
-        vec![
-            (200, identity.clone()),
-            (
-                200,
-                json!([{"id": "codex", "terminal_defaults_supported": true}]),
-            ),
-            (200, json!({"runtime": "codex"})),
-            (
-                200,
-                json!({"ok": true, "session": "worker", "already_existed": false, "ready": "not_waited"}),
-            ),
-        ],
-    );
-    let connection = profile.connect().unwrap();
-    let defaults = TerminalDefaults::new([255; 3], [24, 25, 29]);
-    assert!(matches!(
-        connection.start_agent("worker", false, Some(defaults.clone())),
-        Outcome::Accepted(_)
-    ));
-    let requests = server.join().unwrap();
-    assert!(requests[1].starts_with("get /api/runtimes "));
-    assert!(requests[2].starts_with("get /api/agents/worker/inspect "));
-    let body = requests[3].rsplit("\r\n\r\n").next().unwrap();
-    let sent: Value = serde_json::from_str(body).unwrap();
-    assert_eq!(
-        sent["terminal_defaults"],
-        serde_json::to_value(defaults).unwrap()
-    );
-}
-
-#[test]
-fn a_bound_start_sends_no_terminal_colours_unless_the_saved_runtime_supports_them() {
-    use crate::lifecycle::{Outcome, TerminalDefaults};
-    let started =
-        json!({"ok": true, "session": "worker", "already_existed": false, "ready": "not_waited"});
-    for replies in [
-        // The catalog supports colours, but not for the agent's saved runtime.
-        vec![
-            json!([{"id": "codex", "terminal_defaults_supported": true}]),
-            json!({"runtime": "shell"}),
-        ],
-        // No runtime advertises colour support.
-        vec![json!([{"id": "codex"}])],
-    ] {
-        let (directory, listener, socket) = crate::transport::tests::local_listener();
-        let (profile, identity) = profile_at(directory.path(), &socket);
-        let mut steps = vec![(200, identity)];
-        steps.extend(replies.into_iter().map(|reply| (200, reply)));
-        steps.push((200, started.clone()));
-        let server = serve(listener, steps);
-        let connection = profile.connect().unwrap();
-        let defaults = TerminalDefaults::new([255; 3], [24, 25, 29]);
-        assert!(matches!(
-            connection.start_agent("worker", false, Some(defaults)),
-            Outcome::Accepted(_)
-        ));
-        let requests = server.join().unwrap();
-        let start = requests.last().unwrap();
-        assert!(start.starts_with("post /api/agents/worker/start "));
-        let body = start.rsplit("\r\n\r\n").next().unwrap();
-        let sent: Value = serde_json::from_str(body).unwrap();
-        assert_eq!(sent, json!({"resume": false, "wait": false}));
-    }
 }
 
 #[test]
@@ -783,7 +404,6 @@ fn removing_an_agent_stops_it_first_and_treats_a_missing_one_as_removed() {
     let query = format!("?expected_registration_id={REG} ");
     assert!(requests[1].starts_with(&format!("post /api/agents/worker/stop{query}")));
     assert!(requests[2].starts_with(&format!("delete /api/agents/worker{query}")));
-    assert!(requests[2].contains("x-backbone-lifecycle-id: "));
     assert!(requests[3].starts_with("post /api/agents/worker/stop"));
     assert!(requests[5].starts_with("delete /api/agents/worker"));
     assert!(requests[7].starts_with("delete /api/agents/worker"));
@@ -816,7 +436,8 @@ fn agent_list_reads_again_while_registrations_settle_but_not_forever() {
 fn bound_roster_preserves_typed_failures_and_decodes_success() {
     let (directory, listener, socket) = crate::transport::tests::local_listener();
     let (profile, identity) = profile_at(directory.path(), &socket);
-    let required = fixture()["http_errors"]["binding_required"]["body"].clone();
+    let required =
+        json!({"detail": {"code": "binding_required", "message": "Profile binding is required."}});
     let required_again = required.clone();
     let server = serve(
         listener,
@@ -858,85 +479,59 @@ fn bound_roster_preserves_typed_failures_and_decodes_success() {
             "/api/agents"
         };
         assert!(request.starts_with(&format!("get {path} ")));
-        assert!(request.contains("x-backbone-lifecycle-id: lifecycle-a1\r\n"));
+        assert!(request.contains("x-backbone-profile-id: 0a1b2c3d4e5f\r\n"));
     }
 }
 
 #[test]
-fn handshake_rejects_wrong_identity_tmux_and_unsupported_provider() {
+fn handshake_rejects_another_profile_machine_or_run_and_an_unsupported_service() {
     let (directory, listener, socket) = crate::transport::tests::local_listener();
-    let (profile, mut identity) = profile_at(directory.path(), &socket);
-    let mut wrong_instance = identity.clone();
-    wrong_instance["lifecycle_id"] = json!("lifecycle-a2");
-    identity["tmux"]["socket_path"] = json!(directory.path().join("other.sock"));
-    let required = fixture()["http_errors"]["binding_required"]["body"].clone();
+    let (profile, identity) = profile_at(directory.path(), &socket);
+    let wrong = |field: &str, value: Value| {
+        let mut reply = identity.clone();
+        reply[field] = value;
+        (200, reply)
+    };
+    let required =
+        json!({"detail": {"code": "binding_required", "message": "Profile binding is required."}});
     let server = serve(
         listener,
         vec![
-            (200, wrong_instance),
-            (200, identity),
+            wrong("profile_id", json!("1a2b3c4d5e6f")),
+            wrong("machine", json!({"id": "other-machine"})),
+            wrong("instance_id", json!("0190c3a2c1107a3b8c9d0e1f2a3b4c5e")),
             (404, json!({})),
             (409, required),
-            (200, json!({"schema_version":2,"new_shape":true})),
+            wrong("protocol_version", json!(2)),
         ],
     );
+    assert_eq!(profile.connect().err(), Some(Error::BindingMismatch));
     assert_eq!(profile.connect().err(), Some(Error::BindingMismatch));
     assert_eq!(profile.connect().err(), Some(Error::BindingMismatch));
     assert_eq!(profile.connect().err(), Some(Error::Unsupported));
     assert_eq!(profile.connect().err(), Some(Error::BindingRequired));
     assert_eq!(profile.connect().err(), Some(Error::Unsupported));
-    assert_eq!(server.join().unwrap().len(), 5);
-}
-
-#[test]
-fn credential_source_must_be_the_exact_private_regular_file() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("profile.env");
-    fs::write(&path, "BACKBONE_API_KEY=fixture-key\n").unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-    assert_eq!(credential(&path).unwrap(), "fixture-key");
-    let alias = directory.path().join("alias.env");
-    std::os::unix::fs::symlink(&path, &alias).unwrap();
-    assert_eq!(credential(&alias), Err(Error::Unavailable));
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-    assert_eq!(credential(&path), Err(Error::Unavailable));
-    assert_eq!(credential(directory.path()), Err(Error::Unavailable));
+    assert_eq!(server.join().unwrap().len(), 6);
 }
 
 mod library_snapshots;
 
 #[test]
-fn adding_a_skill_and_a_document_keeps_the_providers_reason() {
+fn adding_a_document_keeps_the_services_reason() {
     let (directory, listener, socket) = crate::transport::tests::local_listener();
     let (profile, identity) = profile_at(directory.path(), &socket);
-    let contract = fixture();
+    let refused =
+        json!({"detail": {"code": "invalid_request", "message": "HTML exceeds the limit"}});
     let server = serve(
         listener,
         vec![
             (200, identity.clone()),
-            (
-                200,
-                json!({"name":"my-skill","path":"/s","tags":["all"],"warnings":["not recorded"]}),
-            ),
-            (422, json!({"detail": "no SKILL.md in the folder"})),
             (201, json!({"record": {"id": 7}, "created": true})),
-            (422, json!({"detail": [{"msg": "HTML exceeds the limit"}]})),
+            (422, refused),
             (403, json!({})),
         ],
     );
     let connection = profile.connect().unwrap();
-    let folder = Path::new("/absolute/folder/my-skill");
-    assert_eq!(
-        connection.add_skill(folder),
-        Ok(AddedSkill {
-            name: "my-skill".into(),
-            warnings: vec!["not recorded".into()],
-        })
-    );
-    assert_eq!(
-        connection.add_skill(folder),
-        Err(AddError::Refused("no SKILL.md in the folder".into()))
-    );
     assert_eq!(
         connection.add_document("Overview", "<h1>Overview</h1>"),
         Ok(7)
@@ -953,20 +548,19 @@ fn adding_a_skill_and_a_document_keeps_the_providers_reason() {
     let body = |request: &str| -> Value {
         serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap()
     };
-    assert!(requests[1].starts_with("post /api/skills "));
-    assert_eq!(body(&requests[1]), contract["skills_copy"]["request"]);
-    assert!(requests[3].starts_with("post /api/documents "));
-    let document = body(&requests[3]);
-    let expected = &contract["operator_document"]["request"];
+    assert!(requests[1].starts_with("post /api/documents "));
+    let document = body(&requests[1]);
     // The fixture server lowercases what it records.
-    for field in ["author", "title", "html"] {
-        assert_eq!(
-            document[field].as_str().unwrap(),
-            expected[field].as_str().unwrap().to_ascii_lowercase()
-        );
-    }
-    assert_eq!(document["supersedes_id"], expected["supersedes_id"]);
-    let retried = body(&requests[4]);
+    assert_eq!(
+        (&document["author"], &document["title"], &document["html"]),
+        (
+            &json!("operator"),
+            &json!("overview"),
+            &json!("<h1>overview</h1>")
+        )
+    );
+    assert_eq!(document["supersedes_id"], Value::Null);
+    let retried = body(&requests[2]);
     assert_eq!(document["request_id"], retried["request_id"]);
     assert_eq!(document["request_id"].as_str().unwrap().len(), 68);
 }
@@ -991,28 +585,10 @@ fn rust_service_entries_list_and_connect_without_a_key() {
     let listed = json!({"profiles": [entry, failed, later]});
     let items = list(&serde_json::to_vec(&listed).unwrap()).unwrap();
     assert_eq!(items.len(), 2);
-    // One served home stands in for the unbound installation; two do not,
-    // nor does a profile whose home is another machine.
-    let home = |listed: &Value| home(&serde_json::to_vec(listed).unwrap());
-    assert_eq!(home(&listed).unwrap().profile_id, "0a1b2c3d4e5f");
-    let mut second = entry.clone();
-    second["profile_id"] = json!("2b3c4d5e6f7a");
-    assert!(home(&json!({"profiles": [entry, second]})).is_none());
-    let mut away = entry.clone();
-    away["home"] = json!(false);
-    assert!(home(&json!({"profiles": [away]})).is_none());
-    assert!(home(&json!({"schema_version": 1, "items": []})).is_none());
+    assert_eq!(items[0].state, State::Ready);
     assert_eq!(
-        (&items[0].state, &items[0].kind),
-        (&State::Ready, &Kind::LegacyDefault)
-    );
-    assert_eq!(
-        (
-            &items[1].state,
-            &items[1].kind,
-            items[1].display_name.as_str()
-        ),
-        (&State::Failed, &Kind::Isolated, "9f8e7d6c5b4a")
+        (&items[1].state, items[1].display_name.as_str()),
+        (&State::Failed, "9f8e7d6c5b4a")
     );
     assert_eq!(
         Profile::parse(&serde_json::to_vec(&failed).unwrap())
@@ -1027,10 +603,7 @@ fn rust_service_entries_list_and_connect_without_a_key() {
     );
 
     let profile = Profile::parse(&serde_json::to_vec(&entry).unwrap()).unwrap();
-    let mut identity = entry.clone();
-    for field in ["state", "socket", "tmux_socket", "credential_reference"] {
-        identity.as_object_mut().unwrap().remove(field);
-    }
+    let identity = handshake(entry.clone());
     let mut restarted = identity.clone();
     restarted["instance_id"] = json!("0190c3a2c1107a3b8c9d0e1f2a3b4c5e");
     let agents = json!({"items": [{"name": "worker", "state": "working"}]});

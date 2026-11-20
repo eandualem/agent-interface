@@ -10,7 +10,7 @@ use agent_interface_roster::{
     library_snapshots::{self, Kind},
     profiles::{
         Connection, Error as ProfileError,
-        runtime_context::{self, Permissions, Target},
+        runtime_context::{self, Target},
     },
     views::{Agent, Part, content},
 };
@@ -26,8 +26,6 @@ struct Reader {
 
 struct Snapshot {
     agent: Agent,
-    /// Read only for the Permissions section, the one place it is shown.
-    permissions: Option<Permissions>,
 }
 
 impl Reader {
@@ -43,23 +41,6 @@ impl Reader {
             self.target = Some(inspection.target);
             inspection.agent
         };
-        // A provider without permission inspection still shows the rest of the
-        // card; the Permissions section says it is unsupported.
-        let permissions = if section == AgentSection::Permissions {
-            Some(
-                match self
-                    .target
-                    .as_ref()
-                    .expect("inspected target")
-                    .permissions()
-                {
-                    Err(runtime_context::Error::Unsupported) => Permissions::unsupported(),
-                    result => result?,
-                },
-            )
-        } else {
-            None
-        };
         let part = match section {
             AgentSection::Skills => Part::Skills,
             AgentSection::Policies => Part::Policies,
@@ -73,7 +54,7 @@ impl Reader {
         {
             attach_skill_artifacts(&self.connection, &mut loadout.skills);
         }
-        Ok(Snapshot { agent, permissions })
+        Ok(Snapshot { agent })
     }
 }
 
@@ -138,8 +119,7 @@ fn removal_refusal(error: ProfileError) -> &'static str {
 
 /// Remove the agent only if it is still the registration the card shows. The
 /// provider checks the registration again on stop and delete, so a replacement
-/// made after this check is refused rather than removed by a provider that
-/// supports the check; older providers ignore it.
+/// made after this check is refused rather than removed.
 fn remove_checked(
     connection: &Connection,
     name: &str,
@@ -394,63 +374,12 @@ impl Render for Card {
                 state(&snapshot.agent),
                 &runs,
             ));
-        } else if let Some(permissions) = self
-            .snapshot
-            .as_ref()
-            .and_then(|snapshot| snapshot.permissions.as_ref())
-        {
-            if let Some(message) = permissions.message() {
-                body = body.child(ui::text(div().text_color(c.muted), &t.text.row).child(message));
-            } else {
-                body = body.child(ui::text(div().text_color(c.muted), &t.text.meta).child(
-                    "Settings reported by this agent's runtime; launch overrides may differ.",
-                ));
-                for mode in &permissions.modes {
-                    body = body.child(
-                        ui::text(div().text_color(c.text), &t.text.row)
-                            .child(format!("{}: {}", mode.name, mode.value)),
-                    );
-                }
-                for (label, rules) in [
-                    ("Allow", &permissions.allow),
-                    ("Deny", &permissions.deny),
-                    ("Ask", &permissions.ask),
-                ] {
-                    for rule in rules {
-                        body = body.child(
-                            ui::text(div().text_color(c.text), &t.text.row)
-                                .child(format!("{label}: {rule}")),
-                        );
-                    }
-                }
-                if permissions.modes.is_empty()
-                    && permissions.allow.is_empty()
-                    && permissions.deny.is_empty()
-                    && permissions.ask.is_empty()
-                {
-                    body = body.child(
-                        ui::text(div().text_color(c.muted), &t.text.row)
-                            .child("No explicit approval settings reported."),
-                    );
-                }
-            }
-            for file in &permissions.files {
-                let scope = match file.scope {
-                    runtime_context::Scope::Runtime => "Runtime settings",
-                    runtime_context::Scope::Project => "Project settings",
-                    runtime_context::Scope::ProjectLocal => "Local project settings",
-                };
-                let state = match file.state {
-                    runtime_context::FileState::Read => "read",
-                    runtime_context::FileState::Missing => "not present",
-                    runtime_context::FileState::Invalid => "invalid",
-                    runtime_context::FileState::Unreadable => "unreadable",
-                };
-                body = body.child(
-                    ui::text(div().text_color(c.muted), &t.text.meta)
-                        .child(format!("{scope}: {} ({state})", file.display_path)),
-                );
-            }
+        } else if self.snapshot.is_some() {
+            // The service reports no permissions of an agent's runtime.
+            body = body.child(
+                ui::text(div().text_color(c.muted), &t.text.row)
+                    .child("Runtime permission inspection is unsupported."),
+            );
         } else {
             body = body
                 .child(ui::text(div().text_color(c.muted), &t.text.row).child("Reading agent…"));

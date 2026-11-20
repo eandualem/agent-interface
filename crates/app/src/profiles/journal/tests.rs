@@ -19,7 +19,7 @@ fn durable_records_restore_exact_capsules_and_reject_stale_revisions() {
     use agent_interface_roster::profiles::operations::Prepared;
     let (_root, path, journal) = fixture();
     let client = Client::new(path.join("provider"), "/usr/bin:/bin".into()).unwrap();
-    let operation = Operation::new(&client, Prepared::create(ID, "Work", "baseline").unwrap());
+    let operation = Operation::new(&client, Prepared::create(ID, "Work").unwrap());
     let capsule = operation.checkpoint().unwrap();
     let first = journal.save(ID, None, &capsule).unwrap();
     assert_eq!(first.revision(), 1);

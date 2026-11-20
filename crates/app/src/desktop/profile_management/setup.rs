@@ -207,9 +207,8 @@ fn saved_open(snapshot: Option<&Snapshot>) -> Option<bool> {
 fn message(error: Error) -> &'static str {
     match error {
         Error::Missing => "The original saved request is missing. No replacement was created.",
-        Error::Invalid => "This saved setup request could not be validated.",
-        Error::Earlier => {
-            "This setup request was saved by an earlier version, and no service takes it now. Forget it."
+        Error::Invalid => {
+            "This saved setup request could not be read. Forget it to add another agent."
         }
         Error::WrongPhase | Error::Completed => {
             "The saved request changed. Reload its original state."
@@ -1214,9 +1213,7 @@ impl Render for Pane {
                             );
                         }
                     }
-                    if snapshot.is_some()
-                        || matches!(self.error, Some(Error::Invalid | Error::Earlier))
-                    {
+                    if snapshot.is_some() || matches!(self.error, Some(Error::Invalid)) {
                         let ticket = ticket.clone();
                         body = body
                             .child(ui::group_note("Forgetting removes this saved request from the app. It does not stop or remove an agent."))

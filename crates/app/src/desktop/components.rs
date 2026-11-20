@@ -190,25 +190,15 @@ fn button_frame(id: impl Into<SharedString>, kind: Button) -> Stateful<Div> {
 /// How round a profile's mark is: its corner radius as a share of its size.
 pub const PROFILE_MARK_ROUND: f32 = 0.3;
 
-/// A profile's mark: the first letter of its name on a soft tint. Default is
-/// neutral; any other profile takes one of four tints from its stable id, so
-/// the colour never changes with its name.
-pub fn profile_mark(id: &str, name: &str, default: bool, size: f32) -> Div {
+/// A profile's mark: the first letter of its name on a neutral tile.
+pub fn profile_mark(name: &str, size: f32) -> Div {
     let (t, c) = (tokens(), colors());
-    let tint = if default {
-        None
-    } else {
-        let hash = id.bytes().fold(0u32, |hash, byte| {
-            hash.wrapping_mul(31).wrapping_add(u32::from(byte))
-        });
-        Some([c.info, c.violet, c.green, c.accent][hash as usize % 4])
-    };
     let letter = name
         .trim()
         .chars()
         .next()
         .map_or_else(|| "?".to_owned(), |ch| ch.to_uppercase().collect());
-    let mark = text(
+    text(
         div()
             .flex_shrink_0()
             .size(px(size))
@@ -218,15 +208,11 @@ pub fn profile_mark(id: &str, name: &str, default: bool, size: f32) -> Div {
             .justify_center()
             .font_weight(t.text.row_selected.weight()),
         &t.text.meta,
-    );
-    match tint {
-        Some(tint) => mark.bg(Rgba { a: 0.14, ..tint }).text_color(tint),
-        None => mark
-            .bg(c.selected)
-            .border(px(t.size.hairline))
-            .border_color(c.line_strong)
-            .text_color(c.text_2),
-    }
+    )
+    .bg(c.selected)
+    .border(px(t.size.hairline))
+    .border_color(c.line_strong)
+    .text_color(c.text_2)
     .child(letter)
 }
 

@@ -50,7 +50,7 @@ impl Reply {
     }
 }
 
-// Scripted disposable providers assert every path, credential and identity header.
+// Scripted disposable providers assert every path and the profile header.
 pub(crate) fn provider(
     label: &str,
     replies: Vec<Reply>,
@@ -68,22 +68,15 @@ pub(crate) fn provider_with_tmux(
     let socket = directory.path().join("api.sock");
     let mut listener = UnixListener::bind(&socket).unwrap();
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).unwrap();
-    let credential = directory.path().join("profile.env");
-    fs::write(&credential, format!("BACKBONE_API_KEY=fixture-{label}\n")).unwrap();
-    fs::set_permissions(&credential, fs::Permissions::from_mode(0o600)).unwrap();
     let identity = json!({
-        "schema_version":1, "profile_id":format!("profile-{label}"),
-        "installation_id":format!("installation-{label}"), "lifecycle_id":format!("lifecycle-{label}"),
-        "baseline_version":"fixture", "tmux":{"socket_path":tmux.unwrap_or_else(|| directory.path().join("tmux.sock"))}
+        "protocol_version":1, "profile_id":format!("profile-{label}"),
+        "instance_id":format!("instance-{label}"), "machine":{"id":format!("machine-{label}")}
     });
     let profile = profiles::Profile::parse(&serde_json::to_vec(&json!({
-        "schema_version":1,"profile_id":identity["profile_id"],"display_name":label,
-        "kind":"isolated","state":"ready","binding":{
-            "installation_id":identity["installation_id"],"lifecycle_id":identity["lifecycle_id"],
-            "endpoint":{"kind":"unix","path":socket},
-            "credential_reference":{"kind":"dotenv","path":credential,"key":"BACKBONE_API_KEY"},
-            "tmux":identity["tmux"]
-        }
+        "state":"serving","protocol_version":1,"profile_id":identity["profile_id"],
+        "display_name":label,"instance_id":identity["instance_id"],"machine":identity["machine"],
+        "socket":socket,"tmux_socket":tmux.unwrap_or_else(|| directory.path().join("tmux.sock")),
+        "credential_reference":{"type":"socket"}
     })).unwrap()).unwrap();
     let label = label.to_owned();
     let server = thread::spawn(move || {
@@ -93,31 +86,44 @@ pub(crate) fn provider_with_tmux(
         while let Some(reply) = replies.next() {
             listener.set_nonblocking(true).unwrap();
             let deadline = Instant::now() + Duration::from_secs(10);
-            let mut stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                        assert!(Instant::now() < deadline, "no request for {}", reply.path);
-                        thread::sleep(Duration::from_millis(5));
+            // The roster's push stream, which these providers don't have, is
+            // refused without taking a scripted reply.
+            let (mut stream, request) = loop {
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "no request for {}", reply.path);
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("{error}"),
                     }
-                    Err(error) => panic!("{error}"),
+                };
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                while !bytes.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    bytes.push(byte[0]);
+                    assert!(bytes.len() < 8192);
                 }
+                let request = String::from_utf8(bytes).unwrap().to_ascii_lowercase();
+                if request.starts_with("get /api/stream") {
+                    write!(
+                        stream,
+                        "HTTP/1.1 404 Fixture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                    .unwrap();
+                    continue;
+                }
+                break (stream, request);
             };
-            stream.set_nonblocking(false).unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            stream
-                .set_write_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut bytes = Vec::new();
-            while !bytes.ends_with(b"\r\n\r\n") {
-                let mut byte = [0];
-                stream.read_exact(&mut byte).unwrap();
-                bytes.push(byte[0]);
-                assert!(bytes.len() < 8192);
-            }
-            let request = String::from_utf8(bytes).unwrap().to_ascii_lowercase();
             if let Some(length) = request
                 .lines()
                 .find_map(|line| line.strip_prefix("content-length: "))
@@ -138,20 +144,10 @@ pub(crate) fn provider_with_tmux(
                     "{request}"
                 );
             }
-            for (header, value) in [
-                ("authorization", format!("bearer fixture-{label}")),
-                ("x-backbone-profile-id", format!("profile-{label}")),
-                (
-                    "x-backbone-installation-id",
-                    format!("installation-{label}"),
-                ),
-                ("x-backbone-lifecycle-id", format!("lifecycle-{label}")),
-            ] {
-                assert!(
-                    request.contains(&format!("{header}: {value}\r\n")),
-                    "{request}"
-                );
-            }
+            assert!(
+                request.contains(&format!("x-backbone-profile-id: profile-{label}\r\n")),
+                "{request}"
+            );
             if let Some((arrived, release)) = reply.delay {
                 arrived.send(()).unwrap();
                 release.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -203,7 +199,7 @@ fn roster(label: &str) -> Reply {
 }
 
 #[test]
-fn same_ids_keep_content_pagination_details_and_credentials_on_each_origin() {
+fn same_ids_keep_content_pagination_and_details_on_each_origin() {
     let feeds = [
         (
             ReportQuery::Latest(None),
@@ -254,7 +250,6 @@ fn same_ids_keep_content_pagination_details_and_credentials_on_each_origin() {
     };
     let (_dir_a, a, server_a) = provider("a", replies("a"));
     let (_dir_b, b, server_b) = provider("b", replies("b"));
-    fs::write(a.credential_reference(), "BACKBONE_API_KEY=rotated\n").unwrap();
     for (query, _, _) in feeds {
         for (connection, label) in [(&a, "a"), (&b, "b")] {
             let request = content::Request::Reports(query.clone(), Some("worker".into()));

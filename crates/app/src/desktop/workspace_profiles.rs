@@ -32,6 +32,8 @@ struct Entry {
     profile_id: String,
     selection: Selection,
     result: Option<Result<Connection, Error>>,
+    /// The service's sentence on why it does not serve the profile.
+    reason: Option<String>,
 }
 
 pub(super) enum Route<'a> {
@@ -75,6 +77,7 @@ impl Registry {
                             profile_id: entry.profile_id.clone(),
                             selection: Selection::default(),
                             result: entry.result.clone().filter(|result| result.is_ok()),
+                            reason: None,
                         },
                     )
                 })
@@ -100,6 +103,7 @@ impl Registry {
                     profile_id: profile_id.clone(),
                     selection: Selection::default(),
                     result: None,
+                    reason: None,
                 });
         }
         let Some(client) = client else {
@@ -152,6 +156,7 @@ impl Registry {
         let Some(entry) = self.entries.get_mut(&finished.workspace) else {
             return false;
         };
+        let reason = finished.completion.reason().map(str::to_owned);
         let Some(result) = entry.selection.accept(finished.completion) else {
             return false;
         };
@@ -171,10 +176,12 @@ impl Registry {
                 && entry.selection.pending().is_none()
             {
                 entry.result = Some(result.clone());
+                entry.reason.clone_from(&reason);
             }
         }
         if let Some(entry) = self.entries.get_mut(&finished.workspace) {
             entry.result = Some(result);
+            entry.reason = reason;
         }
         true
     }
@@ -216,6 +223,7 @@ impl Registry {
                 profile_id: connection.identity().profile_id.clone(),
                 selection: Selection::default(),
                 result: Some(Ok(connection)),
+                reason: None,
             },
         );
         true
@@ -245,6 +253,16 @@ impl Registry {
         }
     }
 
+    /// Why the service does not serve the saved profile, as it said it.
+    pub fn reason(&self, space: &Workspace) -> Option<&str> {
+        let entry = self
+            .entries
+            .get(&space.id)
+            .filter(|entry| space.profile_id.as_ref() == Some(&entry.profile_id))?;
+        entry.result.as_ref()?.as_ref().err()?;
+        entry.reason.as_deref()
+    }
+
     /// The saved connection's failure; `None` while it is still being attempted.
     pub fn failure(&self, space: &Workspace) -> Option<&Error> {
         self.entries
@@ -260,35 +278,6 @@ impl Registry {
     /// connection until desktop reconciliation explicitly closes those panes.
     pub fn retry(&mut self, space: &Workspace) {
         self.entries.remove(&space.id);
-    }
-}
-
-/// Run the provider's start on an I/O worker, with the same journal Manage uses.
-fn start_service(
-    client: Client,
-    directory: Option<std::path::PathBuf>,
-    profile_id: &str,
-) -> Result<(), &'static str> {
-    use crate::profiles::{controller::Controller, journal};
-    use agent_interface_roster::profiles::operations::{Prepared, Status};
-    const FAILED: &str = "This profile's service could not be started.";
-    let live = || true;
-    let profile = client.show(profile_id, &live).map_err(|_| FAILED)?;
-    let directory = crate::library::library_directory(directory.as_deref()).map_err(|_| FAILED)?;
-    let journal =
-        journal::Journal::open(&directory.join("profile-operations")).map_err(|_| FAILED)?;
-    let controller = Controller::new(journal, &client);
-    let prepared = Prepared::start(&uuid::Uuid::now_v7().simple().to_string(), &profile)
-        .map_err(|_| FAILED)?;
-    let key = Controller::key(prepared.request_id());
-    controller.enqueue(prepared).map_err(|_| FAILED)?;
-    let receipt = controller.submit(&key, &live).map_err(|_| FAILED)?;
-    match receipt.status {
-        Status::Failed if receipt.error_code.as_deref() == Some("operation_busy") => Err(
-            "An earlier start or stop of this profile has not finished. Check it in Settings › Profiles, under Saved requests.",
-        ),
-        Status::Failed => Err(FAILED),
-        Status::Pending | Status::Succeeded => Ok(()),
     }
 }
 
@@ -372,15 +361,11 @@ impl Browser {
             .map(profile_picker::message)
     }
 
-    /// Whether Start service could help: the provider is there and knows profiles.
-    pub(super) fn profile_can_start(&self) -> bool {
-        matches!(self.profile_client, Some(Ok(_)))
-            && self
-                .layout
-                .as_ref()
-                .and_then(|layout| layout.model().workspace())
-                .and_then(|space| self.workspace_profiles.failure(space))
-                .is_some_and(|error| !matches!(error, Error::RegistryAbsent))
+    /// The service's own sentence on why it does not serve the selected
+    /// workspace's profile, when it gave one.
+    pub(super) fn profile_reason(&self) -> Option<String> {
+        let space = self.layout.as_ref()?.model().workspace()?;
+        self.workspace_profiles.reason(space).map(str::to_owned)
     }
 
     /// Show a session setup left waiting, in that profile's workspace. A sign-in
@@ -463,57 +448,6 @@ impl Browser {
                     if let Err(error) = opened {
                         browser.save_notice = Some(error.into());
                     }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-        cx.notify();
-    }
-
-    /// Start the selected workspace's stopped service, then connect again. Nothing
-    /// else starts it after a reboot. Agents stay stopped until their panes start them.
-    pub(super) fn start_profile_service(
-        &mut self,
-        origin: Option<&super::navigation_origin::Origin>,
-        cx: &mut Context<Self>,
-    ) {
-        if self.profile_starting || !self.selected_origin_is_current(origin) {
-            return;
-        }
-        let Some(Ok(client)) = &self.profile_client else {
-            return;
-        };
-        let Some(space) = self
-            .layout
-            .as_ref()
-            .and_then(|layout| layout.model().workspace())
-        else {
-            return;
-        };
-        let Some(profile_id) = space.profile_id.clone() else {
-            return;
-        };
-        let workspace = space.id.clone();
-        let (client, directory) = (client.clone(), self.directory.clone());
-        self.profile_starting = true;
-        let work = cx
-            .background_executor()
-            .spawn(async move { start_service(client, directory, &profile_id) });
-        cx.spawn(async move |this, cx| {
-            let result = work.await;
-            let _ = this.update(cx, |browser, cx| {
-                browser.profile_starting = false;
-                if let Err(error) = result {
-                    browser.save_notice = Some(error.into());
-                } else if let Some(space) = browser.layout.as_ref().and_then(|layout| {
-                    layout
-                        .model()
-                        .workspaces
-                        .iter()
-                        .find(|space| space.id == workspace)
-                }) {
-                    browser.workspace_profiles.retry(space);
                 }
                 cx.notify();
             });
@@ -808,17 +742,8 @@ impl Browser {
             return;
         };
         let client = client.clone();
-        let has_bound_workspaces = self.layout.as_ref().is_some_and(|layout| {
-            layout
-                .model()
-                .workspaces
-                .iter()
-                .any(|space| space.profile_id.is_some())
-        });
         let title = change.as_ref().map(|(_, _, name)| name.clone());
-        let picker = cx.new(|cx| {
-            profile_picker::ProfilePicker::new(client, has_bound_workspaces, title, window, cx)
-        });
+        let picker = cx.new(|cx| profile_picker::ProfilePicker::new(client, title, window, cx));
         window.focus(&picker.read(cx).focus_handle(cx), cx);
         let events = cx.subscribe_in(
             &picker,
@@ -1456,6 +1381,7 @@ mod tests {
                 profile_id: "profile-b".into(),
                 selection: Selection::default(),
                 result: Some(Err(Error::Unavailable)),
+                reason: None,
             },
         );
         let client = Client::new(root.path().join("provider"), "/usr/bin:/bin".into()).unwrap();
