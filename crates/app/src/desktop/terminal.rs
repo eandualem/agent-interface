@@ -370,11 +370,24 @@ struct Restarts {
     left: Left,
     /// Why the last one failed, as the service gave it.
     failed: Option<String>,
+    /// Whether the pane has a session attached.
+    attached: bool,
+    /// Whether its session ended while a restart was under way, so its end
+    /// is no error until another session attaches.
+    quiet: bool,
 }
 
 impl Restarts {
     /// Follow one roster read. A pane reads the same one on every frame.
     fn list(&mut self, seen: &Observation) -> RestartStep {
+        let step = self.follow(seen);
+        if !self.attached && self.under_way() {
+            self.quiet = true;
+        }
+        step
+    }
+
+    fn follow(&mut self, seen: &Observation) -> RestartStep {
         match (seen.restart.clone(), self.listed.take()) {
             (Some(listed), _) => {
                 self.listed = Some(listed);
@@ -382,6 +395,9 @@ impl Restarts {
                 self.failed = None;
                 RestartStep::Nothing
             }
+            // The pane already shows a session, its new one or its old one
+            // after a restart that stopped nothing: the restart is over.
+            (None, Some(_)) if self.attached => RestartStep::Nothing,
             // Online again: its new session is there to attach.
             (None, Some(restart)) if !seen.offline => {
                 self.left = Left::Ready {
@@ -435,7 +451,8 @@ impl Restarts {
             Some("failed") => {
                 self.failed = answer
                     .and_then(|answer| answer.result.as_ref())
-                    .and_then(|result| result.reason.clone());
+                    .and_then(|result| result.reason.clone())
+                    .filter(|reason| !reason.trim().is_empty());
                 RestartStep::Nothing
             }
             _ => RestartStep::Nothing,
@@ -451,6 +468,16 @@ impl Restarts {
     fn connected(&mut self) {
         self.left = Left::Nothing;
         self.failed = None;
+        self.attached = true;
+        self.quiet = false;
+    }
+
+    /// The pane's session ended.
+    fn disconnected(&mut self) {
+        self.attached = false;
+        if self.under_way() {
+            self.quiet = true;
+        }
     }
 
     /// What to show, given whether a session is attached and shown.
@@ -551,7 +578,7 @@ fn drawn(
     Drawn {
         ended: error.map(|error| ended(error, agent, saved, sign_in, restart.as_ref())),
         pending: restart == Some(RestartShown::Pending),
-        quiet_end: restarts.under_way(),
+        quiet_end: restarts.under_way() || restarts.quiet,
     }
 }
 
@@ -952,6 +979,7 @@ impl LiveTerminal {
                                         .clone()
                                         .unwrap_or_else(|| "Session disconnected".into()),
                                 );
+                                terminal.restarts.disconnected();
                                 // A shell lost while shown, such as when its server
                                 // stops, gets the same one automatic restart.
                                 if terminal.target.leaf.attachment.is_none() {
@@ -2178,6 +2206,8 @@ mod tests {
         );
         let reason = frames[1].result.as_ref().unwrap().reason.clone();
         assert_eq!(stopped(&restarts, true), not_running(reason));
+        // The old session's end stays quiet under the stopped pane.
+        assert!(drawn(&restarts, Some(PIPE), true, Some("builder"), true, false).quiet_end);
         // A long reason is shown whole, as given.
         let long = "the runtime's own record: ".repeat(40);
         let mut failed = frames[1].clone();
@@ -2190,6 +2220,64 @@ mod tests {
         // Attaching a session again clears it.
         restarts.connected();
         assert_eq!(stopped(&restarts, true).reason, None);
+        assert!(!drawn(&restarts, None, true, None, true, false).quiet_end);
+        // A reason with nothing in it is no reason.
+        let mut blank = frames[1].clone();
+        blank.result.as_mut().unwrap().reason = Some("  ".into());
+        let mut restarts = Restarts::default();
+        restarts.list(&seen(0, true, listed(&frames[0])));
+        restarts.list(&seen(1, true, None));
+        restarts.inspected(14, Some(&blank));
+        assert_eq!(stopped(&restarts, true), not_running(None));
+    }
+
+    #[test]
+    fn a_restart_that_leaves_the_list_while_a_session_is_attached_is_over() {
+        let fresh = frames("stream-agent-restart-fresh");
+        let failed = frames("stream-agent-restart-failed");
+        let today = Drawn {
+            ended: Some(Ended {
+                error: Some(PIPE.into()),
+                message: "Waiting for this session. Reconnecting automatically.".into(),
+                reason: None,
+                launch: false,
+            }),
+            pending: false,
+            quiet_end: false,
+        };
+        // The new session attached while the list still said starting.
+        let mut restarts = Restarts::default();
+        restarts.connected();
+        restarts.list(&seen(0, false, listed(&fresh[1])));
+        restarts.disconnected();
+        restarts.list(&seen(1, false, listed(&fresh[3])));
+        restarts.connected();
+        assert_eq!(
+            restarts.list(&seen(2, false, listed(&fresh[4]))),
+            RestartStep::Nothing
+        );
+        assert!(!restarts.under_way());
+        // A later end of that session is shown as today.
+        restarts.disconnected();
+        assert_eq!(drawn(&restarts, Some(PIPE), true, None, true, false), today);
+        // A restart that failed without stopping anything: the old session
+        // is still attached and shown, and nothing is under way.
+        let mut restarts = Restarts::default();
+        restarts.connected();
+        restarts.list(&seen(0, false, listed(&failed[0])));
+        assert!(drawn(&restarts, None, true, None, true, false).pending);
+        assert_eq!(
+            restarts.list(&seen(1, false, listed(&failed[1]))),
+            RestartStep::Nothing
+        );
+        assert_eq!(
+            drawn(&restarts, None, true, None, true, false),
+            Drawn {
+                ended: None,
+                pending: false,
+                quiet_end: false,
+            }
+        );
     }
 
     #[test]
@@ -2312,6 +2400,7 @@ mod tests {
         let frames = frames("stream-agent-restart-fresh");
         let agents = super::super::agent_status::LiveAgents::default();
         let mut restarts = Restarts::default();
+        restarts.connected();
         let drawn_now = |restarts: &Restarts, error: Option<&str>, offline: bool| {
             drawn(
                 restarts,
@@ -2329,6 +2418,7 @@ mod tests {
         assert!(attached.pending && attached.quiet_end && attached.ended.is_none());
         // Stopping: the session ends while the list still says busy.
         read(&agents, &mut restarts, 1, "busy", &frames[1]);
+        restarts.disconnected();
         let ending = drawn_now(&restarts, Some(PIPE), false);
         assert_eq!(ending.ended, Some(restarting()));
         assert!(ending.quiet_end && !ending.pending);

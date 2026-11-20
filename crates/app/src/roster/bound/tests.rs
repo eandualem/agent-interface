@@ -254,9 +254,10 @@ fn pushed_state_and_run_changes_read_the_roster_and_runs_at_once() {
     let (done, finished) = mpsc::channel::<()>();
     let server = thread::spawn(move || {
         listener.set_nonblocking(true).unwrap();
-        // A state change, then a run change, each pushed once the read the
-        // one before it asked for was answered.
-        let pushes = ["agent.state", "run.changed"];
+        // A state change, a run change, then a step of the agent's own
+        // restart, each pushed once the read the one before it asked for
+        // was answered.
+        let pushes = ["agent.state", "run.changed", "agent.restart"];
         let mut stream = None::<std::os::unix::net::UnixStream>;
         let mut pushed: Vec<Instant> = Vec::new();
         let mut quiet = Instant::now();
@@ -313,9 +314,13 @@ fn pushed_state_and_run_changes_read_the_roster_and_runs_at_once() {
                 // Background counts appear with the run change, so runs are
                 // asked for only then.
                 let state = if pushed.is_empty() { "idle" } else { "working" };
-                let counts = (pushed.len() == 2).then(|| json!({"running": 1, "queued": 1}));
-                json!({"items": [{"name": "worker", "state": state, "background": counts}]})
-                    .to_string()
+                let counts = (pushed.len() >= 2).then(|| json!({"running": 1, "queued": 1}));
+                // The list carries the restart while it is under way.
+                let restart = (pushed.len() == 3)
+                    .then(|| json!({"id": 12, "phase": "stopping", "resume": false}));
+                json!({"items": [{"name": "worker", "state": state, "background": counts,
+                    "restart": restart}]})
+                .to_string()
             };
             write!(
                 socket,
@@ -339,7 +344,13 @@ fn pushed_state_and_run_changes_read_the_roster_and_runs_at_once() {
             .unwrap();
         // Two wakes can announce one update: the second then finds none.
         if source.take_update().is_some_and(|update| {
-            update.snapshot.states["worker"] == "working" && update.runs.active.len() == 2
+            update.snapshot.states["worker"] == "working"
+                && update.runs.active.len() == 2
+                && update.snapshot.details["worker"]
+                    .restart
+                    .as_ref()
+                    .and_then(|r| r.id)
+                    == Some(12)
         }) {
             break;
         }
@@ -350,7 +361,7 @@ fn pushed_state_and_run_changes_read_the_roster_and_runs_at_once() {
     done.send(()).unwrap();
     // Without the stream each read would come two seconds after the last.
     let (reads, runs_early) = server.join().unwrap();
-    assert_eq!(reads.len(), 2, "{reads:?}");
+    assert_eq!(reads.len(), 3, "{reads:?}");
     assert!(
         reads.iter().all(|read| *read < Duration::from_secs(1)),
         "{reads:?}"

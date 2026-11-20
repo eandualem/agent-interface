@@ -928,7 +928,7 @@ pub struct Agent {
     /// older service does not say.
     #[serde(skip)]
     pub queued: u64,
-    /// How the last delivery to it went, as a code such as `human_typing`.
+    /// Whether a delivery to it could go now, as a code such as `human_typing`.
     #[serde(skip)]
     pub delivery: Option<String>,
     /// Its latest restart, finished or not.

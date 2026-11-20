@@ -187,8 +187,8 @@ fn waits_and_runs(details: &agent_interface_roster::AgentDetails) -> Option<Stri
 }
 
 /// What holds an agent's terminal deliveries and how many wait, or `None`
-/// when nothing waits. `delivery` is how its last delivery went, which only
-/// an agent's inspection carries. The service sends changes within one of
+/// when nothing waits. `delivery` is whether a delivery could go to it now,
+/// as a code, which only an agent's inspection carries. The service sends changes within one of
 /// its agent-monitor passes, so this can trail the queue by about a minute.
 pub(super) fn deliveries(
     held: Option<&agent_interface_roster::HeldQueue>,
