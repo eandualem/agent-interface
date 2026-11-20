@@ -73,7 +73,7 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
     root.chmod(0o700)
     env = {k: v for k, v in os.environ.items()
            if k not in ("TMUX", "LD_PRELOAD")
-           and not k.startswith(("BACKBONE_", "AGENT_INTERFACE_", "TMUX_WORKSPACES_"))}
+           and not k.startswith(("BACKBONE_", "AGENT_INTERFACE_"))}
     env.update(HOME=str(root), XDG_CONFIG_HOME=str(root / "config"),
                XDG_DATA_HOME=str(root / "data"), XDG_STATE_HOME=str(root / "state"),
                XDG_CACHE_HOME=str(root / "cache"), TMUX_TMPDIR=str(root / "tmux"),
