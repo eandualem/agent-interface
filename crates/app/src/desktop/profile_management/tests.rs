@@ -148,6 +148,7 @@ fn a_failed_profile_shows_its_reason_and_no_served_panes() {
         display_name: "Work".into(),
         state: State::Failed,
         reason: Some("Its folder can't be read.".into()),
+        failure: None,
     };
     assert_eq!(state_line(&failed), "Its folder can't be read.");
     assert!(!has_served_panes(&failed));

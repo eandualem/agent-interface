@@ -125,7 +125,7 @@ impl BoundRosterSource {
             stream: None,
         };
         // Without a stream worker the roster is still polled.
-        source.stream = watch(watched, refresh).unwrap_or_else(|error| {
+        source.stream = watch(watched, refresh).map(Some).unwrap_or_else(|error| {
             tracing::warn!(event = "roster_stream_not_started", %error, "Agent state stream not followed");
             None
         });
@@ -157,7 +157,7 @@ fn standing(reported: Option<Error>, error: Error) -> Error {
 fn watch(
     connection: Connection,
     refresh: mpsc::Sender<bool>,
-) -> io::Result<Option<(Arc<AtomicBool>, JoinHandle<()>)>> {
+) -> io::Result<(Arc<AtomicBool>, JoinHandle<()>)> {
     let live = Arc::new(AtomicBool::new(true));
     let wanted = Arc::clone(&live);
     let worker = thread::Builder::new()
@@ -177,7 +177,7 @@ fn watch(
                 }
             }
         })?;
-    Ok(Some((live, worker)))
+    Ok((live, worker))
 }
 
 impl Drop for BoundRosterSource {

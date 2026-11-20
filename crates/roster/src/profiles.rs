@@ -103,6 +103,30 @@ pub struct Item {
     /// Why the service does not serve the profile: its own sentence for a
     /// person, shown as given. Its wording may change at any time.
     pub reason: Option<String>,
+    /// The same, as the service's stable code, for logs.
+    pub failure: Option<Failure>,
+}
+
+/// Why the service does not serve a profile, by its stable code. A code this
+/// app does not know is `Other`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Failure {
+    /// The profile's settings can't be read.
+    SettingsUnreadable,
+    /// No database server answered.
+    DatabaseUnreachable,
+    /// The profile's database doesn't exist and can't be made.
+    DatabaseNotCreated,
+    /// The database is one this service can't work with.
+    DatabaseIncompatible,
+    /// Another service already serves the profile.
+    AlreadyServed,
+    /// Anything else that stopped the start.
+    StartFailed,
+    /// A code this app doesn't know.
+    #[serde(other)]
+    Other,
 }
 
 /// Decode a successful `profiles list`. A command error must not call this.
@@ -225,7 +249,7 @@ impl Connection {
     pub fn identity(&self) -> &Identity {
         &self.identity
     }
-    /// The tmux socket confirmed by the provider handshake.
+    /// The tmux socket the service's entry names for this profile.
     pub fn tmux_socket(&self) -> &Path {
         &self.tmux.socket_path
     }

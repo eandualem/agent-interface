@@ -158,9 +158,6 @@ impl Prepared {
     /// Record the Rust service's answer to this create request: the entry of
     /// the profile it made, which it serves at once.
     pub fn observe_created(&mut self, profile: &Profile) -> Result<Receipt, Error> {
-        if self.action != Action::Create {
-            return Err(Error::Invalid);
-        }
         self.record(Receipt {
             request_id: self.request_id.clone(),
             action: self.action,
@@ -173,7 +170,7 @@ impl Prepared {
     /// Record that the Rust service refused this create request, or could not
     /// be reached, so it made nothing; `code` names which.
     pub fn observe_refused(&mut self, code: &str) -> Result<Receipt, Error> {
-        if self.action != Action::Create || !valid_id(code) || code.len() > 128 {
+        if !valid_id(code) || code.len() > 128 {
             return Err(Error::Invalid);
         }
         self.record(Receipt {

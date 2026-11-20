@@ -601,6 +601,17 @@ fn rust_service_entries_list_and_connect_without_a_key() {
         Profile::parse(&serde_json::to_vec(&later).unwrap()).err(),
         Some(Error::Unsupported)
     );
+    // The failure's stable code is kept for logs; one this app doesn't know is Other.
+    assert_eq!(items[1].failure, Some(Failure::DatabaseUnreachable));
+    let mut later_code = failed.clone();
+    later_code["code"] = json!("a_code_to_come");
+    assert_eq!(
+        Profile::parse(&serde_json::to_vec(&later_code).unwrap())
+            .unwrap()
+            .item()
+            .failure,
+        Some(Failure::Other)
+    );
     // A reason that can't be shown as given is left out.
     let reason = |reason: &str| {
         let mut entry = failed.clone();

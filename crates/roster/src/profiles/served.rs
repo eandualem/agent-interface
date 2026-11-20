@@ -2,7 +2,8 @@
 //! its state, with the owner-only socket as the credential.
 
 use super::{
-    AddError, Binding, Error, Identity, Item, Profile, State, Tmux, valid_id, validate_item,
+    AddError, Binding, Error, Failure, Identity, Item, Profile, State, Tmux, valid_id,
+    validate_item,
 };
 use base64::Engine as _;
 use serde::Deserialize;
@@ -46,6 +47,8 @@ enum Entry {
         display_name: Option<String>,
         #[serde(default)]
         reason: Option<String>,
+        #[serde(default)]
+        code: Option<Failure>,
     },
     /// A state this app does not know; such a profile is not offered.
     #[serde(other)]
@@ -54,19 +57,20 @@ enum Entry {
 
 impl Entry {
     fn profile(self) -> Result<Option<Profile>, Error> {
-        let (profile_id, display_name, binding, reason) = match self {
+        let (profile_id, display_name, binding, reason, failure) = match self {
             Self::Unknown => return Ok(None),
             Self::Failed {
                 profile_id,
                 display_name,
                 reason,
+                code,
             } => {
                 let name = display_name.unwrap_or_else(|| profile_id.clone());
                 // A sentence that can't be shown as given is no reason.
                 let reason = reason.filter(|reason| {
                     !reason.trim().is_empty() && !reason.chars().any(char::is_control)
                 });
-                (profile_id, name, None, reason)
+                (profile_id, name, None, reason, code)
             }
             Self::Serving {
                 protocol_version,
@@ -97,7 +101,7 @@ impl Entry {
                     },
                     instance: instance_id,
                 };
-                (profile_id, display_name, Some(binding), None)
+                (profile_id, display_name, Some(binding), None, None)
             }
         };
         let item = Item {
@@ -109,6 +113,7 @@ impl Entry {
                 State::Failed
             },
             reason,
+            failure,
         };
         validate_item(&item)?;
         Ok(Some(Profile { item, binding }))

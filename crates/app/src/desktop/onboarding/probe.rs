@@ -81,6 +81,17 @@ impl Probe {
         probe
     }
 
+    /// A check that found only `backbone` at `path`, with PATH `path_env`.
+    #[cfg(test)]
+    pub fn with_backbone(path: PathBuf, path_env: String) -> Self {
+        Self {
+            path_env,
+            found: vec![("backbone", path)],
+            tmux: None,
+            backbone: Backbone::NotSetUp,
+        }
+    }
+
     /// A profile client for the Backbone this check found, with its PATH.
     pub fn client(&self) -> Option<crate::profiles::Client> {
         let executable = self.path("backbone")?.clone();
@@ -264,16 +275,18 @@ pub fn saved_failure(
     let client = client?;
     let Some(saved) = saved else {
         let items = client.list(&|| true).ok()?;
-        return items
-            .into_iter()
-            .find(|item| item.state == State::Failed)?
-            .reason;
+        let item = items.into_iter().find(|item| item.state == State::Failed)?;
+        tracing::warn!(event = "first_profile_not_served", profile_id = %item.profile_id, code = ?item.failure, "First profile not served");
+        return item.reason;
     };
     let profile = client.show(saved, &|| true).ok()?;
     let item = profile.item();
-    (item.state == State::Failed)
-        .then(|| item.reason.clone())
-        .flatten()
+    if item.state != State::Failed {
+        return None;
+    }
+    // The stable code and the profile go to the log; the sentence never does.
+    tracing::warn!(event = "first_profile_not_served", profile_id = %item.profile_id, code = ?item.failure, "First profile not served");
+    item.reason.clone()
 }
 
 /// The PATH a new terminal has: the login shell's, plus the usual install

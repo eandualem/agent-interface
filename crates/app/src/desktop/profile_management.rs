@@ -743,7 +743,7 @@ impl Render for Management {
                     snapshot
                         .as_ref()
                         .map_or("Request", |s| action_label(s.action)),
-                    "Leaving doesn't stop it. It finishes on its own.",
+                    "Leaving stops waiting for it. Try the same request again to finish it.",
                 ));
                 if let Some(snapshot) = snapshot {
                     body = body.child(meta(status(snapshot).into()));

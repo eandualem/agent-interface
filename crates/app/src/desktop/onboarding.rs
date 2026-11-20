@@ -325,7 +325,8 @@ impl Onboarding {
                         view.check(cx);
                     }
                     Err(reason) => {
-                        tracing::warn!(event = "setup_service_failed", %reason, "Agent service not started");
+                        // The reason may be the service's own words, which stay out of the log.
+                        tracing::warn!(event = "setup_service_failed", "Agent service not started");
                         view.service = Service::Failed(reason);
                     }
                 }
@@ -921,14 +922,16 @@ fn start(probe: &Probe, request: &mut Option<String>, saved: Option<&str>) -> Re
             let Some(backbone) = probe.path("backbone") else {
                 return Err("Agent Backbone isn't installed on this computer.".into());
             };
-            install::initialize_backbone(backbone, &probe.path_env, request)?;
+            // A failed profile's own reason goes before setup's or the wait's.
+            let failure = |otherwise: String| {
+                probe::saved_failure(probe.client(), saved).unwrap_or(otherwise)
+            };
+            install::initialize_backbone(backbone, &probe.path_env, request).map_err(failure)?;
             answered().ok_or_else(|| {
-                probe::saved_failure(probe.client(), saved).unwrap_or_else(|| {
-                    format!(
-                        "Agent Backbone was set up but did not answer (waited {} s). Its log is service.log in Agent Backbone's directory.",
-                        SERVICE_WAIT.as_secs()
-                    )
-                })
+                failure(format!(
+                    "Agent Backbone was set up but did not answer (waited {} s). Its log is service.log in Agent Backbone's directory.",
+                    SERVICE_WAIT.as_secs()
+                ))
             })
         }
     }
@@ -966,6 +969,38 @@ fn missing(probe: &Probe) -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_setup_shows_the_failed_profiles_reason() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let failed = serde_json::json!({"state": "failed", "profile_id": "0a1b2c3d4e5f",
+            "code": "start_failed", "reason": "Its folder is not readable."});
+        // Executing a file that any process holds open for writing fails on Linux
+        // with ETXTBSY, and a child another test thread forks while this one writes
+        // inherits the descriptor. So `cp` writes the executed file, in its own
+        // process, and this process never opens it for writing.
+        let source = root.join("backbone.sh");
+        std::fs::write(
+            &source,
+            format!("#!/bin/sh\ncase \"$1 $2\" in\n  'profiles show') printf '%s' '{failed}';;\n  *) exit 1;;\nesac\n"),
+        )
+        .unwrap();
+        let backbone = root.join("backbone");
+        let copied = std::process::Command::new("/bin/cp")
+            .arg(&source)
+            .arg(&backbone)
+            .status()
+            .unwrap();
+        assert!(copied.success());
+        std::fs::set_permissions(&backbone, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let probe = Probe::with_backbone(backbone, "/usr/bin:/bin".into());
+        assert_eq!(
+            start(&probe, &mut None, Some("0a1b2c3d4e5f")),
+            Err("Its folder is not readable.".into())
+        );
+    }
 
     #[test]
     fn forgetting_a_request_clears_it_and_its_git_identity() {

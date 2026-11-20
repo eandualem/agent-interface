@@ -548,6 +548,7 @@ mod tests {
             display_name: "same label".into(),
             state,
             reason: None,
+            failure: None,
         }
     }
     #[test]
