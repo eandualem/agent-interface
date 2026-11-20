@@ -635,3 +635,17 @@ fn a_fresh_start_sends_only_its_open_request_until_it_is_closed() {
         assert_eq!(saved_open(Some(&s)), again, "{retry}");
     }
 }
+
+#[test]
+fn every_unreadable_setup_record_offers_forget() {
+    use crate::profiles::journal;
+    for error in [
+        Error::Invalid,
+        Error::Storage(journal::Error::Invalid),
+        Error::Storage(journal::Error::TooLarge),
+    ] {
+        assert!(unreadable(error), "{error:?}");
+    }
+    assert!(!unreadable(Error::Missing));
+    assert!(!unreadable(Error::Storage(journal::Error::Unavailable)));
+}

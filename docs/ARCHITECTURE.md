@@ -1492,9 +1492,9 @@ no process.
 
 Profile runtime catalogs come from `backbone runtimes --json` (schema 1), run
 with the captured discovery executable and caller context. It names no profile:
-what it lists is this machine's, and a runtime is compatible with setup when it
-is installed and listed as supporting setup. Catalogs keep authentication
-observations separate from executable availability and setup compatibility.
+what it lists is this machine's, and a runtime can set up an agent when it is
+installed and listed as supporting setup. Catalogs keep authentication
+observations separate from executable availability and setup support.
 Provider paths and unattended argument examples are discarded; these reads cannot
 launch runtimes or authorize an account operation. Discovery remains bounded and
 cancellable, and retained catalogs carry their full origin for deferred consumers.
@@ -1580,8 +1580,8 @@ additional third-party dependency or service is introduced.
 
 The app's lifecycle controller stores exact request intent before submission and
 syncs a `Submitted` phase before invoking the provider. Recovery asks again
-under the original request ID, which the service answers with its first result;
-an explicit identical retry resends the same bytes. Journal keys derive from the original request ID, so duplicate enqueue
+under the original request ID, which the service answers with its first result.
+Journal keys derive from the original request ID, so duplicate enqueue
 attempts cannot silently replace intent. Each invocation claims a revision and
 may publish its validated result only after the updated capsule is durably
 stored at that revision. Competing observations fail closed; the caller rereads
@@ -1631,7 +1631,8 @@ Saved requests enumerates bounded record IDs. The full history validates one
 page of durable snapshots at a time; a profile's page reads every record to find
 that profile's. Lifecycle
 records are kept, and the journal refuses new requests once it holds 4,096.
-Asking again and identical retry are distinct explicit actions. Worker
+Try the same request again is the one action on a sent request: it resends the
+same request under its original ID. Worker
 generations reject stale results and controls. A successful result remains
 progress metadata: workspace selection still performs the authenticated
 handshake. Fresh first-agent setup choices remain separate from saved-request

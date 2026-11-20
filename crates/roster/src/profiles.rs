@@ -28,11 +28,11 @@ use crate::{RESPONSE_LIMIT, Snapshot, transport::local};
 /// both of those fields hold the machine's ID, which stays the same across restarts.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize)]
 pub struct Identity {
-    /// Stable profile, including across registered-instance replacement.
+    /// Stable profile.
     pub profile_id: String,
-    /// Existing provider signing audience.
+    /// The machine's ID, kept under this name in saved workspace bindings.
     pub installation_id: String,
-    /// Instance generation, changed by replacement or restored activation.
+    /// The machine's ID again, kept under this name in saved workspace bindings.
     pub lifecycle_id: String,
 }
 

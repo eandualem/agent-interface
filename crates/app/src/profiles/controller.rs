@@ -164,7 +164,11 @@ impl Controller {
             ) => {}
             Err(error) => return Err(error),
         }
-        self.journal.delete(key, None).map_err(Error::Storage)
+        match self.journal.delete(key, None) {
+            // Not a key this journal could hold, so nothing is kept under it.
+            Err(journal::Error::Invalid) => Ok(()),
+            result => result.map_err(Error::Storage),
+        }
     }
 
     /// First submission only. The Submitted phase is synced before invocation.

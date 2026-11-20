@@ -25,7 +25,7 @@ fn a_served_catalog_is_this_machines_list_for_the_profile_asked() {
     let compatible: Vec<_> = catalog
         .items()
         .iter()
-        .map(|r| r.setup_compatibility.compatible)
+        .map(|r| r.available && r.setup_supported)
         .collect();
     assert_eq!(compatible, [true, false, false]);
     assert_eq!(catalog.items()[0].authentication, Authentication::Unknown);

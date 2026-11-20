@@ -71,8 +71,9 @@ impl Prepared {
         Self::create_request(request_id, display_name, false)
     }
 
-    /// As [`Self::create`], and the provider copies only the person's Git
-    /// user.name and user.email into the new profile; nothing else of theirs.
+    /// As [`Self::create`], and records that the new profile is to get this
+    /// computer's Git user.name and user.email, which the app sets in it once
+    /// it is made; nothing else of theirs.
     pub fn create_copying_git_identity(
         request_id: &str,
         display_name: &str,

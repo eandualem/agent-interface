@@ -310,8 +310,9 @@ impl Onboarding {
         self.repaired = true;
         self.service = Service::Starting;
         let mut request = self.setup_request.take();
+        let saved = self.resume.clone();
         let work = cx.background_executor().spawn(async move {
-            let result = start(&probe, &mut request);
+            let result = start(&probe, &mut request, saved.as_deref());
             (result, request)
         });
         cx.spawn(async move |view, cx| {
@@ -379,6 +380,8 @@ impl Onboarding {
                     settings.setup_identity = typed;
                 });
             }
+            // Nothing brings the forgotten request back after a restart.
+            flow::Event::Forgotten => remember(forget_request),
             flow::Event::Close => {}
         });
         if let Some(id) = self.resume.take() {
@@ -899,7 +902,16 @@ impl Render for Onboarding {
 /// the first one and starts this installation's service. `request` is this
 /// run's setup request, kept for Try again while setup says it may follow.
 /// Blocks; runs off the UI thread.
-fn start(probe: &Probe, request: &mut Option<String>) -> Result<(), String> {
+/// Clear the first profile's saved request and the Git name and email typed
+/// for it.
+fn forget_request(settings: &mut Settings) {
+    settings.setup_request = None;
+    settings.setup_identity = None;
+}
+
+/// Set up the agent service. `saved` is the first profile made before, whose
+/// own failure, as the service gives it, is shown when nothing answers.
+fn start(probe: &Probe, request: &mut Option<String>, saved: Option<&str>) -> Result<(), String> {
     match &probe.backbone {
         Backbone::Running => Err(format!(
             "Agent Backbone answered, but its backbone command was not found on this computer's PATH ({}).",
@@ -907,17 +919,16 @@ fn start(probe: &Probe, request: &mut Option<String>) -> Result<(), String> {
         )),
         Backbone::Unreachable(_) | Backbone::NotSetUp => {
             let Some(backbone) = probe.path("backbone") else {
-                return Err(
-                    "Agent Backbone isn't installed. Run the Agent Interface installer again."
-                        .into(),
-                );
+                return Err("Agent Backbone isn't installed on this computer.".into());
             };
             install::initialize_backbone(backbone, &probe.path_env, request)?;
             answered().ok_or_else(|| {
-                format!(
-                    "Agent Backbone was set up but did not answer (waited {} s). Its log is service.log in Agent Backbone's directory.",
-                    SERVICE_WAIT.as_secs()
-                )
+                probe::saved_failure(probe.client(), saved).unwrap_or_else(|| {
+                    format!(
+                        "Agent Backbone was set up but did not answer (waited {} s). Its log is service.log in Agent Backbone's directory.",
+                        SERVICE_WAIT.as_secs()
+                    )
+                })
             })
         }
     }
@@ -955,6 +966,18 @@ fn missing(probe: &Probe) -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forgetting_a_request_clears_it_and_its_git_identity() {
+        let mut settings = Settings {
+            setup_request: Some("not-a-journal-key".into()),
+            setup_identity: Some(("Sam".into(), "sam@example.com".into())),
+            ..Settings::default()
+        };
+        forget_request(&mut settings);
+        assert_eq!(settings.setup_request, None);
+        assert_eq!(settings.setup_identity, None);
+    }
 
     #[test]
     fn only_completed_setup_skips_onboarding() {

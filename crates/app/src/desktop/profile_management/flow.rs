@@ -45,6 +45,8 @@ pub(in crate::desktop) enum Event {
     /// A request to make the profile, under this key, is about to be sent,
     /// with the Git name and email typed for it.
     Creating(String, Option<(String, String)>),
+    /// The saved request that could not be read was forgotten.
+    Forgotten,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -88,7 +90,7 @@ struct Git {
 /// What the new profile's agents commit as.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Identity {
-    /// This computer's own, which the provider copies in.
+    /// This computer's own, which the app sets in the new profile.
     Computer,
     /// None yet; the profile can set them later.
     None,
@@ -477,7 +479,10 @@ impl Flow {
                 }
                 flow.busy = false;
                 match result {
-                    Ok(()) => flow.stalled = None,
+                    Ok(()) => {
+                        flow.stalled = None;
+                        cx.emit(Event::Forgotten);
+                    }
                     Err(message) => flow.error = Some(message.into()),
                 }
                 cx.notify();
@@ -688,7 +693,10 @@ impl Flow {
                 "Setting up {}…",
                 if typed.is_empty() { "profile" } else { &typed }
             ),
-            (false, Some(Stalled::Unconfirmed(_) | Stalled::Lookup(_))) => "Check again".to_owned(),
+            // It sends the create again, which may make the profile.
+            (false, Some(Stalled::Unconfirmed(_))) => "Try the same request again".to_owned(),
+            // It reads the profile made before again.
+            (false, Some(Stalled::Lookup(_))) => "Check again".to_owned(),
             (false, Some(Stalled::Unreadable(_))) => "Forget it".to_owned(),
             (false, Some(Stalled::NotStarted | Stalled::Failed)) => "Try again".to_owned(),
             (false, None) => "Continue".to_owned(),
@@ -1283,12 +1291,23 @@ mod tests {
     /// one.
     fn provider(root: &std::path::Path) -> Client {
         use std::os::unix::fs::PermissionsExt;
-        let provider = root.join("provider");
+        // Executing a file that any process holds open for writing fails on Linux
+        // with ETXTBSY, and a child another test thread forks while this one writes
+        // inherits the descriptor. So `cp` writes the executed file, in its own
+        // process, and this process never opens it for writing.
+        let source = root.join("provider.sh");
         std::fs::write(
-            &provider,
+            &source,
             "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s\\n' \"$2\" >> \"$d/calls\"\n[ -f \"$d/reply\" ] || exit 4\n/bin/cat \"$d/reply\"\n",
         )
         .unwrap();
+        let provider = root.join("provider");
+        let copied = std::process::Command::new("/bin/cp")
+            .arg(&source)
+            .arg(&provider)
+            .status()
+            .unwrap();
+        assert!(copied.success());
         std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o700)).unwrap();
         Client::new(provider, "/usr/bin:/bin".into()).unwrap()
     }

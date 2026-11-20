@@ -21,7 +21,7 @@ fn superseded_and_closed_controls_cannot_accept_delayed_results() {
 #[test]
 fn unknown_storage_and_submission_never_enable_replacement_submission() {
     assert!(Command::Read.allowed(None));
-    for command in [Command::Submit, Command::Refresh, Command::Retry] {
+    for command in [Command::Submit, Command::Retry] {
         assert!(!command.allowed(None));
     }
     let mut snapshot = Snapshot {
@@ -35,11 +35,9 @@ fn unknown_storage_and_submission_never_enable_replacement_submission() {
         copies_git_identity: false,
     };
     assert!(Command::Submit.allowed(Some(&snapshot)));
-    assert!(!Command::Refresh.allowed(Some(&snapshot)));
     assert!(!Command::Retry.allowed(Some(&snapshot)));
     snapshot.phase = Phase::Submitted;
     assert!(!Command::Submit.allowed(Some(&snapshot)));
-    assert!(Command::Refresh.allowed(Some(&snapshot)));
     assert!(Command::Retry.allowed(Some(&snapshot)));
     snapshot.terminal = Some(Receipt {
         request_id: snapshot.request_id.clone(),
@@ -48,7 +46,7 @@ fn unknown_storage_and_submission_never_enable_replacement_submission() {
         status: Status::Failed,
         error_code: Some("failed".into()),
     });
-    for command in [Command::Submit, Command::Refresh, Command::Retry] {
+    for command in [Command::Submit, Command::Retry] {
         assert!(!command.allowed(Some(&snapshot)));
     }
     assert!(Command::Read.allowed(Some(&snapshot)));

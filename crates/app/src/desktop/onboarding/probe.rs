@@ -252,6 +252,21 @@ pub fn answers(client: Option<crate::profiles::Client>) -> Backbone {
     }
 }
 
+/// The service's own sentence on why it does not serve `saved`, the first
+/// profile made before, when it lists that profile as failed. Blocks for a
+/// moment; call off the UI thread.
+pub fn saved_failure(
+    client: Option<crate::profiles::Client>,
+    saved: Option<&str>,
+) -> Option<String> {
+    use agent_interface_roster::profiles::State;
+    let profile = client?.show(saved?, &|| true).ok()?;
+    let item = profile.item();
+    (item.state == State::Failed)
+        .then(|| item.reason.clone())
+        .flatten()
+}
+
 /// The PATH a new terminal has: the login shell's, plus the usual install
 /// folders. Blocks for up to a few seconds; call off the UI thread.
 pub fn login_path() -> String {
@@ -374,9 +389,50 @@ mod tests {
         }
     }
 
+    /// A stub `backbone` in `root` that logs each call and prints `listed` for
+    /// a list and `shown` for a show.
+    fn stub(root: &std::path::Path, listed: &str, shown: &str) -> crate::profiles::Client {
+        use std::os::unix::fs::PermissionsExt;
+        // Executing a file that any process holds open for writing fails on Linux
+        // with ETXTBSY, and a child another test thread forks while this one writes
+        // inherits the descriptor. So `cp` writes the executed file, in its own
+        // process, and this process never opens it for writing.
+        let source = root.join("provider.sh");
+        std::fs::write(
+            &source,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$(dirname \"$0\")/calls\"\ncase \"$2\" in\n  list) printf '%s' '{listed}';;\n  show) printf '%s' '{shown}';;\nesac\n"
+            ),
+        )
+        .unwrap();
+        let provider = root.join("provider");
+        let copied = std::process::Command::new("/bin/cp")
+            .arg(&source)
+            .arg(&provider)
+            .status()
+            .unwrap();
+        assert!(copied.success());
+        std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o700)).unwrap();
+        crate::profiles::Client::new(provider, "/usr/bin:/bin".into()).unwrap()
+    }
+
+    #[test]
+    fn a_saved_profile_that_failed_gives_the_services_reason() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let failed = serde_json::json!({"state": "failed", "profile_id": "0a1b2c3d4e5f",
+            "code": "start_failed", "reason": "Its folder is not readable."});
+        let client = || stub(&root, "{}", &failed.to_string());
+        assert_eq!(
+            saved_failure(Some(client()), Some("0a1b2c3d4e5f")).as_deref(),
+            Some("Its folder is not readable.")
+        );
+        assert_eq!(saved_failure(Some(client()), None), None);
+        assert_eq!(saved_failure(None, Some("0a1b2c3d4e5f")), None);
+    }
+
     #[test]
     fn only_the_first_serving_profile_is_probed() {
-        use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
         let entry = |id: &str| {
@@ -390,26 +446,7 @@ mod tests {
         let listed =
             serde_json::json!({"profiles": [failed, entry("0a1b2c3d4e5f"), entry("0a1b2c3d4e60")]});
         let shown = entry("0a1b2c3d4e5f");
-        // Written beside the stub and copied, so nothing runs a file open for writing.
-        let source = root.join("provider.sh");
-        std::fs::write(
-            &source,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$(dirname \"$0\")/calls\"\ncase \"$2\" in\n  list) printf '%s' '{listed}';;\n  show) printf '%s' '{shown}';;\nesac\n"
-            ),
-        )
-        .unwrap();
-        let provider = root.join("provider");
-        assert!(
-            Command::new("/bin/cp")
-                .arg(&source)
-                .arg(&provider)
-                .status()
-                .unwrap()
-                .success()
-        );
-        std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let client = crate::profiles::Client::new(provider, "/usr/bin:/bin".into()).unwrap();
+        let client = stub(&root, &listed.to_string(), &shown.to_string());
         // Its socket isn't there, so it doesn't answer, and the next is not asked.
         assert!(matches!(answers(Some(client)), Backbone::Unreachable(_)));
         assert_eq!(

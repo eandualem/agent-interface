@@ -204,10 +204,18 @@ fn saved_open(snapshot: Option<&Snapshot>) -> Option<bool> {
         .filter(|s| !s.closed())
         .map(|s| Command::Submit.allowed(Some(s)) || Command::Retry.allowed(Some(s)))
 }
+/// Whether a saved setup record can't be read, so it can only be forgotten.
+fn unreadable(error: Error) -> bool {
+    matches!(
+        error,
+        Error::Invalid | Error::Storage(journal::Error::Invalid | journal::Error::TooLarge)
+    )
+}
+
 fn message(error: Error) -> &'static str {
     match error {
         Error::Missing => "The original saved request is missing. No replacement was created.",
-        Error::Invalid => {
+        Error::Invalid | Error::Storage(journal::Error::Invalid) => {
             "This saved setup request could not be read. Forget it to add another agent."
         }
         Error::WrongPhase | Error::Completed => {
@@ -1213,7 +1221,7 @@ impl Render for Pane {
                             );
                         }
                     }
-                    if snapshot.is_some() || matches!(self.error, Some(Error::Invalid)) {
+                    if snapshot.is_some() || self.error.is_some_and(unreadable) {
                         let ticket = ticket.clone();
                         body = body
                             .child(ui::group_note("Forgetting removes this saved request from the app. It does not stop or remove an agent."))

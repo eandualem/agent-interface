@@ -840,10 +840,7 @@ fn eligible(runtime: &Runtime, setup: bool) -> bool {
     if setup {
         return runtime.available && SETUP_RUNTIMES.contains(&runtime.id.as_str());
     }
-    runtime.id != "shell"
-        && runtime.available
-        && runtime.setup_supported
-        && runtime.setup_compatibility.compatible
+    runtime.id != "shell" && runtime.available && runtime.setup_supported
 }
 /// The tools setup starts a first agent in.
 const SETUP_RUNTIMES: [&str; 3] = ["claude", "codex", "antigravity"];

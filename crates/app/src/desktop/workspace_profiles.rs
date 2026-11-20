@@ -1173,7 +1173,7 @@ impl Browser {
                         );
                     }
                 }
-                Event::Creating(..) => {}
+                Event::Creating(..) | Event::Forgotten => {}
                 Event::Close => {
                     browser.profile_flow = None;
                     if let Some(focus) = &browser.navigation {

@@ -335,5 +335,11 @@ fn a_damaged_record_can_be_forgotten_too() {
     );
     controller.forget_unreadable(&key).unwrap();
     assert_eq!(controller.read(&key), Err(Error::Missing));
+    // A saved reference that is no journal key holds nothing to forget.
+    assert_eq!(
+        controller.read("not-a-journal-key"),
+        Err(Error::Storage(journal::Error::Invalid))
+    );
+    controller.forget_unreadable("not-a-journal-key").unwrap();
     assert_eq!(fixture.calls(), "");
 }

@@ -394,7 +394,6 @@ impl Management {
             let error = match command {
                 Command::Read => None,
                 Command::Submit => controller.submit(&key, &live).err(),
-                Command::Refresh => controller.refresh(&key, &live).err(),
                 Command::Retry => controller.retry(&key, &live).err(),
             };
             (controller.read(&key), error)
@@ -493,7 +492,6 @@ impl Management {
 enum Command {
     Read,
     Submit,
-    Refresh,
     Retry,
 }
 impl Command {
@@ -506,7 +504,7 @@ impl Command {
                 && match self {
                     Self::Read => true,
                     Self::Submit => snapshot.phase == Phase::Prepared,
-                    Self::Refresh | Self::Retry => snapshot.phase == Phase::Submitted,
+                    Self::Retry => snapshot.phase == Phase::Submitted,
                 }
         })
     }
@@ -750,9 +748,8 @@ impl Render for Management {
                 if !self.busy {
                     let mut row = div().flex().flex_wrap().gap(px(t.space.s8));
                     for (command, label) in [
-                        (Command::Refresh, "Check again"),
-                        (Command::Submit, "Send it"),
                         (Command::Retry, "Try the same request again"),
+                        (Command::Submit, "Send it"),
                         (Command::Read, "Reload"),
                     ] {
                         if command.allowed(snapshot.as_ref()) {

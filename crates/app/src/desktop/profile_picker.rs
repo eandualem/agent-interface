@@ -344,7 +344,7 @@ pub(super) fn message(error: &Error) -> &'static str {
             ProfileError::Unavailable
             | ProfileError::Refused(_)
             | ProfileError::RegistrationChanged,
-        ) => "The profile could not be reached or authenticated. Its service may be stopped.",
+        ) => "The profile could not be reached or authenticated.",
         Error::Unavailable => "The profile discovery command is unavailable.",
         Error::Invalid | Error::TooLarge | Error::Profile(ProfileError::Invalid) => {
             "The provider returned invalid profile information."
