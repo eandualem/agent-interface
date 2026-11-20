@@ -697,29 +697,6 @@ impl Browser {
                     let deliveries = browser
                         .active_agents()
                         .and_then(|agents| agents.get(name).deliveries.clone());
-                    // A muted note beside the name: an icon, then text that
-                    // gives way first.
-                    let note = |icon: &'static str, text: String| {
-                        ui::text(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .items_center()
-                                .gap(px(t.space.s4))
-                                .overflow_hidden()
-                                .text_color(c.muted),
-                            &t.text.meta,
-                        )
-                        .child(ui::icon(icon, t.size.icon - t.space.s2, c.muted))
-                        .child(
-                            div()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .child(text),
-                        )
-                    };
                     // How many deliveries wait keeps its width; why they are
                     // held gives way first.
                     let (waiting, held) = match deliveries {
@@ -740,7 +717,27 @@ impl Browser {
                                 .text_color(if calm { c.muted } else { c.text })
                                 .child(name.to_owned()),
                         )
-                        .children(runs.map(|runs| note("activity", runs)))
+                        .children(runs.map(|runs| {
+                            ui::text(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(t.space.s4))
+                                    .overflow_hidden()
+                                    .text_color(c.muted),
+                                &t.text.meta,
+                            )
+                            .child(ui::icon("activity", t.size.icon - t.space.s2, c.muted))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(runs),
+                            )
+                        }))
                         .children(waiting.map(|count| {
                             ui::text(
                                 div()
