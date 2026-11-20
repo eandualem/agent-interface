@@ -348,16 +348,27 @@ pub(super) struct Observation {
 }
 
 impl Observation {
-    /// The agent's state in the roster read at `at`; none while the roster
-    /// cannot say whether it is online, which leaves a restart as it was.
-    pub(super) fn of(status: &super::agent_status::Status, at: Option<Instant>) -> Option<Self> {
+    /// Agent `name` in the newest roster read. An agent the roster no longer
+    /// lists, as once it is forgotten, is offline with no restart. None
+    /// while the roster cannot be read, or lists the agent in a state it
+    /// cannot place, which leaves a restart as it was.
+    pub(super) fn of(agents: &super::agent_status::LiveAgents, name: &str) -> Option<Self> {
         use super::components::AgentState;
+        let at = agents.observed_at()?;
+        if agents.absent(name) {
+            return Some(Self {
+                at,
+                offline: true,
+                restart: None,
+            });
+        }
+        let status = agents.get(name);
         let offline = match status.state {
             AgentState::Unknown | AgentState::Unavailable => return None,
             state => state == AgentState::Offline,
         };
         Some(Self {
-            at: at?,
+            at,
             offline,
             restart: status.restart.clone(),
         })
@@ -526,11 +537,11 @@ impl Restarts {
         }
         // A session attached: no ended one is shown any more.
         self.quiet = false;
-        // A ready restart ends at the next attach. An attach after an end is
-        // a new session, which ends a read under way and a kept failure; any
-        // other, such as the first one, may still be the old session, so
-        // they stay.
-        if matches!(self.left, Left::Ready { .. }) || self.ended {
+        // An attach after an end is a new session, which ends the restart
+        // and a kept failure, as does one begun after a ready answer: the
+        // replacement. Any other, such as a first attach begun before the
+        // answer, may still be the old session, so they stay.
+        if matches!(self.left, Left::Ready { tried: true, .. }) || self.ended {
             self.left = Left::Nothing;
         }
         if self.ended {
@@ -730,20 +741,17 @@ impl LiveTerminal {
         }
     }
 
-    /// This pane's agent as its roster shows it now, in any state, and that
-    /// roster. A state that cannot say whether it is online changes nothing.
+    /// This pane's agent, by name, and the roster that follows it. A roster
+    /// that cannot say whether the agent is online changes nothing.
     pub fn set_restart(
         &mut self,
-        roster: Option<(
-            std::rc::Rc<super::agent_status::Status>,
-            super::agent_status::LiveAgents,
-        )>,
+        roster: Option<(String, super::agent_status::LiveAgents)>,
         cx: &mut Context<Self>,
     ) {
-        let Some((status, agents)) = roster else {
+        let Some((name, agents)) = roster else {
             return;
         };
-        let seen = Observation::of(&status, agents.observed_at());
+        let seen = Observation::of(&agents, &name);
         self.roster = Some(agents);
         let Some(seen) = seen else {
             return;
@@ -2276,17 +2284,63 @@ mod tests {
     fn a_roster_that_cannot_say_keeps_a_pending_restart() {
         let frames = frames("stream-agent-restart-fresh");
         let agents = super::super::agent_status::LiveAgents::default();
+        assert_eq!(
+            Observation::of(&agents, "builder"),
+            None,
+            "nothing read yet"
+        );
         let mut snapshot = agent_interface_roster::Snapshot::default();
         snapshot.update(br#"{"items":[{"name":"builder","state":"some future state"}]}"#);
+        agents.update(snapshot.clone());
+        // Listed in a state the pane cannot place: nothing either way.
+        assert_eq!(Observation::of(&agents, "builder"), None);
+        // A roster that can no longer be read says nothing of anyone.
+        snapshot.unavailable();
+        snapshot.observed_at = Instant::now().checked_sub(Duration::from_secs(3600));
         agents.update(snapshot);
-        // Unknown, and absent from the roster, say nothing either way.
         for name in ["builder", "missing"] {
-            assert_eq!(Observation::of(&agents.get(name), Some(at(0))), None);
+            assert_eq!(Observation::of(&agents, name), None, "{name}");
         }
+        // A read that succeeded but is past its tolerance says no one left.
+        let mut stale = agent_interface_roster::Snapshot::default();
+        stale.update(br#"{"items":[]}"#);
+        stale.observed_at = Instant::now().checked_sub(Duration::from_secs(3600));
+        agents.update(stale);
+        assert!(!agents.absent("builder"));
         let mut restarts = Restarts::default();
         restarts.list(&seen(0, false, listed(&frames[1])), true);
         // The pane is given no read, so the restart stays pending.
         assert_eq!(stopped(&restarts, false), restarting());
+    }
+
+    #[test]
+    fn a_forgotten_agent_leaving_the_roster_is_read_once_and_shows_todays_pane() {
+        use crate::roster::content::tests::{Reply, provider};
+        let frames = frames("stream-agent-restart-failed");
+        let agents = super::super::agent_status::LiveAgents::default();
+        let mut restarts = Restarts::default();
+        // Its restart is listed, then a fresh list no longer has the agent.
+        read(&agents, &mut restarts, 0, "busy", &frames[0], false);
+        let mut snapshot = agent_interface_roster::Snapshot::default();
+        snapshot.update(br#"{"items":[]}"#);
+        snapshot.observed_at = Some(at(1));
+        agents.update(snapshot);
+        let gone = Observation::of(&agents, "builder").unwrap();
+        assert!(gone.offline && gone.restart.is_none());
+        assert_eq!(restarts.list(&gone, true), RestartStep::Inspect(14));
+        // Its inspection is not found: today's pane.
+        let (_directory, connection, server) = provider(
+            "forgotten",
+            vec![Reply {
+                status: 404,
+                ..Reply::ok("/api/agents/builder/inspect", serde_json::json!({}))
+            }],
+        );
+        let answer = latest_restart(connection, "builder");
+        server.join().unwrap();
+        restarts.inspected(14, answer.as_ref(), agents.observed_at());
+        assert_eq!(stopped(&restarts, true), not_running(None));
+        assert!(!restarts.under_way());
     }
 
     #[test]
@@ -2581,6 +2635,43 @@ mod tests {
     }
 
     #[test]
+    fn only_an_attach_after_the_ready_answer_or_after_an_end_ends_it() {
+        let fresh = frames("stream-agent-restart-fresh");
+        let ready = |restarts: &mut Restarts, before_answer: bool| {
+            restarts.list(&seen(0, false, listed(&fresh[3])), false);
+            assert_eq!(
+                restarts.list(&seen(1, false, None), false),
+                RestartStep::Inspect(12)
+            );
+            if before_answer {
+                restarts.attempting(false);
+            }
+            restarts.inspected(12, Some(&fresh[4]), Some(at(1)));
+        };
+        // An attach begun before the answer completes after it: it may be
+        // the old session, so the restart stays, and that session's close
+        // reads as restarting, without the pipe.
+        let mut restarts = Restarts::default();
+        ready(&mut restarts, true);
+        restarts.connected(false);
+        assert!(restarts.under_way());
+        restarts.disconnected();
+        assert_eq!(stopped(&restarts, false), restarting());
+        // One begun after the answer ends it.
+        let mut restarts = Restarts::default();
+        ready(&mut restarts, false);
+        restarts.attempting(false);
+        restarts.connected(false);
+        assert!(!restarts.under_way());
+        // As does one after an end.
+        let mut restarts = Restarts::default();
+        ready(&mut restarts, true);
+        restarts.disconnected();
+        restarts.connected(false);
+        assert!(!restarts.under_way());
+    }
+
+    #[test]
     fn a_ready_answers_attach_and_a_launch_end_what_the_restart_kept() {
         let fresh = frames("stream-agent-restart-fresh");
         let failed = frames("stream-agent-restart-failed");
@@ -2804,9 +2895,8 @@ mod tests {
         snapshot.update(body.to_string().as_bytes());
         snapshot.observed_at = Some(at(tick));
         agents.update(snapshot);
-        let status = agents.get("builder");
-        let offline = status.state == super::super::components::AgentState::Offline;
-        let seen = Observation::of(&status, agents.observed_at()).unwrap();
+        let offline = agents.get("builder").state == super::super::components::AgentState::Offline;
+        let seen = Observation::of(agents, "builder").unwrap();
         (restarts.list(&seen, !attached), offline)
     }
 

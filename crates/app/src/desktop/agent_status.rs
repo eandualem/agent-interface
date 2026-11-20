@@ -308,6 +308,21 @@ impl LiveAgents {
             .unwrap_or_else(|| current.unknown.clone())
     }
 
+    /// Whether `name` is missing from a roster that was read: its newest
+    /// read succeeded, is still fresh, and does not list it. Not so before
+    /// any read, while the roster cannot be read, or from a cached read
+    /// past its tolerance.
+    pub fn absent(&self, name: &str) -> bool {
+        let current = self.0.current.borrow();
+        current.snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot.error.is_none()
+                && snapshot
+                    .observed_at
+                    .is_some_and(|read| read.elapsed() < TOLERANCE)
+                && !snapshot.states.contains_key(name)
+        })
+    }
+
     /// The folders the newest observation's agents work in.
     pub fn folders(&self) -> Vec<std::path::PathBuf> {
         let current = self.0.current.borrow();

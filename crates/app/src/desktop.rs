@@ -2751,8 +2751,8 @@ impl Render for Browser {
                         .flatten();
                     terminal.update(cx, |terminal, cx| {
                         terminal.set_cwd(leaf);
-                        if let Some((_, status, agents)) = status {
-                            terminal.set_restart(Some((status, agents)), cx);
+                        if let Some((name, _, agents)) = status {
+                            terminal.set_restart(Some((name, agents)), cx);
                         }
                     });
                 }
@@ -2901,7 +2901,7 @@ impl Render for Browser {
             if let Some(terminal) = self.terminals.get(&leaf.id) {
                 terminal.update(cx, |terminal, cx| {
                     terminal.set_agent(agent, cx);
-                    terminal.set_restart(status.map(|(_, status, agents)| (status, agents)), cx);
+                    terminal.set_restart(status.map(|(name, _, agents)| (name, agents)), cx);
                 });
             }
         }
