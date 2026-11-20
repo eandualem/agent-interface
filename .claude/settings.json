@@ -1,3 +1,8 @@
 {
-  "autoMemoryEnabled": false
+  "autoMemoryEnabled": false,
+  "permissions": {
+    "allow": [
+      "Bash(backbone swarm create *)"
+    ]
+  }
 }
