@@ -776,6 +776,112 @@ mod tests {
         assert_eq!(request.as_deref(), Some(ID));
     }
 
+    /// First run's `initialize` against a real Agent Backbone service: the
+    /// request first run builds, sent and read as first run does, and then
+    /// the check first run waits on, that the Default profile answers.
+    /// Ignored by default. Run it by name against a private trial whose
+    /// service is already up, in the environment that service was started
+    /// in: `PATH` (the trial's `backbone` first), `HOME`, `BACKBONE_DIR` and
+    /// `TMUX_TMPDIR` all the trial's own under `/tmp`, `TMUX` unset, and the
+    /// database settings it was started with (`PGHOST`, `PGPORT`). The
+    /// guards below catch a run from an ordinary shell; whoever makes the
+    /// trial answers for what its folders and its service hold. Only
+    /// `service` differs from what first run sends: the trial's service was
+    /// started by hand, so no login service is installed.
+    #[test]
+    #[ignore = "needs a private trial of a real Agent Backbone service"]
+    fn initialize_against_a_real_service() {
+        // Nothing of a person's own: every place the service is told to use
+        // is a folder inside the temporary one, never that folder itself,
+        // where tmux keeps its default server; and no tmux client is
+        // inherited. The XDG folders count when they are set.
+        for (name, required) in [
+            ("HOME", true),
+            ("BACKBONE_DIR", true),
+            ("TMUX_TMPDIR", true),
+            ("XDG_CACHE_HOME", false),
+            ("XDG_CONFIG_HOME", false),
+            ("XDG_DATA_HOME", false),
+            ("XDG_STATE_HOME", false),
+            ("XDG_RUNTIME_DIR", false),
+        ] {
+            let Some(place) = std::env::var_os(name) else {
+                assert!(!required, "{name} must be set");
+                continue;
+            };
+            // The three a trial is made of exist already. Another that
+            // doesn't exist yet is judged by what exists of its path, so a
+            // link on the way can't lead out.
+            let place = PathBuf::from(place);
+            assert!(!required || place.exists(), "{name} must exist");
+            let existing = place
+                .ancestors()
+                .find(|ancestor| ancestor.exists())
+                .and_then(|existing| existing.canonicalize().ok());
+            assert!(
+                place
+                    .components()
+                    .all(|part| part != std::path::Component::ParentDir)
+                    && existing.is_some_and(|existing| {
+                        ["/tmp", "/private/tmp"].iter().any(|root| {
+                            existing
+                                .strip_prefix(root)
+                                .is_ok_and(|rest| rest.components().next().is_some())
+                        })
+                    }),
+                "{name} must be a disposable folder inside the temporary one"
+            );
+        }
+        assert!(std::env::var_os("TMUX").is_none(), "TMUX must be unset");
+        // A shell an agent runs in carries more of its own Backbone than the
+        // directory, so nothing else of that kind may be set.
+        let own: Vec<_> = std::env::vars_os()
+            .filter_map(|(name, _)| name.into_string().ok())
+            .filter(|name| name.starts_with("BACKBONE_") && name != "BACKBONE_DIR")
+            .collect();
+        assert!(own.is_empty(), "these must be unset: {own:?}");
+        let path_env = std::env::var("PATH").unwrap();
+        let backbone = std::env::split_paths(&path_env)
+            .map(|directory| directory.join("backbone"))
+            .find(|candidate| candidate.is_file())
+            .expect("backbone on PATH");
+        let request_id = uuid::Uuid::now_v7().simple().to_string();
+        let mut request = initialize_request(&request_id);
+        request["service"] = "none".into();
+        println!("backbone: {}", backbone.display());
+        println!("request: {request}");
+        let sent = send(
+            &backbone,
+            &path_env,
+            &request.to_string(),
+            &request_id,
+            Instant::now() + SETUP_LIMIT,
+        );
+        println!("answer: {sent:?}");
+        let answer = sent.expect("setup ran").expect("an answer first run reads");
+        assert_eq!(answer.status, "completed");
+        assert!(matches!(
+            answer.code.as_str(),
+            "initialized" | "existing_preserved"
+        ));
+
+        // What first run waits for after that answer, for as long and in the
+        // same order, with the trial's `backbone` where first run asks the
+        // login shell for it.
+        let client = crate::profiles::Client::new(backbone, path_env.into()).unwrap();
+        let deadline = Instant::now() + super::super::SERVICE_WAIT;
+        let mut answered = false;
+        while !answered && Instant::now() < deadline {
+            let answers = super::super::probe::answers(Some(client.clone()));
+            println!("the Default profile: {answers:?}");
+            answered = answers == super::super::probe::Backbone::Running;
+            if !answered {
+                std::thread::sleep(super::super::SERVICE_POLL);
+            }
+        }
+        assert!(answered, "the Default profile did not answer in time");
+    }
+
     #[test]
     fn a_tool_installer_that_succeeds_is_done() {
         let (_directory, path) = temporary_path();
