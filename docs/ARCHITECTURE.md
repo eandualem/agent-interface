@@ -1492,9 +1492,10 @@ no process.
 
 Profile runtime catalogs come from `backbone runtimes --json` (schema 1), run
 with the captured discovery executable and caller context. It names no profile:
-what it lists is this machine's, and a runtime can set up an agent when it is
-installed and listed as supporting setup. Catalogs keep authentication
-observations separate from executable availability and setup support.
+what it lists is this machine's. Add agent offers a runtime that is installed
+and listed as supporting setup; a guide offers an installed runtime among the
+CLIs first-agent setup starts. Catalogs keep authentication observations
+separate from executable availability and setup support.
 Provider paths and unattended argument examples are discarded; these reads cannot
 launch runtimes or authorize an account operation. Discovery remains bounded and
 cancellable, and retained catalogs carry their full origin for deferred consumers.
@@ -1644,12 +1645,14 @@ The name screen takes an explicit profile name and records one immutable create
 request in the same durable lifecycle journal. The service serves a profile from
 the moment it makes it, so the screen then runs the authenticated selection;
 only that verified selection binds the workspace. An unconfirmed create
-is checked again under its original key rather than sent anew. A profile starts
-clean: when this computer's own Git name and email are kept, the create request
-carries `git_identity: "copy"`; the service copies nothing, so once the profile
-is running the app sets those two in it, as for a name and email typed there. Otherwise
-the field is omitted, keeping the request's bytes unchanged, and recovery restores
-whichever request was saved. The guide screen reads the profile's runtime catalog
+is resent under its original request ID, which the service answers with the
+profile it made, rather than as a new request. A profile starts clean: when this
+computer's own Git name and email are kept, the saved request records
+`git_identity: "copy"`, a private mark the service never sees; the service
+copies nothing, so once the profile is running the app sets those two in it, as
+for a name and email typed there. Otherwise the mark is omitted, keeping the
+saved request's bytes unchanged, and recovery restores whichever request was
+saved. The guide screen reads the profile's runtime catalog
 and asks `GET /api/profile/accounts/status` once for each installed CLI, so each
 tool card can say whether it is signed in; signed in means a stored sign-in, not a
 working account. Its Start saves and sends setup's `first_agent` request; Add
@@ -1714,9 +1717,8 @@ An explicit project folder, name, brief, runtime and optional catalog model are
 frozen with the greeting choice into one original request. Antigravity CLI can't
 take a brief silently, so Agent Backbone sends it as its first turn; with the
 default brief, which asks the agent to greet, the request asks for no separate
-greeting. Compatibility
-and authentication observations remain separate; neither opens a terminal or
-connects a workspace. Confirmation hands the retained controller and prepared
+greeting. The catalog keeps each runtime's availability, setup support and
+authentication; none of them opens a terminal or connects a workspace. Confirmation hands the retained controller and prepared
 request to recovery with its original key established before admission or I/O.
 Admission repeats the pending check atomically. Failed or interrupted submission
 keeps recovery on the original key; queued form callbacks cannot create a second

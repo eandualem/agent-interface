@@ -265,8 +265,8 @@ pub fn answers(client: Option<crate::profiles::Client>) -> Backbone {
 
 /// The service's own sentence on why it does not serve `saved`, the first
 /// profile made before, when it lists that profile as failed. With nothing
-/// saved, the first failed profile's. Blocks for a moment; call off the UI
-/// thread.
+/// saved and none served, the first failed profile's. Blocks for a moment;
+/// call off the UI thread.
 pub fn saved_failure(
     client: Option<crate::profiles::Client>,
     saved: Option<&str>,
@@ -275,6 +275,10 @@ pub fn saved_failure(
     let client = client?;
     let Some(saved) = saved else {
         let items = client.list(&|| true).ok()?;
+        // With a profile served, its failed neighbours don't explain setup.
+        if items.iter().any(|item| item.state == State::Ready) {
+            return None;
+        }
         let item = items.into_iter().find(|item| item.state == State::Failed)?;
         tracing::warn!(event = "first_profile_not_served", profile_id = %item.profile_id, code = ?item.failure, "First profile not served");
         return item.reason;
@@ -457,6 +461,15 @@ mod tests {
             saved_failure(Some(client()), None).as_deref(),
             Some("Its folder is not readable.")
         );
+        // With a profile served, no failed one explains setup.
+        let served = serde_json::json!({"state": "serving", "protocol_version": 1,
+            "profile_id": "0a1b2c3d4e61", "display_name": "Work",
+            "instance_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d", "machine": {"id": "5f2c9e0d1b7a4e38"},
+            "socket": root.join("api.sock"), "tmux_socket": root.join("tmux.sock"),
+            "credential_reference": {"type": "socket"}});
+        let listed = serde_json::json!({"profiles": [served, failed]});
+        let client = stub(&root, &listed.to_string(), &failed.to_string());
+        assert_eq!(saved_failure(Some(client), None), None);
         assert_eq!(saved_failure(None, Some("0a1b2c3d4e5f")), None);
     }
 
