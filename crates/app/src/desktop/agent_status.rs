@@ -211,14 +211,30 @@ pub(super) fn deliveries(
         };
         return waiting.map(|waiting| format!("{waiting}{why}"));
     };
-    let held = match held.reason.as_deref() {
-        Some("uncertain_delivery") => "Deliveries held: a message may still be in its prompt",
-        _ => "Deliveries are held",
-    };
-    Some(match waiting {
-        Some(waiting) => format!("{held} · {waiting}"),
-        None => held.into(),
+    // The held one waits too.
+    let waiting = queued.max(1);
+    Some(match held.reason.as_deref() {
+        Some("uncertain_delivery") => {
+            format!("Deliveries held: a message may still be in its prompt · {waiting} waiting")
+        }
+        _ => format!("Deliveries are held · {waiting} waiting"),
     })
+}
+
+/// As [`deliveries`], for a navigation row: the count first, so a narrow
+/// row cuts the reason, never the count.
+pub(super) fn row_deliveries(
+    held: Option<&agent_interface_roster::HeldQueue>,
+    queued: u64,
+) -> Option<String> {
+    let Some(held) = held else {
+        return deliveries(None, queued, None);
+    };
+    let why = match held.reason.as_deref() {
+        Some("uncertain_delivery") => "deliveries held: a message may still be in its prompt",
+        _ => "deliveries are held",
+    };
+    Some(format!("{} waiting · {why}", queued.max(1)))
 }
 
 /// Who a review asked: its model, else its CLI, else the run's label, then
@@ -332,6 +348,16 @@ impl LiveAgents {
         self.0.current.borrow().snapshot.is_some()
     }
 
+    /// When the roster shown was read, if it has been.
+    pub fn observed_at(&self) -> Option<std::time::Instant> {
+        self.0
+            .current
+            .borrow()
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.observed_at)
+    }
+
     /// The background runs of the agent with this registration. While the
     /// roster is reported unavailable, its active runs are not shown as
     /// current; those that ended stay.
@@ -438,7 +464,7 @@ impl LiveAgents {
                         }
                         status.line = waits_and_runs(details);
                         status.deliveries =
-                            deliveries(details.held_queue.as_ref(), details.queued, None);
+                            row_deliveries(details.held_queue.as_ref(), details.queued);
                         status.restart = details.restart.clone();
                     }
                     (name.clone(), Rc::new(status))
@@ -812,7 +838,7 @@ mod tests {
         };
         assert_eq!(
             read(&fixture("agents-held-queue")).as_deref(),
-            Some("Deliveries held: a message may still be in its prompt · 8 waiting")
+            Some("8 waiting · deliveries held: a message may still be in its prompt")
         );
         // The list does not say why a plain wait waits.
         assert_eq!(
@@ -824,7 +850,12 @@ mod tests {
         assert_eq!(
             read(br#"{"items":[{"name":"worker","held_queue":{"reason":"later"},"queued":1}]}"#)
                 .as_deref(),
-            Some("Deliveries are held · 1 waiting")
+            Some("1 waiting · deliveries are held")
+        );
+        // A held queue always waits for at least the held one.
+        assert_eq!(
+            read(br#"{"items":[{"name":"worker","held_queue":{},"queued":0}]}"#).as_deref(),
+            Some("1 waiting · deliveries are held")
         );
         // Cleared only once nothing holds them and none wait.
         assert_eq!(
@@ -847,6 +878,10 @@ mod tests {
         assert_eq!(
             deliveries(Some(&held), 8, Some("human_typing")).as_deref(),
             Some("Deliveries held: a message may still be in its prompt · 8 waiting")
+        );
+        assert_eq!(
+            deliveries(Some(&Default::default()), 0, None).as_deref(),
+            Some("Deliveries are held · 1 waiting")
         );
     }
 

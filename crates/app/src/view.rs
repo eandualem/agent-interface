@@ -110,6 +110,9 @@ pub struct TerminalView {
     input_queue: InputQueue,
     input_error: Option<String>,
     input_rejection: Option<String>,
+    /// Whether an ended session's message is left unpainted, while its
+    /// agent restarts into a new one.
+    quiet_end: bool,
     closed_reported: bool,
     wheel: Option<(PaneId, f32)>,
     program_press: Option<(PaneId, Button, Pointer)>,
@@ -280,6 +283,7 @@ impl TerminalView {
             input_queue,
             input_error: None,
             input_rejection: None,
+            quiet_end: false,
             closed_reported: false,
             wheel: None,
             program_press: None,
@@ -287,6 +291,14 @@ impl TerminalView {
             wheel_gesture: WheelGesture::default(),
             drag: None,
             autoscrolling: false,
+        }
+    }
+
+    /// Leave an ended session's message unpainted while `quiet`.
+    pub(crate) fn quiet_end(&mut self, quiet: bool, cx: &mut Context<Self>) {
+        if self.quiet_end != quiet {
+            self.quiet_end = quiet;
+            cx.notify();
         }
     }
 
@@ -955,7 +967,7 @@ impl Render for TerminalView {
             .clone()
             .or(self.input_error.clone())
             .or_else(|| {
-                self.panes().is_finished().then(|| {
+                (self.panes().is_finished() && !self.quiet_end).then(|| {
                     self.panes()
                         .failure()
                         .unwrap_or_else(|| "Session disconnected.".into())

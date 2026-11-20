@@ -2855,19 +2855,22 @@ impl Render for Browser {
                     return None;
                 }
                 let space = self.layout.as_ref()?.model().workspace_for_pane(&leaf.id)?;
-                let status = self.workspace_agents(space)?.get(&attachment.session);
-                Some((attachment.session.clone(), status))
+                let agents = self.workspace_agents(space)?;
+                let status = agents.get(&attachment.session);
+                let seen = terminal::Observation::of(&status, agents.observed_at());
+                Some((attachment.session.clone(), status, seen))
             });
-            let restart = status
-                .as_ref()
-                .and_then(|(_, status)| status.restart.clone());
-            let agent = status
-                .filter(|(_, status)| status.state == components::AgentState::Offline)
-                .map(|(name, _)| name);
+            let (agent, seen) = match status {
+                Some((name, status, seen)) => (
+                    (status.state == components::AgentState::Offline).then_some(name),
+                    seen,
+                ),
+                None => (None, None),
+            };
             if let Some(terminal) = self.terminals.get(&leaf.id) {
                 terminal.update(cx, |terminal, cx| {
                     terminal.set_agent(agent, cx);
-                    terminal.set_restart(restart, cx);
+                    terminal.set_restart(seen, cx);
                 });
             }
         }
