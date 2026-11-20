@@ -2576,6 +2576,34 @@ impl Browser {
     }
 }
 
+impl Browser {
+    /// The Backbone agent a pane attaches, its roster status and the roster
+    /// it comes from: none for a session on another tmux server, whatever
+    /// its name, or a pane whose profile has no roster.
+    fn pane_agent(
+        &self,
+        leaf: &Leaf,
+    ) -> Option<(
+        String,
+        std::rc::Rc<agent_status::Status>,
+        agent_status::LiveAgents,
+    )> {
+        let attachment = leaf.attachment.as_ref()?;
+        let connection = self.pane_connection(&leaf.id).ok()??;
+        if attachment
+            .source_socket
+            .as_deref()
+            .is_some_and(|path| std::path::Path::new(path) != connection.tmux_socket())
+        {
+            return None;
+        }
+        let space = self.layout.as_ref()?.model().workspace_for_pane(&leaf.id)?;
+        let agents = self.workspace_agents(space)?.clone();
+        let status = agents.get(&attachment.session);
+        Some((attachment.session.clone(), status, agents))
+    }
+}
+
 impl Render for Browser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.refresh_profiles(cx);
@@ -2703,7 +2731,16 @@ impl Render for Browser {
                 .flat_map(|tab| tab.tree.leaves())
             {
                 if let Some(terminal) = self.terminals.get(&leaf.id) {
-                    terminal.update(cx, |terminal, _| terminal.set_cwd(leaf));
+                    // A hidden pane follows its agent's restart too, so it
+                    // does not miss the restart leaving the list.
+                    let hidden = !leaves.iter().any(|drawn| drawn.id == leaf.id);
+                    let status = hidden.then(|| self.pane_agent(leaf)).flatten();
+                    terminal.update(cx, |terminal, cx| {
+                        terminal.set_cwd(leaf);
+                        if let Some((_, status, agents)) = status {
+                            terminal.set_restart(Some((status, agents)), cx);
+                        }
+                    });
                 }
             }
         }
@@ -2843,34 +2880,14 @@ impl Render for Browser {
             }
             // A stopped Backbone agent's pane offers Resume and Start new,
             // and a restarting one says so, whatever the roster's state.
-            let status = leaf.attachment.as_ref().and_then(|attachment| {
-                let connection = self.pane_connection(&leaf.id).ok()??;
-                // A session on another tmux server is not this profile's
-                // agent, whatever its name.
-                if attachment
-                    .source_socket
-                    .as_deref()
-                    .is_some_and(|path| std::path::Path::new(path) != connection.tmux_socket())
-                {
-                    return None;
-                }
-                let space = self.layout.as_ref()?.model().workspace_for_pane(&leaf.id)?;
-                let agents = self.workspace_agents(space)?;
-                let status = agents.get(&attachment.session);
-                let seen = terminal::Observation::of(&status, agents.observed_at());
-                Some((attachment.session.clone(), status, seen))
+            let status = self.pane_agent(leaf);
+            let agent = status.as_ref().and_then(|(name, status, _)| {
+                (status.state == components::AgentState::Offline).then(|| name.clone())
             });
-            let (agent, seen) = match status {
-                Some((name, status, seen)) => (
-                    (status.state == components::AgentState::Offline).then_some(name),
-                    seen,
-                ),
-                None => (None, None),
-            };
             if let Some(terminal) = self.terminals.get(&leaf.id) {
                 terminal.update(cx, |terminal, cx| {
                     terminal.set_agent(agent, cx);
-                    terminal.set_restart(seen, cx);
+                    terminal.set_restart(status.map(|(_, status, agents)| (status, agents)), cx);
                 });
             }
         }
