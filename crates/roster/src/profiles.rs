@@ -45,7 +45,7 @@ pub enum Error {
     Unsupported,
     /// Provisioning is incomplete or failed.
     NotReady,
-    /// The exact credential or local endpoint could not be read safely.
+    /// The local endpoint could not be reached safely.
     Unavailable,
     /// The authenticated provider requires a complete binding.
     BindingRequired,
@@ -234,7 +234,7 @@ pub struct Connection {
 
 impl Connection {
     /// Cache identity shared only by clones of this verified snapshot.
-    /// Fresh connections must not reuse workers holding older credentials.
+    /// Fresh connections must not reuse workers of an older connection.
     pub fn connection_key(&self) -> ConnectionKey {
         self.connection_key.clone()
     }

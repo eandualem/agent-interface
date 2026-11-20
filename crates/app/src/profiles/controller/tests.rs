@@ -273,10 +273,10 @@ fn recovery_confirms_a_terminal_record_left_by_a_post_rename_failure() {
     assert_eq!(fixture.calls(), "create\n");
 }
 
-/// Save `key` as an earlier version did: a checkpoint this app no longer reads.
-pub(crate) fn save_earlier(journal: &std::path::Path, key: &str) {
-    let state = serde_json::json!({"checkpoint_version": 1, "observation": null,
-        "request": "{\"action\":\"create\",\"display_name\":\"Example\",\"request_id\":\"request-a\",\"schema_version\":1}"});
+/// Save `key` with a checkpoint version this app doesn't read.
+pub(crate) fn save_unreadable(journal: &std::path::Path, key: &str) {
+    let state = serde_json::json!({"checkpoint_version": 99, "observation": null,
+        "request": "{\"action\":\"create\",\"display_name\":\"Example\",\"request_id\":\"request-a\"}"});
     let capsule = super::super::recovery::checkpoint(
         super::super::recovery::Kind::Lifecycle,
         &serde_json::to_vec(&state).unwrap(),
@@ -295,11 +295,11 @@ pub(crate) fn save_earlier(journal: &std::path::Path, key: &str) {
 }
 
 #[test]
-fn a_record_an_earlier_version_saved_is_invalid_and_only_forgotten() {
+fn a_record_of_an_unknown_version_is_invalid_and_only_forgotten() {
     let fixture = Fixture::new("");
     let controller = fixture.controller();
     let key = Controller::key("request-a");
-    save_earlier(&fixture.journal, &key);
+    save_unreadable(&fixture.journal, &key);
     assert_eq!(controller.read(&key), Err(Error::Invalid));
     assert_eq!(controller.retry(&key, &|| true), Err(Error::Invalid));
     // A readable record is never forgotten this way.

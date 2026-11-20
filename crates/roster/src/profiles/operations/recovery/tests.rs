@@ -34,7 +34,7 @@ fn requests_and_their_results_round_trip_without_discovery() {
 }
 
 #[test]
-fn corrupt_or_earlier_checkpoints_do_not_normalize_or_replace_requests() {
+fn corrupt_or_unknown_checkpoints_do_not_normalize_or_replace_requests() {
     let original: Value = serde_json::from_slice(&create().checkpoint().unwrap()).unwrap();
     let request = original["request"].as_str().unwrap();
     for request in [
@@ -50,7 +50,7 @@ fn corrupt_or_earlier_checkpoints_do_not_normalize_or_replace_requests() {
     }
     let identity = json!({"profile_id": "a", "installation_id": "b", "lifecycle_id": "c"});
     for (field, value) in [
-        ("checkpoint_version", json!(1)),
+        ("checkpoint_version", json!(99)),
         ("extra", json!(true)),
         (
             "observation",
@@ -70,11 +70,11 @@ fn corrupt_or_earlier_checkpoints_do_not_normalize_or_replace_requests() {
         invalid[field] = value;
         assert!(Prepared::restore(&bytes(&invalid)).is_err());
     }
-    // A record saved in the earlier format is not replayed.
-    let earlier = json!({"checkpoint_version": 1, "observation": null,
-        "request": "{\"action\":\"create\",\"display_name\":\"Work\",\"request_id\":\"a\",\"schema_version\":1}"});
+    // A record of a checkpoint version this app doesn't read is not replayed.
+    let unknown = json!({"checkpoint_version": 99, "observation": null,
+        "request": "{\"action\":\"create\",\"display_name\":\"Work\",\"request_id\":\"a\"}"});
     assert!(matches!(
-        Prepared::restore(&bytes(&earlier)),
+        Prepared::restore(&bytes(&unknown)),
         Err(Error::Invalid)
     ));
     assert!(Prepared::restore(&vec![b' '; CHECKPOINT_LIMIT + 1]).is_err());

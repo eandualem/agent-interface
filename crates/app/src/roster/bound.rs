@@ -47,7 +47,7 @@ impl BoundRosterSource {
     /// Read immediately, then two seconds after each completed attempt, and
     /// at once when the Rust service's push stream reports a change. Runs
     /// are read after each roster is published, so states never wait on them.
-    /// The connection retains its verified tuple, endpoint and credential for
+    /// The connection retains its verified identity and socket for
     /// this worker's lifetime. `wake` runs after publishing a complete update.
     pub fn start(connection: Connection, wake: impl Fn() + Send + 'static) -> io::Result<Self> {
         let updates = Arc::new(Mutex::new(None));

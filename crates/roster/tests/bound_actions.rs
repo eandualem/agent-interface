@@ -614,7 +614,7 @@ fn interaction_state_binding_refusal_invalidates_the_whole_snapshot() {
     let client = interactions::Client::new(connection);
     assert_eq!(
         client.read("start", "end", None).unwrap().state_error,
-        Some(interactions::Error::Unsupported)
+        Some(interactions::Error::Unavailable)
     );
     assert_eq!(
         client.read("start", "end", None).unwrap_err(),

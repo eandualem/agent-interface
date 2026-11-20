@@ -48,7 +48,7 @@ struct Delivery {
 }
 
 /// Feedback on one retained record, pinned to its originating profile.
-/// Clones retain the same connection and credentials for delayed submissions.
+/// Clones retain the same connection for delayed submissions.
 #[derive(Clone)]
 pub struct Client {
     connection: Connection,

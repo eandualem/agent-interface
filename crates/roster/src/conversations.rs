@@ -1,5 +1,5 @@
 //! One conversation per artifact, read and written through Backbone's
-//! authenticated local API (provider contract r3).
+//! authenticated local API.
 //!
 //! A conversation lasts across all of an artifact's versions. Its entries are
 //! owner and agent messages, and the events the artifact produces when a new
@@ -319,8 +319,6 @@ pub enum Error {
     Unavailable,
     /// Backbone answered but did not let this app read or write it.
     Forbidden,
-    /// The provider does not offer conversations yet.
-    Unsupported,
     /// Backbone knows no such artifact.
     UnknownArtifact,
     /// The response violated the bounded contract.
@@ -335,7 +333,6 @@ impl Error {
         match self {
             Self::Unavailable => "Backbone could not provide this conversation.",
             Self::Forbidden => "Backbone did not let this app open this conversation.",
-            Self::Unsupported => "This Agent Backbone does not keep conversations yet.",
             Self::UnknownArtifact => "Backbone has no record of this item.",
             Self::Unreadable => "Backbone returned an unreadable conversation.",
             Self::Connection(
@@ -347,8 +344,8 @@ impl Error {
 }
 
 /// One artifact's conversation on an immutable verified profile connection.
-/// Clone this client for pending operations; retries keep its original binding
-/// and credential snapshot. No method re-resolves configuration or changes origin.
+/// Clone this client for pending operations; retries keep its original
+/// connection. No method re-resolves configuration or changes origin.
 #[derive(Clone)]
 pub struct Client {
     connection: Connection,
@@ -514,15 +511,14 @@ fn parse<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, Error> {
     serde_json::from_slice(body).map_err(|_| Error::Unreadable)
 }
 
-/// A plain 404 is a provider without conversations; a typed one is a missing artifact.
+/// The service's `not_found` is an artifact it has no record of; any other
+/// 404 is an answer this app can't use.
 fn missing(body: &[u8]) -> Error {
-    #[derive(Deserialize)]
-    struct Missing {
-        error: String,
-    }
-    match serde_json::from_slice::<Missing>(body) {
-        Ok(missing) if missing.error == "unknown_artifact" => Error::UnknownArtifact,
-        _ => Error::Unsupported,
+    let refusal: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+    if refusal["detail"]["code"] == "not_found" {
+        Error::UnknownArtifact
+    } else {
+        Error::Unavailable
     }
 }
 
@@ -687,10 +683,10 @@ mod tests {
         );
         assert_eq!(reply(502, "gateway"), Outcome::Unknown);
         assert_eq!(
-            missing(br#"{"error":"unknown_artifact","message":"No report 9999."}"#),
+            missing(br#"{"detail":{"code":"not_found","message":"No report 9999."}}"#),
             Error::UnknownArtifact
         );
-        assert_eq!(missing(b"Not Found"), Error::Unsupported);
+        assert_eq!(missing(b"Not Found"), Error::Unavailable);
     }
 
     /// Bodies captured from the provider's routes.

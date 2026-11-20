@@ -137,7 +137,10 @@ fn removing_an_agent_that_is_already_gone_succeeds() {
         "a",
         vec![Reply {
             status: 404,
-            ..Reply::ok(&inspect_path, json!({"detail":"not found"}))
+            ..Reply::ok(
+                &inspect_path,
+                json!({"detail":{"code":"not_found","message":"No agent worker."}}),
+            )
         }],
     );
     assert_eq!(remove_checked(&a, "worker", REG), Ok(()));

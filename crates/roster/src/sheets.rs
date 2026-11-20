@@ -72,9 +72,7 @@ impl Error {
             Self::RequestConflict => {
                 "This retry key already belongs to different content. Keep the draft and inspect the original operation."
             }
-            Self::Refused(404) => {
-                "This workbook is unavailable, or Backbone needs updating to support Sheets."
-            }
+            Self::Refused(404) => "This workbook is unavailable.",
             Self::Refused(401 | 403) => {
                 "Backbone refused this operation with the current identity."
             }
@@ -111,7 +109,7 @@ impl std::fmt::Debug for Client {
     }
 }
 impl Client {
-    /// Retain a verified connection and its credentials for all workbook work.
+    /// Retain a verified connection for all workbook work.
     pub fn bound(connection: Connection) -> Self {
         Self { connection }
     }
@@ -349,8 +347,8 @@ impl Client {
         if self.identity() != request.client.identity() {
             return Err(Error::ProviderChanged);
         }
-        // A separately verified connection with rotated credentials must not
-        // replace the snapshot that prepared an uncertain mutation.
+        // A separately verified connection must not replace the one that
+        // prepared an uncertain mutation.
         let bytes =
             request
                 .client

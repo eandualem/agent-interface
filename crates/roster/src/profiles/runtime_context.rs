@@ -22,7 +22,7 @@ pub enum Error {
 }
 
 /// A registered agent captured from an authenticated inspection.
-/// Refreshes never acquire a replacement registration or credential snapshot.
+/// Refreshes never acquire a replacement registration or connection.
 #[derive(Clone)]
 pub struct Target {
     connection: Connection,

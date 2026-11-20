@@ -19,7 +19,7 @@ impl Selected {
     pub fn item(&self) -> &Item {
         &self.item
     }
-    /// Authenticated endpoint, credentials and full lifecycle identity.
+    /// The verified socket and identity.
     pub fn connection(&self) -> &Connection {
         &self.connection
     }

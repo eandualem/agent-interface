@@ -380,8 +380,7 @@ backbone documents publish --file explanation.html --title "Explanation"
 backbone documents publish --file revised.html --title "Explanation" --supersedes 7
 ```
 
-Documents need an Agent Backbone version with the Documents API. Older or
-unavailable providers show an explicit error. Rich HTML renders inside the app
+An Agent Backbone that can't provide Documents shows an explicit error. Rich HTML renders inside the app
 on macOS and Linux, including Windows through WSLg. Linux uses WebKitGTK 4.1
 and X11 (XWayland on Wayland desktops and WSLg).
 Self-contained HTML is limited to 4 MiB, including inline assets. Network
@@ -483,8 +482,7 @@ what the waiting steps wait on. Agents with something waiting come first; an
 agent that has not published a plan says so. Plans are what each agent
 declares it is doing, kept current by the agent; the view only reads them and
 rereads them every 20 seconds while open. A plan not updated for a day is
-marked stale, which does not mean it is complete. The section needs an Agent
-Backbone that offers current plans; an older one says it does not.
+marked stale, which does not mean it is complete.
 
 ## Sheets
 

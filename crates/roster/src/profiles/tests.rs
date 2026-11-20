@@ -248,7 +248,10 @@ fn starting_a_stopped_agent_uses_the_bound_route_and_reports_the_outcome() {
             (200, started(true, false, "not_waited")),
             (200, started(true, true, "ready")),
             (200, started(false, false, "exited")),
-            (400, json!({"detail": "no saved conversation"})),
+            (
+                400,
+                json!({"detail": {"code": "invalid_request", "message": "No saved conversation."}}),
+            ),
         ],
     );
     let connection = profile.connect().unwrap();
@@ -367,7 +370,10 @@ fn removing_an_agent_stops_it_first_and_treats_a_missing_one_as_removed() {
             (200, stopped.clone()),
             (404, json!({})),
             (200, stopped.clone()),
-            (409, json!({"detail": "'worker' is running"})),
+            (
+                409,
+                json!({"detail": {"code": "conflict", "message": "worker is running."}}),
+            ),
             (409, changed.clone()),
             (200, stopped),
             (409, changed),

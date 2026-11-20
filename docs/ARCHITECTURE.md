@@ -585,11 +585,10 @@ the record kind and ID plus the user's text, not the original content. This is
 ordinary feedback, without signed owner-confirmation provenance. The existing
 name-based API cannot make source lookup and recipient routing atomic. Each
 message is sent once; a refused message can be retried, and an unknown delivery
-is marked without automatic resubmission. That is the path for a provider
-without conversations.
+is marked without automatic resubmission. That is the path for a record
+Backbone keeps no conversation for.
 
-Where Backbone keeps per-artifact conversations, `roster::conversations` reads
-and writes them instead (`/api/conversations/{kind}/{id}`). A record names its
+Otherwise `roster::conversations` reads and writes the record's conversation (`/api/conversations/{kind}/{id}`). A record names its
 conversation: a document by its stable document ID, a report or answer by the
 root of its correction chain. Requests go only to the provider the record was
 read from; after a connection change they are refused until it is reopened.
@@ -605,8 +604,9 @@ entry. Opening the panel reveals the newest messages; later arrivals follow only
 while the reader stays at the bottom. A painted frame at the bottom advances
 the owner's read marker through that frame's fetched entries. The "new" divider
 stays at the marker from when the panel opened. Read acknowledgements retry at
-most once per polling interval, including after failure. A plain 404 or an unknown
-artifact switches the conversation back to one-way feedback. A shared skill or policy has
+most once per polling interval, including after failure. The service's `not_found`
+for an artifact it has no record of switches the conversation to one-way feedback;
+any other 404 shows as an error. A shared skill or policy has
 no record, so its conversation finds its identity on the first read: the
 current provider, then the `artifact_id` that `/api/skills` or `/api/policies`
 lists for its source path. Without a maintainer, a message names the agent the
@@ -1539,8 +1539,7 @@ context are required before a restored request may execute.
 
 Setup request checkpoints retain both generated schema-3 bodies byte for byte,
 including cancellation's original ID, profile ID, project and brief. A record
-the app cannot read, such as one saved under an earlier setup schema, is
-invalid: it holds back every new first-agent request until it is forgotten.
+the app cannot read is invalid: it holds back every new first-agent request until it is forgotten.
 Restoration validates all choices and rejects changed or noncanonical bodies
 without discovery or allocation. The private format records request intent only:
 interrupted output streams and successful readiness/cancellation are not inferred
@@ -1687,7 +1686,7 @@ else setup's kept message, then a next step taken from the same retry and open
 or closed state that offers its buttons. It never says the agent wasn't added:
 the answer to a request sent again may describe only that send. Forgetting a request removes only the app's saved record; it
 runs no command and keeps any agent the request created. A record the app
-cannot read, such as one saved under an earlier setup schema, fails closed: it
+cannot read fails closed: it
 holds back every new first-agent request until it is forgotten, and the form
 says "A saved setup could not be read. Forget it under Earlier setups to
 continue." Unsafe storage always fails closed. A directory durability barrier precedes the

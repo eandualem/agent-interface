@@ -118,7 +118,7 @@ pub struct ReportItem {
     /// Server publication timestamp.
     pub created_at: String,
     /// Reports and answers: the root of the correction chain, which keys the
-    /// record's conversation. `None` from a provider without conversations.
+    /// record's conversation. `None` when the record has none.
     pub conversation_id: Option<String>,
     /// The record itself.
     pub content: ReportContent,

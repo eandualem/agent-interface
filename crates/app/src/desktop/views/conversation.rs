@@ -7,9 +7,9 @@
 //! read every few seconds while the panel is shown. Messages go through
 //! `roster::conversations` with a key that makes a retry safe.
 //!
-//! A provider without conversations gets the earlier behaviour: the thread
-//! holds the messages sent from this pane, and a record's conversation sends
-//! each once through `roster::feedback` with a reference to the record. A view
+//! A record Backbone keeps no conversation for gets one-way messages: the
+//! thread holds the messages sent from this pane, and a record's conversation
+//! sends each once through `roster::feedback` with a reference to the record. A view
 //! with its own delivery, such as Sheets, receives [`ConversationEvent`]s and
 //! reports each outcome back with [`Conversation::complete`].
 
@@ -868,9 +868,9 @@ impl Conversation {
                         }
                         stored.settle(started, &returned);
                     }
-                    // A provider without conversations, or one that does not
-                    // know this record, keeps the one-way messages.
-                    Err(stored::Error::Unsupported | stored::Error::UnknownArtifact) => {
+                    // A record Backbone has no conversation for keeps the
+                    // one-way messages.
+                    Err(stored::Error::UnknownArtifact) => {
                         stored.supported = Some(false);
                     }
                     // Keep the last page while Backbone is briefly unavailable.
@@ -894,19 +894,11 @@ impl Conversation {
             })
             .collect();
         for index in waiting {
-            if let Some(error @ stored::Error::Connection(_)) = failure {
-                self.messages[index].delivery =
-                    Delivery::NotSent(format!("{} Nothing was sent.", error.message()));
-                continue;
-            }
-            match supported {
-                Some(true) => self.post(index, cx),
-                Some(false) => self.route(index, cx),
-                None => {
-                    self.messages[index].delivery = Delivery::NotSent(match failure {
-                        Some(error) => format!("{} Nothing was sent.", error.message()),
-                        None => "Backbone did not answer. Nothing was sent.".into(),
-                    })
+            match waiting_send(supported, failure) {
+                Waiting::Post => self.post(index, cx),
+                Waiting::Route => self.route(index, cx),
+                Waiting::NotSent(reason) => {
+                    self.messages[index].delivery = Delivery::NotSent(reason)
                 }
             }
         }
@@ -2278,6 +2270,32 @@ impl Conversation {
     }
 }
 
+/// What becomes of a message written before Backbone first answered.
+#[derive(Debug, PartialEq, Eq)]
+enum Waiting {
+    /// Into the record's stored conversation.
+    Post,
+    /// One-way, for a record Backbone keeps no conversation for.
+    Route,
+    /// Not sent, for this reason; Retry asks again.
+    NotSent(String),
+}
+
+/// A message waits for the first read: `supported` is what it said about the
+/// record's conversation, `failure` why it did not answer. A read that failed
+/// sends nothing, and never reroutes the message.
+fn waiting_send(supported: Option<bool>, failure: Option<stored::Error>) -> Waiting {
+    if let Some(error @ stored::Error::Connection(_)) = failure {
+        return Waiting::NotSent(format!("{} Nothing was sent.", error.message()));
+    }
+    match (supported, failure) {
+        (Some(true), _) => Waiting::Post,
+        (Some(false), _) => Waiting::Route,
+        (None, Some(error)) => Waiting::NotSent(format!("{} Nothing was sent.", error.message())),
+        (None, None) => Waiting::NotSent("Backbone did not answer. Nothing was sent.".into()),
+    }
+}
+
 /// Start with the agent whose interactions the owner opened, regardless of
 /// message direction. Only eligible recorded participants may receive a question.
 fn interaction_recipient(
@@ -2371,6 +2389,20 @@ mod tests {
         assert!(!at_latest(px(300.), px(-200.), px(700.)));
         assert!(!at_latest(px(0.), px(0.), px(0.)));
         assert!(at_latest(px(300.), px(0.), px(0.)));
+    }
+
+    #[test]
+    fn a_failed_first_read_leaves_a_waiting_message_unsent() {
+        // A 404 that isn't the service's not_found is an error: nothing is
+        // sent, and the message is not rerouted one-way.
+        let error = stored::Error::Unavailable;
+        assert_eq!(
+            waiting_send(None, Some(error)),
+            Waiting::NotSent(format!("{} Nothing was sent.", error.message()))
+        );
+        // Only a record Backbone keeps no conversation for goes one-way.
+        assert_eq!(waiting_send(Some(false), None), Waiting::Route);
+        assert_eq!(waiting_send(Some(true), None), Waiting::Post);
     }
 
     #[test]

@@ -555,11 +555,11 @@ fn a_retry_this_app_does_not_know_keeps_the_request_open_without_a_retry() {
 }
 
 #[test]
-fn a_request_an_earlier_version_saved_holds_back_every_request_until_forgotten() {
+fn a_request_of_an_unknown_schema_holds_back_every_request_until_forgotten() {
     let fixture = Fixture::new("");
     let controller = fixture.controller();
     let key = controller.enqueue(intent()).unwrap().key;
-    // The same record, as an earlier version saved it under another schema.
+    // The same record, saved under a schema this app doesn't read.
     let journal = journal::Journal::open(&fixture.journal).unwrap();
     let record = journal.read(&key).unwrap().unwrap();
     let mut envelope: Envelope = serde_json::from_slice(record.payload()).unwrap();
@@ -571,7 +571,7 @@ fn a_request_an_earlier_version_saved_holds_back_every_request_until_forgotten()
     let mut state: Value = serde_json::from_slice(&state).unwrap();
     for body in ["first", "cancel"] {
         let mut request: Value = serde_json::from_str(state[body].as_str().unwrap()).unwrap();
-        request["schema_version"] = 2.into();
+        request["schema_version"] = 99.into();
         state[body] = request.to_string().into();
     }
     let capsule = crate::profiles::recovery::checkpoint(

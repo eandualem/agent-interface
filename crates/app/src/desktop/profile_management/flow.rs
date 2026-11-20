@@ -1396,7 +1396,7 @@ mod tests {
         made(&root);
         let journal = root.join("profile-operations");
         let key = Controller::key("request-a");
-        crate::profiles::controller::tests::save_earlier(&journal, &key);
+        crate::profiles::controller::tests::save_unreadable(&journal, &key);
         let controller = Controller::new(journal::Journal::open(&journal).unwrap(), &client);
         let Err((Stalled::Unreadable(stalled), None, _)) = recover(&controller, &key, &|| true)
         else {

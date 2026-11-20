@@ -33,7 +33,7 @@ pub struct Read {
     pub result: Result<Data, Error>,
 }
 
-/// Read a bounded GET chain using the original binding and credentials.
+/// Read a bounded GET chain using the original connection.
 /// Optional enrichment can fail ordinarily, but any connection refusal or
 /// cancellation discards the complete observation. Call on an I/O worker.
 /// It only reads: nothing here navigates or acts.

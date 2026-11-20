@@ -514,7 +514,7 @@ mod tests {
         for printed in [
             changed("request_id", "019a8f3e7c2b7d4e9a1f2b3c4d5e6f71".into()),
             changed("seq", 1.into()),
-            changed("schema_version", 2.into()),
+            changed("schema_version", 99.into()),
             changed("action", "first_agent".into()),
             changed("data", serde_json::Value::Null),
             changed("data", "none".into()),

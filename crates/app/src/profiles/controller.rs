@@ -194,8 +194,7 @@ impl Controller {
         {
             return Err(Error::Invalid);
         }
-        // A record this app can't restore, such as one an earlier version
-        // saved, is invalid: it can only be forgotten.
+        // A record this app can't restore is invalid: it can only be forgotten.
         let operation = Operation::restore(&self.client, envelope.capsule.as_bytes())
             .map_err(|_| Error::Invalid)?;
         if Self::key(operation.request_id()) != key
