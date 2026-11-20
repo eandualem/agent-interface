@@ -1342,7 +1342,6 @@ mod tests {
             author: "worker".into(),
             author_id: Some("b".repeat(32)),
             registered: false,
-            provider_url: String::new(),
             created_at: metadata.created_at.clone(),
             conversation_id: None,
             content: ReportContent::Document(metadata.clone()),
