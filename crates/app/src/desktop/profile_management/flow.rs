@@ -32,8 +32,6 @@ use std::{
 
 /// The name a first profile starts with; the person can change it.
 const FIRST_NAME: &str = "Personal";
-const GIT_MISSING: &str =
-    "This computer's Git name and email aren't both set. Fill them in, or leave both empty.";
 
 pub(in crate::desktop) enum Event {
     /// The new profile is ready: bind the workspace to it.
@@ -65,6 +63,8 @@ enum Stalled {
     Failed,
     /// A profile made before couldn't be read: read it again.
     Lookup(String),
+    /// The saved create request can't be read: it can only be forgotten.
+    Unreadable(String),
 }
 
 struct Made {
@@ -117,7 +117,7 @@ pub(in crate::desktop) struct Flow {
     screen: Screen,
     busy: bool,
     stalled: Option<Stalled>,
-    error: Option<&'static str>,
+    error: Option<SharedString>,
     library: Option<PathBuf>,
     profile: Option<Profile>,
     git: Git,
@@ -229,7 +229,8 @@ impl Flow {
                     Err(_) if gone => {}
                     Err(_) => {
                         flow.stalled = Some(Stalled::Lookup(id));
-                        flow.error = Some("The profile made before couldn't be read. Check again.");
+                        flow.error =
+                            Some("The profile made before couldn't be read. Check again.".into());
                     }
                 }
                 flow.busy = false;
@@ -264,7 +265,7 @@ impl Flow {
             None => Identity::None,
         });
         self.stalled = Some(Stalled::Unconfirmed(key));
-        self.error = Some("Setup closed while the profile was being made. Check again.");
+        self.error = Some("Setup closed while the profile was being made. Check again.".into());
         cx.notify();
     }
 
@@ -280,7 +281,7 @@ impl Flow {
                 self.busy = false;
                 self.stalled = Some(Stalled::NotStarted);
                 self.profile = Some(profile);
-                self.error = Some("Private storage for profile requests is unavailable.");
+                self.error = Some("Private storage for profile requests is unavailable.".into());
                 cx.notify();
                 return;
             }
@@ -359,6 +360,12 @@ impl Flow {
     /// Continue from the name: create the profile, then connect.
     fn create(&mut self, cx: &mut Context<Self>) {
         if !self.busy
+            && let Some(Stalled::Unreadable(key)) = &self.stalled
+        {
+            let key = key.clone();
+            return self.forget_saved(key, cx);
+        }
+        if !self.busy
             && let Some(Stalled::Lookup(id)) = &self.stalled
         {
             let id = id.clone();
@@ -388,7 +395,7 @@ impl Flow {
             } {
                 Ok(prepared) => Some(prepared),
                 Err(_) => {
-                    self.error = Some("Give the profile a name.");
+                    self.error = Some("Give the profile a name.".into());
                     cx.notify();
                     return;
                 }
@@ -441,12 +448,37 @@ impl Flow {
                         if let Some(profile) = profile {
                             flow.profile = Some(*profile);
                         }
-                        if message == GIT_MISSING {
-                            flow.git.open = true;
-                        }
                         flow.stalled = Some(stalled);
-                        flow.error = Some(message);
+                        flow.error = Some(message.into());
                     }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Forget the saved request `key`, which can't be read. Nothing is sent;
+    /// Continue then makes a new request.
+    fn forget_saved(&mut self, key: String, cx: &mut Context<Self>) {
+        let (client, directory) = (self.client.clone(), self.directory.clone());
+        self.busy = true;
+        self.error = None;
+        let ticket = self.ticket.begin();
+        let work = cx
+            .background_executor()
+            .spawn(async move { forget_unreadable(&client, directory.as_deref(), &key) });
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |flow, cx| {
+                if !flow.ticket.accepts(&ticket) {
+                    return;
+                }
+                flow.busy = false;
+                match result {
+                    Ok(()) => flow.stalled = None,
+                    Err(message) => flow.error = Some(message.into()),
                 }
                 cx.notify();
             });
@@ -467,7 +499,7 @@ impl Flow {
             Err(error) => {
                 self.busy = false;
                 self.stalled = Some(Stalled::NotStarted);
-                self.error = Some(crate::desktop::profile_picker::message(&error));
+                self.error = Some(crate::desktop::profile_picker::message(&error).into());
                 return;
             }
         };
@@ -475,6 +507,8 @@ impl Flow {
         let work = cx.background_executor().spawn(async move { attempt.run() });
         cx.spawn(async move |this, cx| {
             let completion = work.await;
+            // The service's own sentence on why it does not serve the profile.
+            let reason = completion.reason().map(SharedString::from);
             let _ = this.update(cx, |flow, cx| {
                 let Some(result) = flow.selection.accept(completion) else {
                     return;
@@ -500,7 +534,9 @@ impl Flow {
                     }
                     Err(error) => {
                         flow.stalled = Some(Stalled::NotStarted);
-                        flow.error = Some(crate::desktop::profile_picker::message(&error));
+                        flow.error = Some(reason.unwrap_or_else(|| {
+                            crate::desktop::profile_picker::message(&error).into()
+                        }));
                     }
                 }
                 cx.notify();
@@ -613,7 +649,7 @@ impl Flow {
                     "New profile"
                 }
                 .into(),
-                line: "A profile keeps its own sign-ins, agents and settings, apart from your other work.".into(),
+                line: "A profile keeps its own agents and settings, apart from your other work.".into(),
                 body: self.name_body(window, cx).into_any_element(),
             },
             Screen::Guide => Parts {
@@ -655,6 +691,7 @@ impl Flow {
                 if typed.is_empty() { "profile" } else { &typed }
             ),
             (false, Some(Stalled::Unconfirmed(_) | Stalled::Lookup(_))) => "Check again".to_owned(),
+            (false, Some(Stalled::Unreadable(_))) => "Forget it".to_owned(),
             (false, Some(Stalled::NotStarted | Stalled::Failed)) => "Try again".to_owned(),
             (false, None) => "Continue".to_owned(),
         };
@@ -822,13 +859,13 @@ impl Flow {
                     .on_click(cx.listener(|flow, _, _, cx| flow.create(cx))),
                 ),
             )
-            .children(self.error.map(|error| {
+            .children(self.error.clone().map(|error| {
                 div()
                     .pt(px(t.space.s10))
                     .flex()
                     .justify_center()
                     .text_center()
-                    .child(meta(error.into(), c.attention_text))
+                    .child(meta(error, c.attention_text))
             }))
             .when(!self.first, |el| {
                 el.child(
@@ -986,13 +1023,11 @@ fn typed_identity(connection: &Connection, name: &str, email: &str) -> Result<()
     // so it is typed only `exec /bin/sh <file>`, read alike by all of them. The
     // script removes its file, and the session ends when it finishes.
     // The profile's own folder holds its tmux socket.
-    let folder = Some(
-        connection
-            .tmux_socket()
-            .parent()
-            .and_then(std::path::Path::to_str)
-            .ok_or("the profile's folder is not known")?,
-    );
+    let folder = connection
+        .tmux_socket()
+        .parent()
+        .and_then(std::path::Path::to_str)
+        .ok_or("the profile's folder is not known")?;
     let script = identity_script(name, email, folder);
     let session = connection
         .ensure_shell(&identity_shell_id(), None)
@@ -1049,14 +1084,12 @@ fn identity_shell_id() -> String {
 /// A `/bin/sh` script, run with its own path as `$0`, that sets the identity.
 /// Given the profile's `folder`, it does so only where `GIT_CONFIG_GLOBAL`
 /// is a file inside it.
-fn identity_script(name: &str, email: &str, folder: Option<&str>) -> String {
+fn identity_script(name: &str, email: &str, folder: &str) -> String {
     let mut script = String::from("rm -f -- \"$0\"\n");
-    if let Some(folder) = folder {
-        script.push_str(&format!(
-            "case \"$GIT_CONFIG_GLOBAL\" in */../*) exit 0 ;; {}/*) ;; *) exit 0 ;; esac\n",
-            quote(folder)
-        ));
-    }
+    script.push_str(&format!(
+        "case \"$GIT_CONFIG_GLOBAL\" in */../*) exit 0 ;; {}/*) ;; *) exit 0 ;; esac\n",
+        quote(folder)
+    ));
     for (key, value) in [("user.name", name), ("user.email", email)] {
         if !value.is_empty() {
             script.push_str(&format!("git config --global {key} {}\n", quote(value)));
@@ -1147,11 +1180,7 @@ fn make(
                         return Err((
                             Stalled::Failed,
                             None,
-                            if receipt.error_code.as_deref() == Some("git_identity_unavailable") {
-                                GIT_MISSING
-                            } else {
-                                "The profile could not be made. Try again."
-                            },
+                            "The profile could not be made. Try again.",
                         ));
                     }
                 }
@@ -1180,6 +1209,14 @@ fn recover(
             None,
             "The profile could not be made. Try again.",
         )),
+        Err(
+            controller::Error::Invalid
+            | controller::Error::Storage(journal::Error::Invalid | journal::Error::TooLarge),
+        ) => Err((
+            Stalled::Unreadable(key.to_owned()),
+            None,
+            "The saved request for this profile can't be read. Forget it to make the profile again.",
+        )),
         Ok(snapshot) => match (snapshot.terminal, snapshot.phase) {
             (Some(receipt), _) => Ok(receipt),
             (None, Phase::Prepared) => controller.submit(key, alive),
@@ -1190,6 +1227,23 @@ fn recover(
         .map_err(|_| unconfirmed(key.to_owned())),
         Err(_) => Err(unconfirmed(key.to_owned())),
     }
+}
+
+/// Forget the unreadable saved create request `key` without running any
+/// command. Runs off the main thread.
+fn forget_unreadable(
+    client: &Client,
+    directory: Option<&std::path::Path>,
+    key: &str,
+) -> Result<(), &'static str> {
+    let storage = "Private storage for profile requests is unavailable.";
+    let library =
+        crate::library::location::create_library_directory(directory).map_err(|_| storage)?;
+    let journal =
+        journal::Journal::open(&library.join("profile-operations")).map_err(|_| storage)?;
+    Controller::new(journal, client)
+        .forget_unreadable(key)
+        .map_err(|_| "The saved request could not be forgotten. Try again.")
 }
 
 fn unconfirmed(key: String) -> Failure {
@@ -1271,6 +1325,29 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_request_that_cant_be_read_is_forgotten_never_sent() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let client = provider(&root);
+        made(&root);
+        let journal = root.join("profile-operations");
+        let key = Controller::key("request-a");
+        crate::profiles::controller::tests::save_earlier(&journal, &key);
+        let controller = Controller::new(journal::Journal::open(&journal).unwrap(), &client);
+        let Err((Stalled::Unreadable(stalled), None, _)) = recover(&controller, &key, &|| true)
+        else {
+            panic!("an unreadable request was not offered to be forgotten");
+        };
+        assert_eq!(stalled, key);
+        forget_unreadable(&client, Some(&root), &key).unwrap();
+        assert!(matches!(
+            controller.read(&key),
+            Err(controller::Error::Missing)
+        ));
+        assert!(!root.join("calls").exists());
+    }
+
+    #[test]
     fn a_saved_create_request_is_looked_up_never_made_again() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
@@ -1313,7 +1390,8 @@ mod tests {
         // Never the developer's own global configuration.
         let config = home.path().join("gitconfig");
         let (name, email) = (r"Sam O'Brien \ ops!", "ops!dev@example.com");
-        std::fs::write(&path, identity_script(name, email, None)).unwrap();
+        let folder = home.path().to_str().unwrap();
+        std::fs::write(&path, identity_script(name, email, folder)).unwrap();
         let isolated = |command: &mut std::process::Command| {
             command
                 .env("HOME", home.path())
@@ -1361,7 +1439,7 @@ mod tests {
         let through = folder.join("../computer.gitconfig");
         for config in [None, Some(&own), Some(&through), Some(&profile)] {
             let path = home.path().join("identity");
-            let script = identity_script("Sam", "sam@example.com", folder.to_str());
+            let script = identity_script("Sam", "sam@example.com", folder.to_str().unwrap());
             std::fs::write(&path, script).unwrap();
             let mut command = std::process::Command::new("/bin/sh");
             command

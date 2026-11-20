@@ -402,6 +402,41 @@ impl Management {
         });
         self.observe_operation(ticket, work, cx);
     }
+    /// Forget the open record when it can't be read; nothing is sent.
+    fn forget(&mut self, expected: &Arc<AtomicBool>, cx: &mut Context<Self>) {
+        if self.busy || !self.ticket.accepts(expected) {
+            return;
+        }
+        let Page::Operation { key, .. } = &self.page else {
+            return;
+        };
+        let Some(controller) = self.controller.clone() else {
+            return;
+        };
+        let key = key.clone();
+        self.busy = true;
+        self.error = None;
+        let ticket = self.ticket.begin();
+        let work = cx
+            .background_executor()
+            .spawn(async move { controller.forget_unreadable(&key) });
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |pane, cx| {
+                if !pane.ticket.accepts(&ticket) {
+                    return;
+                }
+                pane.busy = false;
+                match result {
+                    Ok(()) => pane.history(0, false, cx),
+                    Err(error) => pane.error = Some(error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
     fn history(&mut self, offset: usize, retain_ids: bool, cx: &mut Context<Self>) {
         if self.busy || self.setup.is_some() || self.choices.is_some() {
             return;
@@ -575,7 +610,7 @@ fn message(error: controller::Error) -> &'static str {
     use controller::Error::*;
     match error {
         Missing => "This operation record is missing. No request was sent by this read.",
-        Invalid => "This operation record could not be validated.",
+        Invalid => "This saved request could not be read. Forget it to continue.",
         WrongPhase | Completed => "The operation changed. Reload its saved state.",
         Client(_) => {
             "The provider result could not be confirmed. Keep this operation and check its original receipt."
@@ -630,7 +665,12 @@ impl Render for Management {
                                         .child(item.display_name.clone()),
                                 )
                                 .child(meta(match item.state {
-                                    State::Failed => "Creation didn't finish".into(),
+                                    // The service's own sentence, shown as given.
+                                    State::Failed => item
+                                        .reason
+                                        .clone()
+                                        .unwrap_or_else(|| "Creation didn't finish".into())
+                                        .into(),
                                     State::Ready => "Its own agents, skills and policies".into(),
                                 })),
                         )
@@ -760,13 +800,25 @@ impl Render for Management {
                             );
                         }
                     }
+                    // A record that can't be read can only be forgotten.
+                    if snapshot.is_none() && self.error == Some(controller::Error::Invalid) {
+                        let ticket = ticket.clone();
+                        row = row.child(
+                            ui::button(
+                                "operation-forget",
+                                "Forget this request",
+                                ui::Button::Secondary,
+                            )
+                            .on_click(cx.listener(move |pane, _, _, cx| pane.forget(&ticket, cx))),
+                        );
+                    }
                     body = body.child(row);
                 }
             }
             Page::History { ids, offset, rows } => {
                 body = body.child(ui::group_title(
                     "Saved requests",
-                    "Creating, starting and stopping profiles.",
+                    "Requests to create a profile.",
                 ));
                 if rows.is_empty() {
                     body = body.child(ui::group_note("No saved requests."));

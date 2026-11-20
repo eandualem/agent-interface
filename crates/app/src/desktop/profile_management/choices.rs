@@ -775,21 +775,16 @@ fn folder_name(path: &std::path::Path) -> Option<String> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Field {
     Name,
-    Brief,
     Repository,
 }
-/// Where Tab goes from `at`: through the name, then the instructions and
-/// the repository when each is shown, back to the name. From no field, or
-/// one no longer shown, the name.
-fn next_field(at: Option<Field>, brief: bool, repository: bool) -> Field {
-    let shown: Vec<Field> = [
-        Some(Field::Name),
-        brief.then_some(Field::Brief),
-        repository.then_some(Field::Repository),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
+/// Where Tab goes from `at`: through the name, then the repository when it
+/// is shown, back to the name. From no field, or one no longer shown, the
+/// name.
+fn next_field(at: Option<Field>, repository: bool) -> Field {
+    let shown: Vec<Field> = [Some(Field::Name), repository.then_some(Field::Repository)]
+        .into_iter()
+        .flatten()
+        .collect();
     at.and_then(|at| shown.iter().position(|field| *field == at))
         .map_or(Field::Name, |at| shown[(at + 1) % shown.len()])
 }
@@ -1102,14 +1097,13 @@ impl Render for Form {
                         let focus = |field: &Entity<NameField>| field.read(cx).focus.clone();
                         let fields = [
                             (Field::Name, focus(&form.name)),
-                            (Field::Brief, focus(&form.brief)),
                             (Field::Repository, focus(&form.repository)),
                         ];
                         let at = fields
                             .iter()
                             .find(|(_, handle)| handle.is_focused(window))
                             .map(|(field, _)| *field);
-                        let next = next_field(at, false, form.more);
+                        let next = next_field(at, form.more);
                         if let Some((_, handle)) = fields.iter().find(|(field, _)| *field == next) {
                             window.focus(handle, cx);
                         }

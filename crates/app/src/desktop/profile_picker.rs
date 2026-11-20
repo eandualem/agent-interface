@@ -505,7 +505,7 @@ impl Render for ProfilePicker {
                         .text_color(c.muted),
                     &t.text.meta,
                 )
-                .child("Each profile keeps its own sign-ins, agents, skills and policies."),
+                .child("Each profile keeps its own agents, skills and policies."),
             )
             .child(rows);
         if let Some((_, error)) = &self.selection_error {

@@ -151,7 +151,7 @@ impl Render for Profiles {
             .gap(px(t.space.s8))
             .child(ui::group_title(
                 "Profiles",
-                "Each one keeps its own accounts, agents, skills and policies.",
+                "Each one keeps its own agents, skills and policies.",
             ));
         match &self.list {
             List::Loading => page = page.child(ui::group_note("Loading profiles…")),

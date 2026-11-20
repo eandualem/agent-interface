@@ -223,13 +223,13 @@ fn path_lookup(path_env: &str, home: Option<&Path>) -> (Vec<(&'static str, PathB
     (found, path_env)
 }
 
-/// Whether a profile Agent Backbone serves answers, read through its
+/// Whether the first profile Agent Backbone serves answers, read through its
 /// verified connection with a client already found, so the login shell is
 /// not asked again. First run makes the Default profile. Blocks for a
 /// moment; call off the UI thread.
 pub fn answers(client: Option<crate::profiles::Client>) -> Backbone {
     use agent_interface_roster::profiles::State;
-    const UNANSWERED: &str = "No Agent Backbone profile is answering";
+    const UNANSWERED: &str = "The Default profile is not answering";
     let live = || true;
     let Some(client) = client else {
         return Backbone::NotSetUp;
@@ -238,25 +238,17 @@ pub fn answers(client: Option<crate::profiles::Client>) -> Backbone {
         Ok(items) => items,
         Err(_) => return Backbone::Unreachable("Backbone did not list its profiles"),
     };
-    let served: Vec<_> = items
-        .iter()
-        .filter(|item| item.state == State::Ready)
-        .collect();
-    if served.is_empty() {
+    let Some(served) = items.iter().find(|item| item.state == State::Ready) else {
         return Backbone::NotSetUp;
-    }
-    let answered = served.iter().any(|item| {
-        client
-            .show(&item.profile_id, &live)
-            .ok()
-            .and_then(|profile| profile.connect().ok())
-            .and_then(|connection| connection.roster().ok())
-            .is_some()
-    });
-    if answered {
-        Backbone::Running
-    } else {
-        Backbone::Unreachable(UNANSWERED)
+    };
+    let roster = client
+        .show(&served.profile_id, &live)
+        .ok()
+        .and_then(|profile| profile.connect().ok())
+        .and_then(|connection| connection.roster().ok());
+    match roster {
+        Some(_) => Backbone::Running,
+        None => Backbone::Unreachable(UNANSWERED),
     }
 }
 
@@ -380,5 +372,49 @@ mod tests {
                 "{shell}"
             );
         }
+    }
+
+    #[test]
+    fn only_the_first_serving_profile_is_probed() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let entry = |id: &str| {
+            serde_json::json!({"state": "serving", "protocol_version": 1, "profile_id": id,
+                "display_name": id, "instance_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d",
+                "machine": {"id": "5f2c9e0d1b7a4e38"}, "socket": root.join(format!("{id}.sock")),
+                "tmux_socket": root.join("tmux.sock"), "credential_reference": {"type": "socket"}})
+        };
+        let failed = serde_json::json!({"state": "failed", "profile_id": "0a1b2c3d4e5e",
+            "code": "start_failed", "reason": "It did not start."});
+        let listed =
+            serde_json::json!({"profiles": [failed, entry("0a1b2c3d4e5f"), entry("0a1b2c3d4e60")]});
+        let shown = entry("0a1b2c3d4e5f");
+        // Written beside the stub and copied, so nothing runs a file open for writing.
+        let source = root.join("provider.sh");
+        std::fs::write(
+            &source,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$(dirname \"$0\")/calls\"\ncase \"$2\" in\n  list) printf '%s' '{listed}';;\n  show) printf '%s' '{shown}';;\nesac\n"
+            ),
+        )
+        .unwrap();
+        let provider = root.join("provider");
+        assert!(
+            Command::new("/bin/cp")
+                .arg(&source)
+                .arg(&provider)
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let client = crate::profiles::Client::new(provider, "/usr/bin:/bin".into()).unwrap();
+        // Its socket isn't there, so it doesn't answer, and the next is not asked.
+        assert!(matches!(answers(Some(client)), Backbone::Unreachable(_)));
+        assert_eq!(
+            std::fs::read_to_string(root.join("calls")).unwrap(),
+            "profiles list --json\nprofiles show --json -- 0a1b2c3d4e5f\n"
+        );
     }
 }

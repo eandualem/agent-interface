@@ -277,3 +277,46 @@ fn recovery_confirms_a_terminal_record_left_by_a_post_rename_failure() {
     assert_eq!(recovered.retry(&key, &|| true), Err(Error::Completed));
     assert_eq!(fixture.calls(), "create\n");
 }
+
+/// Save `key` as an earlier version did: a checkpoint this app no longer reads.
+pub(crate) fn save_earlier(journal: &std::path::Path, key: &str) {
+    let state = serde_json::json!({"checkpoint_version": 1, "observation": null,
+        "request": "{\"action\":\"create\",\"display_name\":\"Example\",\"request_id\":\"request-a\",\"schema_version\":1}"});
+    let capsule = super::super::recovery::checkpoint(
+        super::super::recovery::Kind::Lifecycle,
+        &serde_json::to_vec(&state).unwrap(),
+    )
+    .unwrap();
+    let envelope = Envelope {
+        format: 1,
+        kind: "lifecycle".into(),
+        phase: Phase::Submitted,
+        capsule: String::from_utf8(capsule).unwrap(),
+    };
+    journal::Journal::open(journal)
+        .unwrap()
+        .save(key, None, &serde_json::to_vec(&envelope).unwrap())
+        .unwrap();
+}
+
+#[test]
+fn a_record_an_earlier_version_saved_is_invalid_and_only_forgotten() {
+    let fixture = Fixture::new("");
+    let controller = fixture.controller();
+    let key = Controller::key("request-a");
+    save_earlier(&fixture.journal, &key);
+    assert_eq!(controller.read(&key), Err(Error::Invalid));
+    assert_eq!(controller.refresh(&key, &|| true), Err(Error::Invalid));
+    // A readable record is never forgotten this way.
+    let readable = controller.enqueue(Prepared::create("request-b", "Example").unwrap());
+    let readable = readable.unwrap().key;
+    assert_eq!(
+        controller.forget_unreadable(&readable),
+        Err(Error::WrongPhase)
+    );
+    controller.forget_unreadable(&key).unwrap();
+    assert_eq!(controller.read(&key), Err(Error::Missing));
+    assert!(controller.read(&readable).is_ok());
+    // Nothing was sent or asked about.
+    assert_eq!(fixture.calls(), "");
+}

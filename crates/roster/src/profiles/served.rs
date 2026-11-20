@@ -116,7 +116,7 @@ pub(super) fn list(bytes: &[u8]) -> Result<Vec<Item>, Error> {
     struct Catalog {
         profiles: Vec<Entry>,
     }
-    let catalog: Catalog = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
+    let catalog: Catalog = object(bytes)?;
     let mut items = Vec::new();
     let mut ids = std::collections::HashSet::new();
     for entry in catalog.profiles {
@@ -131,7 +131,7 @@ pub(super) fn list(bytes: &[u8]) -> Result<Vec<Item>, Error> {
 }
 
 pub(super) fn show(bytes: &[u8]) -> Result<Profile, Error> {
-    let entry: Entry = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
+    let entry: Entry = object(bytes)?;
     entry.profile()?.ok_or(Error::Unsupported)
 }
 
@@ -150,7 +150,7 @@ pub(super) fn verify(
         instance_id: String,
         machine: Machine,
     }
-    let reply: Reply = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
+    let reply: Reply = object(bytes)?;
     if reply.protocol_version != 1 {
         return Err(Error::Unsupported);
     }
@@ -161,6 +161,15 @@ pub(super) fn verify(
         return Err(Error::BindingMismatch);
     }
     Ok(())
+}
+
+/// Decode the JSON object `bytes`. Derived structs also accept a
+/// positional array, which the service never writes.
+fn object<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Error> {
+    if bytes.trim_ascii_start().first() != Some(&b'{') {
+        return Err(Error::Invalid);
+    }
+    serde_json::from_slice(bytes).map_err(|_| Error::Invalid)
 }
 
 /// The service's bounds for one skill folder: the bytes of its files, its

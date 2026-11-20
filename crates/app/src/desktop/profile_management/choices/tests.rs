@@ -344,30 +344,14 @@ fn choosing_the_chosen_tool_again_changes_nothing() {
 
 #[test]
 fn tab_reaches_every_field_shown_in_order() {
-    // Without the repository field, as before: name, the instructions when
-    // shown, back to name.
-    assert_eq!(next_field(Some(Field::Name), false, false), Field::Name);
-    assert_eq!(next_field(Some(Field::Name), true, false), Field::Brief);
-    assert_eq!(next_field(Some(Field::Brief), true, false), Field::Name);
-    assert_eq!(next_field(None, true, false), Field::Name);
+    // Without the repository field: name, back to name.
+    assert_eq!(next_field(Some(Field::Name), false), Field::Name);
+    assert_eq!(next_field(None, false), Field::Name);
     // With it: name, then the repository, back to name.
-    assert_eq!(
-        next_field(Some(Field::Name), false, true),
-        Field::Repository
-    );
-    assert_eq!(
-        next_field(Some(Field::Repository), false, true),
-        Field::Name
-    );
-    assert_eq!(
-        next_field(Some(Field::Brief), true, true),
-        Field::Repository
-    );
+    assert_eq!(next_field(Some(Field::Name), true), Field::Repository);
+    assert_eq!(next_field(Some(Field::Repository), true), Field::Name);
     // A focused field that is no longer shown goes back to the name.
-    assert_eq!(
-        next_field(Some(Field::Repository), false, false),
-        Field::Name
-    );
+    assert_eq!(next_field(Some(Field::Repository), false), Field::Name);
 }
 
 #[test]

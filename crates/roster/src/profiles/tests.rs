@@ -601,6 +601,12 @@ fn rust_service_entries_list_and_connect_without_a_key() {
         Profile::parse(&serde_json::to_vec(&later).unwrap()).err(),
         Some(Error::Unsupported)
     );
+    // Only the object the service writes is read, never a positional array.
+    assert_eq!(list(b"[[]]").err(), Some(Error::Invalid));
+    assert_eq!(
+        Profile::parse(br#"["failed", "9f8e7d6c5b4a", null, null]"#).err(),
+        Some(Error::Invalid)
+    );
 
     let profile = Profile::parse(&serde_json::to_vec(&entry).unwrap()).unwrap();
     let identity = handshake(entry.clone());

@@ -152,6 +152,21 @@ impl Controller {
         Ok(self.load(key)?.snapshot())
     }
 
+    /// Forget a record that can't be read, without running any command: no
+    /// request could be sent or asked about from it. A readable record is
+    /// never forgotten this way.
+    pub fn forget_unreadable(&self, key: &str) -> Result<(), Error> {
+        match self.load(key) {
+            Ok(_) => return Err(Error::WrongPhase),
+            Err(Error::Missing) => return Ok(()),
+            Err(
+                Error::Invalid | Error::Storage(journal::Error::Invalid | journal::Error::TooLarge),
+            ) => {}
+            Err(error) => return Err(error),
+        }
+        self.journal.delete(key, None).map_err(Error::Storage)
+    }
+
     /// First submission only. The Submitted phase is synced before invocation.
     pub fn submit(&self, key: &str, live: &dyn Fn() -> bool) -> Result<Receipt, Error> {
         self.invoke(key, Invocation::Submit, live)
@@ -180,7 +195,10 @@ impl Controller {
         {
             return Err(Error::Invalid);
         }
-        let operation = Operation::restore(&self.client, envelope.capsule.as_bytes())?;
+        // A record this app can't restore, such as one an earlier version
+        // saved, is invalid: it can only be forgotten.
+        let operation = Operation::restore(&self.client, envelope.capsule.as_bytes())
+            .map_err(|_| Error::Invalid)?;
         if Self::key(operation.request_id()) != key
             || (envelope.phase == Phase::Prepared && operation.terminal().is_some())
         {
@@ -253,4 +271,4 @@ fn encode(phase: Phase, operation: &Operation) -> Result<Vec<u8>, Error> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
