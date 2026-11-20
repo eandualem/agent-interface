@@ -708,9 +708,9 @@ impl Browser {
                         .child(ui::agent_symbol(state))
                         .child(
                             div()
-                                // With runs or deliveries beside it the name
-                                // keeps its width and they give way first.
-                                .when(runs.is_none() && waiting.is_none(), |name| name.flex_1())
+                                // With runs or a held reason beside it the
+                                // name keeps its width and they give way first.
+                                .when(runs.is_none() && held.is_none(), |name| name.flex_1())
                                 .min_w_0()
                                 .overflow_hidden()
                                 .text_ellipsis()

@@ -525,14 +525,22 @@ impl Restarts {
         }
         // A session attached: no ended one is shown any more.
         self.quiet = false;
-        // Only a session that came after an end is a new one. Another attach,
-        // such as the first one, may still be the old session, so a read
-        // under way or an answer it gave stays.
-        if self.ended {
-            self.renewed = true;
+        // Only a session that came after an end is a new one, as is one an
+        // attempt begun after a ready answer reached: the replacement.
+        // Another attach, such as the first one, may still be the old
+        // session, so a read under way or an answer it gave stays.
+        let replacement = matches!(self.left, Left::Ready { tried: true, .. });
+        self.renewed |= self.ended;
+        if self.ended || replacement {
             self.left = Left::Nothing;
             self.failed = None;
         }
+    }
+
+    /// The person starts the agent: a failure kept from its restart is over.
+    fn launched(&mut self) {
+        self.failed = None;
+        self.quiet = false;
     }
 
     /// The pane's session ended.
@@ -797,6 +805,7 @@ impl LiveTerminal {
         };
         self.launching = true;
         self.launch_result = None;
+        self.restarts.launched();
         let name = agent.clone();
         let work = cx
             .background_executor()
@@ -2547,6 +2556,44 @@ mod tests {
             restarts.list(&seen(1, false, None), false),
             RestartStep::Inspect(12)
         );
+    }
+
+    #[test]
+    fn a_ready_answers_attach_and_a_launch_end_what_the_restart_kept() {
+        let fresh = frames("stream-agent-restart-fresh");
+        let failed = frames("stream-agent-restart-failed");
+        let today = Ended {
+            error: Some(PIPE.into()),
+            message: "Waiting for this session. Reconnecting automatically.".into(),
+            reason: None,
+            launch: false,
+        };
+        // Opened after the old session stopped: no end was seen, and the
+        // attach begun after the ready answer reaches the replacement.
+        let mut restarts = Restarts::default();
+        restarts.list(&seen(0, true, listed(&fresh[3])), false);
+        assert_eq!(
+            restarts.list(&seen(1, true, None), false),
+            RestartStep::Inspect(12)
+        );
+        restarts.inspected(12, Some(&fresh[4]), Some(at(1)));
+        restarts.attempting(false);
+        restarts.connected(false);
+        assert!(!restarts.under_way());
+        restarts.disconnected();
+        assert_eq!(stopped(&restarts, false), today);
+        // After a failed restart the person starts the agent: its new
+        // session's later end carries no old reason and shows as today.
+        let mut restarts = Restarts::default();
+        restarts.list(&seen(0, false, listed(&failed[0])), false);
+        restarts.list(&seen(1, true, None), false);
+        restarts.connected(false);
+        restarts.inspected(14, Some(&failed[1]), None);
+        restarts.launched();
+        restarts.connected(false);
+        restarts.disconnected();
+        assert_eq!(stopped(&restarts, false), today);
+        assert_eq!(stopped(&restarts, true), not_running(None));
     }
 
     #[test]
