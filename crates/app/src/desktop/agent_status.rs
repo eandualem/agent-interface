@@ -85,6 +85,8 @@ pub(super) struct Status {
     pub line: Option<String>,
     /// Its held or waiting deliveries, when the service says any wait.
     pub deliveries: Option<String>,
+    /// Its own restart while it is under way.
+    pub restart: Option<agent_interface_roster::Restart>,
 }
 
 impl Status {
@@ -97,6 +99,7 @@ impl Status {
             reason: None,
             line: None,
             deliveries: None,
+            restart: None,
         }
     }
 
@@ -436,6 +439,7 @@ impl LiveAgents {
                         status.line = waits_and_runs(details);
                         status.deliveries =
                             deliveries(details.held_queue.as_ref(), details.queued, None);
+                        status.restart = details.restart.clone();
                     }
                     (name.clone(), Rc::new(status))
                 })

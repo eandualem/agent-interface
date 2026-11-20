@@ -289,9 +289,9 @@ fn pushed_state_and_run_changes_read_the_roster_and_runs_at_once() {
                 request.push(byte[0]);
             }
             let request = String::from_utf8(request).unwrap();
-            if request
-                .starts_with("GET /api/stream?kinds=agent.state,agent.changed,run.changed,resync ")
-            {
+            if request.starts_with(
+                "GET /api/stream?kinds=agent.state,agent.changed,agent.restart,run.changed,resync ",
+            ) {
                 write!(
                     socket,
                     "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\nevent: hello\ndata: {{}}\n\n"

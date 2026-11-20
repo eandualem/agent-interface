@@ -15,7 +15,8 @@ const LINE_LIMIT: usize = 64 * 1024;
 impl Connection {
     /// Follow this profile's push stream until `live` is false, calling
     /// `changed` whenever agents should be read again: when the stream opens,
-    /// when an agent's state, wait or background counts change, when a run
+    /// when an agent's state, wait, background counts or own restart change,
+    /// when a run
     /// changes and when the service says events were missed. A service that
     /// doesn't know a kind ignores it. The events' own values are not used,
     /// so no cursor is kept: a stream that is opened again reads the states
@@ -27,7 +28,7 @@ impl Connection {
         let mut frames = Frames::default();
         local::stream(
             self.socket.to_str().ok_or(Error::Invalid)?,
-            "/api/stream?kinds=agent.state,agent.changed,run.changed,resync",
+            "/api/stream?kinds=agent.state,agent.changed,agent.restart,run.changed,resync",
             &self.identity.profile_id,
             QUIET,
             live,
@@ -69,7 +70,12 @@ impl Frames {
             } else if let Some(kind) = line.strip_prefix(b"event:") {
                 self.relevant = matches!(
                     kind.trim_ascii(),
-                    b"hello" | b"agent.state" | b"agent.changed" | b"run.changed" | b"resync"
+                    b"hello"
+                        | b"agent.state"
+                        | b"agent.changed"
+                        | b"agent.restart"
+                        | b"run.changed"
+                        | b"resync"
                 );
             }
             self.line.clear();
@@ -118,5 +124,21 @@ mod tests {
             assert!(frames.push(frame.as_bytes(), &mut || count += 1));
         }
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn each_step_of_an_agents_restart_signals_a_read() {
+        let mut frames = Frames::default();
+        let mut count = 0;
+        let steps: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "runs/fixtures/stream-agent-restart-fresh.json"
+        ))
+        .unwrap();
+        for step in &steps {
+            let kind = step["event"].as_str().unwrap();
+            let frame = format!("event: {kind}\ndata: {}\n\n", step["data"]);
+            assert!(frames.push(frame.as_bytes(), &mut || count += 1));
+        }
+        assert_eq!(count, steps.len());
     }
 }

@@ -931,6 +931,9 @@ pub struct Agent {
     /// How the last delivery to it went, as a code such as `human_typing`.
     #[serde(skip)]
     pub delivery: Option<String>,
+    /// Its latest restart, finished or not.
+    #[serde(skip)]
+    pub restart: Option<crate::Restart>,
     /// Processes it started that still run.
     #[serde(skip)]
     pub processes: Vec<Process>,
@@ -1102,6 +1105,7 @@ impl Agent {
             .and_then(|raw| serde_json::from_str(raw).ok())
             .unwrap_or(0);
         agent.delivery = field("delivery").and_then(|raw| serde_json::from_str(raw).ok());
+        agent.restart = field("restart").and_then(crate::object);
         agent.processes = field("processes")
             .and_then(|raw| serde_json::from_str::<Vec<&RawValue>>(raw).ok())
             .unwrap_or_default()
@@ -1523,6 +1527,15 @@ mod tests {
         // Today's service gives neither field; mistyped ones leave the card.
         let today = decode(include_bytes!("profiles/runs/fixtures/agent-inspect.json"));
         assert_eq!((today.held_queue, today.queued), (None, 0));
+        let restarting = decode(include_bytes!(
+            "profiles/runs/fixtures/agent-inspect-restarting.json"
+        ));
+        let restart = restarting.restart.unwrap();
+        assert_eq!(
+            (restart.id, restart.phase.as_deref(), restart.result),
+            (Some(12), Some("waiting_for_turn"), Some(Default::default()))
+        );
+        assert_eq!(today.restart, None);
         let mistyped = decode(br#"{"name":"worker","held_queue":[],"queued":"3","delivery":7}"#);
         assert_eq!(
             (mistyped.held_queue, mistyped.queued, mistyped.delivery),

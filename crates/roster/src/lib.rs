@@ -62,6 +62,34 @@ pub struct AgentDetails {
     /// Messages waiting for its terminal, the held one included; 0 when an
     /// older service does not say.
     pub queued: u64,
+    /// Its own restart while it has not finished; absent otherwise.
+    pub restart: Option<Restart>,
+}
+
+/// An agent's own restart. The list carries it only while it is under way,
+/// whatever its phase; an inspection gives the latest one, finished or not.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct Restart {
+    /// Its number.
+    #[serde(default, deserialize_with = "lenient")]
+    pub id: Option<u64>,
+    /// Its step, such as `stopping` or `failed`, as a code.
+    #[serde(default, deserialize_with = "lenient")]
+    pub phase: Option<String>,
+    /// Whether the new session resumes the old one's conversation.
+    #[serde(default, deserialize_with = "lenient")]
+    pub resume: Option<bool>,
+    /// How it ended, once it has.
+    #[serde(default, deserialize_with = "lenient_object")]
+    pub result: Option<RestartResult>,
+}
+
+/// How a restart ended.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct RestartResult {
+    /// Why it failed, written for a person.
+    #[serde(default, deserialize_with = "lenient")]
+    pub reason: Option<String>,
 }
 
 /// Deliveries to an agent's terminal held behind one whose text may still
@@ -266,6 +294,7 @@ fn decode(response: &[u8]) -> Option<Decoded> {
                 queued: field("queued")
                     .and_then(|value| serde_json::from_str(value).ok())
                     .unwrap_or(0),
+                restart: field("restart").and_then(object),
             },
         );
         states.insert(name, state);
@@ -575,6 +604,36 @@ mod tests {
         assert_eq!(
             (&worker.held_queue, worker.queued),
             (&Some(HeldQueue::default()), 0)
+        );
+    }
+
+    #[test]
+    fn an_unfinished_restart_decodes_from_the_services_fixture() {
+        let mut snapshot = Snapshot::default();
+        snapshot.update(include_bytes!(
+            "profiles/runs/fixtures/agents-restarting.json"
+        ));
+        let worker = &snapshot.details["worker"];
+        assert_eq!(
+            worker.restart,
+            Some(Restart {
+                id: Some(12),
+                phase: Some("waiting".into()),
+                resume: Some(false),
+                result: None,
+            })
+        );
+        // This service's fixture has no queued count yet: it reads as none.
+        assert_eq!(worker.queued, 0);
+        assert_eq!(snapshot.details["reviewer"].restart, None);
+        snapshot
+            .update(br#"{"items":[{"name":"worker","restart":null},{"name":"x","restart":[12]}]}"#);
+        assert_eq!(
+            (
+                &snapshot.details["worker"].restart,
+                &snapshot.details["x"].restart
+            ),
+            (&None, &None)
         );
     }
 

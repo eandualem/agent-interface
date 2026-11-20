@@ -1,0 +1,46 @@
+[
+  {
+    "event": "agent.restart",
+    "data": {
+      "id": 14,
+      "session": "builder",
+      "requested_by": "builder",
+      "requested_at": "2026-11-19T17:00:00Z",
+      "runtime": null,
+      "model": null,
+      "resume": false,
+      "start": true,
+      "delay_seconds": 120,
+      "start_at": null,
+      "message": "Resume from the handoff",
+      "status": "pending",
+      "phase": "waiting_for_turn",
+      "stopped_at": null,
+      "completed_at": null,
+      "result": {}
+    }
+  },
+  {
+    "event": "agent.restart",
+    "data": {
+      "id": 14,
+      "session": "builder",
+      "requested_by": "builder",
+      "requested_at": "2026-11-19T17:00:00Z",
+      "runtime": null,
+      "model": null,
+      "resume": false,
+      "start": true,
+      "delay_seconds": 120,
+      "start_at": null,
+      "message": "Resume from the handoff",
+      "status": "failed",
+      "phase": "failed",
+      "stopped_at": null,
+      "completed_at": "2026-11-19T18:00:01Z",
+      "result": {
+        "reason": "the turn it was asked in was not seen to end within an hour, so nothing was stopped; ask again"
+      }
+    }
+  }
+]

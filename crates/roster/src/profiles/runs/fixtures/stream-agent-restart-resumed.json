@@ -1,0 +1,93 @@
+[
+  {
+    "event": "agent.restart",
+    "data": {
+      "id": 13,
+      "session": "builder",
+      "requested_by": "lead",
+      "requested_at": "2026-11-19T16:00:00Z",
+      "runtime": null,
+      "model": null,
+      "resume": true,
+      "start": true,
+      "delay_seconds": 0,
+      "start_at": null,
+      "message": null,
+      "status": "pending",
+      "phase": "stopping",
+      "stopped_at": null,
+      "completed_at": null,
+      "result": {}
+    }
+  },
+  {
+    "event": "agent.restart",
+    "data": {
+      "id": 13,
+      "session": "builder",
+      "requested_by": "lead",
+      "requested_at": "2026-11-19T16:00:00Z",
+      "runtime": null,
+      "model": null,
+      "resume": true,
+      "start": true,
+      "delay_seconds": 0,
+      "start_at": "2026-11-19T16:00:03Z",
+      "message": null,
+      "status": "pending",
+      "phase": "waiting",
+      "stopped_at": "2026-11-19T16:00:03Z",
+      "completed_at": null,
+      "result": {}
+    }
+  },
+  {
+    "event": "agent.restart",
+    "data": {
+      "id": 13,
+      "session": "builder",
+      "requested_by": "lead",
+      "requested_at": "2026-11-19T16:00:00Z",
+      "runtime": null,
+      "model": null,
+      "resume": true,
+      "start": true,
+      "delay_seconds": 0,
+      "start_at": "2026-11-19T16:00:03Z",
+      "message": null,
+      "status": "pending",
+      "phase": "starting",
+      "stopped_at": "2026-11-19T16:00:03Z",
+      "completed_at": null,
+      "result": {}
+    }
+  },
+  {
+    "event": "agent.restart",
+    "data": {
+      "id": 13,
+      "session": "builder",
+      "requested_by": "lead",
+      "requested_at": "2026-11-19T16:00:00Z",
+      "runtime": null,
+      "model": null,
+      "resume": true,
+      "start": true,
+      "delay_seconds": 0,
+      "start_at": "2026-11-19T16:00:03Z",
+      "message": null,
+      "status": "completed",
+      "phase": "ready",
+      "stopped_at": "2026-11-19T16:00:03Z",
+      "completed_at": "2026-11-19T16:00:11Z",
+      "result": {
+        "runtime": "claude",
+        "resume": true,
+        "ready": "ready",
+        "evidence": [
+          "resuming the saved conversation: 019a-conversation"
+        ]
+      }
+    }
+  }
+]
