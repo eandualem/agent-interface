@@ -13,7 +13,18 @@ fn fixture() -> Value {
 fn stub(script: &str) -> (tempfile::TempDir, Client) {
     let directory = tempfile::tempdir().unwrap();
     let executable = directory.path().join("provider");
-    fs::write(&executable, format!("#!/bin/sh\n{script}\n")).unwrap();
+    // Executing a file that any process holds open for writing fails on Linux
+    // with ETXTBSY, and a child another test thread forks while this one writes
+    // inherits the descriptor. So `cp` writes the executed file, in its own
+    // process, and this process never opens it for writing.
+    let source = directory.path().join("provider.sh");
+    fs::write(&source, format!("#!/bin/sh\n{script}\n")).unwrap();
+    let copied = std::process::Command::new("/bin/cp")
+        .arg(&source)
+        .arg(&executable)
+        .status()
+        .unwrap();
+    assert!(copied.success());
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
     let mut client = Client::new(executable, "/usr/bin:/bin".into()).unwrap();
     client.environment.push((
@@ -161,10 +172,11 @@ printf '{"schema_version":1,"items":[]}'
 fn discovery_rejects_wrong_profiles_and_invalid_or_oversized_output() {
     let ready = &fixture()["discovery"]["show_ready"];
     let (_directory, client) = stub(&format!("/bin/cat <<'FIXTURE'\n{ready}\nFIXTURE"));
-    assert!(matches!(
-        client.show("another-profile", &|| true),
-        Err(Error::Profile(profiles::Error::BindingMismatch))
-    ));
+    let shown = client.show("another-profile", &|| true);
+    assert!(
+        matches!(shown, Err(Error::Profile(profiles::Error::BindingMismatch))),
+        "{shown:?}"
+    );
     assert!(matches!(client.show("", &|| true), Err(Error::Invalid)));
     assert!(matches!(
         client.show("two words", &|| true),
