@@ -104,7 +104,7 @@ const VIEWS: [ViewChoice; 7] = [
     ViewChoice {
         glyph: "⚿",
         label: "Agent",
-        description: "One agent: overview and runtime permissions",
+        description: "One agent: overview and connections",
         scope: "pick an agent",
         kind: ViewKind::Agent,
     },
