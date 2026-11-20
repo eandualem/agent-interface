@@ -76,6 +76,9 @@ pub struct Restart {
     /// Its step, such as `stopping` or `failed`, as a code.
     #[serde(default, deserialize_with = "lenient")]
     pub phase: Option<String>,
+    /// Whether it is `pending`, under way, or finished, as a code.
+    #[serde(default, deserialize_with = "lenient")]
+    pub status: Option<String>,
     /// Whether the new session resumes the old one's conversation.
     #[serde(default, deserialize_with = "lenient")]
     pub resume: Option<bool>,
@@ -619,6 +622,7 @@ mod tests {
             Some(Restart {
                 id: Some(12),
                 phase: Some("waiting".into()),
+                status: None,
                 resume: Some(false),
                 result: None,
             })
