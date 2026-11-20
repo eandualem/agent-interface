@@ -175,7 +175,7 @@ and the report, answer and document lists are read again three seconds after
 each read, Usage after 15 seconds, and Skills, Policies and Tags after 30; an
 open Document is read again only when you refresh it. Current plans and
 Interactions are read every 20 seconds while shown, and Sheets when opened or refreshed.
-An agent's card rereads its overview, permissions and connections every three
+An agent's card rereads its overview and connections every three
 seconds, its usage every 15 and its skills and policies every 30. A rotating
 ring marks working or starting agents; labels distinguish starting, working,
 blocked, needs you, idle and unknown. Failed requests show unavailable or stale

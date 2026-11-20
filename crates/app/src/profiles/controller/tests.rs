@@ -320,3 +320,20 @@ fn a_record_an_earlier_version_saved_is_invalid_and_only_forgotten() {
     // Nothing was sent or asked about.
     assert_eq!(fixture.calls(), "");
 }
+
+#[test]
+fn a_damaged_record_can_be_forgotten_too() {
+    let fixture = Fixture::new("");
+    let controller = fixture.controller();
+    let key = Controller::key("request-a");
+    let path = fixture.journal.join(&key);
+    fs::write(&path, b"damaged").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        controller.read(&key),
+        Err(Error::Storage(journal::Error::Invalid))
+    );
+    controller.forget_unreadable(&key).unwrap();
+    assert_eq!(controller.read(&key), Err(Error::Missing));
+    assert_eq!(fixture.calls(), "");
+}

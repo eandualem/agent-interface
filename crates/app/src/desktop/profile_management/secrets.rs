@@ -248,7 +248,7 @@ fn listed(list: Result<Vec<Secret>, AddError>) -> List {
 fn unconnected(error: Error) -> String {
     match error {
         Error::BindingRequired | Error::BindingMismatch | Error::Unsupported => CHANGED.into(),
-        _ => "Start the profile to see its secrets.".into(),
+        _ => "The profile can't be reached, so its secrets can't be shown.".into(),
     }
 }
 

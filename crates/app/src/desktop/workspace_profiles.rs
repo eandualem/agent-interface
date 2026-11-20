@@ -392,8 +392,7 @@ impl Browser {
         self.profile_picker = None;
         let work = cx.background_executor().spawn(async move {
             let live = || true;
-            let unavailable =
-                "The profile could not be reached. Start its service, then try again.";
+            let unavailable = "The profile could not be reached. Try again.";
             let profile_id = match &open {
                 Open::Agent { profile_id, .. }
                 | Open::SignIn { profile_id, .. }

@@ -534,9 +534,7 @@ impl Flow {
                     }
                     Err(error) => {
                         flow.stalled = Some(Stalled::NotStarted);
-                        flow.error = Some(reason.unwrap_or_else(|| {
-                            crate::desktop::profile_picker::message(&error).into()
-                        }));
+                        flow.error = Some(failure_line(reason, &error));
                     }
                 }
                 cx.notify();
@@ -1220,9 +1218,9 @@ fn recover(
         Ok(snapshot) => match (snapshot.terminal, snapshot.phase) {
             (Some(receipt), _) => Ok(receipt),
             (None, Phase::Prepared) => controller.submit(key, alive),
-            (None, Phase::Submitted) => controller
-                .refresh(key, alive)
-                .or_else(|_| controller.retry(key, alive)),
+            // Asking again resends the same request once; the service
+            // answers it with its first result.
+            (None, Phase::Submitted) => controller.refresh(key, alive),
         }
         .map_err(|_| unconfirmed(key.to_owned())),
         Err(_) => Err(unconfirmed(key.to_owned())),
@@ -1244,6 +1242,12 @@ fn forget_unreadable(
     Controller::new(journal, client)
         .forget_unreadable(key)
         .map_err(|_| "The saved request could not be forgotten. Try again.")
+}
+
+/// Why the new profile could not be reached: the service's own sentence
+/// when it gave one, as given.
+fn failure_line(reason: Option<SharedString>, error: &crate::profiles::Error) -> SharedString {
+    reason.unwrap_or_else(|| crate::desktop::profile_picker::message(error).into())
 }
 
 fn unconfirmed(key: String) -> Failure {
@@ -1322,6 +1326,42 @@ mod tests {
         assert_eq!(receipt.status, Status::Succeeded);
         let calls = std::fs::read_to_string(root.join("calls")).unwrap();
         assert_eq!(calls, "create\ncreate\n");
+    }
+
+    #[test]
+    fn an_unanswered_request_is_asked_again_once_and_stays_unconfirmed() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let client = provider(&root);
+        let controller = Controller::new(
+            journal::Journal::open(&root.join("journal")).unwrap(),
+            &client,
+        );
+        let prepared = Prepared::create("request-a", "Example").unwrap();
+        let key = controller.enqueue(prepared).unwrap().key;
+        assert!(controller.submit(&key, &|| true).is_err());
+        // Still no answer: one more send, and the outcome stays unknown.
+        let Err((Stalled::Unconfirmed(stalled), None, _)) = recover(&controller, &key, &|| true)
+        else {
+            panic!("an unanswered request was not left unconfirmed");
+        };
+        assert_eq!(stalled, key);
+        let calls = std::fs::read_to_string(root.join("calls")).unwrap();
+        assert_eq!(calls, "create\ncreate\n");
+    }
+
+    #[test]
+    fn a_profile_that_cant_be_reached_shows_the_services_reason() {
+        use agent_interface_roster::profiles::Error as ProfileError;
+        let error = crate::profiles::Error::Profile(ProfileError::NotReady);
+        assert_eq!(
+            failure_line(Some("Its folder can't be read.".into()), &error),
+            "Its folder can't be read."
+        );
+        assert_eq!(
+            failure_line(None, &error),
+            crate::desktop::profile_picker::message(&error)
+        );
     }
 
     #[test]

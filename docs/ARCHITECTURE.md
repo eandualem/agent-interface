@@ -276,9 +276,9 @@ The first profile's screens are New profile's `Flow` in first-run mode
 selected so typing replaces it, and no way back, since there is nothing to go
 back to. Under the name, a line shows the Git name and email the profile's
 agents will commit as: this computer's own (`git config --global`), never
-another profile's. With both set and unchanged, the create request asks Agent
-Backbone to copy them in (`git_identity: copy`). Change opens two fields; left
-empty, the profile starts with none. Continue creates the profile, which the
+another profile's. With both set and unchanged, the app sets them inside the
+new profile once it is running, as it does with a typed pair. Change opens two
+fields; left empty, the profile starts with none. Continue creates the profile, which the
 service serves at once, and runs the authenticated selection, as New profile
 does. Profile requests
 keep their journal in the library folder, so creation makes that folder (0700,
@@ -321,8 +321,7 @@ for now. An explicit library directory skips first run.
 
 ### Limitations
 
-- A Git name and email typed on the name screen are not part of the create
-  request: Agent Backbone can only copy this computer's own. Once the profile
+- The Git name and email are not part of the create request. Once the profile
   is running, first run opens a shell in it (`ensure_shell`, which starts in
   the profile's home) and runs `git config --global` there. This is best
   effort: a failure is logged, the profile still works, and the person can set
@@ -1392,8 +1391,8 @@ the shell's startup files can change its own variables; a folder that can't be q
 alike in every common shell shows no commands. An Agent card removes its agent
 after a confirmation: the app stops the session, then deletes the registration, because the
 provider refuses to remove a running agent. Both requests carry the registration the
-card shows as `expected_registration_id`, so a provider that checks it refuses to stop
-or remove a replacement made under the same name; older providers ignore it. The Skills view and the Documents section
+card shows as `expected_registration_id`, so the service refuses to stop or remove a
+replacement made under the same name. The Skills view and the Documents section
 add a person's own folder or HTML file to the profile through the provider: a skill is
 copied for every agent in the profile and the folder stays in place, and a document is
 published under the reserved `operator` author. On the Rust service, a profile's
@@ -1630,7 +1629,7 @@ selected library location once and opens a private lifecycle journal; it runs
 no lifecycle action, and the app has no start or stop of a profile's service.
 Saved requests enumerates bounded record IDs. The full history validates one
 page of durable snapshots at a time; a profile's page reads every record to find
-that profile's, and counts its unfinished requests the same way. Lifecycle
+that profile's. Lifecycle
 records are kept, and the journal refuses new requests once it holds 4,096.
 Asking again and identical retry are distinct explicit actions. Worker
 generations reject stale results and controls. A successful result remains

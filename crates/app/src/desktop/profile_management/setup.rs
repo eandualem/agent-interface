@@ -296,8 +296,8 @@ fn attempt(request: &Request, unresolved: bool) -> Answer {
         Ok(connection) => connection,
         Err(_) => {
             return unsent(
-                "The profile could not be reached. Start its service, then try again.",
-                "The profile could not be reached; start its service.",
+                "The profile could not be reached. Try again.",
+                "The profile could not be reached.",
             );
         }
     };

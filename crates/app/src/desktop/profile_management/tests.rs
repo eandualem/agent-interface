@@ -141,3 +141,37 @@ fn unsafe_lifecycle_storage_does_not_hide_independent_setup_recovery() {
         0o755
     );
 }
+
+#[test]
+fn a_failed_profile_shows_its_reason_and_no_served_panes() {
+    use agent_interface_roster::profiles::Item;
+    let failed = Item {
+        profile_id: "0a1b2c3d4e5f".into(),
+        display_name: "Work".into(),
+        state: State::Failed,
+        reason: Some("Its folder can't be read.".into()),
+    };
+    assert_eq!(state_line(&failed), "Its folder can't be read.");
+    assert!(!has_served_panes(&failed));
+    let ready = Item {
+        state: State::Ready,
+        reason: None,
+        ..failed
+    };
+    assert!(has_served_panes(&ready));
+}
+
+#[test]
+fn every_unreadable_record_offers_forget() {
+    for error in [
+        controller::Error::Invalid,
+        controller::Error::Storage(journal::Error::Invalid),
+        controller::Error::Storage(journal::Error::TooLarge),
+    ] {
+        assert!(unreadable(error), "{error:?}");
+    }
+    assert!(!unreadable(controller::Error::Missing));
+    assert!(!unreadable(controller::Error::Storage(
+        journal::Error::Unavailable
+    )));
+}

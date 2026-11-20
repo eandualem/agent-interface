@@ -10,7 +10,7 @@ use crate::profiles::{
     journal,
 };
 use agent_interface_roster::profiles::{
-    Connection, Profile, State,
+    Connection, Item, Profile, State,
     operations::{Action, Status},
     runtime_catalog::Authentication,
 };
@@ -118,8 +118,6 @@ pub(super) struct Management {
     ticket: Ticket,
     busy: bool,
     error: Option<controller::Error>,
-    /// Lifecycle requests for this profile without a confirmed outcome.
-    unfinished: usize,
     /// The ⋯ menu is open.
     more: bool,
     pub focus: FocusHandle,
@@ -147,7 +145,6 @@ impl Management {
             ticket: Ticket::default(),
             busy: true,
             error: None,
-            unfinished: 0,
             more: false,
             focus: cx.focus_handle(),
         };
@@ -167,7 +164,6 @@ impl Management {
                     Ok(opened) => {
                         pane.directory = Some(opened.directory);
                         pane.controller = opened.controller;
-                        pane.unfinished = opened.unfinished;
                         pane.complete(opened.page);
                         pane.served_panes(cx);
                     }
@@ -191,11 +187,14 @@ impl Management {
         }
     }
 
-    /// A profile's Sign-in and Secrets panes.
+    /// A profile's Sign-in and Secrets panes, which only a serving profile has.
     fn served_panes(&mut self, cx: &mut Context<Self>) {
         let Page::Detail(profile) = &self.page else {
             return;
         };
+        if !has_served_panes(profile.item()) {
+            return;
+        }
         let logins = cx.new(|cx| accounts::Section::new(profile.clone(), cx));
         let subscription = cx.subscribe(&logins, |_, _, open: &Open, cx| cx.emit(open.clone()));
         self.logins = Some((logins, subscription));
@@ -516,7 +515,6 @@ struct Opened {
     directory: PathBuf,
     controller: Option<Arc<Controller>>,
     page: Result<Page, controller::Error>,
-    unfinished: usize,
 }
 fn open_management(
     client: Client,
@@ -541,24 +539,10 @@ fn open_management(
         },
         Err(error) => Err(*error),
     };
-    let mut unfinished = 0;
-    if let (Ok(Page::Detail(profile)), Ok(controller)) = (&page, &controller) {
-        let id = &profile.item().profile_id;
-        unfinished = controller
-            .ids()
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|key| controller.read(key).ok())
-            .filter(|s| {
-                s.terminal.is_none() && s.identity.as_ref().is_some_and(|i| &i.profile_id == id)
-            })
-            .count();
-    }
     Ok(Opened {
         directory,
         controller: controller.ok(),
         page,
-        unfinished,
     })
 }
 
@@ -606,14 +590,40 @@ fn status(snapshot: &Snapshot) -> &'static str {
         None => "Outcome not yet confirmed",
     }
 }
+/// The line under a profile's name. A failed profile shows the service's own
+/// sentence, as given.
+fn state_line(item: &Item) -> SharedString {
+    match (&item.state, &item.reason) {
+        (State::Failed, Some(reason)) => reason.clone().into(),
+        (State::Failed, None) => "Creation didn't finish".into(),
+        (State::Ready, _) => "Its own agents, skills and policies".into(),
+    }
+}
+
+/// Only a profile the service serves has Sign-in, a shell and Secrets.
+fn has_served_panes(item: &Item) -> bool {
+    item.state == State::Ready
+}
+
+/// Whether a saved record can't be read, so it can only be forgotten.
+fn unreadable(error: controller::Error) -> bool {
+    matches!(
+        error,
+        controller::Error::Invalid
+            | controller::Error::Storage(journal::Error::Invalid | journal::Error::TooLarge)
+    )
+}
+
 fn message(error: controller::Error) -> &'static str {
     use controller::Error::*;
     match error {
         Missing => "This operation record is missing. No request was sent by this read.",
-        Invalid => "This saved request could not be read. Forget it to continue.",
+        Invalid | Storage(journal::Error::Invalid) => {
+            "This saved request could not be read. Forget it to continue."
+        }
         WrongPhase | Completed => "The operation changed. Reload its saved state.",
         Client(_) => {
-            "The provider result could not be confirmed. Keep this operation and check its original receipt."
+            "The service's answer could not be confirmed. Keep this request and check it again."
         }
         Storage(journal::Error::Unsafe) => "Operation storage is not private or safe to use.",
         Storage(journal::Error::Busy | journal::Error::Conflict) => {
@@ -664,15 +674,7 @@ impl Render for Management {
                                     ui::text(div().text_color(c.text), &t.text.group_title)
                                         .child(item.display_name.clone()),
                                 )
-                                .child(meta(match item.state {
-                                    // The service's own sentence, shown as given.
-                                    State::Failed => item
-                                        .reason
-                                        .clone()
-                                        .unwrap_or_else(|| "Creation didn't finish".into())
-                                        .into(),
-                                    State::Ready => "Its own agents, skills and policies".into(),
-                                })),
+                                .child(meta(state_line(item))),
                         )
                         .child(ui::icon_button("management-more", "ellipsis").on_click(
                             cx.listener(|pane, _, _, cx| {
@@ -703,45 +705,9 @@ impl Render for Management {
                     }
                     body = body.child(div().flex().justify_end().child(menu));
                 }
-                if self.unfinished > 0 {
-                    body = body.child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(t.space.s10))
-                            .p(px(t.space.s12))
-                            .rounded(px(t.radius.popover))
-                            .bg(c.attention_soft)
-                            .child(ui::step_dot(ui::Step::Waits))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .child(div().text_color(c.text).child(
-                                        if self.unfinished == 1 {
-                                            "A request for this profile didn't finish".to_owned()
-                                        } else {
-                                            format!(
-                                                "{} requests for this profile didn't finish",
-                                                self.unfinished
-                                            )
-                                        },
-                                    ))
-                                    .child(meta(
-                                        "It may already have worked. Check it to be sure.".into(),
-                                    )),
-                            )
-                            .child(
-                                ui::button("management-check", "Check", ui::Button::Secondary)
-                                    .on_click(
-                                        cx.listener(|pane, _, _, cx| pane.history(0, false, cx)),
-                                    ),
-                            ),
-                    );
+                if self.logins.is_some() {
+                    body = body.child(ui::group_title("Sign-in", ""));
                 }
-                body = body.child(ui::group_title("Sign-in", ""));
                 if let Some((section, _)) = &self.logins {
                     body = body.child(section.clone());
                 }
@@ -801,7 +767,7 @@ impl Render for Management {
                         }
                     }
                     // A record that can't be read can only be forgotten.
-                    if snapshot.is_none() && self.error == Some(controller::Error::Invalid) {
+                    if snapshot.is_none() && self.error.is_some_and(unreadable) {
                         let ticket = ticket.clone();
                         row = row.child(
                             ui::button(

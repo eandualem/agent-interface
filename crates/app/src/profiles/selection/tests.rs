@@ -176,8 +176,11 @@ fn readiness_and_identity_refusals_never_yield_selection_authority() {
     )
     .unwrap();
     let attempt = selection.begin(&client, "profile-a").unwrap();
+    let completion = attempt.run();
+    // The service's own sentence travels with the refusal.
+    assert_eq!(completion.reason(), Some("It did not start."));
     assert_eq!(
-        selection.accept(attempt.run()).unwrap().err(),
+        selection.accept(completion).unwrap().err(),
         Some(Error::Profile(
             agent_interface_roster::profiles::Error::NotReady
         ))

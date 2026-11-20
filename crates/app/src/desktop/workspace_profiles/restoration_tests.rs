@@ -317,6 +317,25 @@ fn workspaces_on_one_profile_share_one_connection() {
 }
 
 #[test]
+fn every_workspace_waiting_on_a_failed_profile_shows_the_services_reason() {
+    let root = tempfile::tempdir().unwrap();
+    let client = discovery(root.path(), &[]);
+    let failed = json!({"state": "failed", "profile_id": "profile-c",
+        "code": "start_failed", "reason": "Its folder can't be read."});
+    fs::write(root.path().join("profile-c.json"), failed.to_string()).unwrap();
+    let browser = restored_browser(root.path(), &["profile-c", "profile-c"]);
+    let saved = model(&browser);
+    let mut registry = Registry::default();
+    let work = registry.reconcile(&saved, Some(&client));
+    assert_eq!(work.len(), 1);
+    assert!(registry.accept(work.into_iter().next().unwrap().run()));
+    for space in &saved.workspaces {
+        assert!(registry.failure(space).is_some());
+        assert_eq!(registry.reason(space), Some("Its folder can't be read."));
+    }
+}
+
+#[test]
 fn a_failed_shared_attempt_waits_for_retry_in_every_workspace() {
     let root = tempfile::tempdir().unwrap();
     let refusal = Reply {

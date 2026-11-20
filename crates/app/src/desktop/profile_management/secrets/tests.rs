@@ -173,6 +173,9 @@ fn a_profile_that_serves_another_now_isnt_told_to_start() {
         assert_eq!(unconnected(error), CHANGED);
     }
     for error in [Error::Unavailable, Error::NotReady, Error::Invalid] {
-        assert_eq!(unconnected(error), "Start the profile to see its secrets.");
+        assert_eq!(
+            unconnected(error),
+            "The profile can't be reached, so its secrets can't be shown."
+        );
     }
 }

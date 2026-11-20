@@ -591,9 +591,7 @@ fn an_unreachable_profile_keeps_an_unresolved_start_and_its_request_id() {
     let unreached = attempt(&request, true);
     assert_eq!(
         unreached,
-        Answer::Unknown(Some(
-            "The profile could not be reached; start its service.".into()
-        ))
+        Answer::Unknown(Some("The profile could not be reached.".into()))
     );
     assert_eq!(
         heading("guide", Some(&unreached)),
