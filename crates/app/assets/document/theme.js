@@ -9,7 +9,6 @@
 // values are kept, so a theme change maps from them again without a reload.
 (() => {
   const T = /*PALETTE*/ {};
-  const ID = 'agent-interface-theme';
   const KEY = Symbol.for('agent-interface.theme');
   const S = window[KEY] || (window[KEY] = { saved: new WeakMap(), parsed: new Map() });
   const KEEP = new Set([
@@ -422,7 +421,7 @@
       }
     };
     for (const sheet of [...document.styleSheets, ...(document.adoptedStyleSheets || [])]) {
-      if (sheet.ownerNode && sheet.ownerNode.id === ID) continue;
+      if (sheet.ownerNode === S.style) continue;
       try {
         walk(sheet.cssRules);
       } catch {
@@ -452,11 +451,7 @@
   };
 
   const host = () => {
-    let style = document.getElementById(ID);
-    if (!style) {
-      style = document.createElement('style');
-      style.id = ID;
-    }
+    const style = S.style || (S.style = document.createElement('style'));
     const parent = document.head || document.documentElement;
     if (parent.lastElementChild !== style) parent.append(style);
     return style;
@@ -706,7 +701,7 @@
       'load',
       (event) => {
         const node = event.target;
-        if (node && node.id !== ID && (node.nodeName === 'LINK' || node.nodeName === 'STYLE')) {
+        if (node && node !== S.style && (node.nodeName === 'LINK' || node.nodeName === 'STYLE')) {
           window[KEY].schedule();
         }
       },
@@ -762,7 +757,7 @@
 
   // A style element or style sheet link of the document's own.
   const sheet = (node) =>
-    node && node.id !== ID && (node.nodeName === 'STYLE' || node.nodeName === 'LINK');
+    node && node !== S.style && (node.nodeName === 'STYLE' || node.nodeName === 'LINK');
 
   S.changed = (records) => {
     // A node added or removed with style sheets or a graphic inside it.

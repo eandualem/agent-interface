@@ -100,11 +100,11 @@ with tempfile.TemporaryDirectory(prefix="document-smoke-") as directory:
     trap = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Trap)
     threading.Thread(target=trap.serve_forever, daemon=True).start()
     target = f'http://127.0.0.1:{trap.server_port}'
-    html = '''<!doctype html><html><head><meta charset="utf-8"><style>
+    html = '''<!doctype html><html><head><meta charset="utf-8"><style id="agent-interface-theme" media="print"></style><style>
 body { font: 24px sans-serif; padding: 24px; } button,input {font:inherit;margin:12px;}
 button,input { border: 0; padding: 8px; }
 </style></head><body><h1>DOCUMENTREADY</h1><p id="result">WAITING</p>
-<button id="action" onclick="if(this.textContent==='CLICKPASSED')setTimeout(()=>window.ipc.postMessage('focus'),500);this.textContent='CLICKPASSED'">INTERACT</button>
+<button id="action" onclick="if(this.textContent==='CLICKPASSED')setTimeout(()=>window.ipc.postMessage('focus'),500);this.textContent=screenThemeApplied()?'CLICKPASSED':'THEMEMISSING'">INTERACT</button>
 <input aria-label="Input" placeholder="TYPEHERE" onfocus="document.getElementById('typed').textContent='FOCUSED'" oninput="document.getElementById('typed').textContent=this.value"><input id="file" type="file" hidden>
 <button onclick="document.getElementById('file').click();this.textContent='FILEBLOCKED'">FILETEST</button>
 <p id="typed">INPUTWAITING</p>
@@ -112,6 +112,10 @@ button,input { border: 0; padding: 8px; }
 <svg width="100" height="60"><rect width="100" height="60" fill="#3498db"/></svg>
 <canvas id="chart" width="100" height="60"></canvas>
 <script>
+function screenThemeApplied() {
+    const printStyle = document.querySelector('style#agent-interface-theme[media="print"]');
+    return printStyle && !printStyle.textContent && getComputedStyle(document.documentElement).getPropertyValue('--ai-text').trim();
+}
 chart.getContext('2d').fillRect(0,0,80,50);
 let rtc = false; try { new RTCPeerConnection(); rtc = true; } catch (_) {}
 fetch('TARGET/fetch').then(()=>result.textContent='NETWORKFAILED',()=>result.textContent=rtc?'RTCFAILED':'ISOLATIONPASSED');
@@ -262,7 +266,7 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             toolbar = find('Documents')
             assert toolbar and int(heading['top']) > int(toolbar['top']) + int(toolbar['height']), 'webview overlaps native toolbar'
             click('INTERACT')
-            wait_for(lambda: find('CLICKPASSED'), 'JavaScript button')
+            wait_for(lambda: find('CLICKPASSED'), 'JavaScript button and on-screen reader theme')
             click('TYPEHERE')
             # Typing before WebKit has focused the field sends the keys
             # elsewhere, so wait for the field to report focus first.
