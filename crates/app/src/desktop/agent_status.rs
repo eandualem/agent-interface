@@ -84,7 +84,7 @@ pub(super) struct Status {
     /// What it waits on and how many runs it has, when the service says.
     pub line: Option<String>,
     /// Its held or waiting deliveries, when the service says any wait.
-    pub deliveries: Option<String>,
+    pub deliveries: Option<(String, Option<&'static str>)>,
     /// Its own restart while it is under way.
     pub restart: Option<agent_interface_roster::Restart>,
 }
@@ -221,20 +221,21 @@ pub(super) fn deliveries(
     })
 }
 
-/// As [`deliveries`], for a navigation row: the count first, so a narrow
-/// row cuts the reason, never the count.
+/// As [`deliveries`], for a navigation row: the count, and apart from it
+/// why they are held, so a narrow row can cut the reason, never the count.
 pub(super) fn row_deliveries(
     held: Option<&agent_interface_roster::HeldQueue>,
     queued: u64,
-) -> Option<String> {
+) -> Option<(String, Option<&'static str>)> {
     let Some(held) = held else {
-        return deliveries(None, queued, None);
+        return (queued > 0).then(|| (format!("{queued} waiting"), None));
     };
     let why = match held.reason.as_deref() {
         Some("uncertain_delivery") => "deliveries held: a message may still be in its prompt",
         _ => "deliveries are held",
     };
-    Some(format!("{} waiting · {why}", queued.max(1)))
+    // The held one waits too.
+    Some((format!("{} waiting", queued.max(1)), Some(why)))
 }
 
 /// Who a review asked: its model, else its CLI, else the run's label, then
@@ -827,7 +828,15 @@ mod tests {
             let mut snapshot = Snapshot::default();
             snapshot.update(body);
             agents.update(snapshot);
-            agents.get("worker").deliveries.clone()
+            // The row's count, then its reason, as one line.
+            agents
+                .get("worker")
+                .deliveries
+                .clone()
+                .map(|(count, why)| match why {
+                    Some(why) => format!("{count} · {why}"),
+                    None => count,
+                })
         };
         let fixture = |name: &str| {
             std::fs::read(format!(

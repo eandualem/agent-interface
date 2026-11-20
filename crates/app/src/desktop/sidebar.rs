@@ -697,29 +697,33 @@ impl Browser {
                     let deliveries = browser
                         .active_agents()
                         .and_then(|agents| agents.get(name).deliveries.clone());
-                    // A muted note beside the name: an icon, then text that
-                    // gives way first.
-                    let note = |icon: &'static str, text: String| {
-                        ui::text(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .items_center()
-                                .gap(px(t.space.s4))
-                                .overflow_hidden()
-                                .text_color(c.muted),
-                            &t.text.meta,
-                        )
-                        .child(ui::icon(icon, t.size.icon - t.space.s2, c.muted))
-                        .child(
-                            div()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .child(text),
-                        )
-                    };
+                    // A muted note beside the name: an icon, a count that
+                    // stays whole when given, then text that gives way first.
+                    let note =
+                        |icon: &'static str, count: Option<String>, text: Option<String>| {
+                            let whole = count.is_some();
+                            ui::text(
+                                div()
+                                    .flex_1()
+                                    .when(!whole, |note| note.min_w_0().overflow_hidden())
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(t.space.s4))
+                                    .text_color(c.muted),
+                                &t.text.meta,
+                            )
+                            .child(ui::icon(icon, t.size.icon - t.space.s2, c.muted))
+                            .children(count.map(|count| {
+                                div().flex_shrink_0().whitespace_nowrap().child(count)
+                            }))
+                            .children(text.map(|text| {
+                                div()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(text)
+                            }))
+                        };
                     ui::row(SharedString::from(id), false)
                         .when(swarm.is_some(), |row| row.pl(px(t.space.s10 * 3.0)))
                         .child(ui::agent_symbol(state))
@@ -734,8 +738,10 @@ impl Browser {
                                 .text_color(if calm { c.muted } else { c.text })
                                 .child(name.to_owned()),
                         )
-                        .children(runs.map(|runs| note("activity", runs)))
-                        .children(deliveries.map(|deliveries| note("mail", deliveries)))
+                        .children(runs.map(|runs| note("activity", None, Some(runs))))
+                        .children(deliveries.map(|(count, why)| {
+                            note("mail", Some(count), why.map(|why| format!("· {why}")))
+                        }))
                         .on_click(cx.listener(move |browser, _, window, cx| {
                             if let Some(target) = &target {
                                 browser.go_to_agent_target(target, window, cx);

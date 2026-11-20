@@ -294,6 +294,11 @@ impl TerminalView {
         }
     }
 
+    /// Whether its session has ended.
+    pub(crate) fn ended(&self) -> bool {
+        self.panes().is_finished()
+    }
+
     /// Leave an ended session's message unpainted while `quiet`.
     pub(crate) fn quiet_end(&mut self, quiet: bool, cx: &mut Context<Self>) {
         if self.quiet_end != quiet {
@@ -962,17 +967,13 @@ impl Render for TerminalView {
         };
         let embedded = self.embedded;
         let panes = self.panes.clone();
-        let message = self
-            .input_rejection
-            .clone()
-            .or(self.input_error.clone())
-            .or_else(|| {
-                (self.panes().is_finished() && !self.quiet_end).then(|| {
-                    self.panes()
-                        .failure()
-                        .unwrap_or_else(|| "Session disconnected.".into())
-                })
-            });
+        let message = painted(
+            self.input_rejection.as_deref(),
+            self.input_error.as_deref(),
+            self.panes().is_finished(),
+            self.panes().failure(),
+            self.quiet_end,
+        );
         div()
             .id(("terminal-input", cx.entity_id()))
             .size_full()
@@ -1162,6 +1163,26 @@ impl Render for TerminalView {
                 )
             })
     }
+}
+
+/// The message painted over a terminal, if any. `ended` is whether its
+/// session has ended and `failure` why. While `quiet`, as when its agent
+/// restarts, an ended session's failure is no error, nor is input that
+/// failed because of it; a rejection of input is still shown.
+fn painted(
+    rejection: Option<&str>,
+    input_error: Option<&str>,
+    ended: bool,
+    failure: Option<String>,
+    quiet: bool,
+) -> Option<String> {
+    let gone = ended || failure.is_some();
+    rejection
+        .or(input_error.filter(|_| !(quiet && gone)))
+        .map(Into::into)
+        .or_else(|| {
+            (ended && !quiet).then(|| failure.unwrap_or_else(|| "Session disconnected.".into()))
+        })
 }
 
 pub(crate) struct InputQueue {
@@ -1751,6 +1772,32 @@ fn input_key(key: &Keystroke, repeat: bool) -> Option<Input> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_restart_keeps_its_ended_sessions_failure_quiet_but_not_a_rejection() {
+        let pipe = "writing to control client: Broken pipe (os error 32)";
+        // Its session ended: its failure, and input that failed for it.
+        assert_eq!(
+            painted(None, None, true, Some(pipe.into()), false).as_deref(),
+            Some(pipe)
+        );
+        assert_eq!(painted(None, None, true, Some(pipe.into()), true), None);
+        assert_eq!(
+            painted(None, Some(pipe), false, Some(pipe.into()), true),
+            None
+        );
+        assert_eq!(painted(None, Some(pipe), true, None, true), None);
+        // A live session: its input error and a rejection still show.
+        assert_eq!(
+            painted(None, Some("busy"), false, None, true).as_deref(),
+            Some("busy")
+        );
+        let rejected = "Input was not sent: terminal queue is busy or disconnected.";
+        assert_eq!(
+            painted(Some(rejected), Some(pipe), true, Some(pipe.into()), true).as_deref(),
+            Some(rejected)
+        );
+    }
 
     #[test]
     fn closing_input_queue_delivers_mouse_release_before_shutdown() {
