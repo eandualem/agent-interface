@@ -1,6 +1,17 @@
 //! Roster polling owned by one verified profile connection.
 
-use super::*;
+use std::{
+    io,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread::{self, JoinHandle},
+    time::Duration,
+};
+
+use agent_interface_roster::Snapshot;
 use agent_interface_roster::profiles::{
     Connection, Error, Identity,
     runs::{Book, Runs},

@@ -5,7 +5,7 @@ Applies to every agent and all work in this repository.
 Agent Interface reimplements
 [tmux-workspaces](https://github.com/eandualem/tmux-workspaces) in Rust as a
 native desktop app. The binary and packages are named `agent-interface`.
-Legacy names remain only for upgrade compatibility and upstream attribution.
+The earlier name remains only in upstream attribution.
 
 ## Architecture and documentation
 
@@ -17,10 +17,11 @@ belong in the local memory directory described below.
 
 ## Product contract
 
-- This app replaces the Python tool entirely; nothing may depend on it.
-  Its layout and proportions were the reference for this app's window. The
-  navigation panel, menus and settings are native UI with real icons;
-  the terminals keep their terminal rendering.
+- The app and its packages contain and run no Python; the only Python is
+  the tooling under `scripts/`.
+- The earlier tool's layout and proportions were the reference for this
+  app's window. The navigation panel, menus and settings are native UI with
+  real icons; the terminals keep their terminal rendering.
 - Terminal panes are drawn natively, never in a web view. Targets: bulk
   output equal to Ghostty running tmux; typing latency and frame pacing
   equal to plain Ghostty. Speed claims are measured, with the method and
@@ -28,9 +29,8 @@ belong in the local memory directory described below.
 - tmux is the only process layer. The app is a client and runs no daemon of
   its own.
 - macOS first, Linux from the same code. Windows is optional.
-- Existing libraries carry over: read and write `layouts.db` (schema v2)
-  and its shell server with the established conflict rules. New fields need
-  not stay readable by the Python tool.
+- The library is `layouts.db` (schema v2) with its shell server and
+  established conflict rules: the app's own storage.
 - The app works with Agent Backbone directly for the agents roster, and the
   core stays useful without it.
 
@@ -49,8 +49,6 @@ server.
   sessions on private servers. A check against a live session is read-only
   (`-f read-only,ignore-size`) and is reported to the maintainer before it
   runs.
-- The Python repository belongs to its own agent. Ask that agent for library
-  and schema facts; never edit that repository.
 
 ## Models and swarms
 

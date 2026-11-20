@@ -59,7 +59,7 @@ pub(super) fn read(
 pub(super) fn key(snapshot: &Snapshot) -> String {
     format!(
         "{}\npolicy\n{}\n{}",
-        super::seen::origin_key(Some(snapshot.artifact.identity()), ""),
+        super::seen::origin_key(snapshot.artifact.identity()),
         snapshot.artifact.id(),
         snapshot.revision_id
     )
@@ -99,8 +99,7 @@ mod tests {
     fn catalog(connection: &Connection) -> Result<views::PolicyLibrary, &'static str> {
         let (wake, updates) = mpsc::channel();
         let source = super::super::source::Source::start(
-            None,
-            Some(connection),
+            connection,
             views::Request::Policies,
             Duration::from_secs(3600),
             move || {

@@ -317,11 +317,6 @@ fn browser_window(cx: &App) -> Option<gpui::WindowHandle<Browser>> {
         })
 }
 
-/// The Backbone command as a login shell finds it, for work that opens no window.
-pub(crate) fn profile_client() -> Option<crate::profiles::Client> {
-    onboarding::probe::profile_client()
-}
-
 /// New profile, from the application menu: its two screens in the active
 /// workspace window, which opens if there is none.
 fn new_profile(cx: &mut App) {
@@ -365,28 +360,21 @@ fn open_browser(
     source: Result<PathBuf, String>,
     cx: &mut App,
 ) -> Result<(), String> {
-    let backbone = crate::roster::provider_directory(false).ok().flatten();
-    let roster = backbone
-        .as_ref()
-        .and_then(|directory| agent_status::start_legacy(directory.clone(), cx));
     open_browser_with_status(
         directory,
         source,
-        backbone,
-        roster,
         workspace_profiles::Registry::default(),
         None,
         cx,
     )
 }
 
-/// Another native window retains the originating status observation, including
-/// standalone mode, without resolving a different provider during creation.
+/// Open a native window. Another window takes the originating window's verified
+/// profile connections and profile client, without resolving a different
+/// provider during creation.
 fn open_browser_with_status(
     directory: Option<PathBuf>,
     source: Result<PathBuf, String>,
-    backbone: Option<PathBuf>,
-    roster: Option<agent_status::LiveAgents>,
     workspace_profiles: workspace_profiles::Registry,
     profile_client: Option<Result<crate::profiles::Client, ()>>,
     cx: &mut App,
@@ -420,8 +408,6 @@ fn open_browser_with_status(
     cx.open_window(options, |_, cx| {
         cx.new(|cx| {
             let mut browser = Browser {
-                backbone,
-                roster,
                 source: Some(source),
                 shell_environment: Some({
                     let environment = agent_interface_tmux::shells::Environment::capture();
@@ -440,13 +426,6 @@ fn open_browser_with_status(
             browser.open(directory, cx);
             browser.workspace_profiles = workspace_profiles;
             browser.profile_client = profile_client;
-            if browser.roster.is_some() {
-                browser.roster_updates =
-                    Some(cx.observe_global::<agent_status::Sources>(|browser, cx| {
-                        browser.refresh_source_matches(cx);
-                        browser.close_finished_swarm_tabs(cx);
-                    }));
-            }
             // Stopping the library joins its storage worker, which can wait on
             // a locked database; keep that off the UI thread when the window closes.
             cx.on_release(|browser, cx| {
@@ -654,8 +633,6 @@ struct Browser {
     library: Option<Library>,
     directory: Option<PathBuf>,
     source: Option<Result<PathBuf, String>>,
-    source_matches: sidebar::SourceMatches,
-    source_match_updates: Option<Task<()>>,
     terminals: HashMap<String, gpui::Entity<LiveTerminal>>,
     window_choices: HashMap<String, (Target, SessionWindow)>,
     layout: Option<WindowLayout>,
@@ -666,7 +643,6 @@ struct Browser {
     icon_picker: bool,
     icon_ticket: Rc<()>,
     menu_at: Option<gpui::Point<gpui::Pixels>>,
-    roster: Option<agent_status::LiveAgents>,
     workspace_profiles: workspace_profiles::Registry,
     workspace_rosters: HashMap<
         String,
@@ -760,8 +736,6 @@ struct Browser {
     pane_bounds: Rc<RefCell<HashMap<String, Bounds<gpui::Pixels>>>>,
     split_bounds: Rc<RefCell<HashMap<String, Bounds<gpui::Pixels>>>>,
     resize_activation: Option<gpui::Subscription>,
-    /// Agent Backbone's data directory, when it is set up.
-    backbone: Option<PathBuf>,
     /// The view in each shown view pane, with its event subscription.
     views: HashMap<String, (gpui::Entity<views::ViewPane>, navigation_origin::ViewEvents)>,
     /// The chooser in each shown empty pane, with its event subscription.
@@ -882,7 +856,7 @@ impl Browser {
             .connection
             .as_ref()
             .map(|c| workspace_profiles::Owner::Bound(c.connection_key()))
-            .unwrap_or(workspace_profiles::Owner::Legacy);
+            .unwrap_or(workspace_profiles::Owner::Standalone);
         if self.pane_owner(&target.leaf.id).as_ref() != Some(&expected) {
             return;
         }
@@ -947,8 +921,6 @@ impl Browser {
         if let Err(error) = open_browser_with_status(
             self.directory.clone(),
             source,
-            self.backbone.clone(),
-            self.roster.clone(),
             self.workspace_profiles.inherit(),
             self.profile_client.clone(),
             cx,
@@ -1003,8 +975,6 @@ impl Browser {
         self.tab_menu = None;
         self.save_notice = None;
         self.stop_reader(cx);
-        self.source_match_updates = None;
-        self.source_matches = sidebar::SourceMatches::default();
         self.terminals.clear();
         self.window_choices.clear();
         self.reset_focus = true;
@@ -1055,7 +1025,6 @@ impl Browser {
                             browser.library.as_ref().and_then(Library::take_update)
                         {
                             browser.apply(update);
-                            browser.refresh_source_matches(cx);
                             cx.notify();
                         }
                     })
@@ -1428,13 +1397,7 @@ impl Browser {
             workspace_profiles::Route::Bound(connection) => {
                 connection.tmux_socket().to_str().map(str::to_owned)
             }
-            workspace_profiles::Route::Legacy => self
-                .source
-                .as_ref()
-                .and_then(|source| source.as_ref().ok())
-                .and_then(|path| path.to_str())
-                .map(str::to_owned),
-            workspace_profiles::Route::Unavailable => None,
+            workspace_profiles::Route::Standalone | workspace_profiles::Route::Unavailable => None,
         }
     }
 
@@ -2856,7 +2819,7 @@ impl Render for Browser {
                             .connection
                             .as_ref()
                             .map(|c| workspace_profiles::Owner::Bound(c.connection_key()))
-                            .unwrap_or(workspace_profiles::Owner::Legacy);
+                            .unwrap_or(workspace_profiles::Owner::Standalone);
                         if browser.pane_owner(&target.leaf.id).as_ref() != Some(&expected) {
                             return;
                         }
@@ -2880,30 +2843,22 @@ impl Render for Browser {
                 self.terminals.insert(leaf.id.clone(), terminal);
             }
             // A stopped Backbone agent's pane offers Resume and Start new.
-            let agent =
-                leaf.attachment.as_ref().and_then(|attachment| {
-                    let connection = self.pane_connection(&leaf.id).ok()?;
-                    if let Some(connection) = connection {
-                        // A session on another tmux server is not this profile's
-                        // agent, whatever its name.
-                        if attachment.source_socket.as_deref().is_some_and(|path| {
-                            std::path::Path::new(path) != connection.tmux_socket()
-                        }) {
-                            return None;
-                        }
-                        let space = self.layout.as_ref()?.model().workspace_for_pane(&leaf.id)?;
-                        let status = self.workspace_agents(space)?.get(&attachment.session);
-                        return (status.state == components::AgentState::Offline)
-                            .then(|| (None, attachment.session.clone()));
-                    }
-                    let status = self.roster.as_ref()?.get(&attachment.session);
-                    if status.state != components::AgentState::Offline
-                        || !self.is_window_source(attachment.source_socket.as_deref())
-                    {
-                        return None;
-                    }
-                    Some((Some(self.backbone.clone()?), attachment.session.clone()))
-                });
+            let agent = leaf.attachment.as_ref().and_then(|attachment| {
+                let connection = self.pane_connection(&leaf.id).ok()??;
+                // A session on another tmux server is not this profile's
+                // agent, whatever its name.
+                if attachment
+                    .source_socket
+                    .as_deref()
+                    .is_some_and(|path| std::path::Path::new(path) != connection.tmux_socket())
+                {
+                    return None;
+                }
+                let space = self.layout.as_ref()?.model().workspace_for_pane(&leaf.id)?;
+                let status = self.workspace_agents(space)?.get(&attachment.session);
+                (status.state == components::AgentState::Offline)
+                    .then(|| attachment.session.clone())
+            });
             if let Some(terminal) = self.terminals.get(&leaf.id) {
                 terminal.update(cx, |terminal, cx| terminal.set_agent(agent, cx));
             }
@@ -2935,14 +2890,20 @@ impl Render for Browser {
                     .and_then(|space| self.workspace_agents(space))
                     .cloned()
                     .unwrap_or_default();
-                let backbone = self.backbone.clone();
                 let directory = self.directory.clone();
                 let reports = view.kind == agent_interface_core::ViewKind::Reports;
+                let browser = cx.entity().downgrade();
+                let folders: views::Folders = Rc::new(move |cx: &gpui::App| {
+                    browser
+                        .upgrade()
+                        .map(|browser| browser.read(cx).workspace_folders())
+                        .unwrap_or_default()
+                });
                 let pane = cx.new(|cx| match connection {
-                    Some(connection) => {
-                        views::ViewPane::new_bound(view, connection, directory, agents, window, cx)
-                    }
-                    None => views::ViewPane::new(view, backbone, directory, agents, window, cx),
+                    Some(connection) => views::ViewPane::new_bound(
+                        view, connection, directory, agents, folders, window, cx,
+                    ),
+                    None => views::ViewPane::new(view, directory, folders, window, cx),
                 });
                 if let Some(section) = self.opening_sections.remove(&id)
                     && reports
@@ -2982,14 +2943,6 @@ impl Render for Browser {
                             return;
                         }
                         match event {
-                            views::ViewEvent::ShowAgent(name) => browser.go_to_agent_target(
-                                &navigation_origin::AgentTarget {
-                                    origin: ticket.as_ref().clone(),
-                                    name: name.clone(),
-                                },
-                                window,
-                                cx,
-                            ),
                             views::ViewEvent::OpenBeside(view) => {
                                 browser.open_beside(&leaf, view.clone(), window, cx)
                             }
@@ -3066,14 +3019,13 @@ impl Render for Browser {
                     continue;
                 }
                 let socket = self.source.clone().and_then(Result::ok);
-                let backbone = self.backbone.clone();
                 let pane = id.clone();
                 let chooser = cx.new(|cx| match connection {
                     Some(connection) => {
                         new_pane::NewPane::new_bound(pane, connection, agents, window, cx)
                             .expect("matching workspace roster")
                     }
-                    None => new_pane::NewPane::new(pane, socket, backbone, agents, window, cx),
+                    None => new_pane::NewPane::new(pane, socket, window, cx),
                 });
                 let events =
                     cx.subscribe_in(&chooser, window, |browser, chooser, event, window, cx| {
@@ -3088,7 +3040,7 @@ impl Render for Browser {
                         let pane = chooser.pane().to_owned();
                         let expected = chooser
                             .connection()
-                            .map_or(workspace_profiles::Owner::Legacy, |c| {
+                            .map_or(workspace_profiles::Owner::Standalone, |c| {
                                 workspace_profiles::Owner::Bound(c.connection_key())
                             });
                         if browser.pane_owner(&pane) != Some(expected) {
@@ -3572,34 +3524,6 @@ fn setup_agent_layout(
             source_socket: None,
         }));
     added.then_some((base, proposed))
-}
-
-/// The workspace, tab and pane showing an agent's session from this window's
-/// source: the current tab if it shows one, else the first in saved order.
-fn agent_destination(
-    model: &agent_interface_core::Layout,
-    name: &str,
-    same_source: impl Fn(Option<&str>) -> bool,
-) -> Option<(String, String, String)> {
-    let current = model.tab().map(|tab| tab.id.clone());
-    let mut found = Vec::new();
-    for space in model
-        .workspaces
-        .iter()
-        .filter(|space| space.profile_id.is_none())
-    {
-        for tab in &space.tabs {
-            for leaf in tab.tree.leaves() {
-                if leaf.attachment.as_ref().is_some_and(|attachment| {
-                    attachment.session == name && same_source(attachment.source_socket.as_deref())
-                }) {
-                    found.push((space.id.clone(), tab.id.clone(), leaf.id.clone()));
-                }
-            }
-        }
-    }
-    found.sort_by_key(|(_, tab, _)| Some(tab) != current.as_ref());
-    found.into_iter().next()
 }
 
 // Navigation changes this window's selection only. An unavailable terminal keeps
@@ -4184,35 +4108,6 @@ mod tests {
     }
 
     #[test]
-    fn an_agent_goes_to_the_current_tab_showing_it_else_the_first() {
-        let mut model = agent_interface_core::Layout::initial("/tmp".into());
-        let session = |name: &str, socket: Option<&str>| {
-            Some(Attachment {
-                session: name.into(),
-                source_socket: socket.map(Into::into),
-            })
-        };
-        assert!(model.attach(session("reviewer", None)));
-        let first = model.tab().unwrap().id.clone();
-        assert!(model.add_tab(None, "/tmp".into(), false));
-        assert!(model.attach(session("reviewer", Some("/elsewhere"))));
-        let other_source = model.tab().unwrap().id.clone();
-        assert!(model.add_tab(None, "/tmp".into(), false));
-        assert!(model.attach(session("reviewer", None)));
-        let current = model.tab().unwrap().clone();
-        let local = |socket: Option<&str>| socket.is_none();
-        let found = agent_destination(&model, "reviewer", local).unwrap();
-        assert_eq!(found.1, current.id);
-        assert_eq!(found.2, current.focus);
-        assert!(model.choose_tab(&other_source));
-        assert_eq!(
-            agent_destination(&model, "reviewer", local).unwrap().1,
-            first
-        );
-        assert!(agent_destination(&model, "absent", local).is_none());
-    }
-
-    #[test]
     fn settings_binding_matches_the_platform_event() {
         // Linux XKB reports an unshifted comma with Control unchanged. Avoid
         // Shift-comma: punctuation loses its Shift flag and arrives as `<`.
@@ -4290,16 +4185,28 @@ mod tests {
 
     #[test]
     fn agent_state_lookup_omits_offline_and_unavailable_states() {
-        let mut browser = Browser::default();
+        let (_directory, connection, server) = crate::roster::content::tests::provider("a", vec![]);
+        server.join().unwrap();
+        let mut model = Layout::initial("/".into());
+        model.workspaces[0].profile_id = Some(connection.identity().profile_id.clone());
         let raw = r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[],"selected":""}],"selected":"000000000001","focus":false}"#;
-        browser.layout = Some(WindowLayout::new(
-            Document::parse(raw.into(), std::path::Path::new("layouts.db")).unwrap(),
-        ));
+        let path = std::path::Path::new("layouts.db");
+        let base = Document::parse(raw.into(), path).unwrap();
+        let mut browser = Browser {
+            layout: Some(WindowLayout::new(base.with_model(&model, path).unwrap())),
+            ..Browser::default()
+        };
+        browser
+            .workspace_profiles
+            .bind(&model.workspaces[0], connection.clone());
         let mut snapshot = agent_interface_roster::Snapshot::default();
         snapshot.update(br#"{"items":[{"name":"worker","state":"busy"},{"name":"idle","state":""},{"name":"gone","state":"offline"}]}"#);
         let roster = agent_status::LiveAgents::default();
         roster.update(snapshot.clone());
-        browser.roster = Some(roster.clone());
+        browser.workspace_rosters.insert(
+            model.workspaces[0].id.clone(),
+            (connection.connection_key(), roster.clone()),
+        );
         let states = browser.agent_states().unwrap();
         assert_eq!(states.len(), 2);
         assert_eq!(states["worker"], components::AgentState::Working);

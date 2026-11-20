@@ -1,11 +1,11 @@
-//! General read-only views on one verified connection. The closed request set
-//! excludes agent inspection, local runtime configuration and filesystem reads.
+//! General read-only views on one verified connection. Agent cards and
+//! records are read by `content` instead.
 
 pub use super::content::Error;
-use super::{Api, Data, Provider, Range};
+use super::{Api, Data, Range};
 use crate::profiles::{Connection, Identity};
 
-/// GET-only view families that can be read without ambient runtime state.
+/// GET-only view families of the profile's own API.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
     /// The configured agents and running swarms.
@@ -22,19 +22,6 @@ pub enum Request {
     Tags,
 }
 
-impl Request {
-    fn remote(&self) -> super::Request {
-        match self {
-            Self::Team => super::Request::Team,
-            Self::Usage(range) => super::Request::Usage(*range),
-            Self::Activity => super::Request::Activity,
-            Self::Skills => super::Request::Skills,
-            Self::Policies => super::Request::Policies,
-            Self::Tags => super::Request::Tags,
-        }
-    }
-}
-
 /// One observation labelled with the full origin and original request.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Read {
@@ -49,20 +36,12 @@ pub struct Read {
 /// Read a bounded GET chain using the original binding and credentials.
 /// Optional enrichment can fail ordinarily, but any connection refusal or
 /// cancellation discards the complete observation. Call on an I/O worker.
-/// This does not enable native navigation, local skill previews or actions.
+/// It only reads: nothing here navigates or acts.
 pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool) -> Read {
-    let api = Api {
-        provider: Provider::Bound {
-            connection,
-            error: Default::default(),
-        },
-        live,
-    };
-    // The closed request set cannot reach legacy agent/runtime file reads.
-    let result = super::read_using(&api, &request.remote());
-    let Provider::Bound { error, .. } = &api.provider else {
-        unreachable!()
-    };
+    let api = Api::new(connection, live);
+    // Every request in this closed set is a read of the profile's own API.
+    let result = super::read_using(&api, request);
+    let error = &api.error;
     let result = if let Some(error) = error.get() {
         Err(Error::Connection(error))
     } else if !live() {

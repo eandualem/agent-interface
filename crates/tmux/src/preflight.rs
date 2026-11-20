@@ -49,7 +49,7 @@ fn supported(report: &str) -> Option<bool> {
     at_least(report, 3, 4)
 }
 
-// Python: tmux (?:next-)?(\d+)\.(\d+)(?:[a-zA-Z][\w.-]*|[-+][\w.-]+)?
+// Accepted form: tmux (?:next-)?(\d+)\.(\d+)(?:[a-zA-Z][\w.-]*|[-+][\w.-]+)?
 fn at_least(report: &str, floor_major: u32, floor_minor: u32) -> Option<bool> {
     let version = report.strip_prefix("tmux ")?;
     let version = version.strip_prefix("next-").unwrap_or(version);

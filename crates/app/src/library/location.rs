@@ -8,8 +8,7 @@ use uzers::os::unix::UserExt;
 use agent_interface_store::Error;
 
 /// Find an existing library directory: explicit path, nonempty
-/// `AGENT_INTERFACE_DATA_DIR` (or its legacy alias), then the XDG data directory.
-/// Existing pre-rename libraries stay in place to preserve their socket identity.
+/// `AGENT_INTERFACE_DATA_DIR`, then `agent-interface` in the XDG data directory.
 ///
 /// Expands `~`/`~user` and resolves relative paths and symlinks without creating
 /// anything. A missing directory is an error in this read-only phase. Paths are
@@ -69,17 +68,6 @@ pub fn source_socket(explicit: Option<&Path>) -> io::Result<PathBuf> {
     )
 }
 
-/// The default tmux server's socket, whatever tmux session the caller runs
-/// in: where the Python Backbone service kept its agents.
-pub(crate) fn default_source_socket() -> io::Result<PathBuf> {
-    resolve_source(
-        None,
-        &|name| (name != "TMUX").then(|| std::env::var_os(name)).flatten(),
-        &user_home,
-        uzers::get_current_uid(),
-    )
-}
-
 fn resolve_source(
     explicit: Option<&Path>,
     env: &impl Fn(&str) -> Option<OsString>,
@@ -123,24 +111,15 @@ fn resolve(
         .or_else(|| {
             env("AGENT_INTERFACE_DATA_DIR")
                 .filter(|p| !p.is_empty())
-                .or_else(|| env("TMUX_WORKSPACES_DATA_DIR").filter(|p| !p.is_empty()))
                 .map(PathBuf::from)
         })
         .unwrap_or_else(|| {
-            let root = PathBuf::from(
+            PathBuf::from(
                 env("XDG_DATA_HOME")
                     .filter(|p| !p.is_empty())
                     .unwrap_or_else(|| "~/.local/share".into()),
-            );
-            let root = expand_home(&root, env, user_home).unwrap_or(root);
-            let database = crate::compat::existing_or_legacy(
-                root.join("agent-interface/layouts.db"),
-                root.join("tmux-workspaces/layouts.db"),
-            );
-            database
-                .parent()
-                .expect("library database has a parent")
-                .to_owned()
+            )
+            .join("agent-interface")
         });
     let expanded = expand_home(&selected, env, user_home).ok_or_else(|| Error {
         path: selected.join("layouts.db"),
@@ -190,7 +169,7 @@ pub(crate) fn resolve_path(path: &Path) -> io::Result<PathBuf> {
     };
     let mut pending = vec![Pending::Path(path.to_owned())];
     // None marks an active symlink; Some caches its resolved target. This avoids
-    // recursion, repeated expansion and infinite loops, like Python's realpath.
+    // recursion, repeated expansion and infinite loops.
     let mut links: HashMap<PathBuf, Option<PathBuf>> = HashMap::new();
     while let Some(step) = pending.pop() {
         let path = match step {
@@ -249,12 +228,12 @@ pub(crate) fn resolve_path(path: &Path) -> io::Result<PathBuf> {
     Ok(result)
 }
 
-pub(crate) fn expand_home(
+fn expand_home(
     path: &Path,
     env: &impl Fn(&str) -> Option<OsString>,
     user_home: &impl Fn(Option<&OsStr>) -> Option<PathBuf>,
 ) -> Option<PathBuf> {
-    // pathlib removes "." components before expanding the first component.
+    // "." components are dropped before the first component is expanded.
     let mut components = path.components().filter(|part| *part != Component::CurDir);
     let Some(Component::Normal(first)) = components.next() else {
         return Some(path.to_owned());
@@ -267,7 +246,7 @@ pub(crate) fn expand_home(
     } else {
         user_home(Some(OsStr::from_bytes(user)))
     }?;
-    // Python treats an explicitly empty HOME (or account home) as "/".
+    // An explicitly empty HOME (or account home) means "/".
     let mut expanded = if home.as_os_str().is_empty() {
         PathBuf::from("/")
     } else {
@@ -282,26 +261,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rename_preserves_existing_library_and_environment_override() {
+    fn library_is_in_the_data_directory_unless_the_environment_names_one() {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().canonicalize().unwrap();
-        let old = root.join("tmux-workspaces");
-        let new = root.join("agent-interface");
-        std::fs::create_dir(&old).unwrap();
-        std::fs::write(old.join("layouts.db"), b"existing").unwrap();
+        let other = root.join("other");
         let mut env = HashMap::from([("XDG_DATA_HOME", root.as_os_str().to_owned())]);
         let locate = |env: &HashMap<&str, OsString>| {
             resolve(None, &|key| env.get(key).cloned(), &|_| None).unwrap()
         };
-        assert_eq!(locate(&env), old);
-        std::fs::create_dir(&new).unwrap();
-        std::fs::write(new.join("layouts.db"), b"new").unwrap();
-        assert_eq!(locate(&env), new);
-        env.insert("TMUX_WORKSPACES_DATA_DIR", old.as_os_str().to_owned());
-        assert_eq!(locate(&env), old);
-        env.insert("AGENT_INTERFACE_DATA_DIR", new.as_os_str().to_owned());
-        assert_eq!(locate(&env), new);
-        assert_eq!(std::fs::read(old.join("layouts.db")).unwrap(), b"existing");
+        assert_eq!(locate(&env), root.join("agent-interface"));
+        env.insert("AGENT_INTERFACE_DATA_DIR", other.as_os_str().to_owned());
+        assert_eq!(locate(&env), other);
     }
 
     #[test]

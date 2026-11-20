@@ -32,7 +32,7 @@ pub(super) enum Choice {
     NewProfile {
         name: String,
     },
-    /// Profiles are unavailable: a workspace that runs terminals only.
+    /// Profiles are unavailable: the workspace is made without a profile.
     Plain {
         name: String,
     },
@@ -159,7 +159,7 @@ impl ProfilePicker {
         self.name.read(cx).focus.clone()
     }
     /// The caller supplies the already resolved executable and captured caller
-    /// context. No ambient provider or Default profile is selected implicitly.
+    /// context. Nothing, not even the Default profile, is selected implicitly.
     /// With `change`, it chooses the profile of the workspace of that name.
     pub fn new(
         client: Client,

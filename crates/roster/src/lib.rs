@@ -56,6 +56,8 @@ pub struct AgentDetails {
     pub waiting: Option<Waiting>,
     /// How much it runs in the background; absent from an older service.
     pub background: Option<Background>,
+    /// The folder it works in, when reported.
+    pub dir: Option<String>,
 }
 
 /// What an agent waits on outside itself, as the Rust service reports it.
@@ -232,7 +234,7 @@ fn decode(response: &[u8]) -> Option<Decoded> {
             .get("state")
             .and_then(|v| serde_json::from_str::<String>(v.get()).ok())
             .unwrap_or_else(|| "unknown".into());
-        // Last valid occurrence wins, matching the Python provider's map.
+        // The last valid occurrence of an agent wins.
         let field = |key: &str| item.get(key).map(|value| value.get());
         details.insert(
             name.clone(),
@@ -245,6 +247,7 @@ fn decode(response: &[u8]) -> Option<Decoded> {
                     .and_then(|value| serde_json::from_str(value).ok()),
                 waiting: field("waiting").and_then(object),
                 background: field("background").and_then(Background::read),
+                dir: field("dir").and_then(|value| serde_json::from_str(value).ok()),
             },
         );
         states.insert(name, state);
@@ -367,8 +370,8 @@ pub fn valid_agent(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
 }
 
-// The Python provider treats all false-like configured values as disabled,
-// while an absent configured field defaults to true.
+// Every false-like configured value means disabled, while an absent
+// configured field defaults to true.
 fn truthy(value: &RawValue) -> bool {
     let text = value.get().trim_ascii();
     match text.as_bytes()[0] {
@@ -507,6 +510,7 @@ mod tests {
             })
         };
         assert_eq!(worker.background, counts(1, 1, 2));
+        assert_eq!(worker.dir.as_deref(), Some("/home/user/project"));
         let reviewer = &snapshot.details["reviewer"];
         assert_eq!(reviewer.waiting, None);
         assert_eq!(reviewer.background, counts(0, 0, 0));

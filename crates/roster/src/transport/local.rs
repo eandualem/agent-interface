@@ -14,40 +14,10 @@ use tokio::net::UnixStream;
 
 struct Authentication<'a> {
     key: &'a str,
-    identity: Option<&'a crate::profiles::Identity>,
+    identity: &'a crate::profiles::Identity,
     /// Sent as `x-backbone-request-id`, so a repeat after a lost reply gets
     /// the first result. Left out, the Rust service makes one.
     request_id: Option<&'a str>,
-}
-
-pub(super) fn request(
-    socket: &str,
-    path: &str,
-    key: &str,
-    body: Option<Vec<u8>>,
-    limit: usize,
-    timeout: Duration,
-) -> Result<Vec<u8>, Option<u16>> {
-    let auth = Authentication {
-        key,
-        identity: None,
-        request_id: None,
-    };
-    let response = exchange(
-        socket,
-        method(&body),
-        path,
-        auth,
-        body,
-        limit,
-        timeout,
-        false,
-    )?;
-    if (200..300).contains(&response.status) {
-        Ok(response.body)
-    } else {
-        Err(Some(response.status))
-    }
 }
 
 /// Bounded status and body, including structured refusal details.
@@ -55,31 +25,6 @@ pub(crate) struct Response {
     pub status: u16,
     pub body: Vec<u8>,
     pub sheet_warnings: Option<Vec<u8>>,
-}
-
-pub(crate) fn response(
-    socket: &str,
-    path: &str,
-    key: &str,
-    body: Option<Vec<u8>>,
-    limit: usize,
-    timeout: Duration,
-) -> Result<Response, Option<u16>> {
-    let auth = Authentication {
-        key,
-        identity: None,
-        request_id: None,
-    };
-    exchange(
-        socket,
-        method(&body),
-        path,
-        auth,
-        body,
-        limit,
-        timeout,
-        true,
-    )
 }
 
 pub(crate) fn profile_response(
@@ -92,19 +37,10 @@ pub(crate) fn profile_response(
 ) -> Result<Response, Option<u16>> {
     let auth = Authentication {
         key: credentials.0,
-        identity: Some(credentials.1),
+        identity: credentials.1,
         request_id: None,
     };
-    exchange(
-        socket,
-        method(&body),
-        path,
-        auth,
-        body,
-        limit,
-        timeout,
-        true,
-    )
+    exchange(socket, method(&body), path, auth, body, limit, timeout)
 }
 
 /// Remove a resource on a verified profile connection.
@@ -117,10 +53,10 @@ pub(crate) fn profile_delete(
 ) -> Result<Response, Option<u16>> {
     let auth = Authentication {
         key: credentials.0,
-        identity: Some(credentials.1),
+        identity: credentials.1,
         request_id: None,
     };
-    exchange(socket, "DELETE", path, auth, None, limit, timeout, true)
+    exchange(socket, "DELETE", path, auth, None, limit, timeout)
 }
 
 /// Change a resource on a verified profile connection with `method`, under
@@ -138,10 +74,10 @@ pub(crate) fn profile_write(
 ) -> Result<Response, Option<u16>> {
     let auth = Authentication {
         key: credentials.0,
-        identity: Some(credentials.1),
+        identity: credentials.1,
         request_id,
     };
-    exchange(socket, method, path, auth, body, limit, timeout, true)
+    exchange(socket, method, path, auth, body, limit, timeout)
 }
 
 fn method(body: &Option<Vec<u8>>) -> &'static str {
@@ -174,7 +110,6 @@ fn owned(socket: &Path) -> Result<u32, Option<u16>> {
     Ok(uid)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn exchange(
     socket: &str,
     method: &'static str,
@@ -183,7 +118,6 @@ fn exchange(
     body: Option<Vec<u8>>,
     limit: usize,
     timeout: Duration,
-    retain_errors: bool,
 ) -> Result<Response, Option<u16>> {
     let socket = Path::new(socket);
     let uid = owned(socket)?;
@@ -218,15 +152,13 @@ fn exchange(
                 value.set_sensitive(true);
                 request = request.header("Authorization", value);
             }
-            if let Some(identity) = auth.identity {
-                request = request.header("X-Backbone-Profile-ID", &identity.profile_id);
-                // A connection without a key is to the Rust service, which
-                // takes the profile alone.
-                if !auth.key.is_empty() {
-                    request = request
-                        .header("X-Backbone-Installation-ID", &identity.installation_id)
-                        .header("X-Backbone-Lifecycle-ID", &identity.lifecycle_id);
-                }
+            request = request.header("X-Backbone-Profile-ID", &auth.identity.profile_id);
+            // A connection without a key is to the Rust service, which
+            // takes the profile alone.
+            if !auth.key.is_empty() {
+                request = request
+                    .header("X-Backbone-Installation-ID", &auth.identity.installation_id)
+                    .header("X-Backbone-Lifecycle-ID", &auth.identity.lifecycle_id);
             }
             if let Some(id) = auth.request_id {
                 request = request.header("X-Backbone-Request-ID", id);
@@ -242,16 +174,11 @@ fn exchange(
             let result = async {
                 let response = sender.send_request(request).await.map_err(|_| None)?;
                 let status = response.status().as_u16();
-                if !retain_errors && !response.status().is_success() {
-                    return Ok(Response { status, body: Vec::new(), sheet_warnings: None });
-                }
-                let sheet_warnings = if retain_errors {
-                    match response.headers().get("X-Backbone-Sheet-Warnings") {
-                        Some(header) if header.as_bytes().len() <= 4096 => Some(header.as_bytes().to_vec()),
-                        Some(_) => return Err(None),
-                        None => None,
-                    }
-                } else { None };
+                let sheet_warnings = match response.headers().get("X-Backbone-Sheet-Warnings") {
+                    Some(header) if header.as_bytes().len() <= 4096 => Some(header.as_bytes().to_vec()),
+                    Some(_) => return Err(None),
+                    None => None,
+                };
                 let mut body = response.into_body();
                 let mut bytes = Vec::new();
                 while let Some(frame) = body.frame().await {

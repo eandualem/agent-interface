@@ -12,6 +12,7 @@ import json
 import os
 import re
 from pathlib import Path
+import shlex
 import socketserver
 import sqlite3
 import subprocess
@@ -40,8 +41,12 @@ def wait_for(check, label):
 with tempfile.TemporaryDirectory(prefix="document-smoke-") as directory:
     root = Path(directory)
     env = {k: v for k, v in os.environ.items()
-           if k != "TMUX" and not k.startswith(("BACKBONE_", "AGENT_INTERFACE_", "TMUX_WORKSPACES_"))}
+           if k != "TMUX" and not k.startswith(("BACKBONE_", "AGENT_INTERFACE_"))}
     env.pop("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", None)
+    # The app's interactive login shell reads a file ENV or BASH_ENV names
+    # after .profile, which could put another `backbone` first again.
+    env.pop("ENV", None)
+    env.pop("BASH_ENV", None)
     env.update(HOME=str(root), XDG_CONFIG_HOME=str(root / "config"),
                XDG_DATA_HOME=str(root / "data"), XDG_STATE_HOME=str(root / "state"),
                TMUX_TMPDIR=str(root / "tmux"), LIBGL_ALWAYS_SOFTWARE="1")
@@ -49,11 +54,39 @@ with tempfile.TemporaryDirectory(prefix="document-smoke-") as directory:
     settings = root / "config/agent-interface"
     settings.mkdir(parents=True)
     (settings / "settings.toml").write_text(f'interface_size = {SCALE}\n[setup]\nintro_seen = true\ndone = true\n')
+    # A stand-in for the Rust service: a `backbone` command that lists one
+    # served profile, whose private socket below answers the reads.
     provider = root / "provider"
     provider.mkdir(mode=0o700)
-    (provider / "backbone.db").touch()
     (provider / "run").mkdir(mode=0o700)
-    env.update(BACKBONE_DATA_DIR=str(provider), BACKBONE_API_KEY="test-only")
+    served = dict(protocol_version=1, profile_id="0a1b2c3d4e5f",
+                  instance_id="0190c3a2c1107a3b8c9d0e1f2a3b4c5d", machine=dict(id="5f2c9e0d1b7a4e38"))
+    entry = dict(served, state="serving", display_name="Work", home=True,
+                 socket=str(provider / "run/api.sock"), tmux_socket=str(root / "tmux/profile.sock"),
+                 credential_reference=dict(type="socket"))
+    commands = root / ".local/bin"
+    commands.mkdir(parents=True)
+    # It answers only the exact commands the app runs. The replies hold
+    # temporary paths, so each is quoted as one shell word.
+    listed = shlex.quote(json.dumps(dict(profiles=[entry])))
+    shown = shlex.quote(json.dumps(entry))
+    # Each argument is checked on its own, so one argument holding spaces
+    # does not pass for several.
+    (commands / "backbone").write_text(
+        '#!/bin/sh\n'
+        'if [ "$#" -eq 3 ] && [ "$1" = profiles ] && [ "$2" = list ] && [ "$3" = --json ]; then\n'
+        f"    printf '%s' {listed}; exit 0\n"
+        'fi\n'
+        'if [ "$#" -eq 5 ] && [ "$1" = profiles ] && [ "$2" = show ] && [ "$3" = --json ] '
+        f'&& [ "$4" = -- ] && [ "$5" = {served["profile_id"]} ]; then\n'
+        f"    printf '%s' {shown}; exit 0\n"
+        'fi\n'
+        'exit 2\n')
+    (commands / "backbone").chmod(0o755)
+    # The app asks a login shell, then PATH, for `backbone`: this fixture must
+    # come first in both, whatever the runner has installed.
+    env.update(SHELL="/bin/sh", PATH=f"{commands}:{env.get('PATH', '')}")
+    (root / ".profile").write_text(f'PATH={shlex.quote(str(commands))}:"$PATH"\nexport PATH\n')
     leaks = []
 
     class Trap(http.server.BaseHTTPRequestHandler):
@@ -97,7 +130,9 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             requests.append(self.path)
             path = self.path.split('?', 1)[0]
             status = 200
-            if path == '/api/documents/1':
+            if path == '/api/profile':
+                body = served
+            elif path == '/api/documents/1':
                 body = dict(metadata, html=html)
             elif path == '/api/documents':
                 body = dict(items=[metadata], has_more=False, next_before_id=None)
@@ -124,11 +159,11 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
     library.mkdir()
     leaf = dict(id="000000000003", agent=None, view="reports")
     model = dict(version=2, focus=False, selected="000000000001", workspaces=[
-        dict(id="000000000001", name="Fixture", selected="000000000002", tabs=[
+        dict(id="000000000001", name="Fixture", profile_id=served["profile_id"], selected="000000000002", tabs=[
             dict(id="000000000002", name="Fixture tab", focus=leaf['id'], tree=leaf),
             dict(id="000000000004", name="Other tab", focus="000000000005",
                  tree=dict(id="000000000005", agent=None, view="reports"))]),
-        dict(id="000000000006", name="Other workspace", selected="000000000007", tabs=[
+        dict(id="000000000006", name="Other workspace", profile_id=served["profile_id"], selected="000000000007", tabs=[
             dict(id="000000000007", name="Other workspace tab", focus="000000000008",
                  tree=dict(id="000000000008", agent=None, view="reports"))])])
     with sqlite3.connect(library / 'layouts.db') as db:

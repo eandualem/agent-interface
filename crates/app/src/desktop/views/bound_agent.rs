@@ -12,7 +12,7 @@ use agent_interface_roster::{
         Connection, Error as ProfileError,
         runtime_context::{self, Permissions, Target},
     },
-    views::{Agent, Part, Range, content},
+    views::{Agent, Part, content},
 };
 use gpui::{Context, Task, Window, div, prelude::*, px};
 use std::{cell::Cell, rc::Rc, time::Duration};
@@ -63,7 +63,7 @@ impl Reader {
         let part = match section {
             AgentSection::Skills => Part::Skills,
             AgentSection::Policies => Part::Policies,
-            AgentSection::Usage => Part::Usage(Range::Day),
+            AgentSection::Usage => Part::Usage,
             _ => Part::Card,
         };
         // A section's own read failing leaves the card; the section says why.
@@ -190,9 +190,8 @@ impl Card {
             .expect("validated registration");
         let poll = cx.spawn(async move |this, cx| {
             loop {
-                // The pace of the unbound agent view: its libraries change
-                // rarely. Waking every three seconds lets a section change
-                // take its own pace at once.
+                // An agent's libraries change rarely. Waking every three
+                // seconds lets a section change take its own pace at once.
                 let Ok(()) = this.update(cx, |card, cx| {
                     let every = match card.section {
                         AgentSection::Skills | AgentSection::Policies => 30,

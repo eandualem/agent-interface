@@ -22,8 +22,8 @@ fn retained_runtime_context_uses_canonical_permissions_and_original_registration
     let fixtures = fixture();
     let context_fixtures = &fixtures["runtime_context"];
     let registration = context_fixtures["available"]["registration_id"].clone();
-    let (directory, listener, url) = crate::transport::tests::local_listener();
-    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let (directory, listener, socket) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), &socket);
     let mut replies = vec![(200, identity), (200, inspected(registration.clone()))];
     for name in ["available", "missing", "invalid", "unreadable"] {
         replies.push((200, context_fixtures[name].clone()));
@@ -49,7 +49,6 @@ fn retained_runtime_context_uses_canonical_permissions_and_original_registration
         card.target.registration_id(),
         registration.as_str().unwrap()
     );
-    assert!(card.agent.permissions.files.is_empty());
     assert_eq!(card.agent.received.len(), 1);
     assert_eq!(card.agent.received[0].preview, "fixture");
     fs::write(
@@ -104,8 +103,8 @@ fn runtime_context_rejects_foreign_targets_and_malformed_permission_metadata() {
     let fixtures = fixture();
     let available = &fixtures["runtime_context"]["available"];
     let registration = available["registration_id"].as_str().unwrap();
-    let (directory, listener, url) = crate::transport::tests::local_listener();
-    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let (directory, listener, socket) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), &socket);
     let mut replies = vec![(200, identity), (200, inspected(json!(registration)))];
     let mut expected = Vec::new();
     for field in [
@@ -176,8 +175,8 @@ fn retained_inspection_cannot_replace_or_drop_registration() {
     let registration = fixtures["runtime_context"]["available"]["registration_id"]
         .as_str()
         .unwrap();
-    let (directory, listener, url) = crate::transport::tests::local_listener();
-    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let (directory, listener, socket) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), &socket);
     let mut missing = inspected(json!(registration));
     missing.as_object_mut().unwrap().remove("registration_id");
     let server = serve(
@@ -228,9 +227,8 @@ fn same_named_agent_contexts_remain_with_their_profile() {
     use super::runtime_context as context;
     let mut profiles = Vec::new();
     for label in ["a", "b"] {
-        let (directory, listener, url) = crate::transport::tests::local_listener();
-        let (mut profile, mut identity) =
-            profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+        let (directory, listener, socket) = crate::transport::tests::local_listener();
+        let (mut profile, mut identity) = profile_at(directory.path(), &socket);
         profile.item.profile_id = format!("profile-{label}");
         identity["profile_id"] = json!(profile.item.profile_id);
         let mut permissions = fixture()["runtime_context"]["available"].clone();
@@ -364,8 +362,8 @@ fn serve_with_hook(
 
 #[test]
 fn connection_pins_credentials_and_identity_through_followup_and_replacement() {
-    let (directory, listener, url) = crate::transport::tests::local_listener();
-    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let (directory, listener, socket) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), &socket);
     let mismatch = fixture()["http_errors"]["binding_mismatch"]["body"].clone();
     let server = serve(
         listener,
@@ -403,8 +401,8 @@ fn connection_pins_credentials_and_identity_through_followup_and_replacement() {
 
 #[test]
 fn bound_shell_request_carries_no_environment_and_checks_its_reply() {
-    let (directory, listener, url) = crate::transport::tests::local_listener();
-    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let (directory, listener, socket) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), &socket);
     let reply = |shell_id: &str, lifecycle: &str| {
         json!({"schema_version": 1, "profile_id": identity["profile_id"],
             "installation_id": identity["installation_id"], "lifecycle_id": lifecycle,
@@ -442,8 +440,8 @@ fn bound_shell_request_carries_no_environment_and_checks_its_reply() {
 
 #[test]
 fn shared_session_cases_decode_and_refusals_keep_their_status() {
-    let (directory, listener, url) = crate::transport::tests::local_listener();
-    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let (directory, listener, socket) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), &socket);
     let sessions = fixture()["sessions"].clone();
     let tuple = |mut reply: Value| {
         for key in ["profile_id", "installation_id", "lifecycle_id"] {
@@ -505,8 +503,8 @@ fn shared_session_cases_decode_and_refusals_keep_their_status() {
 #[test]
 fn account_status_reads_one_cli_and_refuses_another_answer() {
     use runtime_catalog::Authentication;
-    let (directory, listener, url) = crate::transport::tests::local_listener();
-    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let (directory, listener, socket) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), &socket);
     let sessions = fixture()["sessions"].clone();
     let reply = sessions["account_status_response"].clone();
     let mut other = reply.clone();
@@ -539,9 +537,10 @@ fn account_status_reads_one_cli_and_refuses_another_answer() {
 #[test]
 fn starting_a_stopped_agent_uses_the_bound_route_and_reports_the_outcome() {
     use crate::lifecycle::Outcome;
-    let (directory, listener, url) = crate::transport::tests::local_listener();
-    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let (directory, listener, socket) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), &socket);
     let started = |ok: bool, existed: bool, ready: &str| json!({"ok": ok, "session": "worker", "already_existed": existed, "ready": ready});
+    let probe = listener.try_clone().unwrap();
     let server = serve(
         listener,
         vec![
@@ -574,18 +573,95 @@ fn starting_a_stopped_agent_uses_the_bound_route_and_reports_the_outcome() {
         Outcome::Refused(_)
     ));
     let requests = server.join().unwrap();
+    // The handshake, then one request for each start; the invalid name sends
+    // none, and nothing connects again.
+    assert_eq!(requests.len(), 5);
+    assert_eq!(
+        probe.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
     assert!(requests[1].starts_with("post /api/agents/worker/start "));
     assert!(requests[1].contains("x-backbone-lifecycle-id: "));
-    let body = requests[2].rsplit("\r\n\r\n").next().unwrap();
-    let sent: Value = serde_json::from_str(body).unwrap();
-    assert_eq!(sent, json!({"resume": true, "wait": false}));
+    let body = |request: &str| -> Value {
+        serde_json::from_str(request.rsplit("\r\n\r\n").next().unwrap()).unwrap()
+    };
+    assert_eq!(body(&requests[1]), json!({"resume": false, "wait": false}));
+    assert_eq!(body(&requests[2]), json!({"resume": true, "wait": false}));
+}
+
+#[test]
+fn a_reply_of_exactly_the_limit_is_read_and_one_byte_more_is_refused() {
+    use crate::transport::tests::{ok, serve_on, served_connection};
+    let (_directory, connection, listener) = served_connection();
+    let chunk = |data: &str| format!("{:x}\r\n{data}\r\n", data.len());
+    let half = "x".repeat(RESPONSE_LIMIT / 2);
+    let replies = [
+        ok(&"x".repeat(RESPONSE_LIMIT)),
+        ok(&"x".repeat(RESPONSE_LIMIT + 1)),
+        // The same excess in several chunks, with no length declared up front.
+        format!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{}{}0\r\n\r\n",
+            chunk(&half),
+            chunk(&format!("{half}x")),
+        ),
+    ];
+    let mut read = Vec::new();
+    for reply in replies {
+        let server = serve_on(listener.try_clone().unwrap(), None, reply, Duration::ZERO);
+        read.push(
+            connection
+                .response("/api/example", None, RESPONSE_LIMIT)
+                .map(|response| response.body.len()),
+        );
+        server.join().unwrap();
+    }
+    assert_eq!(
+        read,
+        [Ok(RESPONSE_LIMIT), Err(Error::Invalid), Err(Error::Invalid)]
+    );
+}
+
+#[test]
+fn an_unreadable_or_lost_start_reply_is_unknown_after_one_request() {
+    use crate::lifecycle::Outcome;
+    let (directory, listener, socket) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), &socket);
+    let probe = listener.try_clone().unwrap();
+    let server = serve(
+        listener.try_clone().unwrap(),
+        vec![(200, identity), (200, json!("not json"))],
+    );
+    let connection = profile.connect().unwrap();
+    assert_eq!(
+        connection.start_agent("worker", false, None),
+        Outcome::Unknown
+    );
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].starts_with("post /api/agents/worker/start "));
+    // The connection closes before any answer.
+    let lost = crate::transport::tests::serve_on(listener, None, String::new(), Duration::ZERO);
+    assert_eq!(
+        connection.start_agent("worker", false, None),
+        Outcome::Unknown
+    );
+    assert!(
+        lost.join()
+            .unwrap()
+            .starts_with("POST /api/agents/worker/start ")
+    );
+    // Neither start was sent again.
+    assert_eq!(
+        probe.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
 }
 
 #[test]
 fn a_bound_start_sends_terminal_colours_when_the_runtime_supports_them() {
     use crate::lifecycle::{Outcome, TerminalDefaults};
-    let (directory, listener, url) = crate::transport::tests::local_listener();
-    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let (directory, listener, socket) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), &socket);
     let server = serve(
         listener,
         vec![
@@ -619,10 +695,45 @@ fn a_bound_start_sends_terminal_colours_when_the_runtime_supports_them() {
 }
 
 #[test]
+fn a_bound_start_sends_no_terminal_colours_unless_the_saved_runtime_supports_them() {
+    use crate::lifecycle::{Outcome, TerminalDefaults};
+    let started =
+        json!({"ok": true, "session": "worker", "already_existed": false, "ready": "not_waited"});
+    for replies in [
+        // The catalog supports colours, but not for the agent's saved runtime.
+        vec![
+            json!([{"id": "codex", "terminal_defaults_supported": true}]),
+            json!({"runtime": "shell"}),
+        ],
+        // No runtime advertises colour support.
+        vec![json!([{"id": "codex"}])],
+    ] {
+        let (directory, listener, socket) = crate::transport::tests::local_listener();
+        let (profile, identity) = profile_at(directory.path(), &socket);
+        let mut steps = vec![(200, identity)];
+        steps.extend(replies.into_iter().map(|reply| (200, reply)));
+        steps.push((200, started.clone()));
+        let server = serve(listener, steps);
+        let connection = profile.connect().unwrap();
+        let defaults = TerminalDefaults::new([255; 3], [24, 25, 29]);
+        assert!(matches!(
+            connection.start_agent("worker", false, Some(defaults)),
+            Outcome::Accepted(_)
+        ));
+        let requests = server.join().unwrap();
+        let start = requests.last().unwrap();
+        assert!(start.starts_with("post /api/agents/worker/start "));
+        let body = start.rsplit("\r\n\r\n").next().unwrap();
+        let sent: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(sent, json!({"resume": false, "wait": false}));
+    }
+}
+
+#[test]
 fn removing_an_agent_stops_it_first_and_treats_a_missing_one_as_removed() {
     const REG: &str = "1234567890abcdef1234567890abcdef";
-    let (directory, listener, url) = crate::transport::tests::local_listener();
-    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let (directory, listener, socket) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), &socket);
     let stopped = json!({"ok": true, "session": "worker"});
     let changed = json!({"detail": {"code": "registration_changed"}});
     let server = serve(
@@ -681,8 +792,8 @@ fn removing_an_agent_stops_it_first_and_treats_a_missing_one_as_removed() {
 
 #[test]
 fn agent_list_reads_again_while_registrations_settle_but_not_forever() {
-    let (directory, listener, url) = crate::transport::tests::local_listener();
-    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let (directory, listener, socket) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), &socket);
     let settling = (
         409,
         json!({"detail": {"code": "registration_changed", "message": "Changed."}}),
@@ -703,8 +814,8 @@ fn agent_list_reads_again_while_registrations_settle_but_not_forever() {
 
 #[test]
 fn bound_roster_preserves_typed_failures_and_decodes_success() {
-    let (directory, listener, url) = crate::transport::tests::local_listener();
-    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let (directory, listener, socket) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), &socket);
     let required = fixture()["http_errors"]["binding_required"]["body"].clone();
     let required_again = required.clone();
     let server = serve(
@@ -753,8 +864,8 @@ fn bound_roster_preserves_typed_failures_and_decodes_success() {
 
 #[test]
 fn handshake_rejects_wrong_identity_tmux_and_unsupported_provider() {
-    let (directory, listener, url) = crate::transport::tests::local_listener();
-    let (profile, mut identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let (directory, listener, socket) = crate::transport::tests::local_listener();
+    let (profile, mut identity) = profile_at(directory.path(), &socket);
     let mut wrong_instance = identity.clone();
     wrong_instance["lifecycle_id"] = json!("lifecycle-a2");
     identity["tmux"]["socket_path"] = json!(directory.path().join("other.sock"));
@@ -796,8 +907,8 @@ mod library_snapshots;
 
 #[test]
 fn adding_a_skill_and_a_document_keeps_the_providers_reason() {
-    let (directory, listener, url) = crate::transport::tests::local_listener();
-    let (profile, identity) = profile_at(directory.path(), url.strip_prefix("unix:").unwrap());
+    let (directory, listener, socket) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), &socket);
     let contract = fixture();
     let server = serve(
         listener,
@@ -873,8 +984,8 @@ fn served_entry(socket: &str) -> Value {
 
 #[test]
 fn rust_service_entries_list_and_connect_without_a_key() {
-    let (_directory, listener, url) = crate::transport::tests::local_listener();
-    let entry = served_entry(url.strip_prefix("unix:").unwrap());
+    let (_directory, listener, socket) = crate::transport::tests::local_listener();
+    let entry = served_entry(&socket);
     let failed = json!({"state": "failed", "profile_id": "9f8e7d6c5b4a", "code": "database_unreachable", "reason": "fixture"});
     let later = json!({"state": "moving", "profile_id": "1a2b3c4d5e6f"});
     let listed = json!({"profiles": [entry, failed, later]});
@@ -965,8 +1076,8 @@ fn rust_service_entries_list_and_connect_without_a_key() {
 
 #[test]
 fn the_rust_service_takes_a_skill_folders_files() {
-    let (directory, listener, url) = crate::transport::tests::local_listener();
-    let entry = served_entry(url.strip_prefix("unix:").unwrap());
+    let (directory, listener, socket) = crate::transport::tests::local_listener();
+    let entry = served_entry(&socket);
     let profile = Profile::parse(&serde_json::to_vec(&entry).unwrap()).unwrap();
     let mut identity = entry.clone();
     for field in ["state", "socket", "tmux_socket", "credential_reference"] {
@@ -1048,8 +1159,8 @@ fn a_skill_folder_is_read_within_the_services_bounds() {
 #[test]
 fn a_served_first_agent_starts_under_its_request_id_and_keeps_a_refusal() {
     use super::setup::start::{Readiness, Start};
-    let (_directory, listener, url) = crate::transport::tests::local_listener();
-    let entry = served_entry(url.strip_prefix("unix:").unwrap());
+    let (_directory, listener, socket) = crate::transport::tests::local_listener();
+    let entry = served_entry(&socket);
     let mut identity = entry.clone();
     for field in ["state", "socket", "tmux_socket", "credential_reference"] {
         identity.as_object_mut().unwrap().remove(field);

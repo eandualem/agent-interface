@@ -14,8 +14,7 @@ pub struct Reconciliation {
     /// `Store::save` commits this document only when `conflict` is false.
     pub document: Document,
     /// The caller must tell the user that the conflicting edit was refreshed and
-    /// needs to be retried. Independent local edits are also discarded on conflict,
-    /// matching the Python tool's refresh behavior.
+    /// needs to be retried. Independent local edits are also discarded on conflict.
     pub conflict: bool,
     /// Move input focus to navigation and require a new pane selection before
     /// typing: the active tree or attachment changed, or the active tab disappeared.

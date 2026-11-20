@@ -7,10 +7,6 @@
 
 use crate::profiles::{Connection, Identity};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
 
 mod edit;
 mod model;
@@ -26,11 +22,12 @@ const FILE_LIMIT: usize = 16 * 1024 * 1024;
 /// A fixed explanation without leaking response bodies or credentials.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// Configuration no longer names the provider whose data was displayed.
+    /// The request was prepared on another profile connection.
     ProviderChanged,
     /// The provider refused the original profile or lifecycle binding.
     BindingRefused,
-    /// No authenticated private local provider is configured.
+    /// A read did not complete: Backbone could not be reached, or the
+    /// transport refused its reply.
     Unavailable,
     /// Invalid or oversized client input, before any request.
     Invalid,
@@ -62,7 +59,7 @@ impl Error {
             Self::BindingRefused => {
                 "The original profile binding was refused. Keep the draft and reconnect to that profile."
             }
-            Self::Unavailable => "Sheets requires an authenticated private Backbone connection.",
+            Self::Unavailable => "Backbone did not complete this Sheets read.",
             Self::Invalid => {
                 "This request is invalid or exceeds the supported size. The draft is unchanged."
             }
@@ -101,61 +98,26 @@ impl Error {
     }
 }
 
-/// A connection bound to the provider that supplied the displayed workbook.
-#[derive(Clone, Debug)]
-pub struct Client {
-    source: Source,
-}
+/// A connection bound to the profile that supplied the displayed workbook.
 #[derive(Clone)]
-enum Source {
-    Legacy {
-        directory: PathBuf,
-        provider: String,
-    },
-    Bound(Connection),
+pub struct Client {
+    connection: Connection,
 }
-impl std::fmt::Debug for Source {
+impl std::fmt::Debug for Client {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Legacy {
-                directory,
-                provider,
-            } => f
-                .debug_struct("Legacy")
-                .field("directory", directory)
-                .field("provider", provider)
-                .finish(),
-            Self::Bound(connection) => f.debug_tuple("Bound").field(connection.identity()).finish(),
-        }
+        f.debug_tuple("Client")
+            .field(self.connection.identity())
+            .finish()
     }
 }
 impl Client {
     /// Retain a verified connection and its credentials for all workbook work.
     pub fn bound(connection: Connection) -> Self {
-        Self {
-            source: Source::Bound(connection),
-        }
+        Self { connection }
     }
-    /// Full origin for deferred results and pane ownership; legacy is explicit.
-    pub fn identity(&self) -> Option<&Identity> {
-        match &self.source {
-            Source::Bound(connection) => Some(connection.identity()),
-            Source::Legacy { .. } => None,
-        }
-    }
-    /// Resolve the existing configuration on a worker; no new credentials.
-    pub fn connect(directory: &Path) -> Result<Self, Error> {
-        let (provider, key) =
-            crate::configuration::configured(directory, None).ok_or(Error::Unavailable)?;
-        if !provider.starts_with("unix:") || key.is_empty() {
-            return Err(Error::Unavailable);
-        }
-        Ok(Self {
-            source: Source::Legacy {
-                directory: directory.into(),
-                provider,
-            },
-        })
+    /// Full origin for deferred results and pane ownership.
+    pub fn identity(&self) -> &Identity {
+        self.connection.identity()
     }
     fn request(&self, path: &str, body: Option<Vec<u8>>, limit: usize) -> Result<Vec<u8>, Error> {
         self.response(path, body, limit)
@@ -168,55 +130,17 @@ impl Client {
         limit: usize,
     ) -> Result<crate::transport::local::Response, Error> {
         let mutation = body.is_some();
-        let result = match &self.source {
-            Source::Legacy {
-                directory,
-                provider: expected,
-            } => {
-                let (provider, key) =
-                    crate::configuration::configured(directory, None).ok_or(Error::Unavailable)?;
-                if &provider != expected {
-                    return Err(Error::ProviderChanged);
-                }
-                if key.is_empty() {
-                    return Err(Error::Unavailable);
-                }
-                crate::transport::local::response(
-                    provider.strip_prefix("unix:").ok_or(Error::Unavailable)?,
-                    path,
-                    &key,
-                    body,
-                    limit,
-                    Duration::from_secs(if mutation { 20 } else { 15 }),
-                )
-                .map_err(|_| {
-                    if mutation {
-                        Error::Unknown
-                    } else {
-                        Error::Unavailable
-                    }
-                })?
-            }
-            Source::Bound(connection) => {
-                connection
-                    .response(path, body, limit)
-                    .map_err(|error| match error {
-                        crate::profiles::Error::BindingRequired
-                        | crate::profiles::Error::BindingMismatch => Error::BindingRefused,
-                        _ if mutation => Error::Unknown,
-                        // An oversized reply, not a missing connection.
-                        crate::profiles::Error::Invalid => Error::Unreadable,
-                        _ => Error::Unavailable,
-                    })?
-            }
-        };
-        if result.body.len() > limit {
-            return Err(if mutation {
-                Error::Unknown
-            } else {
-                Error::Unreadable
-            });
-        }
+        let result = self
+            .connection
+            .response(path, body, limit)
+            .map_err(|error| match error {
+                crate::profiles::Error::BindingRequired
+                | crate::profiles::Error::BindingMismatch => Error::BindingRefused,
+                _ if mutation => Error::Unknown,
+                // The connection refuses a body over `limit` as Invalid.
+                crate::profiles::Error::Invalid => Error::Unreadable,
+                _ => Error::Unavailable,
+            })?;
         if (200..300).contains(&result.status) {
             return Ok(result);
         }
@@ -422,22 +346,15 @@ impl Client {
     /// Send exactly once. An explicit retry calls this again with the same
     /// prepared value, not a freshly constructed edit or feedback key.
     pub fn submit(&self, request: &Prepared) -> Result<Accepted, Error> {
-        let same_origin = match (&self.source, &request.client.source) {
-            (Source::Bound(a), Source::Bound(b)) => a.identity() == b.identity(),
-            (Source::Legacy { provider: a, .. }, Source::Legacy { provider: b, .. }) => a == b,
-            _ => false,
-        };
-        if !same_origin {
+        if self.identity() != request.client.identity() {
             return Err(Error::ProviderChanged);
         }
         // A separately verified connection with rotated credentials must not
         // replace the snapshot that prepared an uncertain mutation.
-        let sender = if self.identity().is_some() {
-            &request.client
-        } else {
-            self
-        };
-        let bytes = sender.request(&request.path, Some(request.body.clone()), METADATA_LIMIT)?;
+        let bytes =
+            request
+                .client
+                .request(&request.path, Some(request.body.clone()), METADATA_LIMIT)?;
         match &request.expected {
             Expected::Feedback { sheet, revision } => {
                 let result: FeedbackReceipt =

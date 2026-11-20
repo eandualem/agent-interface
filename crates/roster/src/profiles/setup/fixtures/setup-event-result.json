@@ -1,0 +1,19 @@
+{
+  "schema_version": 3,
+  "request_id": "019a8f3e7c2b7d4e9a1f2b3c4d5e6f70",
+  "seq": 9,
+  "type": "result",
+  "action": "initialize",
+  "status": "completed",
+  "code": "initialized",
+  "message": "This machine is ready: its service runs and its profile Default is served.",
+  "data": {
+    "backbone_dir": "/home/user/.local/share/backbone",
+    "installation": "created",
+    "profile": null,
+    "service_state": "running",
+    "health": "healthy"
+  },
+  "completed_steps": ["preflight", "service", "profile", "starter"],
+  "retry": "none"
+}

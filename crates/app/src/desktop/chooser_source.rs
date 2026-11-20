@@ -2,7 +2,7 @@
 
 use std::{io, path::PathBuf, time::Duration};
 
-use agent_interface_core::{View, ViewKind};
+use agent_interface_core::View;
 use agent_interface_roster::{
     profiles::{Connection, Kind},
     views::{Member, Request},
@@ -13,9 +13,9 @@ use crate::sessions::{Observation, SessionSource};
 
 #[derive(Clone)]
 pub(super) enum Origin {
-    Legacy {
+    /// A workspace without a profile: the window's tmux server, no Backbone.
+    Standalone {
         socket: Option<PathBuf>,
-        directory: Option<PathBuf>,
     },
     Bound(Connection),
 }
@@ -24,58 +24,35 @@ impl Origin {
     pub fn connection(&self) -> Option<&Connection> {
         match self {
             Self::Bound(connection) => Some(connection),
-            Self::Legacy { .. } => None,
+            Self::Standalone { .. } => None,
         }
     }
 
     pub fn has_provider(&self) -> bool {
-        !matches!(
-            self,
-            Self::Legacy {
-                directory: None,
-                ..
-            }
-        )
-    }
-
-    pub fn allows_view(&self, kind: ViewKind) -> bool {
-        kind != ViewKind::Artifacts || shows_artifacts(self.connection().map(Connection::kind))
+        matches!(self, Self::Bound(_))
     }
 
     /// Bind navigation to the registration in the displayed profile list.
     pub fn agent_view(&self, member: &Member) -> Option<View> {
+        self.connection()?;
         let mut view = View::agent(member.name.clone(), None);
-        if self.connection().is_some() {
-            view.registration_id = Some(member.registration_id.clone()?);
-        }
+        view.registration_id = Some(member.registration_id.clone()?);
         view.is_valid().then_some(view)
     }
 
     pub fn team(&self, wake: impl Fn() + Send + 'static) -> io::Result<Option<Source>> {
-        if !self.has_provider() {
+        let Some(connection) = self.connection() else {
             return Ok(None);
-        }
-        let directory = match self {
-            Self::Legacy { directory, .. } => directory.clone(),
-            Self::Bound(_) => None,
         };
-        Source::start(
-            directory,
-            self.connection(),
-            Request::Team,
-            Duration::from_secs(3),
-            wake,
-        )
-        .map(Some)
+        Source::start(connection, Request::Team, Duration::from_secs(3), wake).map(Some)
     }
 
     pub fn sessions(&self, wake: impl Fn() + Send + 'static) -> io::Result<Option<Sessions>> {
         let source = match self {
-            Self::Legacy {
+            Self::Standalone {
                 socket: Some(socket),
-                ..
             } => SessionSource::start(socket.clone(), wake)?,
-            Self::Legacy { socket: None, .. } => return Ok(None),
+            Self::Standalone { socket: None } => return Ok(None),
             Self::Bound(connection) => SessionSource::start_bound(connection.clone(), wake)?,
         };
         Ok(Some(Sessions {
@@ -104,8 +81,8 @@ impl Sessions {
 
 /// Artifacts live in the app-wide library, so an isolated profile never shows
 /// them: a demo profile must not reveal the person's own content.
-pub(super) fn shows_artifacts(kind: Option<&Kind>) -> bool {
-    kind.is_none_or(|kind| *kind == Kind::LegacyDefault)
+pub(super) fn shows_artifacts(kind: &Kind) -> bool {
+    *kind == Kind::LegacyDefault
 }
 
 #[cfg(test)]
@@ -136,12 +113,9 @@ mod tests {
             Some(socket),
         );
         let origin = Origin::Bound(connection.clone());
-        assert!(origin.allows_view(ViewKind::Agent));
-        assert!(!origin.allows_view(ViewKind::Artifacts));
-        assert!(origin.allows_view(ViewKind::Reports));
-        assert!(super::shows_artifacts(None));
-        assert!(super::shows_artifacts(Some(&Kind::LegacyDefault)));
-        assert!(!super::shows_artifacts(Some(&Kind::Isolated)));
+        assert!(origin.has_provider());
+        assert!(super::shows_artifacts(&Kind::LegacyDefault));
+        assert!(!super::shows_artifacts(&Kind::Isolated));
         let (wake, ready) = mpsc::channel();
         let source = origin
             .sessions(move || {
@@ -182,12 +156,9 @@ mod tests {
         assert!(result.is_err());
         drop(source);
         server.join().unwrap();
-        let legacy = Origin::Legacy {
-            socket: None,
-            directory: None,
-        };
-        assert!(legacy.sessions(|| {}).unwrap().is_none());
-        assert!(legacy.team(|| {}).unwrap().is_none());
-        assert!(legacy.allows_view(ViewKind::Agent));
+        let standalone = Origin::Standalone { socket: None };
+        assert!(standalone.sessions(|| {}).unwrap().is_none());
+        assert!(standalone.team(|| {}).unwrap().is_none());
+        assert!(!standalone.has_provider());
     }
 }

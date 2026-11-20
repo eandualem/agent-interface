@@ -1,7 +1,7 @@
 //! The new-pane chooser: what an empty pane offers before anything runs.
 //!
-//! Buttons open a terminal, the Reports & updates sections or the other
-//! Backbone views. Under a filter, the sessions list shows Backbone agents
+//! Buttons open a terminal and, in a workspace with a profile, the Reports &
+//! updates sections or the other Backbone views. Under a filter, the sessions list shows Backbone agents
 //! first, needing you first, then the other tmux sessions; the other lists show
 //! what a pane can display instead of a terminal. Nothing is created until a choice is made, and the owner makes
 //! it from the [`NewPaneEvent`] this emits.
@@ -112,7 +112,7 @@ const VIEWS: [ViewChoice; 7] = [
     ViewChoice {
         glyph: "⚿",
         label: "Agent",
-        description: "One agent: permissions, connections, its skills, policies, usage",
+        description: "One agent: overview and runtime permissions",
         scope: "pick an agent",
         kind: ViewKind::Agent,
     },
@@ -258,21 +258,17 @@ pub(super) struct NewPane {
 impl EventEmitter<NewPaneEvent> for NewPane {}
 
 impl NewPane {
+    /// The chooser in a workspace without a profile, which has no agents.
     pub fn new(
         pane: String,
         socket: Option<PathBuf>,
-        backbone: Option<PathBuf>,
-        agents: crate::desktop::agent_status::LiveAgents,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         Self::new_with(
             pane,
-            Origin::Legacy {
-                socket,
-                directory: backbone,
-            },
-            agents,
+            Origin::Standalone { socket },
+            Default::default(),
             window,
             cx,
         )
@@ -506,9 +502,7 @@ impl NewPane {
                     VIEWS
                         .iter()
                         .enumerate()
-                        .filter(|(_, view)| {
-                            self.origin.allows_view(view.kind) && self.matches(view.label)
-                        })
+                        .filter(|(_, view)| self.origin.has_provider() && self.matches(view.label))
                         .map(|(index, _)| Row::View(index)),
                 );
             }
@@ -608,9 +602,6 @@ impl NewPane {
     }
 
     fn choose(&mut self, row: Row, cx: &mut Context<Self>) {
-        if matches!(&row, Row::View(index) if !self.origin.allows_view(VIEWS[*index].kind)) {
-            return;
-        }
         match row {
             Row::Heading(..) => {}
             Row::Agent(member) => cx.emit(NewPaneEvent::Attach(member.name)),
@@ -620,13 +611,7 @@ impl NewPane {
                 kind => cx.emit(NewPaneEvent::OpenView(View::of(kind))),
             },
             Row::Section(index) => cx.emit(NewPaneEvent::OpenSection(SECTIONS[index].section)),
-            Row::Pick(view) => {
-                if view.is_valid()
-                    && (self.origin.connection().is_none() || view.registration_id.is_some())
-                {
-                    cx.emit(NewPaneEvent::OpenView(view));
-                }
-            }
+            Row::Pick(view) => cx.emit(NewPaneEvent::OpenView(view)),
         }
     }
 
@@ -813,11 +798,7 @@ impl Render for NewPane {
                         id,
                         view.glyph,
                         view.label,
-                        if self.origin.connection().is_some() && view.kind == ViewKind::Agent {
-                            "One agent: overview and runtime permissions"
-                        } else {
-                            view.description
-                        },
+                        view.description,
                         view.scope,
                         key,
                         selected,
@@ -1096,15 +1077,12 @@ mod tests {
         assert!(origin.agent_view(&member).is_none());
         member.registration_id = Some("invalid".into());
         assert!(origin.agent_view(&member).is_none());
-        let legacy = Origin::Legacy {
-            socket: None,
-            directory: None,
-        };
+        // A registration a profile accepts still opens no agent view without one.
+        member.registration_id = Some("abcdef1234567890abcdef1234567890".into());
+        assert!(origin.agent_view(&member).is_some());
         assert!(
-            legacy
+            Origin::Standalone { socket: None }
                 .agent_view(&member)
-                .unwrap()
-                .registration_id
                 .is_none()
         );
         server.join().unwrap();

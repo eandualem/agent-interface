@@ -4,8 +4,8 @@ use serde_json::json;
 use std::{
     io::{Read, Write},
     os::unix::net::UnixStream,
-    process::Command,
     thread,
+    time::Duration,
 };
 
 fn id(n: u8) -> Id {
@@ -77,9 +77,8 @@ fn explicit_types_and_dates_are_preserved() {
 
 #[test]
 fn private_http_fixture_checks_lost_reply_retry_and_stale_drafts() {
-    let directory = tempfile::tempdir().unwrap();
-    let (listener, _) = crate::transport::tests::listener_in_data_dir(directory.path());
-    let worker = thread::spawn(move || {
+    let (_directory, _profile, connection, worker) = bound::connection("a", |listener, _| {
+        listener.set_nonblocking(false).unwrap();
         let (mut first, _) = listener.accept().unwrap();
         let (headers, original) = request(&mut first);
         assert!(headers.starts_with(&format!("POST /api/sheets/{}/feedback HTTP/1.1", id(1))));
@@ -163,26 +162,7 @@ fn private_http_fixture_checks_lost_reply_retry_and_stale_drafts() {
             );
         }
     });
-    let status = Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "sheets::tests::transport_fixture_child",
-            "--nocapture",
-        ])
-        .env("SHEETS_FIXTURE_DIRECTORY", directory.path())
-        .env("BACKBONE_API_KEY", "fixture-token")
-        .status()
-        .unwrap();
-    assert!(status.success());
-    worker.join().unwrap();
-}
-
-#[test]
-fn transport_fixture_child() {
-    let Some(directory) = std::env::var_os("SHEETS_FIXTURE_DIRECTORY") else {
-        return;
-    };
-    let client = Client::connect(Path::new(&directory)).unwrap();
+    let client = Client::bound(connection);
     let feedback = Feedback::operator(
         id(7),
         id(3),
@@ -221,6 +201,7 @@ fn transport_fixture_child() {
         vec![id(8), id(9)]
     );
     assert!(matches!(client.list_all(), Err(Error::Unreadable)));
+    worker.join().unwrap();
 }
 
 #[test]

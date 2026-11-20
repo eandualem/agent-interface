@@ -1,5 +1,5 @@
 //! Provider-parsed permissions retained by connection and agent registration.
-//! Display paths are metadata only; this module never reads runtime files.
+//! Display paths are metadata only and are never read.
 
 use serde::Deserialize;
 
@@ -33,7 +33,7 @@ pub struct Target {
 
 /// The initial card and the immutable target acquired in that same response.
 pub struct Inspection {
-    /// Card metadata from the bound provider, without local file enrichment.
+    /// Card metadata from the bound provider.
     pub agent: Agent,
     /// Retain this target for every subsequent inspection and permissions read.
     pub target: Target,

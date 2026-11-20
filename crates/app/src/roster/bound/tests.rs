@@ -372,3 +372,59 @@ fn pushed_state_and_run_changes_read_the_roster_and_runs_at_once() {
     // Without background counts or active runs, runs are never asked for.
     assert!(!runs_early);
 }
+
+#[test]
+fn a_read_after_a_refusal_clears_it_and_shows_the_new_roster() {
+    use crate::roster::content::tests::{Reply, provider};
+    let roster = |state: &str, reason: &str| {
+        Reply::ok(
+            "/api/agents",
+            json!({"items": [{"name": "worker", "state": state, "reason": reason}]}),
+        )
+    };
+    let swarms = || Reply::ok("/api/swarms", json!({"items": []}));
+    let (_directory, connection, server) = provider(
+        "a",
+        vec![
+            roster("busy", "first"),
+            swarms(),
+            Reply {
+                status: 401,
+                ..Reply::ok("/api/agents", json!({}))
+            },
+            roster("waiting_for_human", "second"),
+            swarms(),
+        ],
+    );
+    let (wake, woken) = mpsc::channel();
+    let source = BoundRosterSource::start(connection, move || {
+        let _ = wake.send(());
+    })
+    .unwrap();
+    let next = || loop {
+        woken.recv_timeout(Duration::from_secs(10)).unwrap();
+        if let Some(update) = source.take_update() {
+            break update;
+        }
+    };
+    let first = next();
+    assert!(first.error.is_none() && first.snapshot.error.is_none());
+    let refused = next();
+    assert_eq!(refused.error, Some(Error::Refused(401)));
+    assert!(refused.snapshot.error.is_some());
+    assert_eq!(refused.snapshot.states, first.snapshot.states);
+    assert_eq!(refused.snapshot.observed_at, first.snapshot.observed_at);
+    let recovered = next();
+    assert!(recovered.error.is_none() && recovered.snapshot.error.is_none());
+    assert_eq!(recovered.snapshot.states["worker"], "waiting_for_human");
+    assert_eq!(
+        recovered.snapshot.details["worker"].reason.as_deref(),
+        Some("second")
+    );
+    assert!(recovered.snapshot.observed_at > first.snapshot.observed_at);
+    // Drop alone stops the worker, and its wake callback goes with it.
+    drop(source);
+    while woken.try_recv() == Ok(()) {}
+    assert_eq!(woken.try_recv(), Err(mpsc::TryRecvError::Disconnected));
+    server.join().unwrap();
+}

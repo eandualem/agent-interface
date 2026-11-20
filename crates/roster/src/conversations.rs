@@ -6,8 +6,6 @@
 //! version or plan step appears. Transport and parsing run on I/O workers,
 //! never the UI thread.
 
-use std::{path::Path, time::Duration};
-
 use serde::{Deserialize, Serialize};
 
 use crate::profiles::{Connection, Identity};
@@ -57,7 +55,7 @@ pub struct Entry {
 pub enum Body {
     /// Something the owner or an agent wrote.
     Message {
-        /// Agent Backbone sets the limit: 4,000 characters in 0.5.1, 64,000 later.
+        /// The text; Agent Backbone sets its length limit.
         text: String,
         /// Owner messages: the agent it was addressed to.
         #[serde(default)]
@@ -197,9 +195,6 @@ pub struct Step {
 /// The most a response may hold; the provider caps a page at 1 MiB.
 const LIMIT: usize = 1024 * 1024 + 64 * 1024;
 
-/// The most a skills or policies listing may hold, as the library views read it.
-const LISTING_LIMIT: usize = 4 * 1024 * 1024;
-
 impl Kind {
     /// The path segment the API uses.
     pub fn name(self) -> &'static str {
@@ -290,7 +285,7 @@ pub enum Page {
 pub struct Message {
     /// Client idempotency key; a retry reuses it.
     pub request_id: String,
-    /// Agent Backbone sets the limit: 4,000 characters in 0.5.1, 64,000 later.
+    /// The text; Agent Backbone sets its length limit.
     pub text: String,
     /// Registration ID or name; `None` for the responsible agent.
     pub recipient: Option<String>,
@@ -320,10 +315,8 @@ pub enum Outcome {
 /// Why a conversation could not be read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// No authenticated private local provider is configured.
+    /// Backbone could not provide the conversation: it answered with an unexpected status.
     Unavailable,
-    /// The configured provider is not the one the record came from.
-    Moved,
     /// Backbone answered but did not let this app read or write it.
     Forbidden,
     /// The provider does not offer conversations yet.
@@ -340,8 +333,7 @@ impl Error {
     /// Safe, fixed text for the person.
     pub fn message(self) -> &'static str {
         match self {
-            Self::Unavailable => "Conversations need an authenticated private Backbone connection.",
-            Self::Moved => "The Backbone connection changed. Reopen this item to continue.",
+            Self::Unavailable => "Backbone could not provide this conversation.",
             Self::Forbidden => "Backbone did not let this app open this conversation.",
             Self::Unsupported => "This Agent Backbone does not keep conversations yet.",
             Self::UnknownArtifact => "Backbone has no record of this item.",
@@ -392,46 +384,35 @@ impl Client {
 
     /// Read a page on this artifact's original connection, on an I/O worker.
     pub fn show(&self, page: &Page) -> Result<Conversation, Error> {
-        show_using(&Api::Bound(&self.connection), self.kind, &self.id, page)
+        show_using(&self.connection, self.kind, &self.id, page)
     }
 
     /// Send on the original connection. Retry an uncertain result with the same
     /// message, including its original request ID, recipient and anchor.
     pub fn send(&self, message: &Message) -> Outcome {
-        send_using(&Api::Bound(&self.connection), self.kind, &self.id, message)
+        send_using(&self.connection, self.kind, &self.id, message)
     }
 
     /// Retry delivery of the original entry; preserve the request ID on retry.
     pub fn redeliver(&self, entry: u64, request_id: &str) -> Outcome {
-        redeliver_using(
-            &Api::Bound(&self.connection),
-            self.kind,
-            &self.id,
-            entry,
-            request_id,
-        )
+        redeliver_using(&self.connection, self.kind, &self.id, entry, request_id)
     }
 
     /// Advance this artifact's read marker without changing its origin.
     pub fn read(&self, through: u64) -> Result<Counts, Error> {
-        read_using(&Api::Bound(&self.connection), self.kind, &self.id, through)
+        read_using(&self.connection, self.kind, &self.id, through)
     }
 }
 
 /// Read one page of a conversation. Runs on an I/O worker.
-pub fn show(
-    directory: &Path,
-    provider: &str,
+fn show_using(
+    connection: &Connection,
     kind: Kind,
     id: &str,
     page: &Page,
 ) -> Result<Conversation, Error> {
-    show_using(&Api::Legacy(directory, provider), kind, id, page)
-}
-
-fn show_using(api: &Api<'_>, kind: Kind, id: &str, page: &Page) -> Result<Conversation, Error> {
     let path = show_path(kind, id, page).ok_or(Error::Unreadable)?;
-    let response = api.exchange(&path, None)?;
+    let response = exchange(connection, &path, None)?;
     match response.status {
         200 => parse(&response.body),
         404 => Err(missing(&response.body)),
@@ -440,111 +421,46 @@ fn show_using(api: &Api<'_>, kind: Kind, id: &str, page: &Page) -> Result<Conver
     }
 }
 
-/// The provider conversations go to now, for an artifact read without one,
-/// such as a skill. Runs on an I/O worker; the key never leaves this crate.
-pub fn provider(directory: &Path) -> Option<String> {
-    crate::configuration::configured(directory, None).map(|(provider, _)| provider)
-}
-
-/// The conversation identity of a skill or policy, by the source path the
-/// app shows it under. A provider without the identity is `Unsupported`.
-/// Runs on an I/O worker.
-pub fn resolve(directory: &Path, provider: &str, kind: Kind, path: &str) -> Result<String, Error> {
-    #[derive(Deserialize)]
-    struct Item {
-        #[serde(default)]
-        path: String,
-        #[serde(default)]
-        artifact_id: Option<String>,
-    }
-    #[derive(Deserialize)]
-    struct Listing {
-        items: Vec<Item>,
-    }
-    let route = match kind {
-        Kind::Skill => "/api/skills",
-        Kind::Policy => "/api/policies",
-        _ => return Err(Error::Unsupported),
-    };
-    let response = exchange_within(directory, provider, route, None, LISTING_LIMIT)?;
-    match response.status {
-        200 => {
-            let listing: Listing =
-                serde_json::from_slice(&response.body).map_err(|_| Error::Unreadable)?;
-            listing
-                .items
-                .into_iter()
-                .find(|item| item.path == path)
-                .and_then(|item| item.artifact_id)
-                .filter(|id| token(id))
-                .ok_or(Error::Unsupported)
-        }
-        404 => Err(Error::Unsupported),
-        401 | 403 => Err(Error::Forbidden),
-        _ => Err(Error::Unavailable),
-    }
-}
-
 /// Append an owner message. Runs on an I/O worker.
-pub fn send(directory: &Path, provider: &str, kind: Kind, id: &str, message: &Message) -> Outcome {
-    send_using(&Api::Legacy(directory, provider), kind, id, message)
-}
-
-fn send_using(api: &Api<'_>, kind: Kind, id: &str, message: &Message) -> Outcome {
+fn send_using(connection: &Connection, kind: Kind, id: &str, message: &Message) -> Outcome {
     let Some(path) = base(kind, id).map(|base| base + "/messages") else {
         return Outcome::Unknown;
     };
     let Ok(body) = serde_json::to_vec(message) else {
         return Outcome::Unknown;
     };
-    outcome(api.exchange(&path, Some(body)))
+    outcome(exchange(connection, &path, Some(body)))
 }
 
 /// Queue a new delivery for a failed owner message. Runs on an I/O worker.
-pub fn redeliver(
-    directory: &Path,
-    provider: &str,
+fn redeliver_using(
+    connection: &Connection,
     kind: Kind,
     id: &str,
     entry: u64,
     request_id: &str,
 ) -> Outcome {
-    redeliver_using(
-        &Api::Legacy(directory, provider),
-        kind,
-        id,
-        entry,
-        request_id,
-    )
-}
-
-fn redeliver_using(api: &Api<'_>, kind: Kind, id: &str, entry: u64, request_id: &str) -> Outcome {
     let Some(path) = base(kind, id).map(|base| format!("{base}/messages/{entry}/redeliver")) else {
         return Outcome::Unknown;
     };
     let body = serde_json::json!({ "request_id": request_id })
         .to_string()
         .into_bytes();
-    outcome(api.exchange(&path, Some(body)))
+    outcome(exchange(connection, &path, Some(body)))
 }
 
 /// Move the owner's read marker forward. Runs on an I/O worker.
-pub fn read(
-    directory: &Path,
-    provider: &str,
+fn read_using(
+    connection: &Connection,
     kind: Kind,
     id: &str,
     through: u64,
 ) -> Result<Counts, Error> {
-    read_using(&Api::Legacy(directory, provider), kind, id, through)
-}
-
-fn read_using(api: &Api<'_>, kind: Kind, id: &str, through: u64) -> Result<Counts, Error> {
     let path = base(kind, id).ok_or(Error::Unreadable)? + "/read";
     let body = serde_json::json!({ "read_through": through })
         .to_string()
         .into_bytes();
-    let response = api.exchange(&path, Some(body))?;
+    let response = exchange(connection, &path, Some(body))?;
     match response.status {
         200 => parse(&response.body),
         404 => Err(missing(&response.body)),
@@ -581,65 +497,14 @@ fn token(text: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b':' | b'.'))
 }
 
-enum Api<'a> {
-    Legacy(&'a Path, &'a str),
-    Bound(&'a Connection),
-}
-
-impl Api<'_> {
-    fn exchange(
-        &self,
-        path: &str,
-        body: Option<Vec<u8>>,
-    ) -> Result<crate::transport::local::Response, Error> {
-        match self {
-            Self::Legacy(directory, provider) => {
-                exchange_within(directory, provider, path, body, LIMIT)
-            }
-            Self::Bound(connection) => connection
-                .response(path, body, LIMIT)
-                .map_err(Error::Connection),
-        }
-    }
-}
-
-fn exchange_within(
-    directory: &Path,
-    expected: &str,
+fn exchange(
+    connection: &Connection,
     path: &str,
     body: Option<Vec<u8>>,
-    limit: usize,
 ) -> Result<crate::transport::local::Response, Error> {
-    let (provider, key) =
-        crate::configuration::configured(directory, None).ok_or(Error::Unavailable)?;
-    if provider != expected {
-        return Err(Error::Moved);
-    }
-    // Conversations need the authenticated private socket; another connection
-    // keeps the one-way feedback it already offers.
-    let socket = provider.strip_prefix("unix:").ok_or(Error::Unsupported)?;
-    if key.is_empty() {
-        return Err(Error::Unsupported);
-    }
-    let route = path.split('?').next().unwrap_or_default();
-    let response =
-        crate::transport::local::response(socket, path, &key, body, limit, Duration::from_secs(15))
-            .map_err(|_| {
-                tracing::debug!(
-                    event = "conversation_unreachable",
-                    route,
-                    "Conversation request failed"
-                );
-                Error::Unavailable
-            })?;
-    // The status only: bodies hold the person's messages.
-    tracing::debug!(
-        event = "conversation_response",
-        route,
-        status = response.status,
-        "Conversation request answered"
-    );
-    Ok(response)
+    connection
+        .response(path, body, LIMIT)
+        .map_err(Error::Connection)
 }
 
 fn parse<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, Error> {
@@ -674,13 +539,6 @@ fn outcome(response: Result<crate::transport::local::Response, Error>) -> Outcom
     }
     let response = match response {
         Ok(response) => response,
-        // Nothing was sent to a provider the record did not come from.
-        Err(error @ Error::Moved) => {
-            return Outcome::Refused {
-                error: "moved".into(),
-                message: error.message().into(),
-            };
-        }
         Err(
             error @ Error::Connection(
                 crate::profiles::Error::BindingRequired | crate::profiles::Error::BindingMismatch,

@@ -73,8 +73,8 @@ a similar one in a view.
 
 - **Panel** (`sidebar.rs`): titlebar strip with the window controls, the
   workspace block (icon tile, name, tab count, chooser), the jump field, the
-  tab list, the agents section (when Agent Backbone is installed) and the
-  workspace switcher with Settings. Its right edge drags to resize.
+  tab list, the agents section (when the active workspace's profile has a
+  roster to show) and the workspace switcher with Settings. Its right edge drags to resize.
 - **Content** (`frame.rs`, `pane_cards.rs`): panes as rounded cards on the
   window's `ground`, separated by `pane_gap`, which is also the resize handle.
   The focused card has a `focus` border and a `focus_halo` glow; the others
@@ -255,9 +255,10 @@ All in `components.rs`; each takes its look from the tokens.
 
 A pane can show a view instead of a terminal.
 An empty pane shows the new-pane chooser (`desktop/new_pane.rs`): Open
-terminal, **Reports & updates** and **Skills, usage, team…**, a filter, Backbone
-agents then other tmux sessions, the seven Reports & updates sections and the
-views list. Tab and Shift-Tab move between the lists; a chosen section opens
+terminal, a filter and the tmux sessions. In a workspace with a verified
+profile connection it also shows **Reports & updates** and **Skills, usage,
+team…**, the profile's agents before the other sessions, the seven Reports &
+updates sections and the views list. Tab and Shift-Tab move between the lists; a chosen section opens
 once and is not saved with the pane. Each view lives in `desktop/views/` and
 follows its design board with its own header (`view_header`), controls, list
 and footer; a view pane has no generic pane header.

@@ -264,7 +264,6 @@ fn same_ids_keep_content_pagination_details_and_credentials_on_each_origin() {
             let content::Data::Reports(page) = first.result.unwrap() else {
                 panic!()
             };
-            assert!(page.items[0].provider_url.is_empty());
             assert_eq!(
                 page.runtimes.get("worker").map(String::as_str),
                 (!matches!(query, ReportQuery::Documents(..)))
@@ -418,8 +417,48 @@ fn delayed_workers_cancel_old_generations_and_clear_pending_results() {
     // A Document ignores its short polling interval; B retains its own wait.
     assert!(woken_a.recv_timeout(Duration::from_millis(60)).is_err());
     assert!(woken_b.recv_timeout(Duration::from_millis(60)).is_err());
+    // Drop alone stops each worker, and its wake callback goes with it.
     drop(source_a);
     drop(source_b);
+    for woken in [&woken_a, &woken_b] {
+        while woken.try_recv() == Ok(()) {}
+        assert_eq!(woken.try_recv(), Err(mpsc::TryRecvError::Disconnected));
+    }
     server_a.join().unwrap();
     server_b.join().unwrap();
+}
+
+#[test]
+fn a_failed_document_read_waits_for_an_explicit_refresh() {
+    let (_dir, connection, server) = provider(
+        "a",
+        vec![
+            Reply {
+                status: 404,
+                ..Reply::ok("/api/documents/7", json!({}))
+            },
+            Reply::ok("/api/documents/7", document("a")),
+        ],
+    );
+    let (wake, woken) = mpsc::channel();
+    let source = BoundContentSource::start(
+        connection,
+        content::Request::Document(7),
+        Duration::from_millis(30),
+        move || {
+            let _ = wake.send(());
+        },
+    )
+    .unwrap();
+    woken.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(source.take_update().unwrap().read.result.is_err());
+    // A Document is not polled, even after a failed read and a short interval.
+    assert!(woken.recv_timeout(Duration::from_millis(200)).is_err());
+    // Refreshing the same revision reads it again.
+    source.set_request(content::Request::Document(7));
+    woken.recv_timeout(Duration::from_secs(5)).unwrap();
+    let update = source.take_update().unwrap();
+    assert!(format!("{:?}", update.read.result).contains("sentinel-a"));
+    drop(source);
+    server.join().unwrap();
 }

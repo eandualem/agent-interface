@@ -1,6 +1,5 @@
 //! Team: who works where. Agents grouped by repository, tag or swarm, with
-//! their states; a click shows an agent's terminal, ⌥-click opens its card
-//! beside this pane.
+//! their states; ⌥-click opens an agent's card beside this pane.
 
 use std::collections::BTreeMap;
 
@@ -137,14 +136,7 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
         .child(summary)
         .child(ui::grouped_page("team-rows", column))
         .child(ui::view_footer(
-            if pane.connection.is_some() {
-                &[("⌥ click", "agent card beside")]
-            } else {
-                &[
-                    ("click", "show its terminal"),
-                    ("⌥ click", "agent card beside"),
-                ]
-            },
+            &[("⌥ click", "agent card beside")],
             "updates every 3 s",
         ))
         .into_any_element()
@@ -369,7 +361,7 @@ pub(super) fn agent_row(
         .when(!first, |el| {
             el.border_t(px(t.size.hairline)).border_color(c.line)
         })
-        .when(pane.connection.is_none() || registration.is_some(), |el| {
+        .when(registration.is_some(), |el| {
             el.cursor_pointer().hover(|el| el.bg(colors().hover))
         })
         .when(state == AgentState::Offline, |el| el.opacity(0.7))
@@ -437,40 +429,23 @@ pub(super) fn agent_row(
                 String::new()
             }),
         )
-        .on_click(cx.listener(move |pane, event: &gpui::ClickEvent, _, cx| {
-            if let Some(event) = row_event(
-                pane.connection.as_ref(),
-                &name,
-                registration.as_deref(),
-                event.modifiers().alt,
-            ) {
+        .on_click(cx.listener(move |_, event: &gpui::ClickEvent, _, cx| {
+            if let Some(event) = row_event(&name, registration.as_deref(), event.modifiers().alt) {
                 cx.emit(event);
             }
         }))
         .into_any_element()
 }
 
-// Bound agent cards capture the observed registration before emitting navigation.
-// Name-only terminal navigation remains unavailable from these rows.
-fn row_event(
-    connection: Option<&agent_interface_roster::profiles::Connection>,
-    name: &str,
-    registration: Option<&str>,
-    card: bool,
-) -> Option<ViewEvent> {
-    if connection.is_some() {
-        if !card {
-            return None;
-        }
-        let mut view = View::agent(name.to_owned(), None);
-        view.registration_id = Some(registration?.to_owned());
-        return view.is_valid().then_some(ViewEvent::OpenBeside(view));
+// ⌥-click opens the agent's card under the registration the row observed; a
+// plain click does nothing.
+fn row_event(name: &str, registration: Option<&str>, card: bool) -> Option<ViewEvent> {
+    if !card {
+        return None;
     }
-    Some(if card {
-        ViewEvent::OpenBeside(View::agent(name.to_owned(), None))
-    } else {
-        ViewEvent::ShowAgent(name.to_owned())
-    })
+    let mut view = View::agent(name.to_owned(), None);
+    view.registration_id = Some(registration?.to_owned());
+    view.is_valid().then_some(ViewEvent::OpenBeside(view))
 }
 
 #[cfg(test)]
@@ -478,21 +453,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bound_rows_cannot_route_same_name_to_legacy_terminal_or_card() {
-        let (_dir, connection, server) = crate::roster::content::tests::provider("a", vec![]);
-        for card in [false, true] {
-            assert!(row_event(Some(&connection), "worker", None, card).is_none());
-            assert!(row_event(None, "worker", None, card).is_some());
-        }
+    fn rows_open_only_a_registered_card_on_alt_click() {
         let registration = "1234567890abcdef1234567890abcdef";
-        assert!(row_event(Some(&connection), "worker", Some("bad"), true).is_none());
-        let Some(ViewEvent::OpenBeside(view)) =
-            row_event(Some(&connection), "worker", Some(registration), true)
+        for card in [false, true] {
+            assert!(row_event("worker", None, card).is_none());
+        }
+        assert!(row_event("worker", Some(registration), false).is_none());
+        assert!(row_event("worker", Some("bad"), true).is_none());
+        let Some(ViewEvent::OpenBeside(view)) = row_event("worker", Some(registration), true)
         else {
             panic!("missing registered card")
         };
         assert_eq!(view.registration_id.as_deref(), Some(registration));
-        server.join().unwrap();
     }
 
     #[test]

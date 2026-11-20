@@ -1,12 +1,12 @@
 # Install Agent Interface
 
-You do not need to install Rust, Zig, or Python yourself. The installer installs
-Agent Interface and the latest compatible published Agent Backbone, using uv to
-supply Python when needed. Terminal sessions require **tmux 3.4 or newer**.
+You do not need to install Rust or Zig yourself. The installer installs Agent
+Interface; it does not install Agent Backbone (see
+[Connect Agent Backbone](#connect-agent-backbone)). Terminal sessions require
+**tmux 3.4 or newer**.
 
-The executable, archives and new installation/data paths use `agent-interface`.
-The desktop app is named **Agent Interface**. Existing libraries and preferences
-from earlier installations are still read without moving their data.
+The executable, archives, installation and data paths use `agent-interface`.
+The desktop app is named **Agent Interface**.
 
 ## Runtime prerequisites
 
@@ -14,6 +14,9 @@ Builds are architecture-specific: Apple silicon and Intel on macOS, and ARM64
 and x86-64 on glibc Linux. Linux packages built by the workflow target Ubuntu
 24.04 or newer, with a graphical desktop. Older distributions and musl-based
 systems such as Alpine are not supported by those packages.
+
+Git diffs in Documents need Git 2.41 or later and code references Git 2.31 or
+later; with older Git a pointer is shown as its author wrote it.
 
 On Ubuntu under WSL, the installer installs missing runtime packages and registers
 the Windows Start entry, asking for your Linux password through sudo when needed.
@@ -66,14 +69,9 @@ before extracting or running it. You can also download and inspect `install.sh`
 first, then run it with `sh install.sh`. Checksums detect corrupt downloads;
 they rely on the same GitHub release as the archive.
 
-Downloads show a progress bar. Package installation and Backbone setup print
-elapsed-time updates every five seconds while running; these updates indicate
-that the step is still active, not a percentage of work completed.
-
-The installer uses Backbone's installed executables directly. An older terminal
-may still have a stale `PATH` even after its shell configuration is updated;
-this does not prevent app installation. Open a new terminal to load shell changes,
-or use the absolute command path printed by the installer.
+Downloads show a progress bar. Package installation steps print elapsed-time
+updates every five seconds while running; these updates indicate that the step
+is still active, not a percentage of work completed.
 
 For a local build or a manually downloaded archive, download the archive and its
 matching `.tar.gz.sha256` file into the same folder. Keep the archive compressed.
@@ -84,23 +82,14 @@ Choose the filename for your computer:
 - ARM64 Linux: `agent-interface-aarch64-unknown-linux-gnu.tar.gz`
 - x86-64 Linux: `agent-interface-x86_64-unknown-linux-gnu.tar.gz`
 
-Release 0.1.0 uses `tmux-workspaces-` instead of `agent-interface-` for
-these same targets. The installer accepts both naming generations. Keep each
-archive and its matching `.tar.gz.sha256` file under their original names.
-
-Download the installer, inspect it, then point it at your archive. This example
-uses Apple silicon; substitute the filename you downloaded for your computer
-and release.
+Keep each archive and its matching `.tar.gz.sha256` file under their original
+names. Download the installer, inspect it, then point it at your archive. This
+example uses Apple silicon; substitute the filename you downloaded for your
+computer.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/install.sh -o install.sh
 sh install.sh --archive "$HOME/Downloads/agent-interface-aarch64-apple-darwin.tar.gz"
-```
-
-For the 0.1.0 Apple silicon archive, use this installation command instead:
-
-```sh
-sh install.sh --archive "$HOME/Downloads/tmux-workspaces-aarch64-apple-darwin.tar.gz"
 ```
 
 Building packages is described in
@@ -110,9 +99,8 @@ compiler and native optimization settings.
 
 ## macOS
 
-The installer places `Agent Interface.app` in `~/Applications`, replacing an
-older `tmux-workspaces.app` installed by this installer. Open `~/Applications`
-in Finder and launch `Agent Interface.app`, or run:
+The installer places `Agent Interface.app` in `~/Applications`. Open
+`~/Applications` in Finder and launch `Agent Interface.app`, or run:
 
 ```sh
 open "$HOME/Applications/Agent Interface.app"
@@ -140,10 +128,6 @@ You can launch directly without changing `PATH`:
 ```sh
 "$HOME/.local/bin/agent-interface"
 ```
-
-Updates from the earlier `tmux-workspaces` installation preserve saved libraries
-and settings. The installer replaces its owned legacy app and launchers; the new
-command is `agent-interface`. Existing data directories remain readable in place.
 
 ### Linux document sandbox
 
@@ -202,13 +186,13 @@ curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/inst
 ```
 
 The installer installs missing runtime packages, downloads the prebuilt app,
-sets up Agent Backbone, and adds **Agent Interface** under your distribution's
-name in Windows Start. Enter your Linux password if sudo asks for it. No compiler
+and adds **Agent Interface** under your distribution's name in Windows Start. Enter your Linux password if sudo asks for it. No compiler
 or source checkout is needed. Installation speed and GPU rendering under WSL
 have not been measured.
 
-Open **Agent Interface** from Windows Start to begin setup. Existing workspaces
-are preserved; setup appears until you finish it. You can also launch it inside
+Open **Agent Interface** from Windows Start to begin setup. Workspaces in the
+app's own data folder (see [Update or remove](#update-or-remove)) are preserved;
+setup appears until you finish it. You can also launch it inside
 WSL with `"$HOME/.local/bin/agent-interface"`.
 Use **Interface size** at the bottom of the welcome window if the text is too
 small. Run agent-tool installation commands inside WSL as well. After installing
@@ -226,79 +210,35 @@ and the app's [diagnostic logging](GUIDE.md#find-work-and-change-appearance).
 
 ## Connect Agent Backbone
 
-The installation command above also installs
-[Agent Backbone](https://github.com/eandualem/agent-backbone) from its published
-Python package. A fresh installation initializes its user service and enables
-the private Unix socket used by the app. Open Agent Interface to continue
-onboarding; no separate Backbone installation command is needed. Onboarding
+The installer does not install Agent Backbone, and running it again does not
+add it: the Agent Backbone service is not distributed yet
+([#268](https://github.com/eandualem/agent-interface/issues/268)). With the
+service installed, open Agent Interface to continue onboarding. Onboarding
 creates your first profile, and offers to install Git, tmux or an agent tool
-when one is missing; each agent tool signs in inside its own terminal.
+when one is missing; each agent tool signs in inside its own terminal. Without
+Agent Backbone, Agent Interface works as a native workspace for tmux: first run
+stops at **Agents can't start yet**, and **Continue with terminals** opens the
+workspace. Running the installer again, which **Details** may suggest, does
+not add the service.
 
-New installations and permitted upgrades select Backbone 0.5.1 or newer. If a compatible published
-release is unavailable, installation stops before replacing the app. Setup
-failures show Backbone's diagnostic and recovery guidance. When retry is allowed,
-rerun the same installer: it retains the request and resumes pending steps using
-the same installed Backbone version. Linux safety preflight runs before this
-recovery and may defer an incomplete or unverified existing installation.
-If a fixed provider was installed but setup has not created data, a service,
-or a saved outcome, setup can continue using that exact installed provider
-without changing packages. Existing saved requests remain subject to identity checks.
-Recovery with an older provider may finish, but the app is not replaced until
-Backbone meets the 0.5.1 minimum. Once recovery completes, rerun the installer
-to upgrade Backbone before installing the app.
-It refuses automatic recovery if that
-pending installation or its saved service/socket choices have changed.
-
-An existing Backbone installation keeps its configuration and service choices.
-On Linux, the installer first requires a verified, installer-owned service
-already running Backbone 0.4.3 or newer. Running versions 0.4.0–0.4.2 may have
-passed network listeners to tmux children: upgrading or restarting the daemon
-can end active sessions. Installing fixed code alone does not repair existing
-children. If the running version or ownership cannot be verified, installation
-is deferred before changing Backbone packages. Continue existing work, then
-coordinate completion of affected sessions and recovery through Backbone.
-Do not use a blanket service restart as an upgrade workaround.
-
-For a verified fixed launch, the installer holds automatic reloading while
-updating the package and releases only its own hold after validation. An
-interrupted package update retains that hold for coordinated recovery. It does
-not clear other holds or enable disabled automatic reload.
-Where preflight permits, the installer upgrades the `agent-backbone` tool to the latest compatible
-published package, including when it was installed from Git or a development
-source. There is no package opt-out; do not run this installer if you need to
-preserve that tool installation.
-
-For an unchanged installation originally created by this installer, an upgrade
-waits up to two minutes for Backbone's automatic reload to report the installed
-version as healthy on its private socket. It does not restart an existing
-service or change reload preferences. If automatic reload is disabled or held,
-the installer reports that the update is not yet running and retains the saved
-setup; resolve the service update through Backbone and rerun the installer.
-Independently managed installations retain their own service lifecycle.
-
-The app connects to `run/api.sock` in Backbone's data directory, which Backbone
-creates itself. The socket must be owned by your user with permissions 0600, in a
-directory owned by your user with permissions 0700. The app does not send
-credentials over TCP.
+The app finds the profiles Agent Backbone serves through its `backbone` command
+and connects to each over the private Unix socket the service reports. The
+socket must be owned by your user with permissions 0600, in a directory owned
+by your user with permissions 0700. The app does not send credentials over TCP.
 
 ## Update or remove
 
-For a verified fixed Backbone launch, quit the app and run the same install
-command again. Existing Linux services running Backbone 0.4.0–0.4.2 need the
-coordinated recovery described above before updating. The installer stages and
-checks the replacement before updating its own installation. Existing layouts
-and settings are preserved; preserving a service definition is not a guarantee
-that running sessions survive a daemon failure or manager restart.
-It refuses to overwrite an installation
-it does not recognize; move that installation yourself if you want to replace it.
+Quit the app and run the same install command again. The installer stages and
+checks the replacement before updating its own installation. Layouts and
+settings in the app's own folders, `${XDG_DATA_HOME:-~/.local/share}/agent-interface`
+and `${XDG_CONFIG_HOME:-~/.config}/agent-interface` on macOS and Linux alike, are
+preserved. It refuses to overwrite an installation it does not recognize; move
+that installation yourself if you want to replace it.
 
-Agent Backbone 0.5.0 and later run every installation as a profile. When the
-installer finds a Backbone installation from before profiles, it stops Backbone
-and any agents it runs, installs the new release, runs `backbone init` once to
-record the installation as the Default profile, and starts Backbone again,
-printing what `init` reported. If `init` fails, Backbone stays stopped; fix the
-reported problem, run `backbone init`, start Backbone and run the installer
-again.
+You can open a library in another folder with **Open Library…** (Command-O, or
+Ctrl+Shift+O on Linux), **Open another** in Settings, `--data-dir` or
+`AGENT_INTERFACE_DATA_DIR`. These change only the library folder; settings stay
+in the configuration folder above.
 
 The installer retains one archive in a hidden download cache so interrupted
 installs and repeated attempts can reuse it. Include that cache when removing

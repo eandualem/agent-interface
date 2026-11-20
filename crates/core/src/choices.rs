@@ -107,7 +107,7 @@ impl SessionChoices {
         self.refilter();
     }
 
-    /// Filtered names in Python's case-sensitive name order.
+    /// Filtered names in case-sensitive name order.
     pub fn rows(&self) -> &[String] {
         &self.rows
     }

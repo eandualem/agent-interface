@@ -45,11 +45,22 @@ impl Step {
 }
 
 fn provider(label: &str, steps: Vec<Step>) -> (tempfile::TempDir, Connection, JoinHandle<()>) {
+    let (directory, connection, server, _probe) = provider_with_probe(label, steps);
+    (directory, connection, server)
+}
+
+/// Also returns a handle on the provider's socket, to check after the steps
+/// that nothing else connected.
+fn provider_with_probe(
+    label: &str,
+    steps: Vec<Step>,
+) -> (tempfile::TempDir, Connection, JoinHandle<()>, UnixListener) {
     let directory = tempfile::tempdir().unwrap();
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let path = directory.path().join("api.sock");
     let mut listener = UnixListener::bind(&path).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let probe = listener.try_clone().unwrap();
     let credential = directory.path().join("profile.env");
     fs::write(&credential, format!("BACKBONE_API_KEY=fixture-{label}\n")).unwrap();
     fs::set_permissions(&credential, fs::Permissions::from_mode(0o600)).unwrap();
@@ -157,7 +168,7 @@ fn provider(label: &str, steps: Vec<Step>) -> (tempfile::TempDir, Connection, Jo
         }
     });
     let connection = profile.connect().unwrap();
-    (directory, connection, server)
+    (directory, connection, server, probe)
 }
 
 fn entry(label: &str) -> Value {
@@ -295,13 +306,61 @@ fn conversations_keep_delayed_sends_retries_pagination_and_markers_on_original_b
     server_b.join().unwrap();
 }
 
+#[test]
+fn feedback_reads_an_author_record_up_to_the_limit_and_refuses_one_past_it() {
+    // The author lookup's limit for an answer.
+    let limit = 4 * 1024 * 1024;
+    // A valid author record padded to exactly `size` bytes.
+    let author = |size: usize| {
+        let record = |padding: String| json!({"id":7,"author_id":"b".repeat(32),"agent_name":"current-worker","padding":padding});
+        let padded = record("a".repeat(size - record(String::new()).to_string().len()));
+        assert_eq!(padded.to_string().len(), size);
+        padded
+    };
+    let body = json!({"target_session":"current-worker","from_entity":"agent-interface-app",
+        "message":"Feedback on response #7 (source=/api/responses/7).\n\nFeedback","priority":false});
+    // At the limit the record is read and the feedback is sent.
+    let (_dir_a, a, server_a) = provider(
+        "a",
+        vec![
+            Step::get("/api/responses/7", author(limit)),
+            Step::post(
+                "/api/messages",
+                body,
+                json!({"ok":true,"queued":false,"outcome":"delivered","detail":"sentinel-a"}),
+            ),
+        ],
+    );
+    let client_a = feedback::Client::new(a.clone(), a.identity(), item()).unwrap();
+    assert_eq!(
+        client_a.send("Feedback"),
+        feedback::Outcome::Accepted("sentinel-a".into())
+    );
+    server_a.join().unwrap();
+    // One byte over, it is refused, and no request follows the author read.
+    let (_dir_b, b, server_b, probe) =
+        provider_with_probe("b", vec![Step::get("/api/responses/7", author(limit + 1))]);
+    let client_b = feedback::Client::new(b.clone(), b.identity(), item()).unwrap();
+    assert_eq!(
+        client_b.send("Feedback"),
+        feedback::Outcome::Refused(
+            "Could not verify the author. Your feedback has not been sent.".into()
+        )
+    );
+    server_b.join().unwrap();
+    probe.set_nonblocking(true).unwrap();
+    assert_eq!(
+        probe.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
 fn item() -> ReportItem {
     ReportItem {
         id: 7,
         author: "worker".into(),
         author_id: Some("b".repeat(32)),
         registered: true,
-        provider_url: String::new(),
         created_at: "2026-11-02T10:00:00Z".into(),
         conversation_id: Some("7".into()),
         content: ReportContent::Response {
@@ -315,8 +374,10 @@ fn item() -> ReportItem {
 
 #[test]
 fn feedback_pins_author_verification_and_submission_and_preserves_unknown_delivery() {
-    let author = json!({"id":7,"author_id":"b".repeat(32),"agent_name":"worker"});
-    let body = json!({"target_session":"worker","from_entity":"agent-interface-app",
+    // The record shows "worker"; the author is registered as "current-worker"
+    // now, and feedback goes to the current name.
+    let author = json!({"id":7,"author_id":"b".repeat(32),"agent_name":"current-worker"});
+    let body = json!({"target_session":"current-worker","from_entity":"agent-interface-app",
         "message":"Feedback on response #7 (source=/api/responses/7).\n\nFeedback","priority":false});
     let (_dir_a, a, server_a) = provider(
         "a",
@@ -514,7 +575,7 @@ fn interactions_retain_snapshot_credentials_for_delayed_history_and_detail_pages
     let worker = thread::spawn(move || a.read("start", "end", Some("worker")));
     reading.recv_timeout(Duration::from_secs(5)).unwrap();
     let b = b.read("start", "end", Some("worker")).unwrap();
-    assert_ne!(b.identity(), Some(&origin));
+    assert_ne!(b.identity(), &origin);
     assert_ne!(
         b.detail("11111111111111111111111111111111")
             .unwrap()
@@ -530,8 +591,7 @@ fn interactions_retain_snapshot_credentials_for_delayed_history_and_detail_pages
     .unwrap();
     release.send(()).unwrap();
     let a = worker.join().unwrap().unwrap();
-    assert_eq!(a.identity(), Some(&origin));
-    assert!(a.provider.is_empty());
+    assert_eq!(a.identity(), &origin);
     assert_eq!(
         a.history.as_ref().unwrap().items[0].body.text.as_deref(),
         Some("sentinel-a")
@@ -582,6 +642,27 @@ fn interaction_state_binding_refusal_invalidates_the_whole_snapshot() {
     assert_eq!(
         client.read("start", "end", None).unwrap_err(),
         interactions::Error::Connection(Error::BindingRequired)
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn a_detail_read_of_a_record_no_longer_retained_is_missing() {
+    use agent_interface_roster::interactions;
+    let id = "11111111111111111111111111111111";
+    let (_dir, connection, server) = provider(
+        "a",
+        vec![Step {
+            reply: Some((404, json!({}))),
+            ..Step::get(
+                "/api/interactions/11111111111111111111111111111111",
+                json!({}),
+            )
+        }],
+    );
+    assert_eq!(
+        interactions::Client::new(connection).detail(id),
+        Err(interactions::Error::Missing)
     );
     server.join().unwrap();
 }

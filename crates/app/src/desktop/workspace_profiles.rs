@@ -1,4 +1,4 @@
-//! Per-workspace lookup ownership. A stored ID never authorizes legacy I/O.
+//! Per-workspace lookup ownership. A stored ID never authorizes I/O by itself.
 
 #[cfg(test)]
 mod restoration_tests;
@@ -17,7 +17,7 @@ use gpui::{Context, Entity, Window, prelude::*};
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum Owner {
-    Legacy,
+    Standalone,
     Bound(agent_interface_roster::profiles::ConnectionKey),
 }
 
@@ -35,7 +35,9 @@ struct Entry {
 }
 
 pub(super) enum Route<'a> {
-    Legacy,
+    /// A workspace without a profile: no Agent Backbone; it holds terminals and
+    /// any existing Artifacts panes.
+    Standalone,
     Bound(&'a Connection),
     Unavailable,
 }
@@ -221,7 +223,7 @@ impl Registry {
 
     pub fn route(&self, space: &Workspace) -> Route<'_> {
         let Some(profile_id) = &space.profile_id else {
-            return Route::Legacy;
+            return Route::Standalone;
         };
         match self
             .entries
@@ -237,7 +239,7 @@ impl Registry {
     /// Moving a retained tab may not change its authenticated authority.
     pub fn can_transfer(&self, source: &Workspace, destination: &Workspace) -> bool {
         match (self.route(source), self.route(destination)) {
-            (Route::Legacy, Route::Legacy) => true,
+            (Route::Standalone, Route::Standalone) => true,
             (Route::Bound(a), Route::Bound(b)) => a.connection_key() == b.connection_key(),
             _ => false,
         }
@@ -298,7 +300,7 @@ impl Browser {
             .and_then(|layout| layout.model().workspace_for_pane(pane))
             .ok_or(())?;
         match self.workspace_profiles.route(space) {
-            Route::Legacy => Ok(None),
+            Route::Standalone => Ok(None),
             Route::Bound(connection) => Ok(Some(connection.clone())),
             Route::Unavailable => Err(()),
         }
@@ -306,13 +308,13 @@ impl Browser {
 
     pub(super) fn pane_owner(&self, pane: &str) -> Option<Owner> {
         self.pane_connection(pane).ok().map(|connection| {
-            connection.map_or(Owner::Legacy, |c| Owner::Bound(c.connection_key()))
+            connection.map_or(Owner::Standalone, |c| Owner::Bound(c.connection_key()))
         })
     }
 
     pub(super) fn workspace_agents(&self, space: &Workspace) -> Option<&agent_status::LiveAgents> {
         match self.workspace_profiles.route(space) {
-            Route::Legacy => self.roster.as_ref(),
+            Route::Standalone => None,
             Route::Bound(connection) => self
                 .workspace_rosters
                 .get(&space.id)
@@ -320,6 +322,28 @@ impl Browser {
                 .map(|(_, agents)| agents),
             Route::Unavailable => None,
         }
+    }
+
+    /// The saved folders of this window's panes, where a Document's code may
+    /// be checked out.
+    pub(super) fn workspace_folders(&self) -> Vec<std::path::PathBuf> {
+        let Some(layout) = &self.layout else {
+            return Vec::new();
+        };
+        let mut folders: Vec<std::path::PathBuf> = Vec::new();
+        let leaves = layout
+            .model()
+            .workspaces
+            .iter()
+            .flat_map(|space| &space.tabs)
+            .flat_map(|tab| tab.tree.leaves());
+        for cwd in leaves.filter_map(|leaf| leaf.cwd.as_deref()) {
+            let folder = std::path::PathBuf::from(cwd);
+            if cwd != "/" && !folders.contains(&folder) {
+                folders.push(folder);
+            }
+        }
+        folders
     }
 
     pub(super) fn active_agents(&self) -> Option<&agent_status::LiveAgents> {
@@ -680,7 +704,6 @@ impl Browser {
         if self.roster_updates.is_none() && cx.has_global::<agent_status::Sources>() {
             self.roster_updates =
                 Some(cx.observe_global::<agent_status::Sources>(|browser, cx| {
-                    browser.refresh_source_matches(cx);
                     browser.close_finished_swarm_tabs(cx);
                     cx.notify();
                 }));
@@ -869,8 +892,8 @@ impl Browser {
     }
 
     /// Bind workspace `id`, which had `previous` as its profile, to a verified
-    /// profile, keeping its tabs and panes. A workspace without a profile is
-    /// bound as `bind-home-profile` binds it. A missing profile's panes stay as
+    /// profile, keeping its tabs and panes. A workspace without a profile keeps
+    /// each attached session on its server. A missing profile's panes stay as
     /// they are: an attachment without a server follows the new profile.
     fn change_profile(
         &mut self,
@@ -910,7 +933,7 @@ impl Browser {
         let source = self.source.clone().and_then(Result::ok);
         let generation = self.library_generation;
         self.workspace_profiles.remember_name(selected.item());
-        // Reading the profile's agents and the library's shells is I/O.
+        // Reading the library's shells is I/O.
         let work = cx.background_executor().spawn(async move {
             let profile_id = &connection.identity().profile_id;
             let space = rebind(&mut proposed, &id, previous.as_deref(), profile_id)
@@ -920,8 +943,8 @@ impl Browser {
                 let directory = crate::library::library_directory(directory.as_deref())
                     .map_err(|error| error.to_string())?;
                 let source = source.ok_or("This window's tmux server could not be found.")?;
-                let binding = crate::adoption::Binding::read(&connection, &source)?;
-                shells = binding.apply(space, &directory)?.shells;
+                let binding = crate::adoption::Binding::new(&connection, &source)?;
+                shells = binding.apply(space, &directory)?;
             }
             Ok::<_, String>((base, proposed, shells))
         });
@@ -1305,7 +1328,6 @@ mod tests {
         let pane_b = model.pane().unwrap().id.clone();
         let mut browser = Browser {
             layout: Some(WindowLayout::new(base.with_model(&model, path).unwrap())),
-            roster: Some(agent_status::LiveAgents::default()),
             ..Browser::default()
         };
         assert!(browser.pane_connection(&pane_a).is_err());
@@ -1508,7 +1530,7 @@ mod tests {
         registry.reconcile(&layout, None);
         assert!(matches!(
             registry.route(&layout.workspaces[0]),
-            Route::Legacy
+            Route::Standalone
         ));
         assert!(registry.entries.is_empty());
     }

@@ -115,8 +115,6 @@ pub struct ReportItem {
     /// Whether the provider resolved the author to a current agent, so
     /// `author` names that agent rather than a retained, reusable name.
     pub registered: bool,
-    /// Provider address from which this record was read.
-    pub provider_url: String,
     /// Server publication timestamp.
     pub created_at: String,
     /// Reports and answers: the root of the correction chain, which keys the
@@ -260,7 +258,6 @@ fn response_item(record: Record<Response>) -> ReportItem {
         registered: record.agent_name.is_some(),
         author: record.agent_name.unwrap_or(record.author_name),
         author_id: record.author_id,
-        provider_url: String::new(),
         created_at: record.created_at,
         conversation_id: record.conversation_id,
         content: ReportContent::Response {
@@ -293,7 +290,6 @@ pub(super) fn read_report(api: &Api<'_>, id: u64) -> Result<ReportPage, &'static
             registered: record.agent_name.is_some(),
             author: record.agent_name.unwrap_or(record.author_name),
             author_id: record.author_id,
-            provider_url: String::new(),
             created_at: record.created_at,
             conversation_id: record.conversation_id,
             content: ReportContent::Progress {
@@ -349,7 +345,6 @@ fn decode(body: &[u8], query: &ReportQuery) -> Result<ReportPage, &'static str> 
                     registered: record.agent_name.is_some(),
                     author: record.agent_name.unwrap_or(record.author_name),
                     author_id: record.author_id,
-                    provider_url: String::new(),
                     created_at: record.created_at,
                     conversation_id: record.conversation_id,
                     content: ReportContent::Progress {

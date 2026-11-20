@@ -1,8 +1,10 @@
 # Use Agent Interface
 
 Start with the [installation guide](INSTALL.md), which covers source builds
-and native packages. Terminal sessions require tmux 3.4 or newer. Agent views
-connect to a running Agent Backbone.
+and native packages. Terminal sessions require tmux 3.4 or newer. Agents and
+their views belong to a workspace with a profile, served by a running Agent
+Backbone; a workspace without a profile holds terminals and existing
+**Artifacts** panes.
 
 If no library exists, the first launch creates one empty workspace. Add a tab
 with **+**, Command-T on macOS, or Ctrl+Shift+T on Linux, then choose **Open
@@ -61,8 +63,7 @@ Settings, chooses another folder containing `layouts.db`.
 Text in Skills, policies, agent briefs and report readers supports drag selection,
 double-click word selection, and Command-C to copy (Control-C on Linux).
 Command-A selects the document text (Control-A on Linux). **Copy Markdown** in
-a skill or policy copies the whole file when available; oversized skills offer
-**Copy Markdown preview** for the portion shown. The Edit menu offers Copy and Select All; on macOS
+a skill or policy copies its whole text. The Edit menu offers Copy and Select All; on macOS
 these also work with selected text inside HTML Documents.
 
 ## Find work and change appearance
@@ -76,7 +77,7 @@ status symbol.
 The navigation panel on the left shows the current workspace (click it for the
 workspace menu), a **Jump** field (Command-K) that finds tabs, panes, agents and
 commands across every workspace, the tabs with a thumbnail of each layout, and,
-with Agent Backbone installed, the **AGENTS** section: agents needing you first,
+in a workspace with a profile, the **AGENTS** section: agents needing you first,
 each with a state symbol. Click an agent to show the tab holding its session.
 An agent running swarms shows the number of swarm members beside its name
 instead of listing them separately. Click the arrow to list each swarm with its
@@ -169,7 +170,13 @@ menu to close the whole window. Ordinary shells keep running; external sessions
 retain their own tmux lifetime policy.
 
 The agent roster refreshes immediately, then two seconds after each completed
-request, and at once when the Rust Backbone service reports a changed state. Team and agent views refresh three seconds after each read. A rotating
+request, and at once when Agent Backbone reports a changed state. Team, Activity
+and the report, answer and document lists are read again three seconds after
+each read, Usage after 15 seconds, and Skills, Policies and Tags after 30; an
+open Document is read again only when you refresh it. Current plans and
+Interactions are read every 20 seconds while shown, and Sheets when opened or refreshed.
+An agent's card rereads its overview, permissions and connections every three
+seconds, its usage every 15 and its skills and policies every 30. A rotating
 ring marks working or starting agents; labels distinguish starting, working,
 blocked, needs you, idle and unknown. Failed requests show unavailable or stale
 data, rather than treating the last successful state as current. These are
@@ -188,9 +195,15 @@ A workspace without a profile has **Choose profile…** in its menu. One whose
 profile cannot be reached has **Change profile…**, in its menu and on its
 **Workspace profile unavailable** screen. Pick a ready profile; the workspace
 keeps its tabs and panes, and panes attached to that profile's agents show
-them. For a workspace that had no profile, the panes change as
-[Move a library to the Rust Backbone service](#move-a-library-to-the-rust-backbone-service)
-describes.
+them. In a workspace that had no profile, a pane follows the profile when its
+session is on the profile's tmux server, whether or not it is an agent's. A
+pane whose session is on another tmux server keeps that server, which the
+profile's panes do not connect to, even when the session has the name of one
+of the profile's agents. Such a pane says its session belongs to a different
+profile socket; choose **Detach** to return it to its chooser. The session
+keeps running in tmux. Ordinary shells become
+shells of the profile; the shells they showed keep running, and the app says
+how to list them when their panes close.
 
 Click **+** beside TABS or press Command-T to add an empty tab. Command-D splits
 right; Command-Shift-D splits below. Both split actions are also in tab options.
@@ -273,7 +286,7 @@ scales down only while another client keeps the window larger.
 
 ## Rename and save changes
 
-Changes saved by the Python app refresh automatically. Double-click the workspace
+Changes saved to the library elsewhere refresh automatically. Double-click the workspace
 name or the active tab's name to rename it. An inactive tab must first be selected.
 Command-R renames the active tab; Command-Shift-R renames the workspace. The tab's
 **⋯**, or right-clicking any tab, opens options to rename it, move it up/down or
@@ -302,28 +315,29 @@ and key-release events are not yet wired into the product UI.
 
 ## Read reports and interactive artifacts
 
-In an empty pane, choose **Reports & updates** to read Agent Backbone's
-authored reports and retained answers. **Recent updates** shows report history;
+In a workspace with a profile, choose **Reports & updates** in an empty pane to
+read Agent Backbone's authored reports and retained answers. **Recent updates** shows report history;
 **Responses** shows questions, answers and their next actions. **Waiting on
 you** shows owner blockers from each agent's latest report. A report's age does
 not resolve its blocker, and an answer's action text is not a pending approval.
-Choose a row to read it; use Back or Escape to return. Previous/Next page browse
-older records, and Refresh returns to the newest page. Authored records cannot be
+Choose a row to read it; use Back or Escape to return. **Show older** and
+**Newer** browse pages, and the refresh button returns to the newest page. Authored records cannot be
 edited in the reader.
 
 **Documents** shows lasting rich documents stored by Agent Backbone. Each row
 is the newest revision of one document. Use the same agent filter, or open a
-document and choose **More from this author** to follow its stable author even
+document and choose **More from** its author to follow that stable author even
 after an agent is renamed or removed. **Back** restores the selected page and
-filter. **Refresh** returns to the newest documents.
+filter. The refresh button returns to the newest documents.
 
 An open report, Response or Document has a conversation with its author: a
 pill at the right end of the reader's toolbar. Choose it, or press **C**, to open it
 as a card beside the record; choose the card's minimize button, or press **C**
 or Esc in the message field, to close it again, keeping the draft. Enter adds a
 paragraph and **⌘↵** sends. The app sets no length limit; Agent Backbone sets
-its own (4,000 characters in 0.5.1, 64,000 in later versions), and a longer
-message shows **Not sent** with that reason. Each message includes a
+its own. A message Backbone refuses, such as one over that limit, shows **Not
+sent**: with Backbone's reason when it keeps the conversation, otherwise with
+"Backbone refused this feedback. Your text is kept here." Each message includes a
 reference to the exact record being read, and the app checks that the author
 is still registered before sending. A message shows **Sending…** until Agent
 Backbone answers, then the time it was sent; **Not sent** offers **Retry**,
@@ -331,8 +345,8 @@ and **Edit** to move the text back into an empty message field.
 When Agent Backbone keeps conversations, the thread is the record's stored
 conversation: your messages, the author's replies and the record's new
 revisions, in order, with a **new** divider before what arrived since you last
-looked. It is read every few seconds while open, and its pill counts what is
-new while it is closed. **Earlier messages** loads older
+looked. It is read every five seconds while open, and every 25 seconds while
+closed, when its pill counts what is new. **Earlier messages** loads older
 ones. Retrying a message Backbone did not confirm is safe: it is stored once.
 A message whose delivery failed after Backbone stored it offers **Retry**,
 which delivers it again without adding it twice.
@@ -345,13 +359,15 @@ record when switching tabs or workspaces; detaching or closing the pane or app
 discards the ones Backbone does not keep. A message never changes the authored
 record.
 
-A shared skill or policy opened in its reader has the same conversation, so
-you can work on it with an agent. Backbone names a maintainer only when one has
-been set; until then, choose who to ask from the agents the skill reaches, the
-conversation's participants or the team. Skills kept in a repository or a CLI's
-own folder have no conversation.
+A shared skill or policy opened in its reader has the same conversation once
+its snapshot has been read from the profile, so you can work on it with an
+agent. Backbone names a maintainer only when one has been set; until then,
+choose who to ask from the agents the skill reaches, the conversation's
+participants or the team. Skills kept in a repository or a CLI's own folder,
+base and swarm layers, and policies opened from an agent's brief have no
+conversation.
 
-Opening a document loads that exact revision. **Check for update** refreshes its
+Opening a document loads that exact revision. Its refresh button rereads its
 correction information; **Open newer revision** opens the linked correction.
 An update never silently replaces the revision being read. Documents remain
 stored across agent restarts and ordinary report retention. Inline controls
@@ -430,28 +446,6 @@ can be replaced through **Open Library…**. Keep its database and journal files
 for recovery; the app never overwrites them with an empty arrangement.
 `--help` and `--version` work without a display or tmux.
 
-## Move a library to the Rust Backbone service
-
-Workspaces saved without a profile showed the agents of the Python Backbone
-service. Once the Rust service has taken its place, bind them to this
-computer's profile with one command:
-
-```sh
-agent-interface bind-home-profile
-```
-
-To bind one workspace instead, choose **Choose profile…** in its menu.
-Add `--data-dir PATH` for another library. Run it in the environment the app
-runs in: like tmux, it finds the default tmux server through `TMUX_TMPDIR`,
-and it prints the server it used. The command needs the service to
-list exactly one profile with its home on this computer, and it changes
-nothing when a workspace already has a profile. Panes attached to the
-profile's agents follow it. Panes attached to your own tmux sessions keep
-their server and say so. Saved agent views stay, and the command names any
-whose agent the profile does not have, to reopen from the Team view. Ordinary shells become shells of the profile; the
-shells they showed keep running, and the command prints the `tmux` command
-that attaches to each one.
-
 ## Linux keyboard shortcuts
 
 Linux uses the same commands and shortcut editor, with these defaults. Ordinary
@@ -500,8 +494,8 @@ inspect the results and send feedback. Documents hold the longer explanation,
 Reports record progress, and Responses answer specific questions; link to the
 workbook from those artifacts so readers can inspect the underlying data.
 
-Open **Reports & updates → Sheets**, choose a workbook, then a tab. Agent Backbone
-must support Sheets and be configured through its normal private local connection.
+Open **Reports & updates → Sheets**, choose a workbook, then a tab. The workspace's
+profile must be served by an Agent Backbone that supports Sheets.
 The grid is read-only. Select a cell or use Shift-click or Shift-arrow to select a
 range. Arrow keys and Tab move the selection. Row and column paging keep large
 workbooks bounded; labels retain canonical A1 coordinates under saved views.
@@ -519,8 +513,10 @@ Each workbook keeps its own conversation. Delivery status
 does not mean the agent has
 answered. **Copy feedback receipt** preserves the identifiers for checking delivery.
 
-**History** opens earlier retained revisions. **Refresh** loads the latest revision.
-**Copy values** copies selected cells as tab-separated text. Text values that could
+The revision control's back arrow opens earlier retained revisions, and its
+forward arrow or the refresh button loads the latest revision. **Copy selected
+values** copies the selected cells as tab-separated text, or **Copy displayed
+values** the shown cells without a selection. Text values that could
 be interpreted as formulas receive a leading apostrophe for pasting into a spreadsheet;
 numeric values are preserved. **Export** saves the displayed revision. JSON/XLSX preserve supported workbook features, while CSV/TSV
 export one tab as values only. Read any export warnings. This is not a claim of full

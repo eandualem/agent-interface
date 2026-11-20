@@ -1,0 +1,8 @@
+{
+  "schema_version": 3,
+  "request_id": "019a8f3e7c2b7d4e9a1f2b3c4d5e6f70",
+  "seq": 1,
+  "type": "step",
+  "step": "preflight",
+  "status": "running"
+}

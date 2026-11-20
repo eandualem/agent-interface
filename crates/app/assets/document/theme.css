@@ -44,3 +44,126 @@ hr { border: 0 !important; height: 1px; background-color: var(--ai-line) !import
   background-color: var(--ai-field); color: var(--ai-text); border-color: var(--ai-line);
 }
 :where(input, textarea)::placeholder { color: var(--ai-muted); }
+/* Git diffs and code the app shows in place of a document's pointers. Each
+   opens and closes as <details>; long lines scroll inside it. The view is
+   the app's own: its root starts from initial values and its parts from the
+   browser's own, then the rules below apply, all of them important, so a
+   document's rule reaches in only if it is important too and ranks higher,
+   as with an ID. The author's markup inside a caption stays the author's.
+   'all' leaves out direction, unicode-bidi and custom properties, so the
+   first two are set here too. */
+.ai-git.ai-git {
+  all: initial !important;
+  /* What its dir="ltr" gives it. */
+  direction: ltr !important;
+  unicode-bidi: isolate !important;
+  /* What the view took from the page before: the theme's own html and
+     body rules. Its color-scheme is the theme's, which the reader's script
+     sets after these rules, as it does on :root. */
+  font-family: system-ui !important;
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  /* A details element's own. */
+  display: block !important;
+  margin: 12px 0 !important;
+  border: 1px solid var(--ai-line) !important;
+  border-radius: 6px !important;
+  overflow: hidden !important;
+  background: var(--ai-background) !important;
+  color: var(--ai-text) !important;
+}
+.ai-git.ai-git :where(:not(.ai-git > summary.ai-git-caption *)) {
+  all: revert !important;
+  direction: ltr !important;
+  unicode-bidi: revert !important;
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+/* A caption reads in the direction of its own text, as dir="auto" sets it. */
+.ai-git.ai-git > summary.ai-git-caption { unicode-bidi: isolate !important; }
+.ai-git.ai-git > summary.ai-git-caption:dir(rtl) { direction: rtl !important; }
+/* A document adds no text to the view, and its disclosure markers are the
+   browser's. */
+.ai-git.ai-git::before,
+.ai-git.ai-git::after,
+.ai-git.ai-git :where(:not(.ai-git > summary.ai-git-caption *))::before,
+.ai-git.ai-git :where(:not(.ai-git > summary.ai-git-caption *))::after {
+  content: none !important;
+}
+.ai-git.ai-git summary::marker { all: revert !important; }
+.ai-git.ai-git summary::-webkit-details-marker { all: revert !important; }
+/* What a details shows when open, which its parts inherit from; a WebKit
+   that has no ::details-content drops these rules alone. The reset is only
+   for an open details: the browser hides a closed one's content on this
+   same slot, and a reset there shows it (measured in WebKit). A closed one
+   is hidden here too, so a document's rule cannot show it. */
+.ai-git.ai-git[open]::details-content,
+.ai-git.ai-git details[open]::details-content {
+  all: revert !important;
+  direction: ltr !important;
+}
+.ai-git.ai-git:not([open])::details-content,
+.ai-git.ai-git details:not([open])::details-content {
+  content-visibility: hidden !important;
+  display: block !important;
+}
+/* The theme's selection, whatever the document's. */
+.ai-git.ai-git::selection,
+.ai-git.ai-git :where(:not(.ai-git > summary.ai-git-caption *))::selection {
+  all: revert !important;
+  background: var(--ai-selection) !important;
+}
+.ai-git.ai-git summary {
+  padding: 6px 10px !important;
+  cursor: pointer !important;
+  font-weight: 600 !important;
+  background: var(--ai-table-head) !important;
+  color: var(--ai-text) !important;
+}
+/* A file's header keeps its spaces: 'a  b.txt' is not 'a b.txt'. */
+.ai-git.ai-git :is(.ai-git-file > summary, .ai-git-head) {
+  font: 600 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace !important;
+  white-space: pre-wrap !important;
+}
+.ai-git.ai-git .ai-git-head {
+  padding: 4px 10px !important;
+  border-top: 1px solid var(--ai-line) !important;
+}
+.ai-git.ai-git .ai-git-file { border-top: 1px solid var(--ai-line) !important; }
+.ai-git.ai-git .ai-git-scroll { overflow-x: auto !important; }
+.ai-git.ai-git table.ai-git-lines {
+  border: 0 !important;
+  border-radius: 0 !important;
+  border-collapse: collapse !important;
+  border-spacing: 0 !important;
+  margin: 0 !important;
+  width: 100% !important;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace !important;
+}
+.ai-git.ai-git .ai-git-lines td {
+  border: 0 !important;
+  border-radius: 0 !important;
+  padding: 0 8px !important;
+  white-space: pre !important;
+  tab-size: 4 !important;
+  vertical-align: top !important;
+}
+.ai-git.ai-git .ai-git-lines td.ai-git-t { width: 100% !important; }
+.ai-git.ai-git .ai-git-lines td:is(.ai-git-n, .ai-git-s) { text-align: right !important; }
+.ai-git.ai-git .ai-git-lines td.ai-git-s { padding: 0 2px !important; }
+/* Every part whose colour is forced has its fill forced too: the box's
+   parts and every cell by default, then the row fills. */
+.ai-git.ai-git :is(details, div, td) {
+  background: var(--ai-background) !important;
+  color: var(--ai-text) !important;
+}
+.ai-git.ai-git .ai-git-lines tr.ai-git-add td { background: var(--ai-diff-add) !important; }
+.ai-git.ai-git .ai-git-lines tr.ai-git-remove td { background: var(--ai-diff-remove) !important; }
+.ai-git.ai-git .ai-git-lines tr:is(.ai-git-hunk, .ai-git-remark) td {
+  background: var(--ai-surface) !important;
+}
+.ai-git.ai-git .ai-git-lines :is(td.ai-git-n, td.ai-git-s, tr.ai-git-hunk td, tr.ai-git-remark td) {
+  color: var(--ai-muted) !important;
+}
+.ai-git.ai-git .ai-git-lines tr.ai-git-add td.ai-git-s { color: var(--ai-diff-add-sign) !important; }
+.ai-git.ai-git .ai-git-lines tr.ai-git-remove td.ai-git-s { color: var(--ai-diff-remove-sign) !important; }

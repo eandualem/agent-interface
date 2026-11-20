@@ -247,6 +247,8 @@ fn stale_jump_panes_do_not_select_foreign_bindings_or_partially_change_selection
 
 #[test]
 fn moved_view_refreshes_events_and_survives_source_workspace_deletion() {
+    let (_a_dir, a, a_server) = provider("a", vec![]);
+    a_server.join().unwrap();
     let path = std::path::Path::new("layouts.db");
     let base = Document::parse(
         r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[],"selected":""}],"selected":"000000000001","focus":false}"#.into(),
@@ -263,11 +265,18 @@ fn moved_view_refreshes_events_and_survives_source_workspace_deletion() {
     model.add_workspace("Destination".into());
     let destination = model.selected.clone();
     model.choose_workspace(&source);
+    // Both workspaces belong to the same profile, whose agent the pane shows.
+    for space in &mut model.workspaces {
+        space.profile_id = Some(a.identity().profile_id.clone());
+    }
     let mut browser = Browser {
         layout: Some(WindowLayout::new(base.with_model(&model, path).unwrap())),
         source: Some(Ok("/fixture-socket".into())),
         ..Browser::default()
     };
+    for space in &model.workspaces {
+        browser.workspace_profiles.bind(space, a.clone());
+    }
     let mut events = ViewEvents::default();
     let old = events
         .refresh(browser.pane_navigation_origin(&pane))
@@ -298,13 +307,24 @@ fn moved_view_refreshes_events_and_survives_source_workspace_deletion() {
     assert_eq!(selected(&browser), destination);
     // Moving away and back must not reactivate the old subscription generation.
     let model = browser.layout.as_mut().unwrap().model_mut();
+    model.add_workspace("Plain".into());
+    let plain = model.selected.clone();
+    // Tabs move only between workspaces of the same profile.
     model.add_workspace("Third".into());
     let third = model.selected.clone();
+    let space = model.workspaces.iter_mut().find(|s| s.id == third).unwrap();
+    space.profile_id = Some(a.identity().profile_id.clone());
+    browser.workspace_profiles.bind(space, a.clone());
     model.choose_workspace(&destination);
     assert!(model.transfer_tab(&third));
     events
         .refresh(browser.pane_navigation_origin(&pane))
         .unwrap();
+    // A workspace without a profile has no agent to go to.
+    assert!(!browser.select_agent_target(&AgentTarget {
+        origin: browser.navigation_origin(&plain).unwrap(),
+        name: "worker".into()
+    }));
     assert!(
         browser
             .layout
@@ -392,7 +412,7 @@ fn retired_icon_events_cannot_change_a_closed_or_replaced_picker() {
 }
 
 #[test]
-fn pane_opening_origins_refuse_binding_removal_before_legacy_fallback() {
+fn pane_opening_origins_refuse_binding_removal() {
     let (_a, a, a_server) = provider("a", vec![]);
     let (_b, b, b_server) = provider("b", vec![]);
     a_server.join().unwrap();
@@ -418,7 +438,7 @@ fn pane_opening_origins_refuse_binding_removal_before_legacy_fallback() {
         ),
         error: None,
     });
-    // Without a pre-refresh capture the consumer would now discover Legacy.
+    // Without a pre-refresh capture the consumer would now find a standalone workspace.
     assert!(matches!(browser.pane_connection(&pane), Ok(None)));
     assert!(!browser.pane_origin_is_current(&pane, Some(&origin)));
     assert!(!browser.pane_origin_is_current(&pane, None));
@@ -686,4 +706,69 @@ fn close_actions_expire_on_selection_reconnect_and_library_replacement() {
     assert!(browser.close_tab_for(&fresh, &tab).is_none());
     assert!(browser.close_pane_for(&fresh, &tab, &pane).is_none());
     assert_eq!(browser.layout.as_ref().unwrap().model().pane(), Some(&pane));
+}
+
+#[test]
+fn an_agent_goes_to_the_current_tab_showing_it_else_the_first() {
+    let (_a_dir, a, a_server) = provider("a", vec![]);
+    a_server.join().unwrap();
+    let path = std::path::Path::new("layouts.db");
+    let base = Document::parse(
+        r#"{"version":2,"workspaces":[{"id":"000000000001","name":"Workspace","tabs":[],"selected":""}],"selected":"000000000001","focus":false}"#.into(),
+        path,
+    )
+    .unwrap();
+    let mut model = Layout::initial("/".into());
+    model.workspaces[0].profile_id = Some(a.identity().profile_id.clone());
+    let session = |socket: Option<&str>| {
+        Some(Attachment {
+            session: "reviewer".into(),
+            source_socket: socket.map(Into::into),
+        })
+    };
+    assert!(model.attach(session(None)));
+    let first = model.tab().unwrap().id.clone();
+    assert!(model.add_tab(None, "/".into(), false));
+    // The same name on another server is not the profile's agent.
+    assert!(model.attach(session(Some("/elsewhere"))));
+    let other_server = model.tab().unwrap().id.clone();
+    assert!(model.add_tab(None, "/".into(), false));
+    assert!(model.attach(session(None)));
+    let current = model.tab().unwrap().id.clone();
+    let mut browser = Browser {
+        layout: Some(WindowLayout::new(base.with_model(&model, path).unwrap())),
+        ..Browser::default()
+    };
+    browser
+        .workspace_profiles
+        .bind(&model.workspaces[0], a.clone());
+    let origin = browser.navigation_origin(&model.workspaces[0].id).unwrap();
+    let target = |name: &str| AgentTarget {
+        origin: origin.clone(),
+        name: name.into(),
+    };
+    let tab = |browser: &Browser| {
+        browser
+            .layout
+            .as_ref()
+            .unwrap()
+            .model()
+            .tab()
+            .unwrap()
+            .id
+            .clone()
+    };
+    assert!(browser.select_agent_target(&target("reviewer")));
+    assert_eq!(tab(&browser), current);
+    assert!(
+        browser
+            .layout
+            .as_mut()
+            .unwrap()
+            .model_mut()
+            .choose_tab(&other_server)
+    );
+    assert!(browser.select_agent_target(&target("reviewer")));
+    assert_eq!(tab(&browser), first);
+    assert!(!browser.select_agent_target(&target("absent")));
 }

@@ -1,4 +1,4 @@
-//! Ordinary-shell creation using the Python-compatible library lock and environment.
+//! Ordinary-shell creation using the library's shell lock and environment.
 //! Call on a worker, and only for explicitly eligible ordinary leaves.
 
 use std::{
@@ -53,9 +53,18 @@ pub struct Environment {
 
 impl Environment {
     /// Capture the creating window's context without changing the process environment.
-    /// This follows the reference SHELL and working-directory policy, not PATH discovery.
+    /// SHELL and the working directory fall back as below; PATH is not searched.
     pub fn capture() -> io::Result<Self> {
-        let variables: BTreeMap<_, _> = std::env::vars_os()
+        Self::from_variables(std::env::vars_os(), std::env::current_dir()?)
+    }
+
+    /// As [`Self::capture`], from these variables and working directory.
+    fn from_variables(
+        all: impl IntoIterator<Item = (OsString, OsString)>,
+        current: PathBuf,
+    ) -> io::Result<Self> {
+        let variables: BTreeMap<_, _> = all
+            .into_iter()
             .filter(|(name, _)| {
                 COMMAND_ENV
                     .iter()
@@ -71,15 +80,11 @@ impl Environment {
                 .map(|user| user.home_dir().to_owned())
                 .ok_or_else(|| io::Error::other("Home directory unavailable"))?,
         };
-        let shell = variables
-            .get(OsStr::new("SHELL"))
-            .map(PathBuf::from)
-            .filter(|shell| shell.is_file())
-            .unwrap_or_else(|| "/bin/sh".into());
+        let shell = login_shell(&variables);
         Ok(Self {
             variables,
             // An app opened from the Dock or Finder runs in "/"; use home instead.
-            cwd: Some(std::env::current_dir()?)
+            cwd: Some(current)
                 .filter(|cwd| cwd.as_os_str() != "/")
                 .unwrap_or_else(|| home.clone()),
             home,
@@ -170,6 +175,10 @@ impl Environment {
     }
 }
 
+/// Lock files a creator found held, so a test can see a creator waiting.
+#[cfg(test)]
+static LOCKS_FOUND_HELD: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
 /// One eligible ordinary leaf; attachments and empty choosers are excluded by the caller.
 pub struct Request {
     /// Stable twelve-character lowercase hexadecimal leaf identity.
@@ -234,6 +243,11 @@ pub fn ensure(socket: &Path, requests: &[Request], environment: &Environment) ->
         match lock.try_lock() {
             Ok(()) => break,
             Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                #[cfg(test)]
+                LOCKS_FOUND_HELD
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(PathBuf::from(&lock_path));
                 thread::sleep(Duration::from_millis(10))
             }
             Err(TryLockError::WouldBlock) => {
@@ -325,6 +339,15 @@ pub fn ensure(socket: &Path, requests: &[Request], environment: &Environment) ->
     }
     // File drop releases flock; the append-open lock file remains for other windows.
     Ok(())
+}
+
+/// The shell a new ordinary terminal runs: SHELL when it names a file, else `/bin/sh`.
+fn login_shell(variables: &BTreeMap<OsString, OsString>) -> PathBuf {
+    variables
+        .get(OsStr::new("SHELL"))
+        .map(PathBuf::from)
+        .filter(|shell| shell.is_file())
+        .unwrap_or_else(|| "/bin/sh".into())
 }
 
 fn require_success(output: std::process::Output) -> io::Result<()> {

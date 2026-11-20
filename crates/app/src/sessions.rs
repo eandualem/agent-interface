@@ -14,7 +14,7 @@ pub use crate::library::location::source_socket;
 /// A complete replacement for the source's previous availability.
 #[derive(Debug)]
 pub struct Observation {
-    /// Captured profile origin, absent only for explicit legacy socket discovery.
+    /// Captured profile origin, absent only for a workspace without a profile.
     pub identity: Option<Identity>,
     /// Typed profile verification failure; failed observations contain no sessions.
     pub profile_error: Option<ProfileError>,
@@ -27,7 +27,7 @@ pub struct Observation {
 }
 
 enum Source {
-    Legacy(PathBuf),
+    Standalone(PathBuf),
     Bound(Connection),
 }
 impl Source {
@@ -36,7 +36,7 @@ impl Source {
             return None;
         }
         let identity = match self {
-            Self::Legacy(_) => None,
+            Self::Standalone(_) => None,
             Self::Bound(connection) => Some(connection.identity().clone()),
         };
         let refused = |error| Observation {
@@ -47,7 +47,7 @@ impl Source {
             observed_at: None,
         };
         let socket = match self {
-            Self::Legacy(socket) => socket.as_path(),
+            Self::Standalone(socket) => socket.as_path(),
             Self::Bound(connection) => {
                 if let Err(error) = connection.verify() {
                     return live().then(|| refused(error));
@@ -112,7 +112,7 @@ impl SessionSource {
     /// resolves `socket` first. No default-server lookup or attachment occurs.
     /// `wake` runs on the worker after each complete observation is published.
     pub fn start(socket: PathBuf, wake: impl Fn() + Send + 'static) -> io::Result<Self> {
-        Self::start_source(Source::Legacy(socket), wake)
+        Self::start_source(Source::Standalone(socket), wake)
     }
 
     /// Poll only the captured profile's authenticated tmux socket. Verify the

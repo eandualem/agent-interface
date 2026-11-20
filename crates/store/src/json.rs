@@ -53,7 +53,7 @@ impl<'de> DeserializeSeed<'de> for Checked<'_> {
             nested.deserialize_any(self).map_err(de::Error::custom)
         } else {
             let value: Value = serde_json::from_str(text).map_err(de::Error::custom)?;
-            // Python permits arbitrary integers, but not non-finite floats.
+            // Arbitrary integers are permitted, but not non-finite floats.
             if let Value::Number(n) = &value
                 && text.contains(['.', 'e', 'E'])
                 && !n.as_f64().is_some_and(f64::is_finite)

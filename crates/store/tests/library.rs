@@ -233,6 +233,7 @@ fn transactional_edits_merge_and_conflicts_reset_before_an_explicit_retry() {
         "123456789012345678901234567890"
     );
     assert!(!db.is_busy());
+    // The row of another table that references the layout row survives the saves.
     assert_eq!(
         db.query_row("SELECT value FROM extension_row", [], |r| r
             .get::<_, String>(0))
@@ -578,7 +579,7 @@ fn missing_legacy_malformed_and_oversized_databases_are_not_initialized_or_repai
             .load()
             .unwrap_err()
             .detail
-            .contains("open this library once")
+            .contains("terminal_layout table is missing")
     );
     assert!(!db.table_exists(None, "terminal_layout").unwrap());
     db.execute_batch("CREATE TABLE terminal_layout (id INTEGER PRIMARY KEY, value TEXT)")

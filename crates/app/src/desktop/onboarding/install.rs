@@ -1,11 +1,15 @@
 //! What first run fixes: Git or tmux with the system's own installer and an
 //! agent tool with its official script, each on the person's click; and the
-//! agent service, which first run starts by itself: restarted once when it
-//! doesn't answer, or set up the way the installer does when it never was.
-//! Every fix runs off the UI thread with a deadline, and a failure explains
-//! itself.
+//! agent service, which first run starts by itself with Agent Backbone's own
+//! setup: it keeps a profile the computer has, or sets one up with this
+//! installation's login service. Every fix runs off the UI thread with a
+//! deadline, and a failure explains itself.
 
+use agent_interface_roster::profiles::setup::{
+    EVENT_LIMIT, LINE_LIMIT, OUTPUT_LIMIT, one_line, token, unique_keys,
+};
 use std::{
+    io::Read,
     os::unix::fs::FileExt,
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
@@ -20,6 +24,8 @@ const TAIL: usize = 16 * 1024;
 /// Agent Backbone's own setup waits up to 30 s for its service; this leaves
 /// room for a slow first start.
 const SETUP_LIMIT: Duration = Duration::from_secs(5 * 60);
+/// How often one setup request is sent when what came of it isn't known.
+const SENDS: usize = 3;
 
 /// How a fix ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,70 +112,139 @@ pub fn tool(install: &str, path_env: &str) -> Outcome {
     ))
 }
 
-/// Restart Agent Backbone's service the way the installer starts it.
-pub fn restart_backbone(path_env: &str) -> Outcome {
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-        return Outcome::Failed("The home folder is unknown.".into());
-    };
-    if cfg!(target_os = "macos") {
-        let plist = home.join("Library/LaunchAgents/dev.agent-backbone.plist");
-        if !plist.is_file() {
-            return Outcome::Failed(not_installed());
-        }
-        if let Err(reason) = owned(&plist, &home) {
-            return Outcome::Failed(reason);
-        }
-        let domain = format!("gui/{}", uzers::get_current_uid());
-        // Stopping fails when it was not running; starting is what counts.
-        let _ = run(
-            Command::new("/bin/launchctl")
-                .args(["bootout", &domain])
-                .arg(&plist),
-            path_env,
-        );
-        return finished(run(
-            Command::new("/bin/launchctl")
-                .args(["bootstrap", &domain])
-                .arg(&plist),
-            path_env,
-        ));
+/// Set this computer up with Agent Backbone's own setup, `initialize`: it
+/// keeps a profile the computer has, or makes the first one with the core
+/// starter and this installation's login service. The app restarts no
+/// service itself: it can't tell safely whose a login service is, and setup
+/// starts this installation's own. `request` is this run's request: it is
+/// kept while setup says the same request may follow, so Try again sends
+/// it again, and a new one is made otherwise.
+pub fn initialize_backbone(
+    backbone: &Path,
+    path_env: &str,
+    request: &mut Option<String>,
+) -> Result<(), String> {
+    let request_id = request
+        .get_or_insert_with(|| uuid::Uuid::now_v7().simple().to_string())
+        .clone();
+    let stopped = initialize(backbone, path_env, &request_id).err();
+    if !stopped.as_ref().is_some_and(|stopped| stopped.again) {
+        *request = None;
     }
-    let unit = home.join(".config/systemd/user/agent-backbone.service");
-    if !unit.is_file() {
-        return Outcome::Failed(not_installed());
-    }
-    if let Err(reason) = owned(&unit, &home) {
-        return Outcome::Failed(reason);
-    }
-    let Some(systemctl) = find("systemctl", path_env) else {
-        return Outcome::Failed("This system has no service manager setup can use.".into());
-    };
-    finished(run(
-        Command::new(systemctl).args(["--user", "restart", "agent-backbone.service"]),
-        path_env,
-    ))
+    stopped.map_or(Ok(()), |stopped| Err(stopped.said))
 }
 
-/// Set Agent Backbone up the way the installer does, when it never was: its
-/// data, its Default profile and its login service. Safe to repeat; existing
-/// data is kept.
-pub fn initialize_backbone(backbone: &Path, path_env: &str) -> Result<(), String> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or("The home folder is unknown.")?;
-    let data = data_dir(&home);
-    let request_id = uuid::Uuid::now_v7().simple().to_string();
-    let request = serde_json::json!({
-        "schema_version": 1,
+/// Why `initialize` stopped, and whether the same request may follow it.
+struct Stopped {
+    said: String,
+    again: bool,
+}
+
+/// The `initialize` request first run sends, under `request_id`.
+fn initialize_request(request_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 3,
         "request_id": request_id,
         "action": "initialize",
-        "data_dir": data,
+        "profile_name": "Default",
         "service": "user",
         "starter_profile": "core-v1",
-    });
+    })
+}
+
+/// Run one `initialize` request until setup says what came of it. The
+/// request is made once: after lost output or an outcome not known, it is
+/// sent again as it was, up to [`SENDS`] times. Any other answer stops it,
+/// in setup's own words.
+fn initialize(backbone: &Path, path_env: &str, request_id: &str) -> Result<(), Stopped> {
+    let request = initialize_request(request_id).to_string();
+    let deadline = Instant::now() + SETUP_LIMIT;
+    let mut last = None;
+    for _ in 0..SENDS {
+        // What came of a send that failed or ran out of time isn't known.
+        let sent = send(backbone, path_env, &request, request_id, deadline)
+            .map_err(|said| Stopped { said, again: true })?;
+        let Some(answer) = sent else {
+            // No readable answer: the same request finds out what came of it.
+            continue;
+        };
+        let said = answer.said();
+        match (
+            answer.status.as_str(),
+            answer.code.as_str(),
+            answer.retry.as_str(),
+        ) {
+            ("completed", "initialized" | "existing_preserved", _) => return Ok(()),
+            // Sent, with what came of it not known, or stopped before it
+            // changed anything: the same request again.
+            (_, "outcome_unknown" | "setup_failed", "same_request") => {}
+            // Anything else, service_unavailable among them, is the person's
+            // to act on: Try again sends the same request when setup says so.
+            _ => {
+                let again = answer.retry == "same_request";
+                return Err(Stopped { said, again });
+            }
+        }
+        last = Some(said);
+    }
+    // Lost every time: the same request finds out what came of it.
+    Err(Stopped {
+        said: last.unwrap_or_else(|| "Agent Backbone's setup did not report a result.".into()),
+        again: true,
+    })
+}
+
+/// What setup answered.
+#[derive(Debug, PartialEq, Eq)]
+struct Answer {
+    status: String,
+    code: String,
+    message: String,
+    retry: String,
+}
+
+impl Answer {
+    /// Whether `exit` is the code setup ends with for this answer: 0
+    /// completed, 1 failed, 2 an invalid request, 3 action required. A
+    /// status this app doesn't know has none to match.
+    fn exits(&self, exit: Option<i32>) -> bool {
+        match self.status.as_str() {
+            "completed" | "failed" | "action_required" if self.code == "invalid_request" => {
+                exit == Some(2)
+            }
+            "completed" => exit == Some(0),
+            "failed" => exit == Some(1),
+            "action_required" => exit == Some(3),
+            _ => true,
+        }
+    }
+
+    /// The answer's own words for a person, else its code.
+    fn said(&self) -> String {
+        let message = one_line(&self.message);
+        format!(
+            "Agent Backbone's setup stopped: {}",
+            if message.is_empty() {
+                &self.code
+            } else {
+                &message
+            }
+        )
+    }
+}
+
+/// Send `request` with `backbone setup --file F --jsonl` and read its
+/// answer. `None` when what it printed is not one.
+fn send(
+    backbone: &Path,
+    path_env: &str,
+    request: &str,
+    request_id: &str,
+    deadline: Instant,
+) -> Result<Option<Answer>, String> {
     let mut file = tempfile::NamedTempFile::new()
         .map_err(|_| "Setup could not create a temporary file.".to_owned())?;
-    std::io::Write::write_all(&mut file, request.to_string().as_bytes())
+    std::io::Write::write_all(&mut file, request.as_bytes())
         .map_err(|_| "Setup could not write its request.".to_owned())?;
     let output =
         tempfile::tempfile().map_err(|_| "Setup could not create a temporary file.".to_owned())?;
@@ -187,10 +262,9 @@ pub fn initialize_backbone(backbone: &Path, path_env: &str) -> Result<(), String
         .stderr(Stdio::null())
         .spawn()
         .map_err(|error| format!("Agent Backbone's setup could not start: {error}."))?;
-    let deadline = Instant::now() + SETUP_LIMIT;
-    loop {
+    let exit = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => break status.code(),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(200)),
             _ => {
                 let _ = child.kill();
@@ -198,113 +272,105 @@ pub fn initialize_backbone(backbone: &Path, path_env: &str) -> Result<(), String
                 return Err("Agent Backbone's setup took too long and was stopped.".into());
             }
         }
-    }
-    let result = last_line(&output);
-    let event: serde_json::Value = serde_json::from_str(&result).unwrap_or_default();
-    match (event["type"].as_str(), event["status"].as_str()) {
-        (Some("result"), Some("completed")) => Ok(()),
-        (Some("result"), _) => Err(format!(
-            "Agent Backbone's setup stopped: {}",
-            event["message"]
-                .as_str()
-                .or(event["code"].as_str())
-                .unwrap_or("no reason given")
-        )),
-        _ => Err("Agent Backbone's setup did not report a result.".into()),
-    }
-}
-
-/// The data folder this app's Agent Backbone uses.
-fn data_dir(home: &Path) -> PathBuf {
-    std::env::var_os("BACKBONE_DATA_DIR")
-        .filter(|dir| !dir.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".local/share/agent-backbone"))
-}
-
-/// Whether the installed service serves this app's data folder. Its
-/// definition names the folder in `BACKBONE_DATA_DIR`, or uses the default
-/// when it doesn't. A service for another folder is left alone.
-fn owned(definition: &Path, home: &Path) -> Result<(), String> {
-    let text = std::fs::read_to_string(definition)
-        .map_err(|_| "The agent service's definition could not be read.".to_owned())?;
-    let expected = data_dir(home);
-    let served = match served_dir(&text) {
-        Served::Named(dir) => PathBuf::from(dir),
-        Served::Default => home.join(".local/share/agent-backbone"),
-        Served::Unknown => {
-            return Err(
-                "The agent service's data folder could not be read from its definition, so it was left alone."
-                    .into(),
-            );
-        }
     };
-    if served == expected {
-        Ok(())
-    } else {
-        Err(format!(
-            "The installed agent service serves {}, not {}, so it was left alone.",
-            served.display(),
-            expected.display()
-        ))
+    let mut printed = String::new();
+    let read = std::io::Seek::rewind(&mut &output).and_then(|_| {
+        (&output)
+            .take(OUTPUT_LIMIT as u64 + 1)
+            .read_to_string(&mut printed)
+    });
+    if read.is_err() || printed.len() > OUTPUT_LIMIT {
+        return Ok(None);
     }
+    // An answer its exit contradicts is no readable answer.
+    Ok(answer(&printed, request_id).filter(|answer| answer.exits(exit)))
 }
 
-/// The data folder a service definition names.
-#[derive(Debug, PartialEq, Eq)]
-enum Served {
-    Named(String),
-    /// It names none, so it uses the default.
-    Default,
-    /// It names one in a form this doesn't read.
-    Unknown,
-}
-
-/// Read `BACKBONE_DATA_DIR` from a systemd unit (`Environment=`, quoted or
-/// not, `%%` for `%`) or a launchd plist (the key, then its XML string).
-fn served_dir(text: &str) -> Served {
-    let lines: Vec<&str> = text.lines().map(str::trim).collect();
-    for (index, line) in lines.iter().enumerate() {
-        if let Some(value) = line.strip_prefix("Environment=") {
-            let value = value.trim();
-            let unquoted = ['"', '\'']
-                .iter()
-                .find_map(|q| value.strip_prefix(*q).and_then(|v| v.strip_suffix(*q)))
-                .unwrap_or(value);
-            if let Some(dir) = unquoted.strip_prefix("BACKBONE_DATA_DIR=") {
-                return Served::Named(dir.replace("%%", "%"));
-            }
-            if value.contains("BACKBONE_DATA_DIR=") {
-                return Served::Unknown;
-            }
+/// What setup answered `request_id`, from the lines it printed: each an
+/// event of that request, in order, and the last its `initialize` result.
+/// `None` when what it printed is not that.
+fn answer(printed: &str, request_id: &str) -> Option<Answer> {
+    use serde::Deserialize;
+    use serde_json::Value;
+    // What every line has; then only the fields its own kind defines, so a
+    // field of the other kind, of any type, is ignored. Each is read from
+    // the line itself, so a field it defines said twice is refused.
+    #[derive(Deserialize)]
+    struct Line {
+        schema_version: u32,
+        request_id: String,
+        seq: u64,
+        #[serde(rename = "type")]
+        kind: String,
+    }
+    #[derive(Deserialize)]
+    struct Step {
+        step: String,
+        status: String,
+    }
+    #[derive(Deserialize)]
+    struct Done {
+        action: String,
+        status: String,
+        code: String,
+        message: String,
+        retry: String,
+        completed_steps: Vec<String>,
+        data: Value,
+    }
+    let mut seq = 0;
+    let mut result = None;
+    for text in printed.lines() {
+        // Bounded as a first agent's events are, nothing after the result,
+        // and every value kept as it came a bounded token.
+        if text.len() > LINE_LIMIT || result.is_some() {
+            return None;
         }
-        if *line == "<key>BACKBONE_DATA_DIR</key>" {
-            let next = lines.get(index + 1).copied().unwrap_or_default();
-            return match next
-                .strip_prefix("<string>")
-                .and_then(|v| v.strip_suffix("</string>"))
-            {
-                Some(dir) => Served::Named(
-                    dir.replace("&lt;", "<")
-                        .replace("&gt;", ">")
-                        .replace("&quot;", "\"")
-                        .replace("&apos;", "'")
-                        .replace("&amp;", "&"),
-                ),
-                None => Served::Unknown,
-            };
+        if text.trim().is_empty() {
+            continue;
+        }
+        // No key said twice anywhere in it, its data among them.
+        if !unique_keys(text.as_bytes()) {
+            return None;
+        }
+        let line: Line = serde_json::from_str(text).ok()?;
+        if line.schema_version != 3
+            || line.request_id != request_id
+            || line.seq <= seq
+            || line.seq > EVENT_LIMIT
+        {
+            return None;
+        }
+        seq = line.seq;
+        match line.kind.as_str() {
+            "step" => {
+                let step: Step = serde_json::from_str(text).ok()?;
+                if !token(&step.step) || !token(&step.status) {
+                    return None;
+                }
+            }
+            "result" => {
+                let done: Done = serde_json::from_str(text).ok()?;
+                if done.action != "initialize"
+                    || !done.data.is_object()
+                    || ![&done.status, &done.code, &done.retry]
+                        .into_iter()
+                        .all(|value| token(value))
+                    || !done.completed_steps.iter().all(|step| token(step))
+                {
+                    return None;
+                }
+                result = Some(Answer {
+                    status: done.status,
+                    code: done.code,
+                    message: done.message,
+                    retry: done.retry,
+                });
+            }
+            _ => return None,
         }
     }
-    if text.contains("BACKBONE_DATA_DIR") {
-        Served::Unknown
-    } else {
-        Served::Default
-    }
-}
-
-fn not_installed() -> String {
-    "Agent Backbone's service isn't installed. Run the Agent Interface installer again to add it."
-        .into()
+    result
 }
 
 fn finished(result: Result<(), String>) -> Outcome {
@@ -403,27 +469,417 @@ mod tests {
         (directory, format!("{path}:/usr/bin:/bin"))
     }
 
+    /// The service's own fixtures, copied byte for byte.
+    fn fixture(name: &str) -> serde_json::Value {
+        serde_json::from_str(match name {
+            "request" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../roster/src/profiles/setup/fixtures/setup-initialize.json"
+            )),
+            "step" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../roster/src/profiles/setup/fixtures/setup-event-step.json"
+            )),
+            "result" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../roster/src/profiles/setup/fixtures/setup-event-result.json"
+            )),
+            _ => unreachable!("{name}"),
+        })
+        .unwrap()
+    }
+    /// The request ID of the service's initialize fixture.
+    const ID: &str = "019a8f3e7c2b7d4e9a1f2b3c4d5e6f70";
+
     #[test]
-    fn a_service_definition_names_its_data_folder() {
-        let unit = "[Service]\nEnvironment='BACKBONE_DATA_DIR=/home/fixture $cash%%/data'\n";
+    fn initialize_is_the_services_request_and_reads_its_events() {
+        assert_eq!(initialize_request(ID), fixture("request"));
+        let printed = format!("{}\n{}\n", fixture("step"), fixture("result"));
+        let read = answer(&printed, ID).unwrap();
         assert_eq!(
-            served_dir(unit),
-            Served::Named("/home/fixture $cash%/data".into())
+            (
+                read.status.as_str(),
+                read.code.as_str(),
+                read.retry.as_str()
+            ),
+            ("completed", "initialized", "none")
         );
+        assert_eq!(read.message, fixture("result")["message"]);
+        // Another request's, out of order, after the result, another schema or action.
+        let changed = |field: &str, value: serde_json::Value| {
+            let mut result = fixture("result");
+            result[field] = value;
+            format!("{}\n{result}\n", fixture("step"))
+        };
+        for printed in [
+            changed("request_id", "019a8f3e7c2b7d4e9a1f2b3c4d5e6f71".into()),
+            changed("seq", 1.into()),
+            changed("schema_version", 2.into()),
+            changed("action", "first_agent".into()),
+            changed("data", serde_json::Value::Null),
+            changed("data", "none".into()),
+            changed("completed_steps", serde_json::Value::Null),
+            changed("completed_steps", 3.into()),
+            changed("message", serde_json::Value::Null),
+            format!("{}\n{}\n", fixture("result"), fixture("step")),
+            fixture("step").to_string(),
+            "not json".into(),
+        ] {
+            assert_eq!(answer(&printed, ID), None, "{printed}");
+        }
+        // A value over its bound, or not a token, as a first agent's are read.
+        let long = serde_json::Value::from("c".repeat(129));
+        for (field, value) in [
+            ("retry", long.clone()),
+            ("code", "a b".into()),
+            ("status", long.clone()),
+            ("completed_steps", serde_json::json!([long.clone()])),
+        ] {
+            let mut result = fixture("result");
+            result[field] = value;
+            let printed = format!("{}\n{result}\n", fixture("step"));
+            assert_eq!(answer(&printed, ID), None, "{printed}");
+        }
+        // A line over its bound, or an event past the most a run has.
+        let mut padded = fixture("step");
+        padded["pad"] = "x".repeat(LINE_LIMIT).into();
+        let late = changed("seq", (EVENT_LIMIT + 1).into());
+        for printed in [format!("{padded}\n{}\n", fixture("result")), late] {
+            assert_eq!(answer(&printed, ID), None);
+        }
+        // A field said twice, the right one last, is refused.
+        let twice = fixture("result").to_string().replacen(
+            '{',
+            "{\"request_id\":\"019a8f3e7c2b7d4e9a1f2b3c4d5e6f71\",",
+            1,
+        );
+        assert_eq!(answer(&format!("{}\n{twice}\n", fixture("step")), ID), None);
+        let twice = fixture("step")
+            .to_string()
+            .replacen('{', "{\"status\":\"failed\",", 1);
         assert_eq!(
-            served_dir("Environment=\"BACKBONE_DATA_DIR=/a b\"\n"),
-            Served::Named("/a b".into())
+            answer(&format!("{twice}\n{}\n", fixture("result")), ID),
+            None
         );
-        let plist = "<key>BACKBONE_DATA_DIR</key>\n<string>/x &amp; y</string>\n";
-        assert_eq!(served_dir(plist), Served::Named("/x & y".into()));
+        let twice =
+            fixture("result")
+                .to_string()
+                .replacen('{', "{\"code\":\"installation_conflict\",", 1);
+        assert_eq!(answer(&format!("{}\n{twice}\n", fixture("step")), ID), None);
+        // Nothing after the result, not even a blank line, and no line,
+        // blank or not, over its bound.
+        let printed = format!("{}\n{}\n\n", fixture("step"), fixture("result"));
+        assert_eq!(answer(&printed, ID), None);
+        let blank = " ".repeat(LINE_LIMIT + 1);
+        let printed = format!("{}\n{blank}\n{}\n", fixture("step"), fixture("result"));
+        assert_eq!(answer(&printed, ID), None);
+        // A key said twice inside the data, which the app doesn't read.
+        let mut twice = fixture("result");
+        twice["data"]["profile"] = serde_json::json!({"profile_id": "0a1b2c3d4e5f"});
+        let twice = twice.to_string().replacen(
+            "\"profile\":{",
+            "\"profile\":{\"profile_id\":\"0a1b2c3d4e60\",",
+            1,
+        );
+        assert_eq!(answer(&format!("{}\n{twice}\n", fixture("step")), ID), None);
+        // A step with a result's fields, of any type, is read as a step.
+        let mut step = fixture("step");
+        step["retry"] = serde_json::json!({"not": "a token"});
+        step["data"] = 3.into();
+        let printed = format!("{step}\n{}\n", fixture("result"));
+        assert!(answer(&printed, ID).is_some());
+        for (field, value) in [
+            ("step", serde_json::Value::Null),
+            ("step", long),
+            ("status", serde_json::Value::Null),
+            ("status", 3.into()),
+        ] {
+            let mut step = fixture("step");
+            step[field] = value;
+            let printed = format!("{step}\n{}\n", fixture("result"));
+            assert_eq!(answer(&printed, ID), None, "{printed}");
+        }
+    }
+
+    /// A fake `backbone`: it keeps each request it is given and prints the
+    /// next of `answers`, a result of `initialize` for [`ID`] each, or
+    /// nothing for a lost answer, and exits as setup does for it.
+    fn fake(answers: &[Option<(&str, &str, &str)>]) -> (tempfile::TempDir, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        for (at, answer) in answers.iter().enumerate() {
+            let printed = answer.map_or(String::new(), |(status, code, retry)| {
+                let mut result = fixture("result");
+                result["status"] = status.into();
+                result["code"] = code.into();
+                result["retry"] = retry.into();
+                result["message"] = format!("the service says {code}").into();
+                format!("{}\n{result}\n", fixture("step"))
+            });
+            std::fs::write(directory.path().join(format!("answer-{}", at + 1)), printed).unwrap();
+            let exit = match answer {
+                Some((_, "invalid_request", _)) => 2,
+                Some(("completed", ..)) => 0,
+                Some(("action_required", ..)) => 3,
+                _ => 1,
+            };
+            std::fs::write(
+                directory.path().join(format!("exit-{}", at + 1)),
+                exit.to_string(),
+            )
+            .unwrap();
+        }
+        let script = directory.path().join("backbone");
+        let root = directory.path().display();
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\n[ \"$1 $2 $4\" = 'setup --file --jsonl' ] || exit 9\n\
+                 /bin/cat \"$3\" >> '{root}/sent'; printf '\\n' >> '{root}/sent'\n\
+                 n=$(($(/bin/cat '{root}/count' 2>/dev/null || echo 0) + 1)); echo $n > '{root}/count'\n\
+                 /bin/cat '{root}/answer-'$n\n\
+                 exit $(/bin/cat '{root}/exit-'$n)\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // A test thread that forked while this one had the script open
+        // keeps it open for writing until its child execs, and until then
+        // running it fails with ETXTBSY. Wait a few seconds for one run to
+        // start: it exits 9 at once, on arguments setup never takes.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match std::process::Command::new(&script).status() {
+                Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "the fake backbone stayed busy (ETXTBSY) for 5 s: {error}"
+                    );
+                    std::thread::yield_now()
+                }
+                started => {
+                    assert_eq!(started.unwrap().code(), Some(9));
+                    break;
+                }
+            }
+        }
+        (directory, script)
+    }
+    /// The requests the fake was given.
+    fn sent(directory: &tempfile::TempDir) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(directory.path().join("sent"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn an_answer_its_exit_contradicts_is_asked_for_again() {
+        let initialized = Some(("completed", "initialized", "none"));
+        let (directory, backbone) = fake(&[initialized, initialized]);
+        std::fs::write(directory.path().join("exit-1"), "1").unwrap();
+        assert_eq!(run(&backbone, &mut Some(ID.into())), Ok(()));
+        assert_eq!(sent(&directory).len(), 2);
+        let answer = |status: &str, code: &str| Answer {
+            status: status.into(),
+            code: code.into(),
+            message: String::new(),
+            retry: "none".into(),
+        };
+        for (status, code, exit) in [
+            ("completed", "initialized", 0),
+            ("failed", "installation_conflict", 1),
+            ("failed", "invalid_request", 2),
+            ("action_required", "runtime_missing", 3),
+        ] {
+            let answer = answer(status, code);
+            assert!(answer.exits(Some(exit)), "{code}");
+            assert!(!answer.exits(Some((exit + 1) % 4)), "{code}");
+            assert!(!answer.exits(None), "{code}");
+        }
+        // A status this app doesn't know has no exit to match.
+        assert!(answer("paused", "new_code").exits(Some(7)));
+        assert!(answer("paused", "invalid_request").exits(Some(1)));
+    }
+
+    /// First run's setup of this computer, under the request `request` holds.
+    fn run(backbone: &Path, request: &mut Option<String>) -> Result<(), String> {
+        initialize_backbone(backbone, "/usr/bin:/bin", request)
+    }
+
+    #[test]
+    fn an_answer_not_known_is_asked_for_with_the_same_request() {
+        let (directory, backbone) = fake(&[
+            None,
+            Some(("action_required", "outcome_unknown", "same_request")),
+            Some(("completed", "existing_preserved", "none")),
+        ]);
+        assert_eq!(run(&backbone, &mut Some(ID.into())), Ok(()));
+        assert_eq!(sent(&directory), vec![fixture("request"); 3]);
+    }
+
+    #[test]
+    fn no_service_answering_is_said_and_try_again_sends_the_same_request() {
+        let unavailable = Some(("action_required", "service_unavailable", "same_request"));
+        let (directory, backbone) =
+            fake(&[unavailable, Some(("completed", "initialized", "none"))]);
+        // Setup's own words, such as how to start the service; nothing is
+        // restarted, and nothing sent again by itself.
+        let mut request = Some(ID.to_owned());
         assert_eq!(
-            served_dir("[Service]\nExecStart=backbone serve\n"),
-            Served::Default
+            run(&backbone, &mut request),
+            Err("Agent Backbone's setup stopped: the service says service_unavailable".into())
         );
+        assert_eq!(sent(&directory).len(), 1);
+        // Try again sends the same request, as setup said it may.
+        assert_eq!(request.as_deref(), Some(ID));
+        assert_eq!(run(&backbone, &mut request), Ok(()));
+        assert_eq!(sent(&directory), vec![fixture("request"); 2]);
+        assert_eq!(request, None);
+        // After one that may not follow, Try again makes a new request.
+        for retry in ["new_request", "none", "later"] {
+            let answer = Some(("action_required", "service_unavailable", retry));
+            let (directory, backbone) = fake(&[answer]);
+            let mut request = Some(ID.to_owned());
+            assert!(run(&backbone, &mut request).is_err());
+            assert_eq!(request, None, "{retry}");
+            assert_eq!(sent(&directory).len(), 1, "{retry}");
+        }
+    }
+
+    #[test]
+    fn what_needs_the_person_is_said_and_not_sent_again() {
+        for (status, code, retry) in [
+            ("action_required", "runtime_missing", "same_request"),
+            ("action_required", "profile_unavailable", "same_request"),
+            ("failed", "installation_conflict", "none"),
+            ("failed", "operator_required", "none"),
+            // A retry this app doesn't know is no resend.
+            ("action_required", "outcome_unknown", "later"),
+            ("paused", "new_code", "none"),
+        ] {
+            let (directory, backbone) = fake(&[Some((status, code, retry))]);
+            let said = run(&backbone, &mut Some(ID.into())).unwrap_err();
+            assert!(said.contains(&format!("the service says {code}")), "{said}");
+            assert_eq!(sent(&directory).len(), 1, "{code}");
+        }
+        // Lost every time: sent a bounded number of times, then said so;
+        // Try again asks with the same request.
+        let (directory, backbone) = fake(&[None, None, None]);
+        let mut request = Some(ID.to_owned());
         assert_eq!(
-            served_dir("<key>BACKBONE_DATA_DIR</key><string>/x</string>"),
-            Served::Unknown
+            run(&backbone, &mut request),
+            Err("Agent Backbone's setup did not report a result.".into())
         );
+        assert_eq!(sent(&directory).len(), 3);
+        assert_eq!(request.as_deref(), Some(ID));
+    }
+
+    /// First run's `initialize` against a real Agent Backbone service: the
+    /// request first run builds, sent and read as first run does, and then
+    /// the check first run waits on, that the Default profile answers.
+    /// Ignored by default. Run it by name against a private trial whose
+    /// service is already up, in the environment that service was started
+    /// in: `PATH` (the trial's `backbone` first), `HOME`, `BACKBONE_DIR` and
+    /// `TMUX_TMPDIR` all the trial's own under `/tmp`, `TMUX` unset, and the
+    /// database settings it was started with (`PGHOST`, `PGPORT`). The
+    /// guards below catch a run from an ordinary shell; whoever makes the
+    /// trial answers for what its folders and its service hold. Only
+    /// `service` differs from what first run sends: the trial's service was
+    /// started by hand, so no login service is installed.
+    #[test]
+    #[ignore = "needs a private trial of a real Agent Backbone service"]
+    fn initialize_against_a_real_service() {
+        // Nothing of a person's own: every place the service is told to use
+        // is a folder inside the temporary one, never that folder itself,
+        // where tmux keeps its default server; and no tmux client is
+        // inherited. The XDG folders count when they are set.
+        for (name, required) in [
+            ("HOME", true),
+            ("BACKBONE_DIR", true),
+            ("TMUX_TMPDIR", true),
+            ("XDG_CACHE_HOME", false),
+            ("XDG_CONFIG_HOME", false),
+            ("XDG_DATA_HOME", false),
+            ("XDG_STATE_HOME", false),
+            ("XDG_RUNTIME_DIR", false),
+        ] {
+            let Some(place) = std::env::var_os(name) else {
+                assert!(!required, "{name} must be set");
+                continue;
+            };
+            // The three a trial is made of exist already. Another that
+            // doesn't exist yet is judged by what exists of its path, so a
+            // link on the way can't lead out.
+            let place = PathBuf::from(place);
+            assert!(!required || place.exists(), "{name} must exist");
+            let existing = place
+                .ancestors()
+                .find(|ancestor| ancestor.exists())
+                .and_then(|existing| existing.canonicalize().ok());
+            assert!(
+                place
+                    .components()
+                    .all(|part| part != std::path::Component::ParentDir)
+                    && existing.is_some_and(|existing| {
+                        ["/tmp", "/private/tmp"].iter().any(|root| {
+                            existing
+                                .strip_prefix(root)
+                                .is_ok_and(|rest| rest.components().next().is_some())
+                        })
+                    }),
+                "{name} must be a disposable folder inside the temporary one"
+            );
+        }
+        assert!(std::env::var_os("TMUX").is_none(), "TMUX must be unset");
+        // A shell an agent runs in carries more of its own Backbone than the
+        // directory, so nothing else of that kind may be set.
+        let own: Vec<_> = std::env::vars_os()
+            .filter_map(|(name, _)| name.into_string().ok())
+            .filter(|name| name.starts_with("BACKBONE_") && name != "BACKBONE_DIR")
+            .collect();
+        assert!(own.is_empty(), "these must be unset: {own:?}");
+        let path_env = std::env::var("PATH").unwrap();
+        let backbone = std::env::split_paths(&path_env)
+            .map(|directory| directory.join("backbone"))
+            .find(|candidate| candidate.is_file())
+            .expect("backbone on PATH");
+        let request_id = uuid::Uuid::now_v7().simple().to_string();
+        let mut request = initialize_request(&request_id);
+        request["service"] = "none".into();
+        println!("backbone: {}", backbone.display());
+        println!("request: {request}");
+        let sent = send(
+            &backbone,
+            &path_env,
+            &request.to_string(),
+            &request_id,
+            Instant::now() + SETUP_LIMIT,
+        );
+        println!("answer: {sent:?}");
+        let answer = sent.expect("setup ran").expect("an answer first run reads");
+        assert_eq!(answer.status, "completed");
+        assert!(matches!(
+            answer.code.as_str(),
+            "initialized" | "existing_preserved"
+        ));
+
+        // What first run waits for after that answer, for as long and in the
+        // same order, with the trial's `backbone` where first run asks the
+        // login shell for it.
+        let client = crate::profiles::Client::new(backbone, path_env.into()).unwrap();
+        let deadline = Instant::now() + super::super::SERVICE_WAIT;
+        let mut answered = false;
+        while !answered && Instant::now() < deadline {
+            let answers = super::super::probe::answers(Some(client.clone()));
+            println!("the Default profile: {answers:?}");
+            answered = answers == super::super::probe::Backbone::Running;
+            if !answered {
+                std::thread::sleep(super::super::SERVICE_POLL);
+            }
+        }
+        assert!(answered, "the Default profile did not answer in time");
     }
 
     #[test]

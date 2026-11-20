@@ -262,12 +262,9 @@ fn plural(count: usize, one: &'static str, many: &'static str) -> &'static str {
 }
 
 fn open_record(pane: &mut ViewPane, item: ReportItem, cx: &mut Context<ViewPane>) {
-    seen::mark(
-        &item,
-        pane.connection
-            .as_ref()
-            .map(|connection| connection.identity()),
-    );
+    if let Some(connection) = &pane.connection {
+        seen::mark(&item, connection.identity());
+    }
     pane.documents.clear();
     pane.reports.open = Some(item);
     pane.refetch(false, cx);
@@ -614,12 +611,10 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                     ui::record_row(
                         id,
                         index == 0,
-                        !seen::is_seen(
-                            item,
-                            pane.connection
-                                .as_ref()
-                                .map(|connection| connection.identity()),
-                        ),
+                        !pane
+                            .connection
+                            .as_ref()
+                            .is_some_and(|connection| seen::is_seen(item, connection.identity())),
                         mark(item, &pane.agents).unwrap_or_else(|| div()),
                         item.author.clone(),
                         line(summary),
@@ -635,12 +630,10 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                 } => ui::question_row(
                     id,
                     index == 0,
-                    !seen::is_seen(
-                        item,
-                        pane.connection
-                            .as_ref()
-                            .map(|connection| connection.identity()),
-                    ),
+                    !pane
+                        .connection
+                        .as_ref()
+                        .is_some_and(|connection| seen::is_seen(item, connection.identity())),
                     item.author.clone(),
                     line(question),
                     line(answer),
@@ -704,22 +697,19 @@ pub(super) fn body(pane: &ViewPane, page: &ReportPage, cx: &mut Context<ViewPane
                     };
                     let open = (*item).clone();
                     let mut tags = Vec::new();
-                    if !seen::is_seen(
-                        item,
-                        pane.connection
-                            .as_ref()
-                            .map(|connection| connection.identity()),
-                    ) {
-                        let label = if seen::is_update(
-                            item,
-                            pane.connection
-                                .as_ref()
-                                .map(|connection| connection.identity()),
-                        ) {
-                            "updated"
-                        } else {
-                            "new"
-                        };
+                    if !pane
+                        .connection
+                        .as_ref()
+                        .is_some_and(|connection| seen::is_seen(item, connection.identity()))
+                    {
+                        let label =
+                            if pane.connection.as_ref().is_some_and(|connection| {
+                                seen::is_update(item, connection.identity())
+                            }) {
+                                "updated"
+                            } else {
+                                "new"
+                            };
                         tags.push(ui::tag(label, ui::Tone::Tag));
                     }
                     shelf = shelf.child(
@@ -811,37 +801,26 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
     let (t, c) = (tokens(), colors());
     let mut sections = ui::segments();
     for (index, (name, make)) in SECTIONS.into_iter().enumerate() {
-        if index == 1
-            && (pane.backbone.is_some()
-                || pane
-                    .connection
-                    .as_ref()
-                    .is_some_and(|connection| pane.agents.belongs_to(connection.identity())))
-        {
-            sections = sections.child(
-                ui::segment(
-                    "reports-Current plans",
-                    "Current plans",
-                    pane.shown == Shown::Plans,
+        if index == 1 {
+            sections = sections
+                .child(
+                    ui::segment(
+                        "reports-Current plans",
+                        "Current plans",
+                        pane.shown == Shown::Plans,
+                    )
+                    .on_click(cx.listener(|pane, _, _, cx| pane.show_plans(cx))),
                 )
-                .on_click(cx.listener(|pane, _, _, cx| pane.show_plans(cx))),
-            );
-        }
-        if index == 1
-            && (pane.backbone.is_some()
-                || pane
-                    .connection
-                    .as_ref()
-                    .is_some_and(|connection| pane.agents.belongs_to(connection.identity())))
-        {
-            sections = sections.child(
-                ui::segment(
-                    "reports-Interactions",
-                    "Interactions",
-                    pane.shown == Shown::Interactions,
-                )
-                .on_click(cx.listener(|pane, _, window, cx| pane.show_interactions(window, cx))),
-            );
+                .child(
+                    ui::segment(
+                        "reports-Interactions",
+                        "Interactions",
+                        pane.shown == Shown::Interactions,
+                    )
+                    .on_click(
+                        cx.listener(|pane, _, window, cx| pane.show_interactions(window, cx)),
+                    ),
+                );
         }
         let query = make();
         sections = sections.child(
@@ -855,17 +834,10 @@ fn controls(pane: &ViewPane, agents: &[String], cx: &mut Context<ViewPane>) -> g
             .on_click(cx.listener(move |pane, _, _, cx| pane.show_records(make(), cx))),
         );
     }
-    if pane.backbone.is_some()
-        || pane
-            .connection
-            .as_ref()
-            .is_some_and(|connection| pane.agents.belongs_to(connection.identity()))
-    {
-        sections = sections.child(
-            ui::segment("reports-Sheets", "Sheets", pane.shown == Shown::Sheets)
-                .on_click(cx.listener(|pane, _, window, cx| pane.show_sheets(window, cx))),
-        );
-    }
+    sections = sections.child(
+        ui::segment("reports-Sheets", "Sheets", pane.shown == Shown::Sheets)
+            .on_click(cx.listener(|pane, _, window, cx| pane.show_sheets(window, cx))),
+    );
     let agent = pane.reports.agent.as_deref().unwrap_or(
         if matches!(pane.reports.query, ReportQuery::Documents(_, Some(_))) {
             "Selected author"
@@ -985,7 +957,6 @@ mod tests {
             author: "worker".into(),
             author_id: None,
             registered: true,
-            provider_url: String::new(),
             created_at: String::new(),
             conversation_id: None,
             content: ReportContent::Progress {
@@ -1020,7 +991,6 @@ mod tests {
             author: "worker".into(),
             author_id: None,
             registered: false,
-            provider_url: String::new(),
             created_at: "2026-10-24T10:00:00Z".into(),
             conversation_id: None,
             content: ReportContent::Response {
@@ -1060,7 +1030,6 @@ mod tests {
             author: "worker".into(),
             author_id: None,
             registered: false,
-            provider_url: String::new(),
             created_at: "2026-10-24T10:00:00Z".into(),
             conversation_id: None,
             content: ReportContent::Response {
@@ -1098,7 +1067,6 @@ mod tests {
             author: "worker".into(),
             author_id: None,
             registered: true,
-            provider_url: String::new(),
             created_at: String::new(),
             conversation_id: None,
             content: ReportContent::Response {
@@ -1127,7 +1095,6 @@ mod tests {
             author: "worker".into(),
             author_id: None,
             registered: true,
-            provider_url: String::new(),
             created_at: String::new(),
             conversation_id: None,
             content: ReportContent::Response {
@@ -1164,7 +1131,7 @@ mod tests {
     #[test]
     fn a_link_names_its_site_and_where_on_it() {
         assert_eq!(
-            place("https://github.com/eandualem/agent-backbone/issues/516"),
+            place("https://github.com/example/project/issues/516"),
             "github.com · issues/516"
         );
         assert_eq!(place("https://www.example.com/"), "example.com");
