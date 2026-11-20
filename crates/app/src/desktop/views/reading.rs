@@ -61,6 +61,49 @@ pub(super) fn look() -> Reading {
     }
 }
 
+/// A diff's added and removed lines: each one's fill, and a colour for its
+/// sign that reads on that fill at 4.5:1, darkened or lightened if needed.
+fn diff_colours(c: &crate::desktop::design::Colors) -> [(Rgba, Rgba); 2] {
+    use crate::desktop::themes::vscode::contrast;
+    let readable = |ink: Rgba, fill: Rgba| {
+        // Black or white, whichever reads better, reads at 4.5:1 or more on
+        // any fill.
+        let [black, white] = [0., 1.].map(|v| Rgba {
+            r: v,
+            g: v,
+            b: v,
+            a: 1.,
+        });
+        let far = if contrast(black, fill) > contrast(white, fill) {
+            black
+        } else {
+            white
+        };
+        (0..=10)
+            .map(|step| byte_exact(mix(ink, far, step as f32 / 10.)))
+            .find(|ink| contrast(*ink, fill) >= 4.5)
+            .unwrap_or(far)
+    };
+    // Checked as the page gets them: in whole bytes, as `hex` writes them.
+    let add = byte_exact(mix(c.surface, c.ok, 0.16));
+    let remove = byte_exact(mix(c.surface, c.attention, 0.16));
+    [
+        (add, readable(c.ok, add)),
+        (remove, readable(c.attention_text, remove)),
+    ]
+}
+
+/// `color` with each channel rounded to the byte `hex` writes.
+fn byte_exact(color: Rgba) -> Rgba {
+    let part = |value: f32| (value.clamp(0., 1.) * 255.).round() / 255.;
+    Rgba {
+        r: part(color.r),
+        g: part(color.g),
+        b: part(color.b),
+        a: color.a,
+    }
+}
+
 /// `color` as CSS.
 fn hex(color: Rgba) -> String {
     let part = |value: f32| (value.clamp(0., 1.) * 255.).round() as u8;
@@ -96,6 +139,7 @@ pub(super) fn document_script() -> std::rc::Rc<str> {
 
 fn script(c: &crate::desktop::design::Colors, light: bool) -> String {
     let look = look();
+    let [(add, add_sign), (remove, remove_sign)] = diff_colours(c);
     let palette = serde_json::json!({
         "scheme": if light { "light" } else { "dark" },
         // What a document may use as `var(--ai-…)`.
@@ -117,6 +161,11 @@ fn script(c: &crate::desktop::design::Colors, light: bool) -> String {
             "block": hex(look.block_fill),
             "table-head": hex(look.table_head),
             "selection": hex(look.selection),
+            // A diff's added and removed lines: their fill and their sign.
+            "diff-add": hex(add),
+            "diff-add-sign": hex(add_sign),
+            "diff-remove": hex(remove),
+            "diff-remove-sign": hex(remove_sign),
         },
         // Neutrals, from the page to its text.
         "ramp": {
@@ -165,6 +214,7 @@ mod tests {
                     .as_str()
                     .is_some_and(|css| css.contains("--ai-table-head"))
             );
+            assert!(palette["variables"]["diff-add"].is_string());
         }
         assert_eq!(
             hex(Rgba {
@@ -175,5 +225,136 @@ mod tests {
             }),
             "rgba(255, 128, 0, 0.350)"
         );
+    }
+
+    #[test]
+    fn every_rule_of_the_view_ranks_above_a_documents() {
+        let css = include_str!("../../../assets/document/theme.css");
+        let start = css.find("/* Git diffs and code").expect("the view's rules");
+        // The view's rules, without their comments.
+        let mut view = String::new();
+        let mut rest = &css[start..];
+        while let Some(open) = rest.find("/*") {
+            view.push_str(&rest[..open]);
+            let close = rest[open..].find("*/").expect("comment end");
+            rest = &rest[open + close + 2..];
+        }
+        view.push_str(rest);
+        assert!(
+            view.contains("all: initial !important") && view.contains("all: revert !important")
+        );
+        // The view's scheme is the theme's: the reader's script sets it after
+        // these rules, which set none.
+        assert!(!view.contains("color-scheme"));
+        let script = include_str!("../../../assets/document/theme.js");
+        assert!(
+            script.contains("const view = `.ai-git.ai-git{color-scheme:${T.scheme}!important}`;")
+        );
+        assert!(script.contains("${T.css}${view}"));
+        let mut closed = None;
+        for rule in view
+            .split('}')
+            .map(str::trim)
+            .filter(|rule| !rule.is_empty())
+        {
+            let (selectors, body) = rule.split_once('{').expect("a rule");
+            // Selectors, split at commas outside parentheses.
+            let (mut depth, mut from, mut list) = (0, 0, Vec::new());
+            for (at, c) in selectors.char_indices() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    ',' if depth == 0 => {
+                        list.push(&selectors[from..at]);
+                        from = at + 1;
+                    }
+                    _ => {}
+                }
+            }
+            list.push(&selectors[from..]);
+            let declarations: Vec<&str> = body
+                .split(';')
+                .map(str::trim)
+                .filter(|d| !d.is_empty())
+                .collect();
+            if list
+                .iter()
+                .any(|selector| selector.contains(":not([open])"))
+            {
+                let selectors: Vec<&str> = list.iter().map(|selector| selector.trim()).collect();
+                assert!(closed.replace((selectors, declarations.clone())).is_none());
+            }
+            for selector in list {
+                // The prefix is the view's classes, and only those.
+                let rest = selector.trim().strip_prefix(".ai-git.ai-git");
+                let after = rest.map(|rest| rest.chars().next());
+                assert!(
+                    after.is_some_and(
+                        |c| c.is_none_or(|c| c.is_whitespace() || ":[>+~.".contains(c))
+                    ),
+                    "{selector}"
+                );
+                // A reset of a closed details' content would show it, so a
+                // rule for that slot names the state it is for.
+                if selector.contains("::details-content") {
+                    let state = ["[open]::details-content", ":not([open])::details-content"];
+                    assert!(
+                        state.iter().any(|state| selector.contains(state)),
+                        "{selector}"
+                    );
+                }
+            }
+            for declaration in declarations {
+                assert!(declaration.ends_with("!important"), "{declaration}");
+            }
+        }
+        // A closed details' content is hidden, whatever a document says, and
+        // nothing else is set there.
+        assert_eq!(
+            closed,
+            Some((
+                vec![
+                    ".ai-git.ai-git:not([open])::details-content",
+                    ".ai-git.ai-git details:not([open])::details-content",
+                ],
+                vec![
+                    "content-visibility: hidden !important",
+                    "display: block !important",
+                ],
+            ))
+        );
+    }
+
+    #[test]
+    fn diff_signs_read_on_their_fill_in_every_shipped_theme() {
+        for id in [
+            "dark",
+            "light",
+            "dracula",
+            "one-dark",
+            "tokyo-night",
+            "catppuccin-mocha",
+            "nord",
+            "gruvbox-dark",
+            "solarized-dark",
+            "github-dark",
+            "catppuccin-latte",
+            "solarized-light",
+            "github-light",
+            "one-light",
+        ] {
+            let design = crate::desktop::themes::resolve(id).unwrap();
+            // The colours as the page gets them, read back from their CSS.
+            let emitted = |color: Rgba| {
+                let hex = hex(color);
+                let byte = |at: usize| u8::from_str_radix(&hex[at..at + 2], 16).unwrap();
+                let [r, g, b] = [1, 3, 5].map(|at| f32::from(byte(at)) / 255.);
+                Rgba { r, g, b, a: 1. }
+            };
+            for (fill, sign) in diff_colours(&design.colors) {
+                let ratio = crate::desktop::themes::vscode::contrast(emitted(sign), emitted(fill));
+                assert!(ratio >= 4.5, "{id}: {ratio}");
+            }
+        }
     }
 }

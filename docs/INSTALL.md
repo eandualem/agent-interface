@@ -15,6 +15,9 @@ and x86-64 on glibc Linux. Linux packages built by the workflow target Ubuntu
 24.04 or newer, with a graphical desktop. Older distributions and musl-based
 systems such as Alpine are not supported by those packages.
 
+Git diffs in Documents need Git 2.41 or later and code references Git 2.31 or
+later; with older Git a pointer is shown as its author wrote it.
+
 On Ubuntu under WSL, the installer installs missing runtime packages and registers
 the Windows Start entry, asking for your Linux password through sudo when needed.
 On other systems, install the prerequisites before running the installer, which

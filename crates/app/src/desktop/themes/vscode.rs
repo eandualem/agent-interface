@@ -297,7 +297,7 @@ fn luminance(colour: Rgba) -> f32 {
 }
 
 /// The WCAG contrast ratio of two opaque colours.
-fn contrast(a: Rgba, b: Rgba) -> f32 {
+pub(in crate::desktop) fn contrast(a: Rgba, b: Rgba) -> f32 {
     let (a, b) = (luminance(a), luminance(b));
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }

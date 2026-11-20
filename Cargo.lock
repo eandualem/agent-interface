@@ -129,6 +129,7 @@ dependencies = [
  "gpui-pre-macos",
  "gpui-pre-platform",
  "gtk",
+ "html5ever",
  "libc",
  "pulldown-cmark",
  "raw-window-handle",

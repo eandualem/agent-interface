@@ -749,6 +749,124 @@ HTML to the same isolated system-webview surface. Credentials remain in the
 native transport. Missing API support is distinct from an empty catalog. No
 local artifact is automatically imported under an authenticated author name.
 
+A Document carries no code of its own. To show a change or a passage of code
+it holds a pointer to Git: `<figure data-backbone-diff="1" data-repo="owner/name"
+data-base="…" data-head="…" data-paths='["src/a.rs"]'>` for `git diff BASE HEAD`
+of two commits' trees (`data-paths` optional), or `<figure data-backbone-code="1"
+data-repo="owner/name" data-commit="…" data-path="src/a.rs" data-lines="40-58">`
+for a file's lines (`data-lines` optional), with full 40-digit commit IDs and
+an optional `figcaption`. Before the reader serves a verified revision,
+`app::code_figures` puts a static view in place of each pointer's content, on
+a thread of its own. The reader says it is reading the document until then,
+for at most 8 seconds; after that it serves the page as stored, and what Git
+had read by then is kept for the next opening. Leaving the reader, or a newer
+revision, stops that work, a running Git command included. Refresh reads the
+pointers again, so a commit fetched since then appears; a pointer that could
+not be read is never remembered.
+
+- **Finding pointers.** The `html5ever` tokenizer reads the page as a browser
+  does, so markup in comments, attribute values, scripts, styles, text areas,
+  titles, `noscript`, SVG and MathML is not a pointer. The page is fed to it in
+  pieces that each end at a `>`, which places the end of every tag at an exact
+  byte offset: only the figure's content is replaced, and every other byte,
+  the figure's own tags included, is served as stored. A figure with another
+  version, a short or non-hexadecimal commit, a path that is absolute or has
+  `..`, empty parts, backslashes or control characters, unreadable JSON, a
+  repeated attribute, or content other than whitespace, comments and one
+  caption is not a pointer. A caption holds text and only these elements,
+  each closed in the order opened, with no link inside a link: `em`,
+  `strong`, `b`, `i`, `u`, `s`, `small`, `code`, `a`, `span`, `kbd`, `samp`,
+  `var`, `sub`, `sup`, `mark`, `abbr`, `cite`, `q`, `time`, `bdi`, and the
+  empty `br` and `wbr`. It becomes the view's summary, and anything else
+  (an unclosed `table`, say) could make a browser build the view inside it. A page's first 64 pointers are read. The page is fed to the
+  tokenizer in steps of at most 1 KiB, with the deadline and cancellation
+  checked between steps. The tokenizer compares each new attribute of a tag
+  with all before it, so a tag with very many attributes is slow to read;
+  the slowest step measured, late in a 4 MiB tag of distinct attributes, took
+  about 0.11 s. Such a page holds one background thread until the deadline,
+  then it is served as stored; the reader is never blocked.
+- **Finding a checkout.** The candidates are the saved folders of the
+  window's panes, then the folders of the profile's agents as `/api/agents`
+  reports them, each counted once, up to 64. Each resolves to its Git top
+  level, one per clone (common Git directory), and matches when its `origin`
+  URL as stored (not rewritten by `url.*.insteadOf`) is the pointer's GitHub
+  repository in one of these forms only: `https://github.com/…`,
+  `ssh://…github.com/…` (port 22 at most), `git@github.com:…`, or
+  `ssh://…ssh.github.com:443/…`; and it has the commits as commit objects.
+  Partial clones (`extensions.partialClone`, or a remote with `promisor` or
+  `partialclonefilter`) are left out, since Git fills them in from the network,
+  and so are clones whose object format is not SHA-1, where a 40-digit ID
+  could name something else.
+- **Reading Git.** `git`, as found on the app's own PATH, is not run at all
+  when it is macOS's `/usr/bin/git` stub with no developer tools installed
+  (checked once, on the file system). It runs without the
+  inherited Git environment, without system or user configuration
+  (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`), with
+  `GIT_OPTIONAL_LOCKS=0`, no terminal prompt, no pager, literal pathspecs,
+  `GIT_NO_REPLACE_OBJECTS=1` (a commit ID names that commit, never a local
+  replacement), and `GIT_NO_LAZY_FETCH=1` with `-c protocol.allow=never` and
+  an empty `GIT_ALLOW_PROTOCOL`, so no transport runs and nothing is fetched.
+  A file over 16 MiB is shown as binary (`core.bigFileThreshold=16m`): Git
+  compares two regular files over that size by size alone, but reads any
+  other changed blob whole, and finding renames reads blobs too. So a diff
+  is first listed with `--raw -z --no-renames --no-abbrev`, which reads no
+  blob, and one `git rev-list --filter=blob:limit=…` names the listed blobs
+  over 16 MiB; a diff that would make Git read a changed blob over 16 MiB
+  is not read, so rename detection never sees one.
+  A diff is read with `--no-ext-diff --no-textconv`, so no configured program
+  runs, and `--submodule=short`, which overrides `diff.submodule`, so Git
+  never reads inside a submodule. Its file list comes from
+  `--raw -z --ignore-submodules=none` with no patch option, so that pass
+  writes no patch; its lines come from the patch, which is not read when the
+  list holds a submodule. Attributes, such as which files
+  are binary, come from the new commit (`--attr-source`), not from the
+  checkout's files or system or user attribute files (`GIT_ATTR_NOSYSTEM=1`,
+  `core.attributesFile=/dev/null`); the clone's own configuration still
+  applies, as it is the person's. Diffs need Git 2.41 or later and code
+  references Git 2.31 or later; with older Git a pointer is shown as its
+  author wrote it. Git 2.31 does not honour `GIT_CONFIG_GLOBAL`, so there the
+  user's own global configuration applies.
+  A file is read with `git cat-file blob`, once `git cat-file -s` says it is
+  at most 4 MiB. Each command stops after 3 seconds or 4 MiB of output,
+  no command starts after a page's 8 seconds, and a diff or code view holds at
+  most 20,000 rows, counted while it is read and drawn. The app bounds Git's
+  output, its time, the number of changed entries and the sizes of the
+  blobs a pointer names directly; what Git reads internally to produce them
+  (the head commit's `.gitattributes` files along the changed paths, and
+  delta bases) is bounded by the repository's own objects. Commits do not change,
+  so answers are kept for the session, up to 64 MiB, by the clone that gave
+  them and what Git read (a file at a commit, or a diff's commits and paths,
+  so excerpts of one file share one read), and used again only while that
+  clone is still a candidate and still has the commits. Nothing is
+  written to a checkout.
+- **The view.** Each pointer becomes `<details open>`, so it collapses and
+  expands without a script. It reads left to right as code does, in a page
+  of any direction; a caption keeps its own direction. For one file or a code reference, its summary is
+  the caption with the file's header under it, or else the header (`old → new`
+  for a rename; a file with no lines to show, a binary one included, is
+  marked added, deleted or renamed, or else mode changed); a diff of several
+  files holds one `<details open>` per
+  file, under the caption or the number of files. Rows show old and new line numbers, the sign
+  as text, and added and removed lines in the theme's `--ai-diff-*` colours,
+  set by `views/reading.rs` for every theme, with each sign readable on its
+  row's fill, and styled by
+  `assets/document/theme.css`; long lines scroll inside the view. Only UTF-8
+  text is shown, and text from Git is escaped. No script, bridge or network access is added, and the
+  content policy is unchanged.
+- **Nothing to show.** A pointer with no matching checkout or commit, a code
+  pointer's path missing at that commit, a diff that touches a submodule, a
+  diff with more than 2,000 changed entries, counted before renames are
+  paired (a moved file counts twice), a diff with a file over 16 MiB on
+  either side unless both sides are regular files over that size, which Git
+  compares by size alone and shows as binary (so one added, deleted,
+  renamed, grown past or shrunk from that size, or changed to or from a
+  link, as a rename is a deletion and an addition there), a code pointer
+  to a file over 4 MiB, a binary file at a code pointer, a path or text that is not UTF-8 or holds a
+  NUL byte, a read that is too large or too slow, or a view past 32 MiB of
+  views on the page stays exactly as authored. A diff's `data-paths` only
+  filter it: a listed path with no change is not shown, and a diff with no
+  changes in its paths shows "0 files changed".
+
 The experimental Artifacts pane is independent of Backbone. `app::artifacts`
 copies a UTF-8 HTML document and small metadata record into an immutable UUID
 directory under the selected library's `artifacts/`, publishing by atomic
@@ -930,6 +1048,14 @@ build-time advisory exception are described below.
   function through the existing GPUI macOS package, pinned to 0.3.9.
 - **`sha2`:** existing MIT OR Apache-2.0 workspace dependency, also used by
   the document adapter to verify the server-provided HTML digest.
+- **`html5ever` 0.39.0:** MIT OR Apache-2.0, pinned exactly. Its tokenizer
+  finds Git pointers in Documents. `Cargo.lock` already listed it through
+  Wry's Android target, so no version is added; macOS and Linux builds now
+  also compile `markup5ever` 0.39.0, `tendril` 0.5.1, `web_atoms` 0.2.6,
+  `string_cache` 0.9.0 and `string_cache_codegen` 0.6.1 (MIT OR Apache-2.0),
+  and `phf_codegen` 0.13.1, `precomputed-hash` 0.1.1 and
+  `new_debug_unreachable` 1.0.6 (MIT). On macOS `phf`, `phf_shared` and
+  `phf_generator` 0.13.1 (MIT) are new to the build as well.
 - **`base64` 0.23.1:** MIT OR Apache-2.0, pinned exactly. The roster sends a
   skill folder's files to the Rust Backbone service in Base64. `reqwest` and
   `hyper-util` already build this version, so it adds no package.
