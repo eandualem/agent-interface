@@ -294,9 +294,9 @@ impl TerminalView {
         }
     }
 
-    /// Whether its session has ended.
+    /// Whether its session has ended, even before its last output is drawn.
     pub(crate) fn ended(&self) -> bool {
-        self.panes().is_finished()
+        self.panes().closed()
     }
 
     /// Leave an ended session's message unpainted while `quiet`.

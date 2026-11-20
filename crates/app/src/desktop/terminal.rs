@@ -373,12 +373,15 @@ struct Restarts {
     /// Whether its session ended while a restart was under way, so its end
     /// is no error until another session attaches.
     quiet: bool,
+    /// The newest roster read it has been given.
+    newest: Option<Instant>,
 }
 
 impl Restarts {
     /// Follow one roster read, which a pane reads again on every frame.
     /// `attached` is whether a session is attached and has not ended now.
     fn list(&mut self, seen: &Observation, attached: bool) -> RestartStep {
+        self.newest = self.newest.max(Some(seen.at));
         let step = self.follow(seen, attached);
         if !attached && self.under_way() {
             self.quiet = true;
@@ -438,7 +441,8 @@ impl Restarts {
         if restart.id != Some(id) {
             return RestartStep::Nothing;
         }
-        let (restart, at) = (restart.clone(), *at);
+        // Reads given while it was asked say nothing of the ready answer.
+        let (restart, at) = (restart.clone(), self.newest.unwrap_or(*at).max(*at));
         self.left = Left::Nothing;
         // A later restart than the one that left says nothing of it.
         let answer = answer.filter(|answer| answer.id == Some(id));
@@ -2088,12 +2092,14 @@ mod tests {
     fn a_fresh_restart_reads_as_restarting_from_start_to_attach() {
         let frames = frames("stream-agent-restart-fresh");
         let mut restarts = Restarts::default();
+        restarts.connected();
         // The old session is attached until the restart stops it.
         assert_eq!(
-            restarts.list(&seen(0, false, listed(&frames[0])), false),
+            restarts.list(&seen(0, false, listed(&frames[0])), true),
             RestartStep::Nothing
         );
         assert!(drawn(&restarts, None, true, None, true, false).pending);
+        restarts.disconnected();
         // It ended: whether the roster still says online or already offline,
         // the pane says it restarts, with no error and no launch buttons.
         for (tick, frame) in (1..).zip(&frames[1..4]) {
@@ -2200,6 +2206,29 @@ mod tests {
             RestartStep::Attach
         );
         restarts.list(&seen(2, true, None), false);
+        assert_eq!(stopped(&restarts, true), not_running(None));
+    }
+
+    #[test]
+    fn a_read_given_while_the_inspection_is_asked_does_not_undo_its_ready_answer() {
+        let frames = frames("stream-agent-restart-fresh");
+        let mut restarts = Restarts::default();
+        restarts.list(&seen(0, true, listed(&frames[3])), false);
+        assert_eq!(
+            restarts.list(&seen(1, true, None), false),
+            RestartStep::Inspect(12)
+        );
+        // A newer offline read lands while the inspection is read.
+        restarts.list(&seen(2, true, None), false);
+        assert_eq!(
+            restarts.inspected(12, Some(&frames[4])),
+            RestartStep::Attach
+        );
+        // Every frame gives that read again: the pane still waits to attach.
+        restarts.list(&seen(2, true, None), false);
+        assert_eq!(stopped(&restarts, true), restarting());
+        // Only a read after the ready answer says it ended: today's pane.
+        restarts.list(&seen(3, true, None), false);
         assert_eq!(stopped(&restarts, true), not_running(None));
     }
 
