@@ -57,6 +57,21 @@ pub struct AgentDetails {
     pub background: Option<Background>,
     /// The folder it works in, when reported.
     pub dir: Option<String>,
+    /// What holds its terminal deliveries; absent when nothing does.
+    pub held_queue: Option<HeldQueue>,
+    /// Messages waiting for its terminal, the held one included; 0 when an
+    /// older service does not say.
+    pub queued: u64,
+}
+
+/// Deliveries to an agent's terminal held behind one whose text may still
+/// be at its prompt.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct HeldQueue {
+    /// Why, as a closed code: `uncertain_delivery` today. Absent or
+    /// mistyped, deliveries are held for a reason not known.
+    #[serde(default, deserialize_with = "lenient")]
+    pub reason: Option<String>,
 }
 
 /// What an agent waits on outside itself, as the Rust service reports it.
@@ -247,6 +262,10 @@ fn decode(response: &[u8]) -> Option<Decoded> {
                 waiting: field("waiting").and_then(object),
                 background: field("background").and_then(Background::read),
                 dir: field("dir").and_then(|value| serde_json::from_str(value).ok()),
+                held_queue: field("held_queue").and_then(object),
+                queued: field("queued")
+                    .and_then(|value| serde_json::from_str(value).ok())
+                    .unwrap_or(0),
             },
         );
         states.insert(name, state);
@@ -516,6 +535,47 @@ mod tests {
         // An older service has neither field.
         snapshot.update(br#"{"items":[{"name":"worker","state":"idle"}]}"#);
         assert_eq!(snapshot.details["worker"], AgentDetails::default());
+    }
+
+    #[test]
+    fn held_and_queued_deliveries_decode_from_the_services_fixtures() {
+        let mut snapshot = Snapshot::default();
+        snapshot.update(include_bytes!(
+            "profiles/runs/fixtures/agents-held-queue.json"
+        ));
+        let worker = &snapshot.details["worker"];
+        assert_eq!(
+            worker.held_queue,
+            Some(HeldQueue {
+                reason: Some("uncertain_delivery".into())
+            })
+        );
+        assert_eq!(worker.queued, 8);
+        assert_eq!(
+            (
+                &snapshot.details["reviewer"].held_queue,
+                snapshot.details["reviewer"].queued
+            ),
+            (&None, 0)
+        );
+        snapshot.update(include_bytes!("profiles/runs/fixtures/agents-queued.json"));
+        let worker = &snapshot.details["worker"];
+        assert_eq!((&worker.held_queue, worker.queued), (&None, 3));
+        // Today's service gives neither field, and a mistyped one reads as absent.
+        snapshot.update(include_bytes!("profiles/runs/fixtures/agents.json"));
+        assert_eq!(
+            (
+                &snapshot.details["worker"].held_queue,
+                snapshot.details["worker"].queued
+            ),
+            (&None, 0)
+        );
+        snapshot.update(br#"{"items":[{"name":"worker","held_queue":{"reason":7},"queued":-1}]}"#);
+        let worker = &snapshot.details["worker"];
+        assert_eq!(
+            (&worker.held_queue, worker.queued),
+            (&Some(HeldQueue::default()), 0)
+        );
     }
 
     #[test]

@@ -83,6 +83,8 @@ pub(super) struct Status {
     pub reason: Option<String>,
     /// What it waits on and how many runs it has, when the service says.
     pub line: Option<String>,
+    /// Its held or waiting deliveries, when the service says any wait.
+    pub deliveries: Option<String>,
 }
 
 impl Status {
@@ -94,6 +96,7 @@ impl Status {
             since: None,
             reason: None,
             line: None,
+            deliveries: None,
         }
     }
 
@@ -178,6 +181,41 @@ fn waits_and_runs(details: &agent_interface_roster::AgentDetails) -> Option<Stri
         (Some(waiting), Some(runs)) => Some(format!("{waiting} · {runs}")),
         (waiting, runs) => waiting.or(runs),
     }
+}
+
+/// What holds an agent's terminal deliveries and how many wait, or `None`
+/// when nothing waits. `delivery` is how its last delivery went, which only
+/// an agent's inspection carries. The service sends changes within one of
+/// its agent-monitor passes, so this can trail the queue by about a minute.
+pub(super) fn deliveries(
+    held: Option<&agent_interface_roster::HeldQueue>,
+    queued: u64,
+    delivery: Option<&str>,
+) -> Option<String> {
+    let waiting = (queued > 0).then(|| format!("{queued} waiting"));
+    let Some(held) = held else {
+        // Only codes are matched, never the service's sentences; an
+        // unknown one gives no reason.
+        let why = match delivery {
+            Some("settling") => " · it has just gone idle",
+            Some("human_typing") => " · someone is typing",
+            Some("human_reading") => " · someone is reading its terminal",
+            Some("unattended_copy_mode") => " · its terminal is in copy mode",
+            Some("agent_working") => " · it is working",
+            Some("waiting_for_human") => " · it is waiting for a person",
+            Some("offline") => " · it is offline",
+            _ => "",
+        };
+        return waiting.map(|waiting| format!("{waiting}{why}"));
+    };
+    let held = match held.reason.as_deref() {
+        Some("uncertain_delivery") => "Deliveries held: a message may still be in its prompt",
+        _ => "Deliveries are held",
+    };
+    Some(match waiting {
+        Some(waiting) => format!("{held} · {waiting}"),
+        None => held.into(),
+    })
 }
 
 /// Who a review asked: its model, else its CLI, else the run's label, then
@@ -396,6 +434,8 @@ impl LiveAgents {
                             status.label = format!("{} · {suffix}", status.state.word());
                         }
                         status.line = waits_and_runs(details);
+                        status.deliveries =
+                            deliveries(details.held_queue.as_ref(), details.queued, None);
                     }
                     (name.clone(), Rc::new(status))
                 })
@@ -748,6 +788,62 @@ mod tests {
         snapshot.observed_at = std::time::Instant::now().checked_sub(TOLERANCE);
         agents.update(snapshot);
         assert_eq!(agents.background(), None);
+    }
+
+    #[test]
+    fn held_and_waiting_deliveries_show_with_their_count_until_none_wait() {
+        let read = |body: &[u8]| {
+            let agents = LiveAgents::default();
+            let mut snapshot = Snapshot::default();
+            snapshot.update(body);
+            agents.update(snapshot);
+            agents.get("worker").deliveries.clone()
+        };
+        let fixture = |name: &str| {
+            std::fs::read(format!(
+                "{}/../roster/src/profiles/runs/fixtures/{name}.json",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .unwrap()
+        };
+        assert_eq!(
+            read(&fixture("agents-held-queue")).as_deref(),
+            Some("Deliveries held: a message may still be in its prompt · 8 waiting")
+        );
+        // The list does not say why a plain wait waits.
+        assert_eq!(
+            read(&fixture("agents-queued")).as_deref(),
+            Some("3 waiting")
+        );
+        assert_eq!(read(&fixture("agents")), None);
+        // One held with none behind it is still one waiting.
+        assert_eq!(
+            read(br#"{"items":[{"name":"worker","held_queue":{"reason":"later"},"queued":1}]}"#)
+                .as_deref(),
+            Some("Deliveries are held · 1 waiting")
+        );
+        // Cleared only once nothing holds them and none wait.
+        assert_eq!(
+            read(br#"{"items":[{"name":"worker","held_queue":null,"queued":0}]}"#),
+            None
+        );
+        // The agent's view adds why from its inspection's delivery code.
+        assert_eq!(
+            deliveries(None, 2, Some("human_typing")).as_deref(),
+            Some("2 waiting · someone is typing")
+        );
+        for code in [Some("ready"), Some("later"), None] {
+            assert_eq!(deliveries(None, 2, code).as_deref(), Some("2 waiting"));
+        }
+        assert_eq!(deliveries(None, 0, Some("human_typing")), None);
+        // A held queue gives its own reason, never the delivery's.
+        let held = agent_interface_roster::HeldQueue {
+            reason: Some("uncertain_delivery".into()),
+        };
+        assert_eq!(
+            deliveries(Some(&held), 8, Some("human_typing")).as_deref(),
+            Some("Deliveries held: a message may still be in its prompt · 8 waiting")
+        );
     }
 
     #[test]

@@ -694,41 +694,48 @@ impl Browser {
                         .active_agents()
                         .and_then(|agents| agents.activity(name))
                         .and_then(|activity| activity.runs.clone());
+                    let deliveries = browser
+                        .active_agents()
+                        .and_then(|agents| agents.get(name).deliveries.clone());
+                    // A muted note beside the name: an icon, then text that
+                    // gives way first.
+                    let note = |icon: &'static str, text: String| {
+                        ui::text(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .items_center()
+                                .gap(px(t.space.s4))
+                                .overflow_hidden()
+                                .text_color(c.muted),
+                            &t.text.meta,
+                        )
+                        .child(ui::icon(icon, t.size.icon - t.space.s2, c.muted))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(text),
+                        )
+                    };
                     ui::row(SharedString::from(id), false)
                         .when(swarm.is_some(), |row| row.pl(px(t.space.s10 * 3.0)))
                         .child(ui::agent_symbol(state))
                         .child(
                             div()
-                                // With runs beside it the name keeps its width
-                                // and the runs give way first.
-                                .when(runs.is_none(), |name| name.flex_1())
+                                // With runs or deliveries beside it the name
+                                // keeps its width and they give way first.
+                                .when(runs.is_none() && deliveries.is_none(), |name| name.flex_1())
                                 .min_w_0()
                                 .overflow_hidden()
                                 .text_ellipsis()
                                 .text_color(if calm { c.muted } else { c.text })
                                 .child(name.to_owned()),
                         )
-                        .children(runs.map(|runs| {
-                            ui::text(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(t.space.s4))
-                                    .overflow_hidden()
-                                    .text_color(c.muted),
-                                &t.text.meta,
-                            )
-                            .child(ui::icon("activity", t.size.icon - t.space.s2, c.muted))
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .child(runs),
-                            )
-                        }))
+                        .children(runs.map(|runs| note("activity", runs)))
+                        .children(deliveries.map(|deliveries| note("mail", deliveries)))
                         .on_click(cx.listener(move |browser, _, window, cx| {
                             if let Some(target) = &target {
                                 browser.go_to_agent_target(target, window, cx);
