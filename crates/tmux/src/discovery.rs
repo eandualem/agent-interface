@@ -14,7 +14,7 @@ const CAPTURE_LIMIT: usize = 1024 * 1024;
 
 /// List attachable session names without starting a server or attaching a client.
 /// `socket` must be an absolute path selected by the caller. Helper sessions
-/// marked `@agent_interface_attachment=1` (or the legacy marker) are excluded. Names retain their exact
+/// marked `@agent_interface_attachment=1` are excluded. Names retain their exact
 /// spelling, including spaces and a leading `=`; they are not command targets.
 ///
 /// An absent server is a successful empty list. Other failures return the fixed
@@ -27,7 +27,7 @@ pub fn read_sessions(socket: &Path) -> io::Result<Vec<String>> {
     command.args([
         "list-sessions",
         "-f",
-        "#{&&:#{!=:#{@agent_interface_attachment},1},#{!=:#{@tmux_workspaces_attachment},1}}",
+        "#{!=:#{@agent_interface_attachment},1}",
         "-F",
         "#{session_name}",
     ]);
@@ -56,22 +56,15 @@ pub fn read_sessions(socket: &Path) -> io::Result<Vec<String>> {
 pub fn read_session_directory(socket: &Path, session: &str) -> io::Result<String> {
     let _span = tracing::trace_span!("tmux_query", operation = "read_directory").entered();
     let unavailable = || io::Error::other("Working directory unavailable");
-    let directory = display(socket, session, "#{pane_current_path}").ok_or_else(unavailable)?;
+    let directory = current_path(socket, session).ok_or_else(unavailable)?;
     if !Path::new(&directory).is_absolute() || directory.contains('\0') {
         return Err(unavailable());
     }
     Ok(directory)
 }
 
-/// The command running in a session's active pane, read the same bounded,
-/// read-only way as its directory. None when it cannot be read.
-pub fn read_session_command(socket: &Path, session: &str) -> Option<String> {
-    let _span = tracing::trace_span!("tmux_query", operation = "read_command").entered();
-    display(socket, session, "#{pane_current_command}")
-}
-
-/// One format of a session's active pane, without its closing newline.
-fn display(socket: &Path, session: &str, format: &str) -> Option<String> {
+/// The current path of a session's active pane, without its closing newline.
+fn current_path(socket: &Path, session: &str) -> Option<String> {
     if names(session).as_slice() != [session] {
         return None;
     }
@@ -81,7 +74,7 @@ fn display(socket: &Path, session: &str, format: &str) -> Option<String> {
         "-p",
         "-t",
         &format!("={session}:"),
-        format,
+        "#{pane_current_path}",
     ]);
     let output = capture(command, TIMEOUT).ok()?;
     if !output.status.success() {
@@ -359,14 +352,7 @@ mod tests {
     #[test]
     fn discovery_preserves_names_excludes_helpers_and_never_attaches_or_creates() {
         let server = TmuxServer::start().unwrap();
-        for name in [
-            " a ",
-            "=leading",
-            "café",
-            "tw-ordinary",
-            "helper",
-            "old-helper",
-        ] {
+        for name in [" a ", "=leading", "café", "tw-ordinary", "helper"] {
             server
                 .run(&["new-session", "-d", "-s", name, "sleep 60"])
                 .unwrap();
@@ -377,15 +363,6 @@ mod tests {
                 "-t",
                 "=helper:",
                 "@agent_interface_attachment",
-                "1",
-            ])
-            .unwrap();
-        server
-            .run(&[
-                "set-option",
-                "-t",
-                "=old-helper:",
-                "@tmux_workspaces_attachment",
                 "1",
             ])
             .unwrap();

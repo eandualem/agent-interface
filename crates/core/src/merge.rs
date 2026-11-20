@@ -222,8 +222,8 @@ fn id(value: &Value) -> Result<&str, LayoutConflict> {
         .ok_or(LayoutConflict)
 }
 
-// Known workspace/tab IDs are strings. Extension lists can also use Python's
-// other hashable JSON values as IDs; preserve their equality and overwrite rules.
+// Known workspace/tab IDs are strings. Extension lists can also use other
+// scalar JSON values as IDs; preserve their equality and overwrite rules.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Identity {
     Text(String),
@@ -263,7 +263,7 @@ fn identity_map(items: &[Value]) -> Result<BTreeMap<Identity, Value>, LayoutConf
     Ok(result)
 }
 
-// Python compares numeric JSON values by value, including bool/int equivalence.
+// Numeric JSON values compare by value, including bool/int equivalence.
 // Large integers must not be rounded through f64 when compared to a float.
 fn same(a: Option<&Value>, b: Option<&Value>) -> bool {
     match (a, b) {

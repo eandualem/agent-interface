@@ -39,7 +39,7 @@ def wait_for(check, description):
 with tempfile.TemporaryDirectory(prefix="agent-interface-desktop-") as directory:
     root = Path(directory)
     env = {key: value for key, value in os.environ.items()
-           if key != "TMUX" and not key.startswith(("BACKBONE_", "AGENT_INTERFACE_", "TMUX_WORKSPACES_"))}
+           if key != "TMUX" and not key.startswith(("BACKBONE_", "AGENT_INTERFACE_"))}
     env.update(HOME=str(root), XDG_CONFIG_HOME=str(root / "config"),
                XDG_DATA_HOME=str(root / "data"), XDG_STATE_HOME=str(root / "state"),
                TMUX_TMPDIR=str(root / "tmux"), LIBGL_ALWAYS_SOFTWARE="1")

@@ -1,23 +1,20 @@
 //! A pane's worker and origin stay together through navigation and visibility.
 
-use crate::roster::{BoundContentSource, ViewSource, ViewUpdate};
+use crate::roster::{BoundContentSource, ViewUpdate};
 use agent_interface_roster::{
     profiles::{Connection, Identity},
     views::{self, content},
 };
-use std::{cell::Cell, io, path::PathBuf, time::Duration};
+use std::{cell::Cell, io, time::Duration};
 
-pub(in crate::desktop) enum Source {
-    Legacy(ViewSource),
-    Bound {
-        worker: BoundContentSource,
-        identity: Identity,
-        generation: Cell<u64>,
-    },
+pub(in crate::desktop) struct Source {
+    worker: BoundContentSource,
+    identity: Identity,
+    generation: Cell<u64>,
 }
 
-fn request(request: &views::Request) -> Option<content::Request> {
-    Some(match request {
+fn request(request: &views::Request) -> content::Request {
+    match request {
         views::Request::Team => content::Request::Team,
         views::Request::Tags => content::Request::Tags,
         views::Request::Policies => content::Request::Policies,
@@ -28,113 +25,73 @@ fn request(request: &views::Request) -> Option<content::Request> {
             content::Request::Reports(query.clone(), agent.clone())
         }
         views::Request::Response(id) => content::Request::Response(*id),
-        views::Request::Report(id) => content::Request::Report(*id),
         views::Request::Document(id) => content::Request::Document(*id),
-        _ => return None,
-    })
+    }
 }
 
 impl Source {
     pub fn start(
-        directory: Option<PathBuf>,
-        connection: Option<&Connection>,
+        connection: &Connection,
         wanted: views::Request,
         every: Duration,
         wake: impl Fn() + Send + 'static,
     ) -> io::Result<Self> {
-        if let Some(connection) = connection {
-            let wanted = request(&wanted).ok_or_else(|| {
-                io::Error::other("This view does not support bound profiles yet.")
-            })?;
-            Ok(Self::Bound {
-                worker: BoundContentSource::start(connection.clone(), wanted, every, wake)?,
-                identity: connection.identity().clone(),
-                generation: Cell::new(0),
-            })
-        } else {
-            Ok(Self::Legacy(ViewSource::start(
-                directory.ok_or_else(|| io::Error::other("Backbone is not configured."))?,
-                wanted,
-                every,
-                wake,
-            )?))
-        }
+        Ok(Self {
+            worker: BoundContentSource::start(connection.clone(), request(&wanted), every, wake)?,
+            identity: connection.identity().clone(),
+            generation: Cell::new(0),
+        })
     }
 
     pub fn set_active(&self, active: bool) {
-        match self {
-            Self::Legacy(worker) => worker.set_active(active),
-            Self::Bound {
-                worker, generation, ..
-            } => generation.set(worker.set_active(active)),
-        }
+        self.generation.set(self.worker.set_active(active));
     }
 
     pub fn set_request(&self, wanted: views::Request) {
-        match self {
-            Self::Legacy(worker) => worker.set_request(wanted),
-            Self::Bound {
-                worker, generation, ..
-            } => {
-                if let Some(wanted) = request(&wanted) {
-                    generation.set(worker.set_request(wanted));
-                } else {
-                    generation.set(worker.set_active(false));
-                }
-            }
-        }
+        self.generation
+            .set(self.worker.set_request(request(&wanted)));
     }
 
     pub fn take_update(&self) -> Option<ViewUpdate> {
-        match self {
-            Self::Legacy(worker) => worker.take_update(),
-            Self::Bound {
-                worker,
-                identity,
-                generation,
-            } => {
-                let update = worker.take_update()?;
-                if !accepts(identity, generation.get(), &update) {
-                    return None;
-                }
-                let wanted = match update.read.request {
-                    content::Request::Team => views::Request::Team,
-                    content::Request::Tags => views::Request::Tags,
-                    content::Request::Policies => views::Request::Policies,
-                    content::Request::Skills => views::Request::Skills,
-                    content::Request::Usage(range) => views::Request::Usage(range),
-                    content::Request::Activity => views::Request::Activity,
-                    content::Request::Reports(query, agent) => {
-                        views::Request::Reports(query, agent)
-                    }
-                    content::Request::Response(id) => views::Request::Response(id),
-                    content::Request::Report(id) => views::Request::Report(id),
-                    content::Request::Document(id) => views::Request::Document(id),
-                };
-                let result = update
-                    .read
-                    .result
-                    .map(|data| match data {
-                        content::Data::Team(team) => views::Data::Team(team),
-                        content::Data::Tags(tags) => views::Data::Tags(tags),
-                        content::Data::Policies(policies) => views::Data::Policies(policies),
-                        content::Data::Skills(skills) => views::Data::Skills(skills),
-                        content::Data::Usage(usage) => views::Data::Usage(usage),
-                        content::Data::Activity(activity) => views::Data::Activity(activity),
-                        content::Data::Reports(page) => views::Data::Reports(page),
-                        content::Data::Document(document) => views::Data::Document(document),
-                    })
-                    .map_err(|error| match error {
-                        content::Error::Content(message) => message,
-                        content::Error::Connection(
-                            agent_interface_roster::profiles::Error::BindingRequired
-                            | agent_interface_roster::profiles::Error::BindingMismatch,
-                        ) => "The original profile binding was refused. Reconnect to that profile.",
-                        _ => views::UNAVAILABLE,
-                    });
-                Some((wanted, result))
-            }
+        let update = self.worker.take_update()?;
+        if !accepts(&self.identity, self.generation.get(), &update) {
+            return None;
         }
+        let wanted = match update.read.request {
+            content::Request::Team => views::Request::Team,
+            content::Request::Tags => views::Request::Tags,
+            content::Request::Policies => views::Request::Policies,
+            content::Request::Skills => views::Request::Skills,
+            content::Request::Usage(range) => views::Request::Usage(range),
+            content::Request::Activity => views::Request::Activity,
+            content::Request::Reports(query, agent) => views::Request::Reports(query, agent),
+            content::Request::Response(id) => views::Request::Response(id),
+            // A linked report is read by Interactions directly, never by a pane.
+            content::Request::Report(_) => unreachable!("a pane never asks for a linked report"),
+            content::Request::Document(id) => views::Request::Document(id),
+        };
+        let result = update
+            .read
+            .result
+            .map(|data| match data {
+                content::Data::Team(team) => views::Data::Team(team),
+                content::Data::Tags(tags) => views::Data::Tags(tags),
+                content::Data::Policies(policies) => views::Data::Policies(policies),
+                content::Data::Skills(skills) => views::Data::Skills(skills),
+                content::Data::Usage(usage) => views::Data::Usage(usage),
+                content::Data::Activity(activity) => views::Data::Activity(activity),
+                content::Data::Reports(page) => views::Data::Reports(page),
+                content::Data::Document(document) => views::Data::Document(document),
+            })
+            .map_err(|error| match error {
+                content::Error::Content(message) => message,
+                content::Error::Connection(
+                    agent_interface_roster::profiles::Error::BindingRequired
+                    | agent_interface_roster::profiles::Error::BindingMismatch,
+                ) => "The original profile binding was refused. Reconnect to that profile.",
+                _ => views::UNAVAILABLE,
+            });
+        Some((wanted, result))
     }
 }
 
@@ -183,7 +140,6 @@ mod tests {
             update.read.identity = changed;
             assert!(!accepts(&origin, 3, &update));
         }
-        assert!(request(&views::Request::Agent("worker".into(), views::Part::Card)).is_none());
     }
 
     #[test]
@@ -208,8 +164,7 @@ mod tests {
         let (wa, ra) = mpsc::channel();
         let (wb, rb) = mpsc::channel();
         let source_a = Source::start(
-            None,
-            Some(&a),
+            &a,
             views::Request::Response(7),
             Duration::from_secs(3600),
             move || {
@@ -221,8 +176,7 @@ mod tests {
         source_a.set_request(views::Request::Response(8));
         std::fs::write(a.credential_reference(), "BACKBONE_API_KEY=rotated\n").unwrap();
         let source_b = Source::start(
-            None,
-            Some(&b),
+            &b,
             views::Request::Response(7),
             Duration::from_secs(3600),
             move || {
@@ -246,10 +200,15 @@ mod tests {
     }
 
     #[test]
-    fn observation_requests_exclude_agent_and_unsupported_library_paths() {
-        assert!(request(&views::Request::Usage(views::Range::Day)).is_some());
-        assert!(request(&views::Request::Activity).is_some());
-        assert!(request(&views::Request::Agent("worker".into(), views::Part::Card)).is_none());
+    fn observation_requests_are_bound() {
+        assert_eq!(
+            request(&views::Request::Usage(views::Range::Day)),
+            content::Request::Usage(views::Range::Day)
+        );
+        assert_eq!(
+            request(&views::Request::Activity),
+            content::Request::Activity
+        );
     }
 
     #[test]
@@ -290,8 +249,7 @@ mod tests {
         let (wake_a, ready_a) = mpsc::channel();
         let (wake_b, ready_b) = mpsc::channel();
         let source_a = Source::start(
-            None,
-            Some(&a),
+            &a,
             views::Request::Usage(views::Range::Day),
             Duration::from_secs(3600),
             move || {
@@ -303,8 +261,7 @@ mod tests {
         source_a.set_request(views::Request::Usage(views::Range::Hour));
         std::fs::write(a.credential_reference(), "BACKBONE_API_KEY=rotated\n").unwrap();
         let source_b = Source::start(
-            None,
-            Some(&b),
+            &b,
             views::Request::Usage(views::Range::Day),
             Duration::from_secs(3600),
             move || {

@@ -1,13 +1,10 @@
 //! Explicit user feedback on an authored record, through Backbone's message API.
 
-use std::path::Path;
-
 use serde::Deserialize;
 
 use crate::{
-    configuration::configured,
     profiles::{Connection, Error, Identity},
-    transport, valid_agent,
+    valid_agent,
     views::{ReportContent, ReportItem},
 };
 
@@ -73,54 +70,28 @@ impl Client {
     }
 
     /// Validate author and submit on the same captured binding. An unknown
-    /// delivery must be checked before another send, as with legacy feedback.
+    /// delivery must be checked before another send.
     pub fn send(&self, text: &str) -> Outcome {
-        send_using(&Api::Bound(&self.connection), &self.item, text)
+        send_using(&self.connection, &self.item, text)
     }
 }
 
-enum Api<'a> {
-    Legacy(&'a str, &'a str),
-    Bound(&'a Connection),
-}
-
-impl Api<'_> {
-    fn fetch(&self, path: &str, body: Option<Vec<u8>>, limit: usize) -> Result<Vec<u8>, Error> {
-        match self {
-            Self::Legacy(url, key) => {
-                let result = match body {
-                    Some(body) => transport::post_message(url, key, body),
-                    None => transport::fetch(url, path, key, limit),
-                };
-                result.map_err(|status| status.map_or(Error::Unavailable, Error::Refused))
-            }
-            Self::Bound(connection) => {
-                let response = connection.response(path, body, limit)?;
-                if (200..300).contains(&response.status) {
-                    Ok(response.body)
-                } else {
-                    Err(Error::Refused(response.status))
-                }
-            }
-        }
+fn fetch(
+    connection: &Connection,
+    path: &str,
+    body: Option<Vec<u8>>,
+    limit: usize,
+) -> Result<Vec<u8>, Error> {
+    let response = connection.response(path, body, limit)?;
+    if (200..300).contains(&response.status) {
+        Ok(response.body)
+    } else {
+        Err(Error::Refused(response.status))
     }
 }
 
-/// Revalidate the source and author, then send once. Runs on an I/O worker.
-pub fn send(data_dir: &Path, item: &ReportItem, text: &str) -> Outcome {
-    let Some((url, key)) = configured(data_dir, None) else {
-        return Outcome::Refused(
-            "Backbone is unavailable. Your feedback has not been sent.".into(),
-        );
-    };
-    send_to(&url, &key, item, text)
-}
-
-fn send_to(url: &str, key: &str, item: &ReportItem, text: &str) -> Outcome {
-    send_using(&Api::Legacy(url, key), item, text)
-}
-
-fn send_using(api: &Api<'_>, item: &ReportItem, text: &str) -> Outcome {
+/// Revalidate the author, then send once. Runs on an I/O worker.
+fn send_using(connection: &Connection, item: &ReportItem, text: &str) -> Outcome {
     let refused = |text: &str| Outcome::Refused(text.into());
     if text.trim().is_empty() {
         return refused("Enter feedback before sending.");
@@ -130,11 +101,6 @@ fn send_using(api: &Api<'_>, item: &ReportItem, text: &str) -> Outcome {
     };
     if item.id == 0 || item.id > i64::MAX as u64 {
         return refused("This record has an invalid reference.");
-    }
-    if let Api::Legacy(url, _) = api
-        && *url != item.provider_url
-    {
-        return refused("The Backbone connection changed. Reopen this record before sending.");
     }
     let path = match &item.content {
         ReportContent::Progress { .. } => format!("/api/reports/{}", item.id),
@@ -148,8 +114,8 @@ fn send_using(api: &Api<'_>, item: &ReportItem, text: &str) -> Outcome {
     } else {
         4 * 1024 * 1024
     };
-    let body = match api.fetch(&path, None, limit) {
-        Ok(body) if body.len() <= limit => body,
+    let body = match fetch(connection, &path, None, limit) {
+        Ok(body) => body,
         Err(Error::Refused(404)) => {
             return refused("This record is no longer available. Your feedback has not been sent.");
         }
@@ -180,7 +146,7 @@ fn send_using(api: &Api<'_>, item: &ReportItem, text: &str) -> Outcome {
     let unknown = || {
         Outcome::Unknown("Delivery could not be confirmed. Your text is kept here; check with the author before sending it again.".into())
     };
-    let body = match api.fetch("/api/messages", Some(body), 65536) {
+    let body = match fetch(connection, "/api/messages", Some(body), 65536) {
         Ok(body) => body,
         Err(Error::Refused(401 | 403)) => {
             return refused("Backbone refused this app's access. Your feedback has not been sent.");
@@ -210,148 +176,5 @@ fn send_using(api: &Api<'_>, item: &ReportItem, text: &str) -> Outcome {
         Outcome::Accepted(detail)
     } else {
         Outcome::Unknown(format!("Delivery could not be confirmed. {detail}"))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::{
-        io::{Read, Write},
-        os::unix::net::UnixStream,
-        thread,
-        time::Duration,
-    };
-
-    fn request(socket: &mut UnixStream) -> (String, Vec<u8>) {
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut headers = Vec::new();
-        while !headers.ends_with(b"\r\n\r\n") {
-            let mut byte = [0];
-            socket.read_exact(&mut byte).unwrap();
-            headers.push(byte[0]);
-        }
-        let headers = String::from_utf8(headers).unwrap();
-        let length = headers
-            .lines()
-            .find_map(|line| {
-                line.to_ascii_lowercase()
-                    .strip_prefix("content-length:")
-                    .map(|n| n.trim().parse::<usize>().unwrap())
-            })
-            .unwrap_or(0);
-        let mut body = vec![0; length];
-        socket.read_exact(&mut body).unwrap();
-        (headers, body)
-    }
-
-    fn reply(socket: &mut UnixStream, body: &str) {
-        write!(
-            socket,
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        )
-        .unwrap();
-    }
-
-    fn item(url: &str) -> ReportItem {
-        ReportItem {
-            id: 7,
-            author: "previous-name".into(),
-            author_id: Some("a".repeat(32)),
-            registered: false,
-            provider_url: url.into(),
-            created_at: String::new(),
-            conversation_id: None,
-            content: ReportContent::Response {
-                question: "Question".into(),
-                answer: "Private answer body".into(),
-                action: String::new(),
-                superseded_by: None,
-            },
-        }
-    }
-
-    #[test]
-    fn feedback_uses_the_current_author_and_never_retries_a_lost_post_reply() {
-        let (_directory, listener, url) = crate::transport::tests::local_listener();
-        let server = thread::spawn(move || {
-            let (mut socket, _) = listener.accept().unwrap();
-            let (headers, _) = request(&mut socket);
-            assert!(headers.starts_with("GET /api/responses/7 "));
-            reply(
-                &mut socket,
-                &format!(
-                    r#"{{"id":7,"author_id":"{}","agent_name":"current-name"}}"#,
-                    "a".repeat(32)
-                ),
-            );
-            drop(socket);
-            let (mut socket, _) = listener.accept().unwrap();
-            let (headers, body) = request(&mut socket);
-            assert!(headers.starts_with("POST /api/messages "));
-            assert!(
-                headers
-                    .to_ascii_lowercase()
-                    .contains("authorization: bearer fixture-token")
-            );
-            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(body["target_session"], "current-name");
-            assert_eq!(body["from_entity"], "agent-interface-app");
-            assert_eq!(body["priority"], false);
-            assert_eq!(
-                body["message"],
-                "Feedback on response #7 (source=/api/responses/7).\n\nPlease explain café.\nMore detail."
-            );
-            assert!(body.get("owner_confirmation").is_none());
-            // Losing the response after accepting bytes must not produce another POST.
-            drop(socket);
-            listener.set_nonblocking(true).unwrap();
-            listener
-        });
-        assert!(matches!(
-            send_to(
-                &url,
-                "fixture-token",
-                &item(&url),
-                "Please explain café.\nMore detail."
-            ),
-            Outcome::Unknown(_)
-        ));
-        let listener = server.join().unwrap();
-        assert_eq!(
-            listener.accept().unwrap_err().kind(),
-            std::io::ErrorKind::WouldBlock
-        );
-    }
-
-    #[test]
-    fn a_replaced_author_receives_no_feedback() {
-        let (_directory, listener, url) = crate::transport::tests::local_listener();
-        let server = thread::spawn(move || {
-            let (mut socket, _) = listener.accept().unwrap();
-            request(&mut socket);
-            reply(
-                &mut socket,
-                &format!(
-                    r#"{{"id":7,"author_id":"{}","agent_name":"previous-name"}}"#,
-                    "b".repeat(32)
-                ),
-            );
-            drop(socket);
-            listener.set_nonblocking(true).unwrap();
-            listener
-        });
-        assert!(matches!(
-            send_to(&url, "fixture-token", &item(&url), "Feedback"),
-            Outcome::Refused(_)
-        ));
-        let listener = server.join().unwrap();
-        assert_eq!(
-            listener.accept().unwrap_err().kind(),
-            std::io::ErrorKind::WouldBlock
-        );
     }
 }

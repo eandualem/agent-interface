@@ -26,11 +26,11 @@ pub(super) fn body(
 ) -> AnyElement {
     match &pane.carriers_of {
         Some(tag) => carriers(pane, library, tag, cx),
-        None => cards(pane, library, cx),
+        None => cards(library, cx),
     }
 }
 
-fn cards(pane: &ViewPane, library: &TagLibrary, cx: &mut Context<ViewPane>) -> AnyElement {
+fn cards(library: &TagLibrary, cx: &mut Context<ViewPane>) -> AnyElement {
     let (t, c) = (tokens(), colors());
     let header =
         ui::view_header("hash", "Tags").child("what each tag gives the agents that carry it");
@@ -49,12 +49,12 @@ fn cards(pane: &ViewPane, library: &TagLibrary, cx: &mut Context<ViewPane>) -> A
         &t.text.status,
     )
     .child("Tags are how a team is organised in Backbone. An agent tagged")
-    .child(code("coder python"))
+    .child(code("coder rust"))
     .child("gets everything tagged")
     .child(div().flex().child(code("all")).child(","))
     .child(code("coder"))
     .child("and")
-    .child(div().flex().child(code("python")).child(","))
+    .child(div().flex().child(code("rust")).child(","))
     .child("and nothing else.");
     let mut rows = div().gap(px(t.space.s8)).pt(px(t.space.s12));
     for card in library.cards() {
@@ -150,11 +150,7 @@ fn cards(pane: &ViewPane, library: &TagLibrary, cx: &mut Context<ViewPane>) -> A
         .child(ui::grouped_page("tag-cards", rows))
         .child(ui::view_footer(
             &[("click", "the agents carrying it")],
-            if pane.connection.is_some() {
-                "read-only"
-            } else {
-                "tags set with backbone agent tag NAME TAG…"
-            },
+            "read-only",
         ))
         .into_any_element()
 }
@@ -201,13 +197,6 @@ fn carriers(
         .child(header)
         .child(bar)
         .child(ui::grouped_page("tag-agents", column))
-        .child(ui::view_footer(
-            if pane.connection.is_some() {
-                &[("esc", "back")]
-            } else {
-                &[("esc", "back"), ("click", "show its terminal")]
-            },
-            "read-only",
-        ))
+        .child(ui::view_footer(&[("esc", "back")], "read-only"))
         .into_any_element()
 }

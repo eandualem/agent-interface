@@ -153,28 +153,18 @@ pub(super) fn selected(pane: &ViewPane) -> Option<&DocumentMetadata> {
 }
 
 fn open(pane: &mut ViewPane, metadata: DocumentMetadata, cx: &mut Context<ViewPane>) {
-    let provider_url = pane
-        .reports
-        .open
-        .as_ref()
-        .map(|item| item.provider_url.clone())
-        .unwrap_or_default();
     let item = ReportItem {
         id: metadata.id,
         author: metadata.author().to_owned(),
         author_id: Some(metadata.author_id.clone()),
         registered: false,
-        provider_url,
         created_at: metadata.created_at.clone(),
         conversation_id: None,
         content: ReportContent::Document(metadata),
     };
-    super::seen::mark(
-        &item,
-        pane.connection
-            .as_ref()
-            .map(|connection| connection.identity()),
-    );
+    if let Some(connection) = &pane.connection {
+        super::seen::mark(&item, connection.identity());
+    }
     pane.documents.clear();
     pane.reports.open = Some(item);
     pane.refetch(false, cx);

@@ -1,6 +1,6 @@
 //! Delayed navigation retains the displayed workspace and connection epoch.
 
-use super::{Browser, agent_destination, workspace_profiles::Route};
+use super::{Browser, workspace_profiles::Route};
 use agent_interface_roster::profiles::ConnectionKey;
 use std::{path::PathBuf, rc::Rc};
 
@@ -13,7 +13,6 @@ pub(super) struct Origin {
     profile: Option<String>,
     connection: Option<ConnectionKey>,
     directory: Option<PathBuf>,
-    legacy_source: Option<Result<PathBuf, String>>,
 }
 
 #[derive(Clone)]
@@ -111,11 +110,6 @@ impl Browser {
                 _ => None,
             },
             directory: self.directory.clone(),
-            legacy_source: space
-                .profile_id
-                .is_none()
-                .then(|| self.source.clone())
-                .flatten(),
         })
     }
 
@@ -171,24 +165,8 @@ impl Browser {
                         .map(|leaf| (space.id.clone(), tab.id.clone(), leaf.id.clone()))
                 })
             }
-            Route::Unavailable => None,
-            Route::Legacy => {
-                let source = target
-                    .origin
-                    .legacy_source
-                    .as_ref()
-                    .and_then(|s| s.as_ref().ok())
-                    .and_then(|path| crate::library::location::resolve_path(path).ok());
-                agent_destination(model, &target.name, |socket| match socket {
-                    None => source.is_some(),
-                    Some(socket) => {
-                        source.is_some()
-                            && crate::library::location::resolve_path(std::path::Path::new(socket))
-                                .ok()
-                                == source
-                    }
-                })
-            }
+            // A workspace without a profile has no agents.
+            Route::Standalone | Route::Unavailable => None,
         };
         let Some((workspace, tab, pane)) = destination else {
             return false;

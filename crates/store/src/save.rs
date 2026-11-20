@@ -30,8 +30,8 @@ impl Store {
             .connection
             .busy_timeout(Duration::from_secs(5))
             .map_err(|error| store.failure(error))?;
-        // Bundled SQLite enables this by default; Python's connection does not.
-        // REPLACE must not cascade deletes into unrelated extension tables.
+        // A save replaces the layout row. With foreign keys on, that would also
+        // delete the rows of other tables that reference it, so they stay off.
         store
             .connection
             .pragma_update(None, "foreign_keys", false)
@@ -138,8 +138,9 @@ impl Store {
 mod tests {
     use super::*;
 
+    /// A save must not delete rows of other tables that reference the layout row.
     #[test]
-    fn writer_foreign_key_setting_matches_the_reference_runtime() {
+    fn the_writer_saves_with_foreign_keys_off() {
         let directory = tempfile::tempdir().unwrap();
         let database = Connection::open(directory.path().join("layouts.db")).unwrap();
         database.execute_batch(r#"CREATE TABLE terminal_layout(id INTEGER PRIMARY KEY, value TEXT);
@@ -149,10 +150,6 @@ mod tests {
             .connection
             .pragma_query_value(None, "foreign_keys", |row| row.get(0))
             .unwrap();
-        println!(
-            "Rust SQLite {}, writer foreign_keys={enabled}",
-            rusqlite::version()
-        );
         assert!(!enabled);
     }
 }

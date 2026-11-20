@@ -32,9 +32,6 @@ class InstallTests(unittest.TestCase):
         self.command("uname", 'case "$1" in -s) echo Linux;; -m) echo x86_64;; esac')
         self.command("getconf", "echo glibc 2.39")
         self.env = dict(os.environ, HOME=str(self.home), PATH=str(self.tools) + os.pathsep + os.environ["PATH"])
-        for name in list(self.env):
-            if name.startswith("BACKBONE_"):
-                self.env.pop(name)
         self.env.pop("XDG_DATA_HOME", None)
         self.env.pop("WSL_DISTRO_NAME", None)
         # Ordinary fixtures must never inspect or configure the host's sandbox
@@ -55,15 +52,14 @@ class InstallTests(unittest.TestCase):
         path.write_text("#!/bin/sh\n" + body + "\n")
         path.chmod(0o755)
 
-    def package(self, version="0.0.0", target="x86_64-unknown-linux-gnu", extra=None, legacy_mac=False, legacy=False):
+    def package(self, version="0.0.0", target="x86_64-unknown-linux-gnu", extra=None):
         archive = self.root / "app.tar.gz"
         mac = target.endswith("apple-darwin")
-        name = "tmux-workspaces" if legacy else "agent-interface"
-        bundle = "tmux-workspaces.app" if legacy_mac else "Agent Interface.app"
-        root = bundle + "/Contents" if mac else name
+        name = "agent-interface"
+        root = "Agent Interface.app/Contents" if mac else name
         resources = root + "/Resources" if mac else root
         executable = root + ("/MacOS" if mac else "/bin") + "/" + name
-        files = {resources + "/INSTALLER": "io.github.eandualem." + name + "\n",
+        files = {resources + "/INSTALLER": APP_ID + "\n",
                  resources + "/TARGET": target + "\n",
                  executable: f"#!/bin/sh\necho '{name} {version}'\n"}
         if not mac:
@@ -102,7 +98,17 @@ class InstallTests(unittest.TestCase):
 printf '%s\\n' "$*" >> "$TEST_SYSTEM_ACTIONS"
 case "$1" in
     -v) exit 0;;
-    apt-get) exit 0;;
+    apt-get)
+        # With TEST_TICKS, the refresh ends once run_step has printed an update.
+        if [ "$2" = update ] && [ -n "${TEST_TICKS:-}" ]; then
+            i=0
+            until [ -e "$TEST_TICKS.second" ]; do
+                i=$((i + 1)); [ "$i" -le 400 ] || exit 98
+                /bin/sleep 0.05
+            done
+        fi
+        [ "$2" != update ] || exit "${TEST_APT_STATUS:-0}"
+        exit 0;;
     install)
         if [ "${TEST_FAIL_SHORTCUT:-}" = yes ]; then exit 1; fi
         shift; exec /usr/bin/install "$@";;
@@ -192,6 +198,40 @@ exec "$@"
         self.install(self.package("0.0.1"))
         self.assertNotIn("apt-get", (self.root / "system-actions").read_text())
 
+    def heartbeat_ticks(self):
+        # run_step's first five-second tick passes at once. Its second tick
+        # marks that the first update was printed; the package refresh ends
+        # only then, so no wall-clock wait decides the outcome.
+        self.env["TEST_TICKS"] = str(self.root / "tick")
+        self.command("sleep", '''
+if [ "$1" = 5 ] && [ -n "${TEST_TICKS:-}" ]; then
+    if [ ! -e "$TEST_TICKS.first" ]; then : > "$TEST_TICKS.first"; exit 0; fi
+    : > "$TEST_TICKS.second"
+fi
+exec /bin/sleep "$@"''')
+
+    def test_slow_package_step_reports_elapsed_time_and_cleans_up_progress(self):
+        self.wsl()
+        self.heartbeat_ticks()
+        result = self.install(self.package())
+        step = "Refreshing Ubuntu package information"
+        self.assertIn(f"{step}: still running (5s elapsed)", result.stderr)
+        self.assertIn(f"{step}: done.", result.stderr)
+        # install() has a bounded timeout: an orphan heartbeat would otherwise
+        # retain its capture pipe indefinitely. It must emit no later updates.
+        self.assertNotIn(f"{step}: still running", result.stderr.split(f"{step}: done.", 1)[1])
+
+    def test_failed_package_step_reports_failure_and_cleans_up_progress(self):
+        self.wsl()
+        self.heartbeat_ticks()
+        self.env["TEST_APT_STATUS"] = "1"
+        result = self.install(self.package(), success=False)
+        step = "Refreshing Ubuntu package information"
+        self.assertIn(f"{step}: still running (5s elapsed)", result.stderr)
+        self.assertIn(f"{step}: failed.", result.stderr)
+        self.assertIn("Could not refresh Ubuntu package information.", result.stderr)
+        self.assertNotIn(f"{step}: still running", result.stderr.split(f"{step}: failed.", 1)[1])
+
     def test_wsl_shortcut_failure_rolls_back_app(self):
         self.install(self.package("0.0.0"))
         before = self.launcher.read_bytes()
@@ -210,9 +250,9 @@ exec "$@"
         self.assertEqual(shortcut.read_text(), "[Desktop Entry]\nName=Another installation\n")
         self.assertFalse((self.root / "system-actions").exists())
 
-    def mock_download(self, archive, prefix="tmux-workspaces", missing_status="404"):
+    def mock_download(self, archive, prefix="agent-interface"):
         self.env.update(TEST_ARCHIVE=str(archive), TEST_PREFIX=prefix,
-                        TEST_DOWNLOADS=str(self.root / "downloads"), TEST_MISSING_STATUS=missing_status)
+                        TEST_DOWNLOADS=str(self.root / "downloads"))
         self.command("curl", '''
 printf '%s\\n' "$*" >> "$TEST_DOWNLOADS.args"
 url= output= write_status=false
@@ -230,52 +270,36 @@ printf '%s\\n' "$name" >> "$TEST_DOWNLOADS"
 case "$name" in
     "$TEST_PREFIX"-*.tar.gz) cp "$TEST_ARCHIVE" "$output";;
     "$TEST_PREFIX"-*.tar.gz.sha256) cp "$TEST_ARCHIVE.sha256" "$output";;
-    *) if [ "$write_status" = true ]; then printf '%s' "$TEST_MISSING_STATUS"; fi; exit 22;;
+    *) exit 22;;
 esac
 if [ "$write_status" = true ]; then printf 200; fi
 ''')
 
-    def test_download_legacy_linux_then_update_to_renamed_release(self):
-        archive = self.package("0.1.0", legacy=True)
-        self.mock_download(archive)
-        self.install(None)
-        self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "tmux-workspaces 0.1.0")
-        self.assertIn(f"Icon={self.destination}/agent-interface.png\n", self.launcher.read_text())
-        self.assertTrue((self.destination / "agent-interface.png").is_file())
-        self.assertIn("StartupWMClass=io.github.eandualem.tmux-workspaces\n", self.launcher.read_text())
-        self.assertEqual((self.root / "downloads").read_text().splitlines(), [
-            "agent-interface-x86_64-unknown-linux-gnu.tar.gz.sha256",
-            "tmux-workspaces-x86_64-unknown-linux-gnu.tar.gz.sha256",
-            "tmux-workspaces-x86_64-unknown-linux-gnu.tar.gz"])
-        requests = (self.root / "downloads.args").read_text().splitlines()
-        self.assertIn("--progress-bar", requests[3])
-        archive = self.package("0.1.1")
-        self.mock_download(archive, prefix="agent-interface")
+    def test_download_installs_the_latest_release(self):
+        self.mock_download(self.package("0.1.1"))
         self.install(None)
         self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "agent-interface 0.1.1")
+        self.assertIn(f"Icon={self.destination}/agent-interface.png\n", self.launcher.read_text())
+        self.assertTrue((self.destination / "agent-interface.png").is_file())
         self.assertIn("StartupWMClass=io.github.eandualem.agent-interface\n", self.launcher.read_text())
+        self.assertEqual((self.root / "downloads").read_text().splitlines(), [
+            "agent-interface-x86_64-unknown-linux-gnu.tar.gz.sha256",
+            "agent-interface-x86_64-unknown-linux-gnu.tar.gz"])
+        requests = (self.root / "downloads.args").read_text().splitlines()
+        self.assertIn("--progress-bar", requests[2])
 
-    def test_download_legacy_mac_then_update_to_renamed_release(self):
-        self.command("uname", 'case "$1" in -s) echo Darwin;; -m) echo arm64;; esac')
-        self.command("codesign", "exit 0")
-        archive = self.package("0.1.0", target="aarch64-apple-darwin", legacy=True)
-        self.mock_download(archive)
-        self.install(None)
-        destination = self.home / "Applications/Agent Interface.app/Contents/MacOS"
-        self.assertEqual(subprocess.check_output([destination / "tmux-workspaces", "--version"], text=True).strip(), "tmux-workspaces 0.1.0")
-        self.install(self.package("0.1.1", target="aarch64-apple-darwin"))
-        self.assertEqual(subprocess.check_output([destination / "agent-interface", "--version"], text=True).strip(), "agent-interface 0.1.1")
-
-    def test_download_failure_does_not_fall_back_or_change_installation(self):
+    def test_checksum_failure_does_not_change_installation(self):
         self.install(self.package("0.1.1"))
-        self.mock_download(self.package("0.1.0", legacy=True), missing_status="500")
+        # The release has no checksum: curl fails the fetch, so the archive is
+        # never downloaded and the installed app stays.
+        self.mock_download(self.package("0.1.0"), prefix="missing")
         self.install(None, success=False)
         self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "agent-interface 0.1.1")
         self.assertEqual((self.root / "downloads").read_text().splitlines(), ["agent-interface-x86_64-unknown-linux-gnu.tar.gz.sha256"])
 
-    def test_legacy_download_checksum_failure_preserves_installation(self):
+    def test_download_checksum_mismatch_preserves_installation(self):
         self.install(self.package("0.1.1"))
-        archive = self.package("0.1.0", legacy=True)
+        archive = self.package("0.1.0")
         with archive.open("ab") as stream:
             stream.write(b"corrupt")
         self.mock_download(archive)
@@ -300,7 +324,6 @@ if url.endswith('/releases/latest'):
 assert '/releases/download/vfixture/' in url
 if url.endswith('.sha256'):
     output.write_bytes(Path(str(archive) + '.sha256').read_bytes())
-    print('200', end='')
     sys.exit(0)
 assert '--continue-at' in args and args[args.index('--continue-at') + 1] == '-'
 assert '--max-time' not in args
@@ -488,16 +511,6 @@ sys.exit(0 if outcome in ('ok', 'corrupt') else int(outcome))
         self.assertEqual(outside.read_text(), 'preserve')
         self.assertFalse((self.root / 'transfers').exists())
 
-    def test_transitional_link_is_restored_after_update_failure(self):
-        self.install(self.package("0.1.0", legacy=True))
-        before = self.launcher.read_bytes()
-        self.command("mv", 'for last do :; done\ncase "$last" in *.desktop)\n'
-                     'case "$*" in *launcher.*) echo partial > "$last"; exit 1;; esac;; esac\n'
-                     'exec /bin/mv "$@"')
-        self.install(self.package("0.1.1"), success=False)
-        self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "tmux-workspaces 0.1.0")
-        self.assertEqual(self.launcher.read_bytes(), before)
-
     def test_install_update_and_preserve_data(self):
         library = self.home / ".local/share/agent-interface/layouts.db"
         library.parent.mkdir(parents=True)
@@ -514,45 +527,6 @@ sys.exit(0 if outcome in ('ok', 'corrupt') else int(outcome))
         import shlex
         path = shlex.split(entry)[0].replace("\\$", "$").replace("%%", "%")
         self.assertEqual(Path(path).resolve(), self.link.resolve())
-
-    def legacy_linux_install(self):
-        old = self.home / ".local/lib/tmux-workspaces"
-        binary = old / "bin/tmux-workspaces"
-        binary.parent.mkdir(parents=True)
-        binary.write_text("#!/bin/sh\necho 'tmux-workspaces 0.1.0'\n")
-        binary.chmod(0o755)
-        (old / "INSTALLER").write_text("io.github.eandualem.tmux-workspaces\n")
-        link = self.home / ".local/bin/tmux-workspaces"
-        link.parent.mkdir(parents=True)
-        link.symlink_to(binary)
-        launcher = self.launcher.with_name("io.github.eandualem.tmux-workspaces.desktop")
-        launcher.parent.mkdir(parents=True)
-        launcher.write_text("[Desktop Entry]\nX-TmuxWorkspaces-Installer=1\n")
-        library = self.home / ".local/share/tmux-workspaces/layouts.db"
-        library.parent.mkdir(parents=True)
-        library.write_bytes(b"existing workspace")
-        return old, link, launcher, library
-
-    def test_linux_rename_retires_owned_launchers_and_preserves_library(self):
-        old, link, launcher, library = self.legacy_linux_install()
-        self.install(self.package())
-        for retired in (old, link, launcher):
-            self.assertFalse(retired.exists())
-            self.assertFalse(retired.is_symlink())
-        self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "agent-interface 0.0.0")
-        self.assertEqual(library.read_bytes(), b"existing workspace")
-
-    def test_linux_rename_failure_restores_old_install_and_launchers(self):
-        old, link, launcher, library = self.legacy_linux_install()
-        self.command("rm", 'for last do :; done\ncase "$last" in *tmux-workspaces.desktop) exit 1;; esac\nexec /bin/rm "$@"')
-        self.install(self.package(), success=False)
-        self.assertTrue(old.exists())
-        self.assertTrue(launcher.exists())
-        self.assertEqual(subprocess.check_output([link, "--version"], text=True).strip(), "tmux-workspaces 0.1.0")
-        self.assertEqual(library.read_bytes(), b"existing workspace")
-        self.assertFalse(self.destination.exists())
-        self.assertFalse(self.link.is_symlink())
-        self.assertFalse(self.launcher.exists())
 
     def test_reject_corrupt_wrong_target_and_unsafe_archive(self):
         archive = self.package()
@@ -572,34 +546,33 @@ sys.exit(0 if outcome in ('ok', 'corrupt') else int(outcome))
         self.install(self.package(), success=False)
         self.assertEqual((self.destination / "mine").read_text(), "preserve")
 
-    def test_mac_rename_update_and_rollback(self):
+    def test_mac_update_and_rollback(self):
         self.command("uname", 'case "$1" in -s) echo Darwin;; -m) echo arm64;; esac')
         self.command("codesign", "exit 0")
         destination = self.home / "Applications/Agent Interface.app"
-        legacy = self.home / "Applications/tmux-workspaces.app"
-        self.install(self.package(target="aarch64-apple-darwin", legacy_mac=True))
-        destination.rename(legacy)
-        # Failed replacement restores the old bundle under its original name.
-        self.command("mv", 'case "$1" in */"Agent Interface.app") exit 1;; esac\nexec /bin/mv "$@"')
+        binary = destination / "Contents/MacOS/agent-interface"
+        self.install(self.package(target="aarch64-apple-darwin"))
+        # A failed replacement restores the previous bundle.
+        self.command("mv", 'case "$1" in */.agent-interface-stage.*/"Agent Interface.app") exit 1;; esac\n'
+                     'exec /bin/mv "$@"')
         self.install(self.package("0.0.1", target="aarch64-apple-darwin"), success=False)
-        self.assertTrue(legacy.exists())
-        self.assertFalse(destination.exists())
+        self.assertEqual(subprocess.check_output([binary, "--version"], text=True).strip(), "agent-interface 0.0.0")
         (self.tools / "mv").unlink()
         self.install(self.package("0.0.1", target="aarch64-apple-darwin"))
-        self.assertFalse(legacy.exists())
-        binary = destination / "Contents/MacOS/agent-interface"
         self.assertEqual(subprocess.check_output([binary, "--version"], text=True).strip(), "agent-interface 0.0.1")
         self.install(self.package("0.0.2", target="aarch64-apple-darwin"))
         self.assertEqual(subprocess.check_output([binary, "--version"], text=True).strip(), "agent-interface 0.0.2")
 
-    def test_mac_preserves_unmanaged_legacy_app(self):
+    def test_mac_download_installs_the_latest_release(self):
         self.command("uname", 'case "$1" in -s) echo Darwin;; -m) echo arm64;; esac')
-        legacy = self.home / "Applications/tmux-workspaces.app"
-        legacy.mkdir(parents=True)
-        (legacy / "mine").write_text("preserve")
-        self.install(self.package(target="aarch64-apple-darwin"), success=False)
-        self.assertEqual((legacy / "mine").read_text(), "preserve")
-        self.assertFalse((self.home / "Applications/Agent Interface.app").exists())
+        self.command("codesign", "exit 0")
+        self.mock_download(self.package("0.1.1", target="aarch64-apple-darwin"))
+        self.install(None)
+        binary = self.home / "Applications/Agent Interface.app/Contents/MacOS/agent-interface"
+        self.assertEqual(subprocess.check_output([binary, "--version"], text=True).strip(), "agent-interface 0.1.1")
+        self.assertEqual((self.root / "downloads").read_text().splitlines(), [
+            "agent-interface-aarch64-apple-darwin.tar.gz.sha256",
+            "agent-interface-aarch64-apple-darwin.tar.gz"])
 
     def test_rollback_after_launcher_failure(self):
         self.install(self.package())
@@ -622,276 +595,6 @@ sys.exit(0 if outcome in ('ok', 'corrupt') else int(outcome))
         backups = list(self.launcher.parent.glob(".agent-interface-previous.*"))
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_bytes(), before)
-
-
-    def backbone_tools(self):
-        self.env.update(FIXTURE_TOOLS=str(self.root / "uv tools"),
-                        FIXTURE_BIN=str(self.home / ".local/bin"),
-                        FIXTURE_LOG=str(self.root / "provider.log"),
-                        FIXTURE_PYTHON=str(self.tools / "provider-python"))
-        self.command("provider-python", '''
-printf '%s\\n' "$*" >> "$FIXTURE_LOG"
-case "$*" in *'--phase before'*) exit "${FIXTURE_PREFLIGHT:-0}";; *'--phase after'*) exit "${FIXTURE_RELEASE:-0}";; *'--phase verify'*) exit "${FIXTURE_VERIFY:-0}";; esac
-case "$*" in *--resume-pending*) exit "${FIXTURE_RESUME:-0}";; esac
-case "$*" in *'importlib.metadata import version'*) exit "${FIXTURE_VERSION_FAIL:-0}";; esac
-case "$*" in *'default_profiles'*) exit "${FIXTURE_UPGRADE_CHECK:-0}";; esac
-case "$*" in *--check-stopped*) exit "${FIXTURE_STILL_RUNNING:-0}";; esac
-case "$*" in *--init-profiles*) exit "${FIXTURE_INIT_FAIL:-0}";; esac
-case ":$PATH:" in *":$FIXTURE_BIN:"*) :;; *) exit 89;; esac
-if [ "${FIXTURE_SETUP_DELAY:-0}" != 0 ]; then sleep "$FIXTURE_SETUP_DELAY"; fi
-exit "${FIXTURE_SETUP_FAIL:-0}"
-''')
-        self.command("uv", '''
-printf '%s\\n' "$*" >> "$FIXTURE_LOG"
-case "$1 $2" in
-    "tool dir")
-        if [ "${3:-}" = --bin ]; then printf '%s\\n' "$FIXTURE_BIN";
-        else printf '%s\\n' "$FIXTURE_TOOLS"; fi;;
-    "tool install")
-        [ "${FIXTURE_INSTALL_FAIL:-0}" = 0 ] || exit 1
-        mkdir -p "$FIXTURE_TOOLS/agent-backbone/bin"
-        cp "$FIXTURE_PYTHON" "$FIXTURE_TOOLS/agent-backbone/bin/python"
-        chmod 755 "$FIXTURE_TOOLS/agent-backbone/bin/python";;
-    "tool update-shell")
-        if [ "${FIXTURE_SHELL_FAIL:-0}" != 0 ]; then
-            echo 'error: PATH is stale but the Bash configuration files are already up-to-date' >&2
-            exit 1
-        fi
-        echo 'Restart your shell to apply changes' >&2;;
-    *) exit 1;;
-esac
-''')
-
-    def test_latest_provider_install_and_pending_resume_order(self):
-        self.backbone_tools()
-        archive = self.package("0.2.0", extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"})
-        first = self.install(archive)
-        self.assertIn('Backbone command: "' + self.env["FIXTURE_BIN"] + '/backbone"', first.stdout)
-        self.assertIn("Restart your shell to apply changes", first.stderr)
-        log = Path(self.env["FIXTURE_LOG"])
-        lines = log.read_text().splitlines()
-        self.assertIn("tool install --upgrade --prerelease disallow --python >=3.11,<3.14 agent-backbone>=0.5.1,<2", lines)
-        self.assertTrue(any(line.startswith("-I -B -c") for line in lines))
-        self.env["FIXTURE_RESUME"] = "3"
-        log.write_text("")
-        result = self.install(archive)
-        lines = log.read_text().splitlines()
-        self.assertTrue(any("--resume-pending" in line for line in lines))
-        self.assertFalse(any(line.startswith("tool install") for line in lines))
-        self.assertNotIn(": failed.", result.stderr)
-
-    def test_installation_from_before_profiles_is_recorded_as_default_after_the_upgrade(self):
-        self.install(self.package("0.1.1"))
-        self.backbone_tools()
-        tool = Path(self.env["FIXTURE_TOOLS"]) / "agent-backbone/bin/python"
-        tool.parent.mkdir(parents=True)
-        shutil.copy(self.env["FIXTURE_PYTHON"], tool)
-        data = self.home / ".local/share/agent-backbone"
-        data.mkdir(parents=True)
-        (data / "backbone.db").write_bytes(b"fixture database")
-        for manager in ("launchctl", "systemctl"):
-            self.command(manager, 'printf "%s %s\\n" "$(basename "$0")" "$*" >> "$FIXTURE_LOG"\n'
-                         'case "$*" in *bootstrap*|*" start "*) exit "${FIXTURE_START_FAIL:-0}";; esac')
-        plist = self.home / "Library/LaunchAgents/dev.agent-backbone.plist"
-        unit = self.home / ".config/systemd/user/agent-backbone.service"
-        for path in (plist, unit):
-            path.parent.mkdir(parents=True)
-            path.write_text("fixture service")
-        helper = "agent-interface/setup_backbone.py"
-        archive = self.package(extra={helper: "fixture helper --check-stopped --init-profiles", "agent-interface/upgrade_backbone.py": "fixture guard"})
-        log = Path(self.env["FIXTURE_LOG"])
-
-        def steps():
-            lines = log.read_text().splitlines()
-            order = []
-            for line in lines:
-                for name, mark in (("stop", ("bootout", "stop agent-backbone")), ("check", ("--check-stopped",)),
-                                   ("install", ("tool install",)), ("init", ("--init-profiles",)),
-                                   ("start", ("bootstrap", "start agent-backbone"))):
-                    if any(m in line for m in mark):
-                        order.append(name)
-            return order
-
-        self.env["FIXTURE_UPGRADE_CHECK"] = "2"
-        log.write_text("")
-        result = self.install(archive, success=False)
-        self.assertIn("registry could not be checked", result.stderr)
-        self.assertEqual(steps(), [])
-
-        self.env.update(FIXTURE_UPGRADE_CHECK="1", FIXTURE_STILL_RUNNING="1")
-        log.write_text("")
-        result = self.install(archive, success=False)
-        self.assertIn("did not stop, so it was not upgraded", result.stderr)
-        self.assertNotIn("could not be started again", result.stderr)
-        self.assertEqual(steps(), ["stop", "check", "start"])
-
-        self.env.update(FIXTURE_STILL_RUNNING="0", FIXTURE_INSTALL_FAIL="1")
-        log.write_text("")
-        result = self.install(archive, success=False)
-        self.assertIn("Could not install a compatible published Agent Backbone release", result.stderr)
-        self.assertEqual(steps(), ["stop", "check", "install", "start"])
-        self.env["FIXTURE_START_FAIL"] = "1"
-        result = self.install(archive, success=False)
-        self.assertIn("could not be started again and is stopped", result.stderr)
-        self.env["FIXTURE_START_FAIL"] = "0"
-
-        self.env.update(FIXTURE_INSTALL_FAIL="0", FIXTURE_INIT_FAIL="1")
-        log.write_text("")
-        result = self.install(archive, success=False)
-        self.assertIn("was not started again", result.stderr)
-        self.assertEqual(steps(), ["stop", "check", "install", "init"])
-        self.assertFalse(any("--resume-pending" in line for line in log.read_text().splitlines()))
-        self.assertIn("0.1.1", subprocess.check_output([self.link, "--version"], text=True))
-
-        self.env["FIXTURE_INIT_FAIL"] = "0"
-        log.write_text("")
-        result = self.install(archive)
-        self.assertIn("will stop while", result.stdout)
-        self.assertEqual(steps(), ["stop", "check", "install", "init", "start"])
-
-        old = self.package(extra={helper: "fixture helper --init-profiles", "agent-interface/upgrade_backbone.py": "fixture guard"})
-        log.write_text("")
-        result = self.install(old, success=False)
-        self.assertIn("this app release cannot upgrade it. Nothing was changed", result.stderr)
-        self.assertEqual(steps(), [])
-
-    def test_recovered_old_provider_keeps_previous_app_until_upgrade(self):
-        self.install(self.package("0.1.1"))
-        self.backbone_tools()
-        archive = self.package(extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"})
-        self.env["FIXTURE_SETUP_FAIL"] = "1"
-        self.install(archive, success=False)
-        self.env.update(FIXTURE_SETUP_FAIL="0", FIXTURE_RESUME="3", FIXTURE_VERSION_FAIL="1")
-        log = Path(self.env["FIXTURE_LOG"])
-        log.write_text("")
-        result = self.install(archive, success=False)
-        self.assertIn("requires Backbone 0.5.1 or newer", result.stderr)
-        self.assertNotIn("tool install", log.read_text())
-        self.assertIn("0.1.1", subprocess.check_output([self.link, "--version"], text=True))
-        self.env.update(FIXTURE_RESUME="0", FIXTURE_VERSION_FAIL="0")
-        self.install(archive)
-        self.assertIn("tool install", log.read_text())
-
-    def test_stale_shell_path_does_not_block_app_or_provider_setup(self):
-        self.backbone_tools()
-        self.env["FIXTURE_SHELL_FAIL"] = "1"
-        result = self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"}))
-        self.assertTrue(self.link.is_symlink())
-        self.assertIn('Backbone command: "' + self.env["FIXTURE_BIN"] + '/backbone"', result.stdout)
-        self.assertIn("Shell setup notice (app installation will continue)", result.stderr)
-        self.assertIn("Bash configuration files are already up-to-date", result.stderr)
-        self.assertIn("Starting and checking Agent Backbone: done.", result.stderr)
-
-    def test_provider_install_path_with_equals_is_executed(self):
-        self.backbone_tools()
-        self.env["FIXTURE_TOOLS"] = str(self.root / "uv=tools")
-        self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"}))
-        self.assertTrue(self.link.is_symlink())
-
-    def test_quiet_setup_reports_elapsed_time_and_cleans_up_progress(self):
-        self.backbone_tools()
-        self.env["FIXTURE_SETUP_DELAY"] = "6"
-        result = self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"}))
-        self.assertIn("Starting and checking Agent Backbone: still running (5s elapsed)", result.stderr)
-        self.assertIn("Starting and checking Agent Backbone: done.", result.stderr)
-        # install() has a bounded timeout: an orphan heartbeat would otherwise
-        # retain its capture pipe indefinitely. It must emit no later updates.
-        self.assertTrue(result.stderr.rstrip().endswith("Starting and checking Agent Backbone: done."))
-
-    def test_setup_failure_reports_failed_step_and_preserves_old_app(self):
-        self.install(self.package("0.1.1"))
-        self.backbone_tools()
-        self.env.update(FIXTURE_SHELL_FAIL="1", FIXTURE_SETUP_FAIL="1")
-        result = self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"}), success=False)
-        self.assertIn("Starting and checking Agent Backbone: failed.", result.stderr)
-        self.assertIn("0.1.1", subprocess.check_output([self.link, "--version"], text=True))
-
-    def test_provider_failure_keeps_previous_app(self):
-        self.install(self.package("0.1.1"))
-        self.backbone_tools()
-        archive = self.package("0.2.0", extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"})
-        self.env["FIXTURE_INSTALL_FAIL"] = "1"
-        self.install(archive, success=False)
-        self.assertIn("0.1.1", subprocess.check_output([self.link, "--version"], text=True))
-        self.env["FIXTURE_INSTALL_FAIL"] = "0"
-        self.env["FIXTURE_SETUP_FAIL"] = "1"
-        self.install(archive, success=False)
-        self.assertIn("0.1.1", subprocess.check_output([self.link, "--version"], text=True))
-        self.env["FIXTURE_RESUME"] = "1"
-        Path(self.env["FIXTURE_LOG"]).write_text("")
-        self.install(archive, success=False)
-        self.assertNotIn("tool install", Path(self.env["FIXTURE_LOG"]).read_text())
-
-    def test_unsafe_linux_upgrade_stops_before_resume_or_uv_mutation(self):
-        self.backbone_tools()
-        archive = self.package("0.2.2", extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"})
-        self.install(archive)
-        log = Path(self.env["FIXTURE_LOG"])
-        log.write_text("")
-        self.env["FIXTURE_PREFLIGHT"] = "1"
-        result = self.install(archive, success=False)
-        calls = log.read_text()
-        self.assertIn("--phase before", calls)
-        self.assertNotIn("--resume-pending", calls)
-        self.assertNotIn("tool install", calls)
-        self.assertNotIn("--phase after", calls)
-        self.assertIn("package and service were preserved", result.stderr)
-        self.assertIn("0.2.2", subprocess.check_output([self.link, "--version"], text=True))
-
-    def test_fixed_upgrade_holds_before_uv_and_releases_before_readiness(self):
-        self.backbone_tools()
-        archive = self.package(extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"})
-        self.install(archive)
-        log = Path(self.env["FIXTURE_LOG"])
-        log.write_text("")
-        self.install(archive)
-        calls = log.read_text()
-        self.assertLess(calls.index("--phase before"), calls.index("tool install"))
-        self.assertLess(calls.index("tool install"), calls.index("--phase after"))
-        self.assertLess(calls.index("--phase after"), calls.index("tool update-shell"))
-        log.write_text("")
-        self.env["FIXTURE_INSTALL_FAIL"] = "1"
-        self.install(archive, success=False)
-        self.assertIn("--phase before", log.read_text())
-        self.assertNotIn("--phase after", log.read_text())
-
-    def test_fixed_first_setup_continues_without_package_mutation(self):
-        self.backbone_tools()
-        archive = self.package(extra={"agent-interface/setup_backbone.py": "fixture helper", "agent-interface/upgrade_backbone.py": "fixture guard"})
-        self.install(archive)
-        self.env["FIXTURE_PREFLIGHT"] = "3"
-        log = Path(self.env["FIXTURE_LOG"])
-        for resumed in ("0", "3"):
-            with self.subTest(resumed=resumed):
-                self.env["FIXTURE_RESUME"] = resumed
-                log.write_text("")
-                result = self.install(archive)
-                calls = log.read_text()
-                self.assertIn("--resume-pending", calls)
-                self.assertNotIn("tool install", calls)
-                self.assertNotIn("--phase after", calls)
-                self.assertNotIn("--phase verify", calls)
-                self.assertNotIn(": failed.", result.stderr)
-                if resumed == "0":
-                    self.assertIn("Starting and checking Agent Backbone: done.", result.stderr)
-                else:
-                    self.assertNotIn("Starting and checking Agent Backbone", result.stderr)
-
-    def test_existing_linux_install_rejects_archive_without_guard(self):
-        self.backbone_tools()
-        self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper"}))
-        log = Path(self.env["FIXTURE_LOG"])
-        log.write_text("")
-        result = self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper"}), success=False)
-        self.assertIn("cannot safely upgrade", result.stderr)
-        self.assertNotIn("tool install", log.read_text())
-
-    def test_unknown_existing_linux_data_defers_before_provider_install(self):
-        self.backbone_tools()
-        (self.home / ".local/share/agent-backbone").mkdir(parents=True)
-        result = self.install(self.package(extra={"agent-interface/setup_backbone.py": "fixture helper"}), success=False)
-        self.assertIn("could not be verified", result.stderr)
-        self.assertNotIn("tool install", Path(self.env["FIXTURE_LOG"]).read_text())
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
-//! Content read through one verified connection. No desktop actions or local files.
+//! Content read through one verified connection. It only reads.
 
-use super::{Api, DocumentRevision, Provider, ReportPage, ReportQuery, documents, reports};
+use super::{Api, DocumentRevision, ReportPage, ReportQuery, documents, reports};
 use crate::profiles::{Connection, Identity};
 
 /// Retained content and explicitly supported read-only observation views.
@@ -12,7 +12,7 @@ pub enum Request {
     Tags,
     /// Policy layers with catalog identities and provider-owned base/swarm text.
     Policies,
-    /// Skill catalog and provider previews, without reading local files.
+    /// Skill catalog and provider previews.
     Skills,
     /// Token usage on the captured profile.
     Usage(super::Range),
@@ -38,7 +38,7 @@ impl Request {
     }
 }
 
-/// Retained content without legacy URL-based action authority.
+/// Retained content, each from the connection that read it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Data {
     /// Team observation from the originating connection.
@@ -53,7 +53,7 @@ pub enum Data {
     Usage(super::Usage),
     /// Deliveries, events and state history from the originating connection.
     Activity(super::Activity),
-    /// A feed page or a single report/answer. Item provider URLs stay empty.
+    /// A feed page or a single report/answer.
     Reports(ReportPage),
     /// Size- and digest-checked HTML from the originating connection.
     Document(DocumentRevision),
@@ -82,8 +82,7 @@ pub struct Read {
 }
 
 /// Read on an I/O worker, retaining the same connection for every chained GET.
-/// Pagination and later detail requests must use this same connection. No
-/// environment, legacy configuration, local runtime files or actions are read.
+/// Pagination and later detail requests must use this same connection.
 pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool) -> Read {
     let observation = match request {
         Request::Team => Some(super::bound::Request::Team),
@@ -110,13 +109,7 @@ pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool)
             }),
         };
     }
-    let api = Api {
-        provider: Provider::Bound {
-            connection,
-            error: Default::default(),
-        },
-        live,
-    };
+    let api = Api::new(connection, live);
     let result = match request {
         Request::Team
         | Request::Tags
@@ -133,9 +126,7 @@ pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool)
         Request::Report(id) => reports::read_report(&api, *id).map(Data::Reports),
         Request::Document(id) => documents::read(&api, *id).map(Data::Document),
     };
-    let Provider::Bound { error, .. } = &api.provider else {
-        unreachable!()
-    };
+    let error = &api.error;
     // Enrichment is optional for ordinary HTTP refusals or unreadable metadata,
     // but a failed bound transport invalidates the whole chain, even if the
     // content decoder otherwise succeeded. Cancellation also discards results.
@@ -154,7 +145,7 @@ pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool)
 }
 
 /// Read one agent card section on the same verified connection, into an agent
-/// already inspected under its saved registration. No local files are read.
+/// already inspected under its saved registration.
 pub fn agent_part(
     connection: &Connection,
     part: &super::Part,
@@ -164,18 +155,10 @@ pub fn agent_part(
     if !crate::valid_agent(&agent.name) {
         return Err(Error::Content(super::UNREADABLE));
     }
-    let api = Api {
-        provider: Provider::Bound {
-            connection,
-            error: Default::default(),
-        },
-        live,
-    };
+    let api = Api::new(connection, live);
     let name = agent.name.clone();
     super::read_part(&api, &name, part, agent);
-    let Provider::Bound { error, .. } = &api.provider else {
-        unreachable!()
-    };
+    let error = &api.error;
     if let Some(error) = error.get() {
         Err(Error::Connection(error))
     } else if !live() {
@@ -190,22 +173,14 @@ pub fn agent_part(
 pub fn members(
     connection: &Connection,
 ) -> Result<std::collections::BTreeMap<String, super::Member>, Error> {
-    let api = Api {
-        provider: Provider::Bound {
-            connection,
-            error: Default::default(),
-        },
-        live: &|| true,
-    };
+    let api = Api::new(connection, &|| true);
     let result = super::library::agents(&api).map(|agents| {
         agents
             .into_iter()
             .map(|agent| (agent.name.clone(), agent))
             .collect()
     });
-    let Provider::Bound { error, .. } = &api.provider else {
-        unreachable!()
-    };
+    let error = &api.error;
     match error.get() {
         Some(error) => Err(Error::Connection(error)),
         None => result.map_err(Error::Content),

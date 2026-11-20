@@ -1245,14 +1245,6 @@ impl SettingsWindow {
 
     fn agents(&self, cx: &mut Context<Self>) -> gpui::Div {
         let (t, c) = (tokens(), colors());
-        let (connected, detail) = match crate::roster::provider_directory(false) {
-            Ok(Some(path)) => (true, path.display().to_string()),
-            Ok(None) => (
-                false,
-                "Agent Backbone is not installed; the panel has no agents section.".into(),
-            ),
-            Err(error) => (false, format!("Unavailable: {error}")),
-        };
         // The preference lives with each window's library; show the first's.
         let shown = cx
             .windows()
@@ -1281,28 +1273,8 @@ impl SettingsWindow {
             .child(Self::heading("Agents"))
             .child(Self::section([
                 Self::label("AGENT BACKBONE").into_any_element(),
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(t.space.s6))
-                    .px(px(t.space.s14))
-                    .py(px(t.space.s12))
-                    .rounded(px(t.radius.pane))
-                    .bg(c.panel)
-                    .border(px(t.size.hairline))
-                    .border_color(c.line)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(t.space.s8))
-                            .font_weight(t.text.row_selected.weight())
-                            .child(ui::dot(if connected { c.ok } else { c.faint }))
-                            .child(if connected { "Connected" } else { "Not connected" }),
-                    )
-                    .child(ui::text(div().text_color(c.muted), &t.text.meta).child(detail))
+                Self::note("A workspace with a profile shows its agents. States refresh every two seconds.")
                     .into_any_element(),
-                Self::note("States refresh every two seconds.").into_any_element(),
             ]))
             .child(
                 div()

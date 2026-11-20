@@ -25,13 +25,13 @@ fn fixture(name: &str) -> Json {
 pub(in crate::profiles) fn served(
     replies: Vec<(u16, Json)>,
 ) -> (Connection, thread::JoinHandle<Vec<String>>) {
-    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let (directory, listener, socket) = crate::transport::tests::local_listener();
     let entry = json!({
         "state": "serving", "protocol_version": 1, "backbone_version": "0.1.0",
         "profile_id": "0a1b2c3d4e5f", "display_name": "Work",
         "instance_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d",
         "machine": {"id": "5f2c9e0d1b7a4e38", "name": "laptop"}, "home": true,
-        "socket": url.strip_prefix("unix:").unwrap(), "tmux_socket": "/run/profile/tmux.sock",
+        "socket": &socket, "tmux_socket": "/run/profile/tmux.sock",
         "credential_reference": {"type": "socket"}
     });
     let mut identity = entry.clone();

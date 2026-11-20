@@ -4,7 +4,7 @@
 //! declared intent; whether an agent is working comes from its reported
 //! state, not the plan. This view only reads them.
 
-use std::{cell::Cell, collections::BTreeMap, path::PathBuf, rc::Rc, time::Duration};
+use std::{cell::Cell, collections::BTreeMap, rc::Rc, time::Duration};
 
 use agent_interface_roster::{
     conversations,
@@ -23,68 +23,39 @@ use crate::desktop::{
 /// How often an open list rereads the plans.
 const REFRESH: Duration = Duration::from_secs(20);
 
+/// The profile whose plans a pane reads.
 #[derive(Clone)]
-pub(super) enum Source {
-    Legacy(PathBuf),
-    Bound(Connection),
-}
+pub(super) struct Source(pub Connection);
 
 struct Read {
-    origin: Option<Identity>,
+    origin: Identity,
     page: PlansPage,
     members: BTreeMap<String, Member>,
-    provider: String,
 }
 
 impl Source {
     pub fn belongs_to(&self, agents: &crate::desktop::agent_status::LiveAgents) -> bool {
-        self.connection()
-            .is_none_or(|connection| agents.belongs_to(connection.identity()))
-    }
-
-    fn connection(&self) -> Option<&Connection> {
-        match self {
-            Self::Bound(connection) => Some(connection),
-            Self::Legacy(_) => None,
-        }
+        agents.belongs_to(self.0.identity())
     }
 
     fn accepts(&self, read: &Read) -> bool {
-        self.connection().map(Connection::identity) == read.origin.as_ref()
+        self.0.identity() == &read.origin
     }
 
     fn read(&self) -> Result<Read, Error> {
-        let (page, members, provider) = match self {
-            Self::Legacy(directory) => {
-                let provider = conversations::provider(directory).ok_or(Error::Unavailable)?;
-                let page = plans::list_all(directory)?;
-                if conversations::provider(directory).as_ref() != Some(&provider) {
-                    return Err(Error::Unavailable);
+        let page = plans::Client::new(self.0.clone()).list_all()?;
+        let members = agent_interface_roster::views::content::members(&self.0).map_err(
+            |error| match error {
+                agent_interface_roster::views::content::Error::Connection(error) => {
+                    Error::Connection(error)
                 }
-                let members =
-                    agent_interface_roster::views::members(directory).ok_or(Error::Unavailable)?;
-                (page, members, provider)
-            }
-            Self::Bound(connection) => {
-                let page = plans::Client::new(connection.clone()).list_all()?;
-                let members = agent_interface_roster::views::content::members(connection).map_err(
-                    |error| match error {
-                        agent_interface_roster::views::content::Error::Connection(error) => {
-                            Error::Connection(error)
-                        }
-                        _ => Error::Unreadable,
-                    },
-                )?;
-                (page, members, String::new())
-            }
-        };
+                _ => Error::Unreadable,
+            },
+        )?;
         Ok(Read {
-            origin: self
-                .connection()
-                .map(|connection| connection.identity().clone()),
+            origin: self.0.identity().clone(),
             page,
             members,
-            provider,
         })
     }
 }
@@ -104,13 +75,12 @@ pub(super) struct Plans {
 }
 
 /// What the section shows, copied for each frame it draws.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct Frame {
     agents: crate::desktop::agent_status::LiveAgents,
     /// The plans last read, kept when a later read fails.
     page: Option<PlansPage>,
-    provider: Option<String>,
-    connection: Option<Connection>,
+    connection: Connection,
     /// Drafts and unresolved deliveries keep their observed plans accessible.
     held: bool,
     /// Each agent's runtime metadata from the plan read; live state is shared.
@@ -141,14 +111,10 @@ impl Plans {
                 cx.background_executor().timer(REFRESH).await;
             }
         });
-        let connection = source.connection().cloned();
+        let frame = Frame::new(agents, source.0.clone());
         Self {
             source,
-            frame: Frame {
-                agents,
-                connection,
-                ..Frame::default()
-            },
+            frame,
             asked: 0,
             applied: 0,
             reading: false,
@@ -203,7 +169,6 @@ impl Plans {
         self.applied = number;
         match read {
             Ok(read) if self.source.accepts(&read) => {
-                self.frame.provider = Some(read.provider);
                 self.frame.page = Some(read.page);
                 self.frame.members = read.members;
                 self.frame.error = None;
@@ -309,35 +274,26 @@ impl Plans {
 
 /// Immutable context for a draft and every retry of a sent message.
 pub(super) struct ConversationTarget {
-    pub provider: String,
-    pub connection: Option<Connection>,
+    pub connection: Connection,
     pub author: String,
     pub agent: String,
     pub anchor: conversations::Anchor,
 }
 
 impl ConversationTarget {
-    pub fn bound_client(&self) -> Result<Option<conversations::Client>, conversations::Error> {
-        self.connection
-            .as_ref()
-            .map(|connection| {
-                conversations::Client::new(
-                    connection.clone(),
-                    connection.identity(),
-                    conversations::Kind::Plan,
-                    self.author.clone(),
-                )
-            })
-            .transpose()
+    pub fn bound_client(&self) -> Result<conversations::Client, conversations::Error> {
+        conversations::Client::new(
+            self.connection.clone(),
+            self.connection.identity(),
+            conversations::Kind::Plan,
+            self.author.clone(),
+        )
     }
 
     pub fn key(&self) -> String {
         format!(
             "plan\n{}\n{}\n{}\n{}",
-            super::seen::origin_key(
-                self.connection.as_ref().map(Connection::identity),
-                &self.provider
-            ),
+            super::seen::origin_key(self.connection.identity()),
             self.author,
             self.anchor.revision_id.as_deref().unwrap_or_default(),
             self.anchor.item_id.as_deref().unwrap_or_default()
@@ -346,6 +302,21 @@ impl ConversationTarget {
 }
 
 impl Frame {
+    fn new(agents: crate::desktop::agent_status::LiveAgents, connection: Connection) -> Self {
+        Self {
+            agents,
+            page: None,
+            connection,
+            held: false,
+            members: BTreeMap::new(),
+            error: None,
+            selected: None,
+            open: None,
+            step: None,
+            card_step: None,
+        }
+    }
+
     fn open(&mut self, author: String) -> bool {
         let Some(entry) = self
             .page
@@ -380,7 +351,6 @@ impl Frame {
             .as_ref()
             .and_then(|id| record.plan.items.iter().find(|item| &item.item_id == id));
         Some(ConversationTarget {
-            provider: self.provider.clone()?,
             connection: self.connection.clone(),
             author: entry.author_id.clone(),
             agent: entry.agent_name.clone(),
@@ -1286,8 +1256,8 @@ mod tests {
                 Reply::ok("/api/agents", members("b")),
             ],
         );
-        let source_a = Source::Bound(a.clone());
-        let source_b = Source::Bound(b.clone());
+        let source_a = Source(a.clone());
+        let source_b = Source(b.clone());
         assert!(!source_a.belongs_to(&crate::desktop::agent_status::LiveAgents::default()));
         let worker = std::thread::spawn({
             let source = source_a.clone();
@@ -1303,20 +1273,18 @@ mod tests {
         assert!(source_a.accepts(&read_a));
         assert_eq!(read_a.members["worker"].runtime, "a");
         let origin = read_a.origin.clone();
-        read_a.origin.as_mut().unwrap().lifecycle_id = "replacement".into();
+        read_a.origin.lifecycle_id = "replacement".into();
         assert!(!source_a.accepts(&read_a));
         read_a.origin = origin;
         let mut frame = Frame {
             page: Some(read_a.page),
-            provider: Some(read_a.provider),
-            connection: Some(a.clone()),
             open: Some("11111111111111111111111111111111".into()),
             step: Some("step".into()),
-            ..Default::default()
+            ..Frame::new(Default::default(), a.clone())
         };
         let target = frame.conversation().unwrap();
         let original_key = target.key();
-        frame.connection = Some(b);
+        frame.connection = b;
         assert_ne!(original_key, frame.conversation().unwrap().key());
         frame.page.as_mut().unwrap().items[0]
             .record
@@ -1325,7 +1293,7 @@ mod tests {
             .revision_id = "second".into();
         assert_eq!(target.anchor.revision_id.as_deref(), Some("first"));
         assert_eq!(target.anchor.item_id.as_deref(), Some("step"));
-        let client = target.bound_client().unwrap().unwrap();
+        let client = target.bound_client().unwrap();
         assert_eq!(client.identity(), a.identity());
         assert!(
             client
@@ -1346,11 +1314,12 @@ mod tests {
 
     #[test]
     fn held_plan_frame_observes_live_status_without_refreshing_its_page() {
+        let (_directory, connection, server) = crate::roster::content::tests::provider("a", vec![]);
+        server.join().unwrap();
         let agents = crate::desktop::agent_status::LiveAgents::default();
         let frame = Frame {
-            agents: agents.clone(),
             held: true,
-            ..Default::default()
+            ..Frame::new(agents.clone(), connection)
         };
         let mut snapshot = agent_interface_roster::Snapshot::default();
         snapshot.update(br#"{"items":[{"name":"worker","state":"busy"}]}"#);
@@ -1377,11 +1346,12 @@ mod tests {
                 ]}
             }}], "next_after_author_id": null
         })).unwrap();
+        let (_directory, connection, server) = crate::roster::content::tests::provider("a", vec![]);
+        server.join().unwrap();
         let mut frame = Frame {
             page: Some(page),
-            provider: Some("unix:/tmp/provider.sock".into()),
             card_step: Some(("author".into(), "old".into())),
-            ..Default::default()
+            ..Frame::new(Default::default(), connection)
         };
         assert!(frame.open("author".into()));
         assert_eq!(frame.step.as_deref(), Some("old"));
@@ -1415,12 +1385,13 @@ mod tests {
             }}], "next_after_author_id": null
         }))
         .unwrap();
+        let (_directory, connection, server) = crate::roster::content::tests::provider("a", vec![]);
+        server.join().unwrap();
         let mut frame = Frame {
             page: Some(page),
-            provider: Some("unix:/tmp/provider.sock".into()),
             open: Some("author".into()),
             step: Some("step".into()),
-            ..Default::default()
+            ..Frame::new(Default::default(), connection)
         };
         let observed = frame.conversation().unwrap();
         assert_eq!(observed.author, "author");

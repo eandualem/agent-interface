@@ -312,9 +312,9 @@ pub(super) struct LiveTerminal {
     /// Starts this ordinary terminal's shell when it is no longer running.
     environment: Option<agent_interface_tmux::shells::Environment>,
     restoring: bool,
-    /// The name of the stopped agent this attachment shows, with the Backbone data
-    /// directory that starts it. A bound pane starts it through its connection.
-    agent: Option<(Option<PathBuf>, String)>,
+    /// The name of the stopped agent this attachment shows. A bound pane
+    /// starts it through its connection.
+    agent: Option<String>,
     launching: bool,
     launch_result: Option<agent_interface_roster::lifecycle::Outcome>,
     /// Whether the browser shows this terminal. A hidden one keeps its
@@ -352,7 +352,7 @@ impl LiveTerminal {
     }
 
     /// Only the browser knows whether an attachment is a registered agent.
-    pub fn set_agent(&mut self, agent: Option<(Option<PathBuf>, String)>, cx: &mut Context<Self>) {
+    pub fn set_agent(&mut self, agent: Option<String>, cx: &mut Context<Self>) {
         if self.agent != agent {
             self.agent = agent;
             self.launch_result = None;
@@ -367,21 +367,16 @@ impl LiveTerminal {
         let Some(agent) = self.agent.clone().filter(|_| !self.launching) else {
             return;
         };
+        let Some(connection) = self.target.connection.clone() else {
+            return;
+        };
         self.launching = true;
         self.launch_result = None;
-        let target = agent.clone();
-        let connection = self.target.connection.clone();
+        let name = agent.clone();
         let defaults = defaults();
-        let work = cx.background_executor().spawn(async move {
-            use agent_interface_roster::lifecycle;
-            match (connection, &target.0) {
-                (Some(connection), _) => connection.start_agent(&target.1, resume, Some(defaults)),
-                (None, Some(data_dir)) => {
-                    lifecycle::start_with_defaults(data_dir, &target.1, resume, defaults)
-                }
-                (None, None) => lifecycle::Outcome::Unknown,
-            }
-        });
+        let work = cx
+            .background_executor()
+            .spawn(async move { connection.start_agent(&name, resume, Some(defaults)) });
         cx.spawn(async move |this, cx| {
             let result = work.await;
             let _ = this.update(cx, |terminal, cx| {
@@ -779,7 +774,7 @@ impl Render for LiveTerminal {
                 let launching = self.launching;
                 el.child(line(
                     match (&self.agent, attached) {
-                        (Some((_, name)), _) => format!("{name} is not running."),
+                        (Some(name), _) => format!("{name} is not running."),
                         (None, true) if self.target.is_sign_in() => {
                             "This sign-in has ended.".into()
                         }
@@ -925,7 +920,7 @@ mod tests {
     };
 
     #[test]
-    fn bound_attachment_ignores_legacy_source_and_refuses_foreign_targets() {
+    fn bound_attachment_ignores_the_window_source_and_refuses_foreign_targets() {
         use crate::roster::content::tests::{Reply, provider_with_tmux};
         use serde_json::json;
         let a = TmuxServer::start().unwrap();
@@ -1016,7 +1011,7 @@ mod tests {
             connection: Some(connection),
             leaf: model.pane().unwrap().clone(),
             directory: None,
-            source: Err("no legacy source".into()),
+            source: Err("no window source".into()),
         };
         assert!(
             connect(target)

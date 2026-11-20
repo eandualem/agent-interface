@@ -390,10 +390,7 @@ fn path_from(
 /// Read the saved settings, or the defaults.
 pub fn load() -> Settings {
     path()
-        .and_then(|path| {
-            let config = path.parent()?.parent()?;
-            load_from(&crate::compat::config_file(config, "settings.toml")).ok()
-        })
+        .and_then(|path| load_from(&path).ok())
         .unwrap_or_default()
 }
 

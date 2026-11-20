@@ -37,9 +37,8 @@ impl EventEmitter<Choice> for SessionChooser {}
 impl SessionChooser {
     pub fn new(socket: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self::new_with(
-            Origin::Legacy {
+            Origin::Standalone {
                 socket: Some(socket),
-                directory: None,
             },
             window,
             cx,

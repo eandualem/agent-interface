@@ -1316,12 +1316,6 @@ impl Render for Interactions {
             .flex_col()
             .bg(c.surface)
             .child(toolbar(self, cx));
-        if self.error == Some(Error::Unsupported) && self.source.connection().is_none() {
-            frame = frame.child(
-                ui::interaction_chip("interactions-open-activity", "Open Activity", false)
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(Event::Activity))),
-            );
-        }
         let main = if self.snapshot.is_none() && self.selected.is_none() {
             match self.error {
                 Some(error) => div()

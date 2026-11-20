@@ -648,9 +648,8 @@ mod tests {
         };
 
         for counts in [[2049, 2049, 1], [1, 4097, 1]] {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let (_directory, connection, listener) = crate::transport::tests::served_connection();
             listener.set_nonblocking(true).unwrap();
-            let url = format!("http://{}", listener.local_addr().unwrap());
             let stop = Arc::new(AtomicBool::new(false));
             let finished = stop.clone();
             let server = std::thread::spawn(move || {
@@ -692,7 +691,7 @@ mod tests {
                 }
                 requests
             });
-            let api = Api::new(url, String::new(), &|| true);
+            let api = Api::new(&connection, &|| true);
             let result = PolicyLibrary::read(
                 &api,
                 &[agent("one", &[]), agent("two", &[]), agent("three", &[])],
@@ -860,11 +859,12 @@ mod tests {
             Err(super::super::UNREADABLE)
         );
         let agents = [agent("worker", &[]), agent("helper", &[])];
+        let (_directory, connection, _listener) = crate::transport::tests::served_connection();
         let gone = || false;
-        let api = Api::new(String::new(), String::new(), &gone);
+        let api = Api::new(&connection, &gone);
         assert_eq!(sampled(&api, &agents).count(), 0);
         let wanted = || true;
-        let api = Api::new(String::new(), String::new(), &wanted);
+        let api = Api::new(&connection, &wanted);
         assert_eq!(sampled(&api, &agents).count(), 2);
     }
 

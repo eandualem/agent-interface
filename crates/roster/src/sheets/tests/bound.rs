@@ -7,7 +7,7 @@ use std::{
     time::Instant,
 };
 
-fn connection(
+pub(super) fn connection(
     label: &str,
     script: impl FnOnce(UnixListener, serde_json::Value) + Send + 'static,
 ) -> (
@@ -16,7 +16,7 @@ fn connection(
     Connection,
     thread::JoinHandle<()>,
 ) {
-    let (directory, listener, url) = crate::transport::tests::local_listener();
+    let (directory, listener, socket) = crate::transport::tests::local_listener();
     let credential = directory.path().join("profile.env");
     fs::write(&credential, "BACKBONE_API_KEY=fixture-original\n").unwrap();
     fs::set_permissions(&credential, fs::Permissions::from_mode(0o600)).unwrap();
@@ -27,7 +27,7 @@ fn connection(
         &serde_json::to_vec(&json!({"schema_version":1,
         "profile_id":label,"display_name":label,"kind":"isolated","state":"ready",
         "binding":{"installation_id":"installation","lifecycle_id":"lifecycle",
-            "endpoint":{"kind":"unix","path":url.strip_prefix("unix:").unwrap()},
+            "endpoint":{"kind":"unix","path":&socket},
             "credential_reference":{"kind":"dotenv","path":credential,"key":"BACKBONE_API_KEY"},
             "tmux":identity["tmux"]}}))
         .unwrap(),

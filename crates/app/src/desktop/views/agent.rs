@@ -8,15 +8,14 @@ use agent_interface_roster::{
     Background, Waiting,
     profiles::runs::{Run, Runs},
     views::{
-        Agent, Data, Instructions, Loadout, LocalSkill, Process, Reason, Received, Usage,
-        epoch_seconds, now,
+        Agent, Instructions, Loadout, LocalSkill, Process, Reason, Received, Usage, epoch_seconds,
+        now,
     },
 };
 use gpui::{AnyElement, Context, Div, SharedString, div, prelude::*, px};
 
 use super::{
-    Target, ViewEvent, ViewPane, ago, count, home, line, list, mono, policies, reader, since,
-    skills, usage,
+    Target, ViewPane, ago, count, home, line, list, mono, policies, reader, since, skills, usage,
 };
 use crate::desktop::{
     agent_status::counted,
@@ -32,118 +31,17 @@ fn held(message: &Received) -> bool {
 }
 
 pub(super) fn body(pane: &ViewPane, agent: &Agent, cx: &mut Context<ViewPane>) -> AnyElement {
-    let (t, c) = (tokens(), colors());
-    if !agent.known {
-        return div()
+    // A skill or policy opened from the profile's agent card shows in the
+    // reader; going back shows the card. Only that card sets this data.
+    let header =
+        ui::view_header("user", agent.name.clone()).child(ui::badge(agent.runtime.clone()));
+    match page(pane, agent) {
+        Some(page) => reader::render(pane, header, page, cx),
+        None => div()
             .size_full()
-            .flex()
-            .flex_col()
-            .child(ui::view_header("user", agent.name.clone()))
-            .child(ui::empty_state(
-                ui::empty_tile("user", c.selected, c.muted),
-                "Backbone does not know this agent",
-                format!("{} may have been renamed or removed.", agent.name),
-            ))
-            .into_any_element();
+            .children(pane.bound_agent.clone())
+            .into_any_element(),
     }
-    // A profile card's skill or policy: the card read this agent itself, so
-    // the reader goes back to the card rather than to this view's sections.
-    if let Some(card) = &pane.bound_agent {
-        let header =
-            ui::view_header("user", agent.name.clone()).child(ui::badge(agent.runtime.clone()));
-        return match page(pane, agent) {
-            Some(page) => reader::render(pane, header, page, cx),
-            None => div().size_full().child(card.clone()).into_any_element(),
-        };
-    }
-    let status = pane.agents.get(&agent.name);
-    let name = agent.name.clone();
-    let header = ui::view_header("user", agent.name.clone())
-        .pr(px(t.space.s6))
-        .child(ui::badge(agent.runtime.clone()))
-        .child(ui::agent_status(&status))
-        .child(div().flex_1())
-        .child(
-            ui::text(
-                div()
-                    .id("agent-terminal")
-                    .flex()
-                    .items_center()
-                    .gap(px(t.space.s6))
-                    .h(px(t.size.chip - t.space.s2))
-                    .px(px(t.space.s8))
-                    .rounded(px(t.radius.key + 1.0))
-                    .border(px(t.size.hairline))
-                    .border_color(c.line_strong)
-                    .bg(c.field)
-                    .text_color(c.text_2)
-                    .cursor_pointer()
-                    .hover(|el| el.bg(colors().hover)),
-                &t.text.meta,
-            )
-            .child("Its terminal")
-            .on_click(cx.listener(move |_, _, _, cx| cx.emit(ViewEvent::ShowAgent(name.clone())))),
-        );
-
-    if let Some(page) = page(pane, agent) {
-        return reader::render(pane, header, page, cx);
-    }
-    // In a narrow pane the tabs scroll sideways rather than hide a section.
-    let mut nav = div()
-        .id("agent-sections")
-        .flex()
-        .flex_shrink_0()
-        .items_end()
-        .gap(px(t.space.s2))
-        .h(px(t.size.view_toolbar))
-        .px(px(t.space.s10))
-        .overflow_x_scroll()
-        .border_b(px(t.size.hairline))
-        .border_color(c.line);
-    for section in AgentSection::ALL {
-        // A count is known once its section has been read.
-        let count = match section {
-            AgentSection::Skills => agent
-                .skills
-                .as_ref()
-                .and_then(|loadout| loadout.as_ref().ok())
-                .map(|loadout| {
-                    loadout.skills.len() + loadout.user.len() + loadout.repository.len()
-                }),
-            AgentSection::Policies => agent
-                .brief
-                .as_ref()
-                .and_then(|brief| brief.as_ref().ok())
-                .map(|brief| brief.sources.len()),
-            _ => None,
-        };
-        nav = nav.child(
-            tab(
-                SharedString::from(format!("agent-section-{}", section.as_str())),
-                label(section),
-                count.map(|n| n.to_string()).unwrap_or_default(),
-                section == pane.section,
-            )
-            .on_click(cx.listener(move |pane, _, _, cx| pane.set_section(section, cx))),
-        );
-    }
-
-    let content = match pane.section {
-        AgentSection::Overview => overview(agent, status.state, &Runs::default()),
-        AgentSection::Permissions => permissions(agent),
-        AgentSection::Connections => connections(agent),
-        AgentSection::Skills => skills_section(agent, cx, Some(ViewPane::open)),
-        AgentSection::Policies => policies_section(agent, cx, Some(ViewPane::open)),
-        AgentSection::Usage => usage_section(agent),
-    };
-    div()
-        .size_full()
-        .flex()
-        .flex_col()
-        .child(header)
-        .child(nav)
-        .child(content)
-        .into_any_element()
 }
 
 pub(super) fn label(section: AgentSection) -> &'static str {
@@ -180,31 +78,6 @@ pub(super) fn targets(pane: &ViewPane, agent: &Agent) -> Vec<Target> {
             .unwrap_or_default(),
         _ => Vec::new(),
     }
-}
-
-/// When a refresh's section read failed but the last data had that section,
-/// keep the last section and return the failure to show as stale.
-pub(super) fn keep_section(last: Option<&Data>, new: &mut Data) -> Option<&'static str> {
-    fn keep<T: Clone>(
-        last: &Option<Result<T, &'static str>>,
-        new: &mut Option<Result<T, &'static str>>,
-    ) -> Option<&'static str> {
-        let (Some(Ok(kept)), Some(Err(error))) = (last, &new) else {
-            return None;
-        };
-        let error = *error;
-        *new = Some(Ok(kept.clone()));
-        Some(error)
-    }
-    let (Some(Data::Agent(last)), Data::Agent(new)) = (last, new) else {
-        return None;
-    };
-    if last.name != new.name {
-        return None;
-    }
-    keep(&last.skills, &mut new.skills)
-        .or(keep(&last.brief, &mut new.brief))
-        .or(keep(&last.usage, &mut new.usage))
 }
 
 fn loaded<'a, T>(part: &'a Option<Result<T, &'static str>>) -> Option<&'a T> {
@@ -1098,252 +971,6 @@ pub(super) fn connections(agent: &Agent) -> AnyElement {
                 .child(github)
                 .child(sources),
         )
-        .into_any_element()
-}
-
-/// Whether the CLI's own settings let it act without any prompt.
-fn skips_prompts(rules: &agent_interface_roster::views::Permissions) -> bool {
-    rules.modes.iter().any(|(name, value)| {
-        matches!(
-            (name.as_str(), value.as_str()),
-            ("defaultMode", "bypassPermissions") | ("approval_policy", "never")
-        )
-    })
-}
-
-fn summary(title: String, sub: String) -> gpui::Div {
-    let (t, c) = (tokens(), colors());
-    div()
-        .flex_1()
-        .min_w_0()
-        .flex()
-        .flex_col()
-        .gap(px(t.space.s2 + 1.0))
-        .px(px(t.space.s12))
-        .py(px(t.space.s10))
-        .rounded(px(t.radius.slot))
-        .bg(c.field)
-        .border(px(t.size.hairline))
-        .border_color(c.line_strong)
-        .child(ui::text(div().text_color(c.text), &t.text.row_selected).child(title))
-        .child(ui::text(div().text_color(c.muted), &t.text.meta).child(sub))
-}
-
-fn permissions(agent: &Agent) -> AnyElement {
-    let (t, c) = (tokens(), colors());
-    let rules = &agent.permissions;
-    let launch = agent.launch.clone().unwrap_or_default();
-    let mode = rules
-        .modes
-        .iter()
-        .map(|(name, value)| format!("{name} {value}"))
-        .collect::<Vec<_>>()
-        .join(" · ");
-    let cards = div()
-        .flex()
-        .flex_shrink_0()
-        .gap(px(t.space.s8))
-        .child(if launch.unattended {
-            summary(
-                "Runs unattended".into(),
-                "launched without permission prompts".into(),
-            )
-        } else if skips_prompts(rules) {
-            summary(
-                "Does not ask".into(),
-                "its CLI settings skip prompts".into(),
-            )
-        } else {
-            summary(
-                "Asks before acting".into(),
-                "except what its rules allow".into(),
-            )
-        })
-        .child(summary(
-            format!("{} rules pre-approved", rules.allow.len()),
-            if rules.deny.is_empty() {
-                "no deny rules".into()
-            } else {
-                format!("{} deny rules", rules.deny.len())
-            },
-        ))
-        .child(summary(
-            if mode.is_empty() {
-                "CLI defaults".into()
-            } else {
-                mode
-            },
-            if launch.always_on {
-                "kept running by Backbone".into()
-            } else {
-                "started on demand".into()
-            },
-        ));
-    let row = |key: &'static str, value: &'static str, why: &'static str, warn: bool| {
-        ui::text(
-            div()
-                .flex()
-                .items_baseline()
-                .gap(px(t.space.s12))
-                .py(px(t.space.s6 + 1.0))
-                .border_t(px(t.size.hairline))
-                .border_color(c.line),
-            &t.text.body,
-        )
-        .child(
-            div()
-                .flex_shrink_0()
-                .w(px(t.size.fact_label + t.space.s24 * 2.0))
-                .text_color(c.text_2)
-                .child(key),
-        )
-        .child(
-            div()
-                .flex_shrink_0()
-                .w(px(t.size.fact_label))
-                .font_weight(t.text.row_selected.weight())
-                .text_color(if warn { c.accent_text } else { c.text })
-                .child(value),
-        )
-        .child(ui::text(div().flex_1().min_w_0().text_color(c.muted), &t.text.meta).child(why))
-    };
-    let set = div()
-        .flex_shrink_0()
-        .flex()
-        .flex_col()
-        .child(
-            ui::view_heading(
-                "SET BY BACKBONE AT LAUNCH",
-                "changes apply at the next start",
-            )
-            .px(px(0.0)),
-        )
-        .child(row(
-            "Approval mode",
-            if launch.unattended {
-                "Unattended"
-            } else {
-                "Attended"
-            },
-            if launch.unattended {
-                "Started so it acts without asking."
-            } else {
-                "Backbone does not start it unattended; its CLI's own settings below still apply."
-            },
-            launch.unattended,
-        ))
-        .child(row(
-            "Always on",
-            if launch.always_on { "Yes" } else { "No" },
-            "Backbone restarts it when it stops.",
-            false,
-        ))
-        .child(row(
-            "Inbox only",
-            if launch.inbox_only { "Yes" } else { "No" },
-            "Messages wait in its inbox instead of its terminal.",
-            false,
-        ));
-    let files: Vec<String> = rules
-        .files
-        .iter()
-        .filter(|file| file.read)
-        .map(|file| file.path.clone())
-        .collect();
-    let incomplete = rules.files.iter().any(|file| file.error.is_some());
-    let chips = |items: &[String]| {
-        let mut chips = div().flex_1().flex().flex_wrap().gap(px(t.space.s4 + 1.0));
-        if items.is_empty() {
-            chips = chips.child(
-                ui::text(div().text_color(c.muted), &t.text.status).child(if incomplete {
-                    "unavailable"
-                } else {
-                    "none"
-                }),
-            );
-        }
-        for item in items {
-            chips = chips.child(
-                ui::text(
-                    div()
-                        .px(px(t.space.s6 + 1.0))
-                        .py(px(t.space.s2))
-                        .rounded(px(t.radius.key + 1.0))
-                        .bg(c.hover)
-                        .border(px(t.size.hairline))
-                        .border_color(c.line_strong)
-                        .font_family(t.font.mono.clone())
-                        .text_color(c.text_2),
-                    &t.text.meta,
-                )
-                .child(item.clone()),
-            );
-        }
-        chips
-    };
-    let kind = |label: &'static str, color: gpui::Rgba| {
-        ui::text(
-            div()
-                .flex_shrink_0()
-                .w(px(t.size.view_choice + t.space.s8))
-                .pt(px(t.space.s2))
-                .text_color(color),
-            &t.text.status,
-        )
-        .child(label)
-    };
-    let own = div()
-        .flex_shrink_0()
-        .flex()
-        .flex_col()
-        .gap(px(t.space.s8))
-        .child(
-            ui::view_heading(format!("{}'S OWN RULES", agent.runtime.to_uppercase()), "")
-                .px(px(0.0))
-                .child(mono(files.join(" · ")).text_color(c.muted)),
-        )
-        .children(rules.files.iter().filter_map(|file| {
-            file.error.map(|error| {
-                ui::text(div().text_color(c.attention_text), &t.text.status)
-                    .child(format!("Incomplete inspection: {}: {error}", file.path))
-            })
-        }))
-        .child(if rules.files.is_empty() {
-            ui::text(div().text_color(c.muted), &t.text.status).child(format!(
-                "This app does not read {}'s settings.",
-                agent.runtime
-            ))
-        } else {
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(t.space.s8))
-                .child(
-                    div()
-                        .flex()
-                        .child(kind("allow", c.ok))
-                        .child(chips(&rules.allow)),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .child(kind("deny", c.attention_text))
-                        .child(chips(&rules.deny)),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .child(kind("ask", c.muted))
-                        .child(chips(&rules.ask)),
-                )
-        });
-    list("agent-permissions")
-        .px(px(t.space.s18))
-        .py(px(t.space.s14))
-        .gap(px(t.space.s14))
-        .child(cards)
-        .child(set)
-        .child(own)
         .into_any_element()
 }
 

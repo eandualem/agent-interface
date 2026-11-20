@@ -74,8 +74,8 @@ fn bound_interaction_navigation_and_discussions_keep_the_snapshot_origin() {
             Reply::ok(states, fixture("states")),
         ],
     );
-    let source_a = Source::Bound(a.clone());
-    let source_b = Source::Bound(b);
+    let source_a = Source(a.clone());
+    let source_b = Source(b);
     assert!(!source_a.belongs_to(&crate::desktop::agent_status::LiveAgents::default()));
     let worker = std::thread::spawn({
         let source = source_a.clone();
@@ -84,47 +84,26 @@ fn bound_interaction_navigation_and_discussions_keep_the_snapshot_origin() {
     reading.recv_timeout(Duration::from_secs(5)).unwrap();
     let snapshot_b = source_b.read("start", "end", Some("worker")).unwrap();
     assert!(!source_a.accepts(&snapshot_b));
-    assert!(matches!(
-        source_a.detail(&source_b.key(&snapshot_b.provider), id),
-        Err(Error::Connection(
-            agent_interface_roster::profiles::Error::BindingMismatch
-        ))
-    ));
     std::fs::write(a.credential_reference(), "BACKBONE_API_KEY=rotated\n").unwrap();
     release.send(()).unwrap();
     let snapshot_a = worker.join().unwrap().unwrap();
     assert!(source_a.accepts(&snapshot_a));
-    assert!(source_a.directory().is_none());
-    assert_ne!(
-        source_a.key(&snapshot_a.provider),
-        source_b.key(&snapshot_b.provider)
-    );
-    let accepted_origin = source_a.key(&snapshot_a.provider);
+    assert_ne!(source_a.key(), source_b.key());
     // A time-window refresh clears the ledger while its reader stays visible.
     // Detail navigation must keep working without waiting for another snapshot.
     drop(snapshot_a);
     assert_eq!(
-        source_a
-            .detail(&accepted_origin, id)
-            .unwrap()
-            .body
-            .text
-            .as_deref(),
+        source_a.detail(id).unwrap().body.text.as_deref(),
         Some("sentinel-a")
     );
-    assert!(source_a.report(&source_b.key(""), 7, true).is_err());
-    assert!(
-        format!("{:?}", source_a.report(&source_a.key(""), 7, true).unwrap())
-            .contains("sentinel-a-link")
-    );
+    assert!(format!("{:?}", source_a.report(7, true).unwrap()).contains("sentinel-a-link"));
     for (kind, id) in [(Kind::Interaction, id), (Kind::Document, "7")] {
         let target = super::super::conversation::ReferenceTarget {
-            provider: String::new(),
-            connection: source_a.connection().cloned(),
+            connection: source_a.connection().clone(),
             kind,
             id: id.into(),
         };
-        let client = target.bound_client().unwrap().unwrap();
+        let client = target.bound_client().unwrap();
         assert_eq!(client.identity(), a.identity());
         assert!(client.show(&Page::Newest).unwrap().entries.is_empty());
     }
