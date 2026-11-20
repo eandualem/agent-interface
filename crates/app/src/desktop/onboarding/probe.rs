@@ -253,14 +253,23 @@ pub fn answers(client: Option<crate::profiles::Client>) -> Backbone {
 }
 
 /// The service's own sentence on why it does not serve `saved`, the first
-/// profile made before, when it lists that profile as failed. Blocks for a
-/// moment; call off the UI thread.
+/// profile made before, when it lists that profile as failed. With nothing
+/// saved, the first failed profile's. Blocks for a moment; call off the UI
+/// thread.
 pub fn saved_failure(
     client: Option<crate::profiles::Client>,
     saved: Option<&str>,
 ) -> Option<String> {
     use agent_interface_roster::profiles::State;
-    let profile = client?.show(saved?, &|| true).ok()?;
+    let client = client?;
+    let Some(saved) = saved else {
+        let items = client.list(&|| true).ok()?;
+        return items
+            .into_iter()
+            .find(|item| item.state == State::Failed)?
+            .reason;
+    };
+    let profile = client.show(saved, &|| true).ok()?;
     let item = profile.item();
     (item.state == State::Failed)
         .then(|| item.reason.clone())
@@ -422,12 +431,19 @@ mod tests {
         let root = root.path().canonicalize().unwrap();
         let failed = serde_json::json!({"state": "failed", "profile_id": "0a1b2c3d4e5f",
             "code": "start_failed", "reason": "Its folder is not readable."});
-        let client = || stub(&root, "{}", &failed.to_string());
+        let second = serde_json::json!({"state": "failed", "profile_id": "0a1b2c3d4e60",
+            "code": "start_failed", "reason": "Its settings are not readable."});
+        let listed = serde_json::json!({"profiles": [failed, second]});
+        let client = || stub(&root, &listed.to_string(), &failed.to_string());
         assert_eq!(
             saved_failure(Some(client()), Some("0a1b2c3d4e5f")).as_deref(),
             Some("Its folder is not readable.")
         );
-        assert_eq!(saved_failure(Some(client()), None), None);
+        // A fresh first run, with nothing saved: the first failed profile's.
+        assert_eq!(
+            saved_failure(Some(client()), None).as_deref(),
+            Some("Its folder is not readable.")
+        );
         assert_eq!(saved_failure(None, Some("0a1b2c3d4e5f")), None);
     }
 

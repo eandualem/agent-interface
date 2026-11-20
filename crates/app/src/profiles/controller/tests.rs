@@ -89,7 +89,7 @@ fn a_maximum_request_id_recovers_after_a_lost_reply() {
         Err(Error::Client(_))
     ));
     drop(controller);
-    let receipt = fixture.controller().refresh(&saved.key, &|| true).unwrap();
+    let receipt = fixture.controller().retry(&saved.key, &|| true).unwrap();
     assert_eq!(receipt.status, Status::Succeeded);
     assert_eq!(
         fixture.controller().read(&saved.key).unwrap().terminal,
@@ -118,10 +118,6 @@ fn intent_is_durable_before_execution_and_duplicate_ids_cannot_replace_it() {
         Err(Error::Storage(journal::Error::Conflict))
     );
     assert_eq!(
-        controller.refresh(&saved.key, &|| true),
-        Err(Error::WrongPhase)
-    );
-    assert_eq!(
         controller.retry(&saved.key, &|| true),
         Err(Error::WrongPhase)
     );
@@ -147,7 +143,7 @@ fn restart_asks_again_and_terminal_receipts_disable_all_commands() {
     assert_eq!(restored.read(&key).unwrap().phase, Phase::Submitted);
     assert_eq!(fixture.calls(), "create\n");
     assert_eq!(restored.submit(&key, &|| true), Err(Error::WrongPhase));
-    let receipt = restored.refresh(&key, &|| true).unwrap();
+    let receipt = restored.retry(&key, &|| true).unwrap();
     assert_eq!(receipt.status, Status::Succeeded);
     assert_eq!(
         fixture.controller().read(&key).unwrap().terminal,
@@ -156,7 +152,6 @@ fn restart_asks_again_and_terminal_receipts_disable_all_commands() {
     for result in [
         restored.submit(&key, &|| true),
         restored.retry(&key, &|| true),
-        restored.refresh(&key, &|| true),
     ] {
         assert_eq!(result, Err(Error::Completed));
     }
@@ -245,7 +240,7 @@ fn concurrent_first_submission_is_refused_and_stale_results_cannot_overwrite_pro
     });
     notified.recv_timeout(Duration::from_secs(5)).unwrap();
     let duplicate = controller.submit(&key, &|| true);
-    let fresh = controller.refresh(&key, &|| true);
+    let fresh = controller.retry(&key, &|| true);
     release.send(()).unwrap();
     let stale = worker.join().unwrap();
     assert_eq!(duplicate, Err(Error::WrongPhase));
@@ -306,7 +301,7 @@ fn a_record_an_earlier_version_saved_is_invalid_and_only_forgotten() {
     let key = Controller::key("request-a");
     save_earlier(&fixture.journal, &key);
     assert_eq!(controller.read(&key), Err(Error::Invalid));
-    assert_eq!(controller.refresh(&key, &|| true), Err(Error::Invalid));
+    assert_eq!(controller.retry(&key, &|| true), Err(Error::Invalid));
     // A readable record is never forgotten this way.
     let readable = controller.enqueue(Prepared::create("request-b", "Example").unwrap());
     let readable = readable.unwrap().key;

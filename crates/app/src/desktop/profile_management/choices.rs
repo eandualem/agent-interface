@@ -626,8 +626,7 @@ impl Form {
             self.start_guide(cx);
             return;
         }
-        // Add agent starts with the Rust service's own start; a profile it
-        // doesn't serve takes none from this app.
+        // Add agent starts with the service's own start.
         let request_id = uuid::Uuid::now_v7().simple().to_string();
         let Some(request) = self.served_request(request_id, cx) else {
             return;

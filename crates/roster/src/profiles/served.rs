@@ -62,6 +62,10 @@ impl Entry {
                 reason,
             } => {
                 let name = display_name.unwrap_or_else(|| profile_id.clone());
+                // A sentence that can't be shown as given is no reason.
+                let reason = reason.filter(|reason| {
+                    !reason.trim().is_empty() && !reason.chars().any(char::is_control)
+                });
                 (profile_id, name, None, reason)
             }
             Self::Serving {

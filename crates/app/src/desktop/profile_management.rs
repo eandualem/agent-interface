@@ -621,13 +621,16 @@ fn message(error: controller::Error) -> &'static str {
         }
         WrongPhase | Completed => "The operation changed. Reload its saved state.",
         Client(_) => {
-            "The service's answer could not be confirmed. Keep this request and check it again."
+            "The service's answer could not be confirmed. Keep this request and try the same request again."
         }
         Storage(journal::Error::Unsafe) => "Operation storage is not private or safe to use.",
         Storage(journal::Error::Busy | journal::Error::Conflict) => {
             "Another operation update won. Reload the saved state."
         }
-        Storage(journal::Error::TooLarge) => "Operation storage has reached its capacity.",
+        // Too large to read, or too large to save: both can be forgotten.
+        Storage(journal::Error::TooLarge) => {
+            "This saved request is too large, or request storage is full. Forget it, or other requests, to continue."
+        }
         Storage(_) => "Operation storage could not be confirmed. Reload before retrying.",
     }
 }

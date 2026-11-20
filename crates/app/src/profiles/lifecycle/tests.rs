@@ -79,10 +79,7 @@ FIXTURE
         Err(Error::TimedOut)
     );
     assert_eq!(operation.request_bytes(), original);
-    assert_eq!(
-        operation.refresh(&|| true).unwrap().status,
-        Status::Succeeded
-    );
+    assert_eq!(operation.retry(&|| true).unwrap().status, Status::Succeeded);
     assert_eq!(
         fs::read_to_string(dir.path().join("calls")).unwrap(),
         "create\ncreate\n"
@@ -177,7 +174,7 @@ esac
         Err(Error::CommandFailed)
     ));
     fs::remove_file(dir.path().join("calls.unreachable")).unwrap();
-    let receipt = operation.refresh(&|| true).unwrap();
+    let receipt = operation.retry(&|| true).unwrap();
     assert_eq!(receipt.status, Status::Succeeded);
     assert_eq!(
         receipt.identity.unwrap().profile_id,

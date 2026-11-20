@@ -601,6 +601,23 @@ fn rust_service_entries_list_and_connect_without_a_key() {
         Profile::parse(&serde_json::to_vec(&later).unwrap()).err(),
         Some(Error::Unsupported)
     );
+    // A reason that can't be shown as given is left out.
+    let reason = |reason: &str| {
+        let mut entry = failed.clone();
+        entry["reason"] = json!(reason);
+        Profile::parse(&serde_json::to_vec(&entry).unwrap())
+            .unwrap()
+            .item()
+            .reason
+            .clone()
+    };
+    assert_eq!(
+        reason("Its folder is not readable.").as_deref(),
+        Some("Its folder is not readable.")
+    );
+    for unshown in ["", "   ", "two\nlines", "bell\u{7}"] {
+        assert_eq!(reason(unshown), None, "{unshown:?}");
+    }
     // Only the object the service writes is read, never a positional array.
     assert_eq!(list(b"[[]]").err(), Some(Error::Invalid));
     assert_eq!(

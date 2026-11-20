@@ -243,8 +243,9 @@ impl Flow {
         cx.notify();
     }
 
-    /// First run closed while its profile was being made: Check again looks
-    /// up that same request rather than making another profile.
+    /// First run closed while its profile was being made: Try the same
+    /// request again resends that request under its own ID, which the service
+    /// answers with the profile it made, rather than making another one.
     pub fn resume_request(
         &mut self,
         key: String,
@@ -267,7 +268,9 @@ impl Flow {
             None => Identity::None,
         });
         self.stalled = Some(Stalled::Unconfirmed(key));
-        self.error = Some("Setup closed while the profile was being made. Check again.".into());
+        self.error = Some(
+            "Setup closed while the profile was being made. Try the same request again.".into(),
+        );
         cx.notify();
     }
 
@@ -859,7 +862,9 @@ impl Flow {
                     ui::setup_button(
                         "profile-flow-continue",
                         label,
-                        !typed.is_empty() && self.git.computer.is_some(),
+                        // Forgetting a request that can't be read needs no name.
+                        matches!(self.stalled, Some(Stalled::Unreadable(_)))
+                            || (!typed.is_empty() && self.git.computer.is_some()),
                         self.busy,
                     )
                     .on_click(cx.listener(|flow, _, _, cx| flow.create(cx))),
@@ -1008,8 +1013,8 @@ fn computer_identity() -> (String, String) {
 
 /// Set a Git name and email typed for a new profile inside it: a shell in
 /// the profile, with its own home, runs `git config --global` and exits.
-/// Agent Backbone can copy only this computer's own identity into a profile,
-/// so this is how a different one is set. A shell whose `GIT_CONFIG_GLOBAL`
+/// Agent Backbone copies none into a profile, so this is how one is set,
+/// this computer's own or one typed here. A shell whose `GIT_CONFIG_GLOBAL`
 /// is not in the profile's own folder shares this computer's settings, which
 /// are left alone. Best effort: a failure is logged, and the
 /// profile still works.
@@ -1228,7 +1233,7 @@ fn recover(
             (None, Phase::Prepared) => controller.submit(key, alive),
             // Asking again resends the same request once; the service
             // answers it with its first result.
-            (None, Phase::Submitted) => controller.refresh(key, alive),
+            (None, Phase::Submitted) => controller.retry(key, alive),
         }
         .map_err(|_| unconfirmed(key.to_owned())),
         Err(_) => Err(unconfirmed(key.to_owned())),
@@ -1262,7 +1267,7 @@ fn unconfirmed(key: String) -> Failure {
     (
         Stalled::Unconfirmed(key),
         None,
-        "It isn't confirmed yet whether the profile was made. Check again.",
+        "It isn't confirmed yet whether the profile was made. Try the same request again.",
     )
 }
 

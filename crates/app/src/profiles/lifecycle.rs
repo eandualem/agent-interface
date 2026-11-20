@@ -115,12 +115,6 @@ impl Operation {
         self.create_served(live, timeout, repeat)
     }
 
-    /// Ask again under the original request ID without making a second
-    /// profile: the service answers the same ID with its first result.
-    pub fn refresh(&mut self, live: &dyn Fn() -> bool) -> Result<Receipt, Error> {
-        self.create_served(live, TIMEOUT, true)
-    }
-
     /// Make the profile with the Rust service under this request's own ID.
     /// It serves the profile at once, so there is nothing to start after.
     /// A `repeat` follows an unknown outcome, so only what it shows of the

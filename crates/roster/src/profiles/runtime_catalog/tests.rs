@@ -1,5 +1,5 @@
 use super::*;
-use serde_json::json;
+use serde_json::{Value, json};
 
 fn identity() -> Identity {
     Identity {
@@ -39,6 +39,57 @@ fn a_served_catalog_is_this_machines_list_for_the_profile_asked() {
     other["schema_version"] = json!(2);
     assert_eq!(
         Catalog::served(&serde_json::to_vec(&other).unwrap(), &identity()).unwrap_err(),
+        Error::Unsupported
+    );
+}
+
+#[test]
+fn a_served_catalog_keeps_authentication_and_refuses_malformed_rows() {
+    let row = json!({"id": "codex", "display_name": "Codex", "available": true,
+        "setup_supported": true, "models": ["gpt"], "efforts": ["high"],
+        "authentication": "authenticated"});
+    let decode = |items: Value| {
+        let wire = json!({"schema_version": 1, "items": items});
+        Catalog::served(&serde_json::to_vec(&wire).unwrap(), &identity())
+    };
+    for (status, expected) in [
+        ("authenticated", Authentication::Authenticated),
+        ("not_authenticated", Authentication::NotAuthenticated),
+        ("unavailable", Authentication::Unavailable),
+        ("unsupported", Authentication::Unsupported),
+        ("not_applicable", Authentication::NotApplicable),
+        ("unknown", Authentication::Unknown),
+        ("future_status", Authentication::Unknown),
+    ] {
+        let mut item = row.clone();
+        item["authentication"] = json!(status);
+        let catalog = decode(json!([item])).unwrap();
+        assert_eq!(catalog.items()[0].authentication, expected, "{status}");
+    }
+    assert!(decode(json!([])).unwrap().items().is_empty());
+    for (field, value) in [
+        ("display_name", json!(" ")),
+        ("display_name", json!("Co\ndex")),
+        ("models", json!(["gpt", "gpt"])),
+        ("efforts", json!(["high", "high"])),
+    ] {
+        let mut item = row.clone();
+        item[field] = value.clone();
+        assert!(decode(json!([item])).is_err(), "{field}: {value}");
+    }
+    // Only the service's object, within its size, is read.
+    assert_eq!(
+        Catalog::served(b"[1, []]", &identity()).unwrap_err(),
+        Error::Invalid
+    );
+    assert_eq!(
+        Catalog::served(&vec![b' '; 1024 * 1024 + 1], &identity()).unwrap_err(),
+        Error::Invalid
+    );
+    // A newer schema is told apart from a malformed one, before its items.
+    let newer = json!({"schema_version": 2, "items": "a shape to come"});
+    assert_eq!(
+        Catalog::served(&serde_json::to_vec(&newer).unwrap(), &identity()).unwrap_err(),
         Error::Unsupported
     );
 }

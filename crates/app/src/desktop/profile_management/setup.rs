@@ -229,6 +229,9 @@ fn message(error: Error) -> &'static str {
         Error::Storage(journal::Error::Busy | journal::Error::Conflict) => {
             "Another update won. Reload the original request."
         }
+        Error::Storage(journal::Error::TooLarge) => {
+            "This saved setup request is too large, or setup storage is full. Forget it, or other requests, to continue."
+        }
         Error::Storage(_) => "Saved setup state could not be confirmed. Reload before retrying.",
         Error::Client(_) => {
             "The outcome could not be confirmed. Keep and recover this original request."

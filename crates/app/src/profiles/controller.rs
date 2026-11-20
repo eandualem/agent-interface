@@ -1,4 +1,5 @@
-//! Durable lifecycle coordination. Recovery never implicitly resubmits intent.
+//! Durable lifecycle coordination. A request is sent again only when the
+//! person asks for it.
 
 use super::{Client, journal, lifecycle::Operation};
 use agent_interface_roster::profiles::{
@@ -176,15 +177,9 @@ impl Controller {
         self.invoke(key, Invocation::Submit, live)
     }
 
-    /// Ask again under the original request ID after an uncertain submission.
-    /// This is the default recovery action: the service answers the same ID
-    /// with its first result and makes nothing new.
-    pub fn refresh(&self, key: &str, live: &dyn Fn() -> bool) -> Result<Receipt, Error> {
-        self.invoke(key, Invocation::Refresh, live)
-    }
-
-    /// Explicitly resend identical bytes under the original ID and caller only.
-    /// Provider idempotency is required, including for concurrent explicit retries.
+    /// Explicitly resend identical bytes under the original ID and caller only,
+    /// after an uncertain submission. The service answers the same ID with its
+    /// first result, including for concurrent explicit retries.
     pub fn retry(&self, key: &str, live: &dyn Fn() -> bool) -> Result<Receipt, Error> {
         self.invoke(key, Invocation::Retry, live)
     }
@@ -227,7 +222,7 @@ impl Controller {
         }
         let expected_phase = match invocation {
             Invocation::Submit => Phase::Prepared,
-            Invocation::Refresh | Invocation::Retry => Phase::Submitted,
+            Invocation::Retry => Phase::Submitted,
         };
         if stored.phase != expected_phase {
             return Err(Error::WrongPhase);
@@ -244,7 +239,6 @@ impl Controller {
         let receipt = match invocation {
             Invocation::Submit => stored.operation.apply(live),
             Invocation::Retry => stored.operation.retry(live),
-            Invocation::Refresh => stored.operation.refresh(live),
         }?;
         let bytes = encode(Phase::Submitted, &stored.operation)?;
         self.journal.save(key, Some(claimed.revision()), &bytes)?;
@@ -255,7 +249,6 @@ impl Controller {
 
 enum Invocation {
     Submit,
-    Refresh,
     Retry,
 }
 

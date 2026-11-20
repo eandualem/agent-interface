@@ -897,11 +897,6 @@ impl Render for Onboarding {
     }
 }
 
-/// Start the agent service, or set it up, and wait for it to answer.
-/// Setup decides what this computer is: it keeps a profile it has, or makes
-/// the first one and starts this installation's service. `request` is this
-/// run's setup request, kept for Try again while setup says it may follow.
-/// Blocks; runs off the UI thread.
 /// Clear the first profile's saved request and the Git name and email typed
 /// for it.
 fn forget_request(settings: &mut Settings) {
@@ -909,8 +904,13 @@ fn forget_request(settings: &mut Settings) {
     settings.setup_identity = None;
 }
 
-/// Set up the agent service. `saved` is the first profile made before, whose
-/// own failure, as the service gives it, is shown when nothing answers.
+/// Start the agent service, or set it up, and wait for it to answer.
+/// Setup decides what this computer is: it keeps a profile it has, or makes
+/// the first one and starts this installation's service. `request` is this
+/// run's setup request, kept for Try again while setup says it may follow.
+/// When nothing answers, the service's own failure of `saved`, the first
+/// profile made before, is shown, or with nothing saved the first failed
+/// profile's. Blocks; runs off the UI thread.
 fn start(probe: &Probe, request: &mut Option<String>, saved: Option<&str>) -> Result<(), String> {
     match &probe.backbone {
         Backbone::Running => Err(format!(

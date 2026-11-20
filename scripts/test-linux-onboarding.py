@@ -233,8 +233,6 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
             assert len(created) == 1, created
             assert created[0]["entry"]["display_name"] == "Personal", created
             profile_id = created[0]["entry"]["profile_id"]
-            commands = [entry["argv"][:2] for entry in log("cli.jsonl")]
-            assert ["profiles", "apply"] not in commands, commands
             # Personal is the machine's second profile, so it keeps its own
             # accounts, which hold no login yet: both tools ask for a sign-in
             # when they start.

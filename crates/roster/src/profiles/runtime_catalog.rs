@@ -57,7 +57,6 @@ impl Catalog {
     pub fn served(bytes: &[u8], expected: &Identity) -> Result<Self, Error> {
         #[derive(Deserialize)]
         struct Served {
-            schema_version: u32,
             items: Vec<Item>,
         }
         #[derive(Deserialize)]
@@ -70,13 +69,22 @@ impl Catalog {
             efforts: Vec<String>,
             authentication: Authentication,
         }
-        if bytes.len() > 1024 * 1024 {
+        #[derive(Deserialize)]
+        struct Version {
+            schema_version: u32,
+        }
+        // Only the object the service writes; a derived struct also accepts a
+        // positional array.
+        if bytes.len() > 1024 * 1024 || bytes.trim_ascii_start().first() != Some(&b'{') {
             return Err(Error::Invalid);
         }
-        let served: Served = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
-        if served.schema_version != 1 {
+        // The version comes first, so a newer shape is told apart from a
+        // malformed one.
+        let version: Version = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
+        if version.schema_version != 1 {
             return Err(Error::Unsupported);
         }
+        let served: Served = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
         let items = served
             .items
             .into_iter()
