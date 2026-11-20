@@ -1,0 +1,19 @@
+{
+  "schema_version": 3,
+  "request_id": "019a8f3f1a2b7c3d8e4f5a6b7c8d9e0f",
+  "seq": 6,
+  "type": "result",
+  "action": "first_agent",
+  "status": "completed",
+  "code": "agent_ready",
+  "message": "the agent's CLI is running; it may ask the person something first",
+  "data": {
+    "agent_name": "guide",
+    "ready": "ready",
+    "launch_id": "019a8f3f2c4d7e5f9a0b1c2d3e4f5a6b",
+    "greeting_delivery_id": 41,
+    "evidence": "starting"
+  },
+  "completed_steps": ["preflight", "agent", "launch", "ready", "greeting"],
+  "retry": "none"
+}

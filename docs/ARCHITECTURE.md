@@ -245,13 +245,21 @@ handoff until the check has answered, and the tagline then reads "Getting
 things ready…".
 
 The agent service is started without asking and is never named on screen
-unless the person opens Details. One that is installed but not answering is
-restarted once, the way the installer starts it (`launchctl` on macOS, the
-systemd user unit on Linux and WSL), and given 30 seconds to answer. One that
-was never set up is set up with the installer's own request,
-`backbone setup --file REQUEST --jsonl` with `action: initialize`,
-`service: user` and the `core-v1` starter profile, which keeps any existing
-data. If it still does not answer, "Agents can't start yet" offers Try again
+unless the person opens Details. When it doesn't answer, first run runs Agent
+Backbone's own setup, `backbone setup --file REQUEST --jsonl` with a schema-3
+`initialize` request (`profile_name: Default`, `service: user` and the
+`core-v1` starter), which decides what the computer is: it keeps a profile the
+computer has (`existing_preserved`), or makes the first one and the login
+service (`initialized`), starting this installation's own login service. The
+app restarts no service itself: it can't tell safely whose a login service is,
+and setup starts this installation's. The request lives in memory for the run:
+after lost output, an answer its exit code contradicts, or `outcome_unknown` or
+`setup_failed` with `same_request`, the same request is sent again under the
+same ID, up to three sends. Any other answer is shown in setup's own words,
+such as how to start the service (`service_unavailable`, which names
+`backbone up --detach`) or PostgreSQL; when setup says the same request may
+follow, Try again sends it again, else a new one. The service is then given
+30 seconds to answer. If it still does not answer, "Agents can't start yet" offers Try again
 and Continue with terminals; Details holds the technical reason and where the
 service's log is. tmux and Git, when missing, are one screen with one Install
 button. They install through the system's own installer: Apple's command line
@@ -283,21 +291,26 @@ name, the tool it runs in and Start. Each tool card says whether that tool is
 signed in in the profile, will ask to sign in when it starts, isn't installed
 (Install, with the tool's official installer and the login shell's PATH) or
 needs an update. The first choice is a signed-in tool, else an installed one.
-Folder, instructions, model, hooks and greeting sit under More options. The
+Folder, instructions, model and greeting sit under More options. The
 guide starts as `guide`, working in `~/Agents/guide`, which setup creates
 (`create_directory`); a folder the person chooses must already exist. Its brief
 is the coordinating `orchestrator-v1` template or the person's own
-instructions. While it starts, the provider's steps show as one status line
-under the button, and as soon as the guide is running, or waiting for a sign-in
-or permission, its pane opens: a tool that needs signing in asks in that
-terminal. The layer then fades over `reveal_ms` while the panel eases in. Use a
-terminal instead leaves the workspace on a terminal. A start that fails keeps
-the choices, and Try again repeats the same request when nothing changed and
-the provider allows it. Under the Rust service, the guide and Add agent start the
+instructions. The guide starts through setup's schema-3 `first_agent`
+request, saved in the profile's setup journal before it runs and retried or
+cancelled as that saved request. While it starts, setup's steps show as one
+status line under the button, and as soon as setup says its CLI runs
+(`agent_ready`), its pane opens: a sign-in, trust or terms screen may still
+wait in that terminal. The layer then fades over `reveal_ms` while the panel
+eases in. Use a terminal instead leaves the workspace on a terminal. A start
+that fails keeps the choices. While its saved request is open, Try again sends
+that request again when setup allows it, whatever was changed since; a new one
+follows only once it is closed, cancelled or forgotten under Earlier setups.
+Add agent under the Rust service starts the
 agent with `POST /api/agents/start` on the profile socket, carrying
 `x-backbone-request-id` (a UUIDv7) so a repeat after a lost reply gets the first
-result, and the tool list comes from `backbone runtimes --json`. The earlier
-provider keeps its schema-2 setup requests and their saved recovery.
+result, and the tool list comes from `backbone runtimes --json`. A profile of
+the earlier provider gets no first-agent setup from the app: its Add agent form
+says so.
 
 The layer offers the same persistent interface-size setting as the workspace,
 including during the opening scene. Progress is saved as `[setup]` in
@@ -323,10 +336,10 @@ Default, with the person's own CLI sign-ins.
   so the GitHub CLI sign-in and SSH keys of the person's own account are not
   visible to its agents. Running `gh auth login` and `gh auth setup-git` in a
   shell in that profile is the supported way today.
-- The service repair restarts and sets up the Default profile's login service
-  only. Under WSL it needs systemd enabled in `/etc/wsl.conf`; without it the
-  restart fails and first run offers Continue with terminals. WSL has not been
-  verified with this flow.
+- First run's setup sets up the Default profile and its login service only,
+  and restarts no service. Under WSL it needs systemd enabled in
+  `/etc/wsl.conf`; without it setup can't start the login service and first run
+  offers Continue with terminals. WSL has not been verified with this flow.
 
 ## Appearance and integrations
 
@@ -534,11 +547,10 @@ clipboard JavaScript bridge.
 
 For new agent launches, the app captures its foreground and background and sends
 `terminal_defaults` only when the saved runtime advertises support through
-Backbone's runtime catalog. First-agent setup saves these values with the request;
-retries keep the original colours, and legacy requests still omit the field.
-Backbone seeds the new pane before executing the CLI. This closes the interval
-before Interface attaches, including on tmux versions without control-client
-colour reporting. Attached clients continue reporting their current defaults.
+Backbone's runtime catalog. Backbone seeds the new pane before executing the CLI.
+This closes the interval before Interface attaches, including on tmux versions
+without control-client colour reporting. Attached clients continue reporting
+their current defaults.
 A CLI that caches colours at startup may need a user-requested restart to adapt
 to a later appearance change; Interface does not restart it or reinterpret its
 explicit RGB output.
@@ -737,6 +749,124 @@ HTML to the same isolated system-webview surface. Credentials remain in the
 native transport. Missing API support is distinct from an empty catalog. No
 local artifact is automatically imported under an authenticated author name.
 
+A Document carries no code of its own. To show a change or a passage of code
+it holds a pointer to Git: `<figure data-backbone-diff="1" data-repo="owner/name"
+data-base="…" data-head="…" data-paths='["src/a.rs"]'>` for `git diff BASE HEAD`
+of two commits' trees (`data-paths` optional), or `<figure data-backbone-code="1"
+data-repo="owner/name" data-commit="…" data-path="src/a.rs" data-lines="40-58">`
+for a file's lines (`data-lines` optional), with full 40-digit commit IDs and
+an optional `figcaption`. Before the reader serves a verified revision,
+`app::code_figures` puts a static view in place of each pointer's content, on
+a thread of its own. The reader says it is reading the document until then,
+for at most 8 seconds; after that it serves the page as stored, and what Git
+had read by then is kept for the next opening. Leaving the reader, or a newer
+revision, stops that work, a running Git command included. Refresh reads the
+pointers again, so a commit fetched since then appears; a pointer that could
+not be read is never remembered.
+
+- **Finding pointers.** The `html5ever` tokenizer reads the page as a browser
+  does, so markup in comments, attribute values, scripts, styles, text areas,
+  titles, `noscript`, SVG and MathML is not a pointer. The page is fed to it in
+  pieces that each end at a `>`, which places the end of every tag at an exact
+  byte offset: only the figure's content is replaced, and every other byte,
+  the figure's own tags included, is served as stored. A figure with another
+  version, a short or non-hexadecimal commit, a path that is absolute or has
+  `..`, empty parts, backslashes or control characters, unreadable JSON, a
+  repeated attribute, or content other than whitespace, comments and one
+  caption is not a pointer. A caption holds text and only these elements,
+  each closed in the order opened, with no link inside a link: `em`,
+  `strong`, `b`, `i`, `u`, `s`, `small`, `code`, `a`, `span`, `kbd`, `samp`,
+  `var`, `sub`, `sup`, `mark`, `abbr`, `cite`, `q`, `time`, `bdi`, and the
+  empty `br` and `wbr`. It becomes the view's summary, and anything else
+  (an unclosed `table`, say) could make a browser build the view inside it. A page's first 64 pointers are read. The page is fed to the
+  tokenizer in steps of at most 1 KiB, with the deadline and cancellation
+  checked between steps. The tokenizer compares each new attribute of a tag
+  with all before it, so a tag with very many attributes is slow to read;
+  the slowest step measured, late in a 4 MiB tag of distinct attributes, took
+  about 0.11 s. Such a page holds one background thread until the deadline,
+  then it is served as stored; the reader is never blocked.
+- **Finding a checkout.** The candidates are the saved folders of the
+  window's panes, then the folders of the profile's agents as `/api/agents`
+  reports them, each counted once, up to 64. Each resolves to its Git top
+  level, one per clone (common Git directory), and matches when its `origin`
+  URL as stored (not rewritten by `url.*.insteadOf`) is the pointer's GitHub
+  repository in one of these forms only: `https://github.com/…`,
+  `ssh://…github.com/…` (port 22 at most), `git@github.com:…`, or
+  `ssh://…ssh.github.com:443/…`; and it has the commits as commit objects.
+  Partial clones (`extensions.partialClone`, or a remote with `promisor` or
+  `partialclonefilter`) are left out, since Git fills them in from the network,
+  and so are clones whose object format is not SHA-1, where a 40-digit ID
+  could name something else.
+- **Reading Git.** `git`, as found on the app's own PATH, is not run at all
+  when it is macOS's `/usr/bin/git` stub with no developer tools installed
+  (checked once, on the file system). It runs without the
+  inherited Git environment, without system or user configuration
+  (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`), with
+  `GIT_OPTIONAL_LOCKS=0`, no terminal prompt, no pager, literal pathspecs,
+  `GIT_NO_REPLACE_OBJECTS=1` (a commit ID names that commit, never a local
+  replacement), and `GIT_NO_LAZY_FETCH=1` with `-c protocol.allow=never` and
+  an empty `GIT_ALLOW_PROTOCOL`, so no transport runs and nothing is fetched.
+  A file over 16 MiB is shown as binary (`core.bigFileThreshold=16m`): Git
+  compares two regular files over that size by size alone, but reads any
+  other changed blob whole, and finding renames reads blobs too. So a diff
+  is first listed with `--raw -z --no-renames --no-abbrev`, which reads no
+  blob, and one `git rev-list --filter=blob:limit=…` names the listed blobs
+  over 16 MiB; a diff that would make Git read a changed blob over 16 MiB
+  is not read, so rename detection never sees one.
+  A diff is read with `--no-ext-diff --no-textconv`, so no configured program
+  runs, and `--submodule=short`, which overrides `diff.submodule`, so Git
+  never reads inside a submodule. Its file list comes from
+  `--raw -z --ignore-submodules=none` with no patch option, so that pass
+  writes no patch; its lines come from the patch, which is not read when the
+  list holds a submodule. Attributes, such as which files
+  are binary, come from the new commit (`--attr-source`), not from the
+  checkout's files or system or user attribute files (`GIT_ATTR_NOSYSTEM=1`,
+  `core.attributesFile=/dev/null`); the clone's own configuration still
+  applies, as it is the person's. Diffs need Git 2.41 or later and code
+  references Git 2.31 or later; with older Git a pointer is shown as its
+  author wrote it. Git 2.31 does not honour `GIT_CONFIG_GLOBAL`, so there the
+  user's own global configuration applies.
+  A file is read with `git cat-file blob`, once `git cat-file -s` says it is
+  at most 4 MiB. Each command stops after 3 seconds or 4 MiB of output,
+  no command starts after a page's 8 seconds, and a diff or code view holds at
+  most 20,000 rows, counted while it is read and drawn. The app bounds Git's
+  output, its time, the number of changed entries and the sizes of the
+  blobs a pointer names directly; what Git reads internally to produce them
+  (the head commit's `.gitattributes` files along the changed paths, and
+  delta bases) is bounded by the repository's own objects. Commits do not change,
+  so answers are kept for the session, up to 64 MiB, by the clone that gave
+  them and what Git read (a file at a commit, or a diff's commits and paths,
+  so excerpts of one file share one read), and used again only while that
+  clone is still a candidate and still has the commits. Nothing is
+  written to a checkout.
+- **The view.** Each pointer becomes `<details open>`, so it collapses and
+  expands without a script. It reads left to right as code does, in a page
+  of any direction; a caption keeps its own direction. For one file or a code reference, its summary is
+  the caption with the file's header under it, or else the header (`old → new`
+  for a rename; a file with no lines to show, a binary one included, is
+  marked added, deleted or renamed, or else mode changed); a diff of several
+  files holds one `<details open>` per
+  file, under the caption or the number of files. Rows show old and new line numbers, the sign
+  as text, and added and removed lines in the theme's `--ai-diff-*` colours,
+  set by `views/reading.rs` for every theme, with each sign readable on its
+  row's fill, and styled by
+  `assets/document/theme.css`; long lines scroll inside the view. Only UTF-8
+  text is shown, and text from Git is escaped. No script, bridge or network access is added, and the
+  content policy is unchanged.
+- **Nothing to show.** A pointer with no matching checkout or commit, a code
+  pointer's path missing at that commit, a diff that touches a submodule, a
+  diff with more than 2,000 changed entries, counted before renames are
+  paired (a moved file counts twice), a diff with a file over 16 MiB on
+  either side unless both sides are regular files over that size, which Git
+  compares by size alone and shows as binary (so one added, deleted,
+  renamed, grown past or shrunk from that size, or changed to or from a
+  link, as a rename is a deletion and an addition there), a code pointer
+  to a file over 4 MiB, a binary file at a code pointer, a path or text that is not UTF-8 or holds a
+  NUL byte, a read that is too large or too slow, or a view past 32 MiB of
+  views on the page stays exactly as authored. A diff's `data-paths` only
+  filter it: a listed path with no change is not shown, and a diff with no
+  changes in its paths shows "0 files changed".
+
 The experimental Artifacts pane is independent of Backbone. `app::artifacts`
 copies a UTF-8 HTML document and small metadata record into an immutable UUID
 directory under the selected library's `artifacts/`, publishing by atomic
@@ -918,6 +1048,14 @@ build-time advisory exception are described below.
   function through the existing GPUI macOS package, pinned to 0.3.9.
 - **`sha2`:** existing MIT OR Apache-2.0 workspace dependency, also used by
   the document adapter to verify the server-provided HTML digest.
+- **`html5ever` 0.39.0:** MIT OR Apache-2.0, pinned exactly. Its tokenizer
+  finds Git pointers in Documents. `Cargo.lock` already listed it through
+  Wry's Android target, so no version is added; macOS and Linux builds now
+  also compile `markup5ever` 0.39.0, `tendril` 0.5.1, `web_atoms` 0.2.6,
+  `string_cache` 0.9.0 and `string_cache_codegen` 0.6.1 (MIT OR Apache-2.0),
+  and `phf_codegen` 0.13.1, `precomputed-hash` 0.1.1 and
+  `new_debug_unreachable` 1.0.6 (MIT). On macOS `phf`, `phf_shared` and
+  `phf_generator` 0.13.1 (MIT) are new to the build as well.
 - **`base64` 0.23.1:** MIT OR Apache-2.0, pinned exactly. The roster sends a
   skill folder's files to the Rust Backbone service in Base64. `reqwest` and
   `hyper-util` already build this version, so it adds no package.
@@ -1482,14 +1620,19 @@ cannot inherit a previously rendered number key or click target. The chooser
 exposes only the supported bound overview and permission card; it never builds a
 name-only bound Agent view.
 
-Profile first-agent setup uses an independent schema-2 request model. Preparation
-captures the full expected profile tuple and immutable agent/hook choices; the
-cancellation body changes only the action and keeps the original request ID.
-Bounded JSON-lines decoding checks every progress and final event against that
-origin and action, enforces monotonic sequence numbers and refuses incomplete or
-contradictory streams. Only a precise provider cancellation acknowledgement allows
-new choices; unsafe cancellation preserves the original operation. These models
-invoke no process and do not activate the legacy setup UI for a bound workspace.
+Profile first-agent setup uses setup schema 3's request model. Preparation
+captures a served profile's ID and immutable agent choices, each checked as the
+setup contract words it: a UUIDv7 request ID, the name, folder, runtime, model
+and brief, and at most 32,768 bytes, or 32,775 for the cancellation, whose body
+changes only the action and keeps the original request ID. Events carry no
+identity: bounded JSON-lines decoding checks each event's schema version and
+request ID, the result's action, rising sequence numbers and one final result,
+and keeps a status, code or retry it doesn't know as it came. Only `agent_ready`
+naming this agent with its CLI running is readiness, and only
+`request_cancelled` naming this request allows new choices; unsafe cancellation
+preserves the original operation. The service's setup fixtures are copied byte
+for byte into `crates/roster/src/profiles/setup/fixtures/`. These models invoke
+no process and do not activate the legacy setup UI for a bound workspace.
 
 Profile runtime catalogs use the captured discovery executable and caller context,
 with all three expected identity fields sent explicitly. Only successful schema-2
@@ -1514,10 +1657,10 @@ not receive SIGPIPE when the consumer finishes or exits. Receipt reads reject an
 observed file above the output limit during invocation; the provider owns the
 logging destination and lifetime of any service that inherits the descriptor.
 
-Profile setup execution owns immutable schema-2 requests and the captured provider
+Profile setup execution owns immutable schema-3 requests and the captured provider
 client. It emits only validated progress steps before exit; terminal readiness or
-cancellation is returned only when the full-origin result matches the process exit
-contract. Timeouts and loss of observation terminate and reap only the direct
+cancellation is returned only when the result matches the process exit contract;
+a status the app doesn't know has no exit code to match. Timeouts and loss of observation terminate and reap only the direct
 command, leaving the same request with an unknown outcome for explicit recovery.
 Neither cleanup nor closing confirms provider cancellation or rollback. The
 consumer does not detach a setup command and allow a concurrent retry.
@@ -1535,8 +1678,10 @@ prose is discarded. A restored record supplies expectations only. Durable storag
 and verification of the original operator/registry context are required before
 any restored request may execute; these model APIs do not activate lifecycle UI.
 
-Setup request checkpoints retain both generated schema-2 bodies byte for byte,
-including cancellation's original ID, profile tuple, hooks, project and brief.
+Setup request checkpoints retain both generated schema-3 bodies byte for byte,
+including cancellation's original ID, profile ID, project and brief. One saved
+under schema 2 is refused as unsupported; the app lists it as a request that
+cannot be validated, which can be forgotten.
 Restoration validates all choices and rejects changed or noncanonical bodies
 without discovery or allocation. The private format records request intent only:
 interrupted output streams and successful readiness/cancellation are not inferred
@@ -1593,10 +1738,12 @@ completion after an earlier post-rename sync failure. The journal's ordinary
 read remains a storage inspection; `read_durable` provides this recovery barrier.
 
 Setup terminal observations have a separate private checkpoint from request
-intent. They retain the original tuple, request, action, sequence and bounded
-outcome/retry fields, including the actual launch ID for confirmed readiness.
-Normalization removes provider prose and unneeded result details; restoration
-revalidates the result through the existing schema-2 stream rules and requires
+intent. They retain the request, action, sequence and bounded outcome/retry
+fields, including the launch ID, when one was named, for confirmed readiness.
+Normalization keeps setup's message as one line of plain text, at most 300
+characters, with control and direction-changing characters removed, and drops
+other provider prose and unneeded result details; restoration
+revalidates the result through the schema-3 stream rules and requires
 canonical encoding for the original prepared request and explicit action.
 Progress is never reconstructed as terminal authority. The executor must still
 verify the matching process exit before a controller durably saves an outcome;
@@ -1650,31 +1797,40 @@ the field is omitted, keeping the request's bytes unchanged, and recovery restor
 whichever request was saved. The guide screen reads the profile's runtime catalog
 and asks `GET /api/profile/accounts/status` once for each installed CLI, so each
 tool card can say whether it is signed in; signed in means a stored sign-in, not a
-working account. Its Start submits the same setup request as Add agent. Setup is
-complete once the CLI has started, or is waiting for a sign-in or permission,
-whatever it shows: its pane opens then, so a sign-in happens in its terminal and
-focus lands there. A CLI that exits right away is a failed setup with the
-provider's explanation, shown under the button; recovery of its saved request
-stays under Earlier setups and in the profile's Settings page.
+working account. Its Start saves and sends setup's `first_agent` request; Add
+agent under the Rust service uses the service's own start instead. Setup is
+complete once setup says the CLI runs (`agent_ready`), whatever its terminal
+shows: its pane opens then, so a sign-in happens in its terminal and focus lands
+there. A CLI that exits right away is a failed setup, worded by its code under
+the button; recovery of its saved request stays under Earlier setups and in the
+profile's Settings page.
 
 Native profile management exposes saved first-agent setup separately from the
 current runtime catalog. It opens a private setup journal from the already
 resolved library directory and renders validated records in bounded pages.
-Retries and cancellation retain the original profile tuple and request bytes. Progress is checked against its journal key, request, tuple and
+Retries and cancellation retain the original profile ID and request bytes. Progress is checked against its journal key, request, profile and
 revision; superseded pane tasks cannot publish results. Stopping observation
 reloads the same record and never reports safe cancellation. Confirmed setup
 readiness does not authorize account access or open an ambient terminal.
 
 Fresh setup admission validates existing durable setup records and inserts the
-new intent under one journal lock. An open request blocks only the same agent name
-in the same full profile instance, so a second agent can be added while another
-needs attention. A request closes on confirmed readiness, safe cancellation, or a
-result whose retry policy says this same request can go no further (a name already
-in use answers `new_request`, for example). A result the provider says can be retried
-(`launch_timeout`, `runtime_permission`) stays open, and the recovery view shows fixed
-text for its code. Forgetting a request removes only the app's saved record; it runs
-no command and keeps any agent the request created. Malformed records fail closed
-until they are forgotten; unsafe storage always fails closed. A directory durability barrier precedes the
+new intent under one journal lock. An open request blocks every other first-agent
+request of the same profile, whatever agent it adds, since it may still make the
+profile's first agent; a guide's Start waits while one is open. A request closes
+on confirmed readiness, safe cancellation, a cancellation answered
+`request_expired` (the request never runs now; what came of it before stays
+unknown and listed), or a result whose retry policy says this same request can
+go no further (`new_request` or `none`). One setup says can be
+sent again (`outcome_unknown` or `setup_failed` with `same_request`), or whose
+retry the app doesn't know, stays open. The recovery view shows the result's code
+with the app's own words where it can point to a remedy (`cancellation_unsafe`,
+`agent_conflict`, `runtime_missing`, `invalid_request`, `service_unavailable`),
+else setup's kept message, then a next step taken from the same retry and open
+or closed state that offers its buttons. It never says the agent wasn't added:
+the answer to a request sent again may describe only that send. Forgetting a request removes only the app's saved record; it
+runs no command and keeps any agent the request created. A request saved under
+schema 1 or 2 holds nothing back and stays listed to be forgotten. Other malformed
+records fail closed until they are forgotten; unsafe storage always fails closed. A directory durability barrier precedes the
 check, and the bounded scan has a read budget. Catalog-facing pending reads are
 observations only: actual admission repeats the check atomically. This local
 journal rule does not replace the provider's own request serialization.
@@ -1693,14 +1849,15 @@ A failed roster read loses status, not access: tmux keeps the sessions and panes
 attached, with a status note, while the read retries.
 
 Native first-agent setup captures one atomic registry profile and the operator
-client before loading choices. It checks the independent private setup journal
-for open requests, which it points to without blocking other agent names, and then
-reads that instance's schema-2 runtime catalog.
+client before loading choices. A guide checks the independent private setup
+journal for open requests of the profile, which hold back a new one, and then
+reads the Rust service's runtime catalog (`backbone runtimes --json`); setup
+starts Claude Code, Codex and Antigravity only. Add agent opens no journal.
 An explicit project folder, name, brief, runtime and optional catalog model are
-frozen with hook and greeting choices into one original request. Gemini CLI and
-Antigravity CLI can't take a brief silently, so Agent Backbone sends it as their
-first turn; with the default brief, which asks the agent to greet, the request
-asks for no separate greeting. Compatibility
+frozen with the greeting choice into one original request. Antigravity CLI can't
+take a brief silently, so Agent Backbone sends it as its first turn; with the
+default brief, which asks the agent to greet, the request asks for no separate
+greeting. Compatibility
 and authentication observations remain separate; neither opens a terminal or
 connects a workspace. Confirmation hands the retained controller and prepared
 request to recovery with its original key established before admission or I/O.

@@ -1,6 +1,6 @@
 //! Private normalized terminal observations, never an interrupted stream.
 
-use super::{Action, Error, Event, LINE_LIMIT, Prepared};
+use super::{Action, Error, Event, LINE_LIMIT, Prepared, SCHEMA_VERSION, Version, refused};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -13,9 +13,10 @@ struct Checkpoint {
 }
 
 impl Prepared {
-    /// Store a validated terminal observation without provider prose or step
-    /// details. The executor must first verify the matching process exit; this
-    /// model validates semantics only and grants no connection or account access.
+    /// Store a validated terminal observation with setup's message as one
+    /// bounded line and without other provider details. The executor must
+    /// first verify the matching process exit; this model validates
+    /// semantics only and grants no connection or account access.
     pub fn outcome_checkpoint(&self, event: &Event) -> Result<Vec<u8>, Error> {
         if event.step.is_some() {
             return Err(Error::Invalid);
@@ -23,20 +24,16 @@ impl Prepared {
         let data = if event.cancelled {
             json!({"cancelled_request_id":event.request_id,"can_start_new_request":true})
         } else if let Some(name) = &event.ready_agent {
-            json!({"agent_name":name,"ready":"ready","launch_id":event.launch_id})
+            json!({"agent_name":name,"ready":"ready","launch_id":event.launch_id,
+                "greeting_delivery_id":null,"evidence":""})
         } else {
             json!({})
         };
         let result = serde_json::to_string(&json!({
-            "schema_version":2,"type":"result",
-            "profile_id":event.identity.profile_id,
-            "installation_id":event.identity.installation_id,
-            "lifecycle_id":event.identity.lifecycle_id,
-            "request_id":event.request_id,"action":match event.action {
-                Action::FirstAgent=>"first_agent",Action::CancelFirstAgent=>"cancel_first_agent"
-            },
+            "schema_version":SCHEMA_VERSION,"type":"result",
+            "request_id":event.request_id,"action":event.action.name(),
             "seq":event.sequence,"status":event.status,"code":event.code,
-            "retry":event.retry,"completed_steps":[],"data":data,
+            "message":event.message.as_deref().unwrap_or(""),"retry":event.retry,"completed_steps":[],"data":data,
         }))
         .map_err(|_| Error::Invalid)?;
         let validated = self.decode_outcome(event.action, &result)?;
@@ -53,6 +50,7 @@ impl Prepared {
 
     /// Restore only a canonical terminal observation for this exact request and
     /// expected action. It does not restore a stream or infer process-exit proof.
+    /// An observation saved under schema 1 or 2 is `Unsupported`.
     /// Caller-context and journal validation remain separate requirements.
     pub fn restore_outcome(&self, action: Action, bytes: &[u8]) -> Result<Event, Error> {
         if bytes.len() > LIMIT || bytes.first() != Some(&b'{') {
@@ -60,7 +58,12 @@ impl Prepared {
         }
         let checkpoint: Checkpoint = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
         if checkpoint.format != 1 {
-            return Err(Error::Unsupported);
+            return Err(Error::Invalid);
+        }
+        if let Ok(Version { schema_version }) = serde_json::from_str(&checkpoint.result)
+            && schema_version != SCHEMA_VERSION
+        {
+            return Err(refused(schema_version));
         }
         let event = self.decode_outcome(action, &checkpoint.result)?;
         if self.outcome_checkpoint(&event)? != bytes {

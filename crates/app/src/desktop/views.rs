@@ -159,9 +159,36 @@ pub(super) struct Open {
     pub text: Option<Result<std::sync::Arc<str>, &'static str>>,
 }
 
+/// What a Reports pane reads: its open record, or else its feed.
+fn reports_request(reports: &reports::State) -> Request {
+    match &reports.open {
+        // A correction asked for by number reads only that answer.
+        _ if let Some(id) = reports.pending_correction() => Request::Response(id),
+        Some(item) if matches!(item.content, views::ReportContent::Document(_)) => {
+            Request::Document(item.id)
+        }
+        Some(item) if matches!(item.content, views::ReportContent::Response { .. }) => {
+            Request::Response(item.id)
+        }
+        _ => Request::Reports(reports.query.clone(), reports.agent.clone()),
+    }
+}
+
+/// Close the open record and drop a Document's page and its work. A read
+/// for that record then no longer matches the pane's request and is dropped.
+fn leave(documents: &mut documents::State, reports: &mut reports::State) {
+    documents.clear();
+    reports.open = None;
+}
+
+/// The folders of a window's workspaces, read when a Document is opened.
+pub(super) type Folders = Rc<dyn Fn(&gpui::App) -> Vec<PathBuf>>;
+
 /// One view in one pane, with its newest data and what the person chose in it.
 pub(super) struct ViewPane {
     agents: crate::desktop::agent_status::LiveAgents,
+    /// Where a Document's code may be checked out, with the agents' folders.
+    folders: Folders,
     pub view: View,
     source: Option<Source>,
     /// Immutable origin for retained content and every operation it opens.
@@ -251,10 +278,19 @@ impl ViewPane {
     pub fn new(
         view: View,
         directory: Option<PathBuf>,
+        folders: Folders,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::new_with(view, directory, Default::default(), None, window, cx)
+        Self::new_with(
+            view,
+            directory,
+            Default::default(),
+            folders,
+            None,
+            window,
+            cx,
+        )
     }
 
     /// A view in a workspace with a profile, reading through its verified
@@ -264,22 +300,33 @@ impl ViewPane {
         connection: Connection,
         directory: Option<PathBuf>,
         agents: crate::desktop::agent_status::LiveAgents,
+        folders: Folders,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::new_with(view, directory, agents, Some(connection), window, cx)
+        Self::new_with(
+            view,
+            directory,
+            agents,
+            folders,
+            Some(connection),
+            window,
+            cx,
+        )
     }
 
     fn new_with(
         view: View,
         directory: Option<PathBuf>,
         agents: crate::desktop::agent_status::LiveAgents,
+        folders: Folders,
         connection: Option<Connection>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut pane = Self {
             agents,
+            folders,
             source: None,
             connection,
             data: None,
@@ -402,8 +449,8 @@ impl ViewPane {
                         match update {
                             Ok(data) => {
                                 if let Data::Document(document) = &data {
-                                    pane.documents.loaded = Some(document.clone());
                                     pane.documents.error = None;
+                                    documents::serve(pane, document, cx);
                                 }
                                 if let Data::Reports(page) = &data {
                                     pane.reports.observe(page);
@@ -433,17 +480,7 @@ impl ViewPane {
             ViewKind::Skills => Request::Skills,
             ViewKind::Policies => Request::Policies,
             ViewKind::Tags => Request::Tags,
-            ViewKind::Reports => match &self.reports.open {
-                // A correction asked for by number reads only that answer.
-                _ if let Some(id) = self.reports.pending_correction() => Request::Response(id),
-                Some(item) if matches!(item.content, views::ReportContent::Document(_)) => {
-                    Request::Document(item.id)
-                }
-                Some(item) if matches!(item.content, views::ReportContent::Response { .. }) => {
-                    Request::Response(item.id)
-                }
-                _ => Request::Reports(self.reports.query.clone(), self.reports.agent.clone()),
-            },
+            ViewKind::Reports => reports_request(&self.reports),
             ViewKind::Artifacts => unreachable!("artifacts have no Backbone source"),
             // A profile's agent card reads through its own connection.
             ViewKind::Agent => unreachable!("agent cards have no view source"),
@@ -475,9 +512,15 @@ impl ViewPane {
         self.plans_shown(false, cx);
         self.interactions_shown(false, cx);
         self.shown = Shown::Records;
-        self.reports.open = None;
         self.reports.query = query;
         self.reports.previous.clear();
+        self.leave_reader(cx);
+    }
+
+    /// Close the open record, and with it a Document's page and its work,
+    /// as every section switch does, and read for the section shown.
+    fn leave_reader(&mut self, cx: &mut Context<Self>) {
+        leave(&mut self.documents, &mut self.reports);
         self.refetch(true, cx);
     }
 
@@ -497,7 +540,7 @@ impl ViewPane {
         if !source.belongs_to(&self.agents) {
             return;
         }
-        self.documents.surface.borrow_mut().clear();
+        self.leave_reader(cx);
         match &self.plans {
             Some(_) => self.plans_shown(true, cx),
             None => {
@@ -522,7 +565,7 @@ impl ViewPane {
             return;
         }
         self.interactions_shown(false, cx);
-        self.documents.surface.borrow_mut().clear();
+        self.leave_reader(cx);
         self.plans_shown(false, cx);
         if self.sheets.is_none() {
             let sheets = cx.new(|cx| sheets::Sheets::new(source, window, cx));
@@ -549,7 +592,7 @@ impl ViewPane {
         if !source.belongs_to(&self.agents) {
             return;
         }
-        self.documents.surface.borrow_mut().clear();
+        self.leave_reader(cx);
         self.plans_shown(false, cx);
         if self.interactions.is_none() {
             let visible = self.visible.clone();
@@ -1274,6 +1317,47 @@ fn line(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn leaving_the_reader_closes_its_record_so_a_late_read_is_refused() {
+        use agent_interface_roster::views::{
+            DocumentMetadata, DocumentRevision, ReportContent, ReportItem,
+        };
+        let metadata = DocumentMetadata {
+            id: 7,
+            document_id: "a".repeat(32),
+            author_id: "b".repeat(32),
+            author_name: "worker".into(),
+            agent_name: None,
+            title: "Title".into(),
+            created_at: "2026-11-19T00:00:00Z".into(),
+            content_bytes: 1,
+            content_sha256: "c".repeat(64),
+            supersedes_id: None,
+            superseded_by: None,
+        };
+        let mut reports = reports::State::default();
+        reports.open = Some(ReportItem {
+            id: 7,
+            author: "worker".into(),
+            author_id: Some("b".repeat(32)),
+            registered: false,
+            provider_url: String::new(),
+            created_at: metadata.created_at.clone(),
+            conversation_id: None,
+            content: ReportContent::Document(metadata.clone()),
+        });
+        let mut documents = documents::State::default();
+        documents.loaded = Some(DocumentRevision {
+            metadata,
+            html: "x".into(),
+        });
+        assert_eq!(reports_request(&reports), Request::Document(7));
+        leave(&mut documents, &mut reports);
+        assert!(reports.open.is_none() && documents.loaded.is_none());
+        // A read of the Document still in flight no longer matches.
+        assert_ne!(reports_request(&reports), Request::Document(7));
+    }
 
     #[test]
     fn counts_and_ages_stay_short() {

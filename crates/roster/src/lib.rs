@@ -56,6 +56,8 @@ pub struct AgentDetails {
     pub waiting: Option<Waiting>,
     /// How much it runs in the background; absent from an older service.
     pub background: Option<Background>,
+    /// The folder it works in, when reported.
+    pub dir: Option<String>,
 }
 
 /// What an agent waits on outside itself, as the Rust service reports it.
@@ -245,6 +247,7 @@ fn decode(response: &[u8]) -> Option<Decoded> {
                     .and_then(|value| serde_json::from_str(value).ok()),
                 waiting: field("waiting").and_then(object),
                 background: field("background").and_then(Background::read),
+                dir: field("dir").and_then(|value| serde_json::from_str(value).ok()),
             },
         );
         states.insert(name, state);
@@ -507,6 +510,7 @@ mod tests {
             })
         };
         assert_eq!(worker.background, counts(1, 1, 2));
+        assert_eq!(worker.dir.as_deref(), Some("/home/user/project"));
         let reviewer = &snapshot.details["reviewer"];
         assert_eq!(reviewer.waiting, None);
         assert_eq!(reviewer.background, counts(0, 0, 0));

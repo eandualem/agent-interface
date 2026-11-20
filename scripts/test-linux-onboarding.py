@@ -2,9 +2,10 @@
 """Click through first run in a private Linux desktop: a fresh install makes
 its first profile and starts its guide, all in the one workspace window.
 
-Uses the real native app and a stand-in Agent Backbone
-(scripts/tests/fixtures/fake_backbone.py). No agent executable, model, real
-provider, user home or shared tmux server is used. Run under xvfb-run +
+Uses the real native app and a stand-in for the Rust Agent Backbone service
+(scripts/tests/fixtures/fake_backbone.py), whose machine serves no profile
+yet: first run sets it up with setup's `initialize`. No agent executable,
+model, real provider, user home or shared tmux server is used. Run under xvfb-run +
 dbus-run-session, as a normal user. At 100 % the opening scene plays and
 settles into the first question; at 150 % it has already been seen.
 """
@@ -35,7 +36,25 @@ PALETTE = TOKENS["color"]["dark"]
 accent = tuple(bytes.fromhex(PALETTE["accent"][1:]))
 surface = tuple(bytes.fromhex(PALETTE["surface"][1:]))
 DISABLED_ACCENT = "#" + "".join(f"{round((a + s) / 2):02x}" for a, s in zip(accent, surface))
-ACCOUNTS = {"claude": "authenticated", "codex": "not_authenticated"}
+# The request bodies setup takes, as the service's fixtures give them.
+SETUP_FIXTURES = ROOT / "crates/roster/src/profiles/setup/fixtures"
+INITIALIZE = json.loads((SETUP_FIXTURES / "setup-initialize.json").read_text())
+FIRST_AGENT = json.loads((SETUP_FIXTURES / "setup-first-agent.json").read_text())
+REQUEST_ID = re.compile(r"[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}")
+
+
+def same(sent, expected):
+    """Equal as JSON, types included: 1 is not true."""
+    return json.dumps(sent, sort_keys=True) == json.dumps(expected, sort_keys=True)
+
+
+def fresh_request_id(request_id):
+    """A UUIDv7 in simple form, made within the contract's window: at most
+    seven days before now, at most five minutes after."""
+    if not REQUEST_ID.fullmatch(request_id):
+        return False
+    made = int(request_id[:12], 16) / 1000
+    return time.time() - 7 * 24 * 3600 <= made <= time.time() + 5 * 60
 
 
 def wait_for(check, description, timeout=40):
@@ -58,8 +77,7 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
     env.update(HOME=str(root), XDG_CONFIG_HOME=str(root / "config"),
                XDG_DATA_HOME=str(root / "data"), XDG_STATE_HOME=str(root / "state"),
                XDG_CACHE_HOME=str(root / "cache"), TMUX_TMPDIR=str(root / "tmux"),
-               LIBGL_ALWAYS_SOFTWARE="1", FAKE_BACKBONE_ROOT=str(root),
-               BACKBONE_DATA_DIR=str(root / "provider"))
+               LIBGL_ALWAYS_SOFTWARE="1", FAKE_BACKBONE_ROOT=str(root))
     (root / "tmux").mkdir(mode=0o700)
     settings = root / "config/agent-interface"
     settings.mkdir(parents=True)
@@ -88,8 +106,7 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
     for name in ("claude", "codex"):
         executable(name, "#!/bin/sh\nexit 99\n")  # Found, but no real agent can run.
     executable("backbone", f'#!/bin/sh\nexec "{sys.executable}" -I "{FIXTURE}" "$@"\n')
-    subprocess.run([str(bin_dir / "backbone"), "init", json.dumps(ACCOUNTS)],
-                   env=env, check=True, capture_output=True)
+    subprocess.run([str(bin_dir / "backbone"), "init"], env=env, check=True, capture_output=True)
 
     def command(*args, check=True, timeout=30):
         # OCR's OpenMP workers contend on constrained runners. Keep this limit
@@ -174,7 +191,7 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
         try:
             server = subprocess.Popen([str(bin_dir / "backbone"), "serve"], env=env,
                                       stdout=server_log, stderr=subprocess.STDOUT)
-            wait_for(lambda: (root / "provider/run/api.sock").exists(), "Default profile socket")
+            wait_for(lambda: (root / "fake/serve.pid").exists(), "the service")
             wm = subprocess.Popen(["xfwm4", "--compositor=on", "--sm-client-disable"],
                                   env=env, stdout=wm_log, stderr=subprocess.STDOUT)
             wait_for(lambda: "_GTK_FRAME_EXTENTS" in command("xprop", "-root", "_NET_SUPPORTED"), "window manager")
@@ -182,9 +199,17 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
             main = wait_for(lambda: next(iter(app_windows()), None), "the app's window")
             command("xdotool", "mousemove", "--window", main, "5", "5")
 
-            # This computer has everything, so nothing is asked of it: the scene
-            # (or, once seen, first run itself) goes straight to the first profile.
+            # This computer has everything, so nothing is asked of it: setup's
+            # initialize makes its first profile while the scene (or, once seen,
+            # first run itself) goes straight to naming the first profile.
             wait_for(lambda: re.search(r"first\s+profile", text(main)), "Name your first profile", timeout=60)
+            setups = [entry["request"] for entry in log("setup.jsonl")]
+            assert [r["action"] for r in setups] == ["initialize"], setups
+            # The whole body, field for field as the service's fixture, but
+            # its own request ID.
+            assert setups[0].keys() == INITIALIZE.keys(), setups
+            assert fresh_request_id(setups[0]["request_id"]), setups
+            assert same({**setups[0], "request_id": INITIALIZE["request_id"]}, INITIALIZE), setups
             value = capture(main, "profile")
             assert "Agent Backbone" not in value, "the service was named on screen"
             assert "Personal" in value, "the suggested name"
@@ -192,14 +217,31 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
             click(main, "Continue")
             wait_for(lambda: re.search(r"your\s+guide", text(main)), "Start your guide", timeout=60)
             # Each tool's card says whether it is signed in; nothing else opens.
-            # OCR reads the plain cards reliably; the selected one is tinted.
+            # Both tools' account reads answer first (what each said is
+            # asserted below); OCR reads the plain cards reliably, but the
+            # selected one is tinted, so one card's line is what it can show.
+            def account_reads():
+                return {entry["path"].split("runtime=")[1] for entry in log("http.jsonl")
+                        if entry["path"].startswith("/api/profile/accounts/status")}
+            wait_for(lambda: {"claude", "codex"} <= account_reads(), "both tools' account reads", timeout=60)
             wait_for(lambda: re.search(r"Sign\s+in\s+when\s+it\s+starts", text(main)),
                      "the tools' sign-ins", timeout=60)
             assert list(app_windows()) == [main], "first run opened or closed a window"
-            lifecycle = [entry["request"] for entry in log("lifecycle.jsonl")]
-            assert [r["action"] for r in lifecycle] == ["create", "start"], lifecycle
-            assert lifecycle[0]["display_name"] == "Personal"
-            profile_id = lifecycle[1]["profile_id"]
+            # The service makes the profile and serves it at once: one create,
+            # nothing to start.
+            created = log("create.jsonl")
+            assert len(created) == 1, created
+            assert created[0]["entry"]["display_name"] == "Personal", created
+            profile_id = created[0]["entry"]["profile_id"]
+            commands = [entry["argv"][:2] for entry in log("cli.jsonl")]
+            assert ["profiles", "apply"] not in commands, commands
+            # Personal is the machine's second profile, so it keeps its own
+            # accounts, which hold no login yet: both tools ask for a sign-in
+            # when they start.
+            assert created[0]["entry"]["accounts"] == "own", created
+            accounts = {entry["path"].split("runtime=")[1]: entry.get("said") for entry in log("http.jsonl")
+                        if entry["profile"] == profile_id and entry["path"].startswith("/api/profile/accounts/status")}
+            assert accounts == {"claude": "missing", "codex": "missing"}, accounts
             assert stat.S_IMODE(library.stat().st_mode) == 0o700, "the library folder is private"
             capture(main, "guide")
 
@@ -210,14 +252,18 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
             assert list(app_windows()) == [main], "first run opened or closed a window"
 
             setups = [entry["request"] for entry in log("setup.jsonl")]
-            assert len(setups) == 1, setups
-            request = setups[0]
-            assert request["action"] == "first_agent" and request["profile_id"] == profile_id
-            assert request["hooks"] == ["claude"]
-            agent = request["agent"]
-            assert agent["name"] == "guide" and agent["runtime"] == "claude"
-            assert agent["directory"] == str(root / "Agents/guide") and agent["create_directory"]
-            assert agent["brief"] == {"template": "orchestrator-v1"}
+            assert [r["action"] for r in setups] == ["initialize", "first_agent"], setups
+            request = setups[1]
+            # The whole body: the fixture's fields, with this run's choices.
+            assert request.keys() == FIRST_AGENT.keys(), request
+            assert request["agent"].keys() == FIRST_AGENT["agent"].keys(), request
+            assert fresh_request_id(request["request_id"]), request
+            assert request["request_id"] != setups[0]["request_id"], request
+            assert same({**request, "request_id": None}, {
+                **FIRST_AGENT, "request_id": None, "profile_id": profile_id, "start_greeting": True,
+                "agent": {**FIRST_AGENT["agent"], "directory": str(root / "Agents/guide"),
+                          "runtime": "claude", "model": None, "create_directory": True,
+                          "name": "guide", "brief": {"template": "orchestrator-v1"}}}), request
             assert (root / "Agents/guide").is_dir()
 
             saved = tomllib.loads((settings / "settings.toml").read_text())
@@ -229,11 +275,13 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
             assert len(spaces) == 1, spaces
             assert spaces[0]["name"] == "Personal" and spaces[0]["profile_id"] == profile_id, spaces
 
-            (OUTPUT / "requests.json").write_text(json.dumps(dict(lifecycle=lifecycle, setup=setups), indent=2) + "\n")
+            (OUTPUT / "requests.json").write_text(json.dumps(dict(created=created, setup=setups), indent=2) + "\n")
             (OUTPUT / "result.json").write_text(json.dumps(dict(scale=SCALE, passed=True, checks=[
-                "nothing asked of a ready computer", "first profile on a fresh install",
+                "nothing asked of a ready computer", "setup's initialize on a fresh machine",
+                "first profile made and served by the service",
                 "private library folder", "one window throughout",
-                "sign-ins on the tool cards", "guide preselected on a signed-in tool",
+                "sign-ins on the tool cards, from the profile's own accounts",
+                "guide on the first tool that can run",
                 "guide's setup request", "setup remembered as done",
                 "one workspace bound to the profile"]), indent=2) + "\n")
             print(f"Linux onboarding regression passed at {SCALE}%")

@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
-"""A stand-in Agent Backbone for the Linux first-run regression: the `backbone`
-CLI and its profile sockets, speaking the profile contract the app's Rust
-clients expect (crates/roster/tests/fixtures/profiles-v1.json).
+"""A stand-in for the Rust Agent Backbone service in the Linux first-run
+regression: its `backbone` CLI and the sockets of the profiles it serves,
+in the shapes the service prints and serves (its protocol fixtures, as this
+repository copies them under crates/roster).
 
 Three roles, one file:
 
-  fake_backbone.py init ACCOUNTS    a registry with a ready Default profile
-  fake_backbone.py serve            the socket servers (one per running profile)
-  fake_backbone.py <backbone args>  the CLI: profiles list/show/apply/operation,
-                                    runtimes, setup
+  fake_backbone.py init             a machine whose service runs with no profile
+  fake_backbone.py serve            the service: each served profile's api.sock
+  fake_backbone.py <backbone args>  the CLI: profiles list/show/create,
+                                    runtimes, setup (initialize, first_agent)
 
-ACCOUNTS is a JSON object of runtime id to authentication, such as
-{"claude": "authenticated"}; new profiles start with the same accounts.
+The machine's first profile uses the machine user's accounts, every later
+one its own, and account status reads the login files the service reads
+for each: none is made here, so a login is present only where one is put.
 
 Everything lives under FAKE_BACKBONE_ROOT (the test's temporary HOME):
-  provider/                 BACKBONE_DATA_DIR of the Default (legacy) profile
-  provider/profiles/<id>/   each new profile's .env, run/api.sock and tmux/
-  fake/state.json           registry, operations, agents, accounts
-  fake/*.jsonl              logs of CLI calls, HTTP requests and setup requests
+  <backbone dir>/profiles/<id>/   each profile's api.sock, as the service
+                                  keeps them: $XDG_DATA_HOME/backbone
+  fake/state.json                 the machine, its profiles and their agents
+  fake/*.jsonl                    logs of CLI calls, HTTP requests and setup
 
 Nothing here starts tmux, an agent CLI or a network connection.
 """
@@ -26,6 +28,7 @@ import http.server
 import json
 import os
 import secrets
+import shutil
 import socketserver
 import sys
 import threading
@@ -38,23 +41,43 @@ ROOT = Path(os.environ.get("FAKE_BACKBONE_ROOT") or os.environ["HOME"])
 FAKE = ROOT / "fake"
 STATE = FAKE / "state.json"
 LOCK = FAKE / "state.lock"
-BASELINE = "core-v1"
+VERSION = "0.1.0"
 # FAKE_BACKBONE_SLOW=1 adds delays so each busy state stays on screen long
 # enough to watch or record.
 SLOW = os.environ.get("FAKE_BACKBONE_SLOW") == "1"
-CREATE_DELAY = 1.4 if SLOW else 0.0
-START_DELAY = 0.9 if SLOW else 0.0
 STEP_DELAY = 0.75 if SLOW else 0.0
 
+# `backbone runtimes --json`, as the service's catalogue lists them; only
+# `available` depends on this machine: whether the runtime's executable is
+# on PATH.
+EXECUTABLES = {"claude": "claude", "codex": "codex", "opencode": "opencode", "antigravity": "agy"}
 RUNTIMES = [
-    # id, display name, installed
-    ("claude", "Claude Code", True),
-    ("codex", "Codex", True),
-    ("gemini", "Gemini CLI", False),
-    ("opencode", "OpenCode", False),
-    ("shell", "Plain shell", True),
+    {"id": "claude", "display_name": "Claude Code", "setup_supported": True,
+     "reports_state": "hooks + terminal", "models": ["opus", "sonnet", "haiku"],
+     "efforts": ["low", "medium", "high", "xhigh", "max"],
+     "unattended": {"supported": True, "args": ["--dangerously-skip-permissions"], "sandboxed": False},
+     "authentication": "unknown"},
+    {"id": "codex", "display_name": "Codex", "setup_supported": True,
+     "reports_state": "hooks + terminal", "models": ["gpt-5.6-sol", "gpt-6-astra"],
+     "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"],
+     "unattended": {"supported": True, "args": ["-a", "never", "-s", "workspace-write"], "sandboxed": True},
+     "authentication": "unknown"},
+    {"id": "opencode", "display_name": "OpenCode", "setup_supported": True,
+     "reports_state": "hooks + terminal", "models": [],
+     "efforts": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+     "unattended": {"supported": True, "args": ["--auto"], "sandboxed": False},
+     "authentication": "unknown"},
+    {"id": "antigravity", "display_name": "Antigravity CLI", "setup_supported": False,
+     "reports_state": "terminal", "models": [], "efforts": ["low", "medium", "high", "xhigh", "max"],
+     "unattended": {"supported": True, "args": ["--dangerously-skip-permissions"], "sandboxed": False},
+     "authentication": "unknown"},
+    {"id": "shell", "display_name": "Plain shell", "setup_supported": False,
+     "reports_state": "terminal", "models": [], "efforts": [],
+     "unattended": {"supported": False, "args": [], "sandboxed": None},
+     "authentication": "not_applicable"},
 ]
-VERSIONS = {"claude": "2.1.0", "codex": "0.160.0"}
+# The tools setup starts a first agent in.
+SETUP_RUNTIMES = ("claude", "codex", "antigravity")
 
 
 # ---------------------------------------------------------------- state ----
@@ -63,10 +86,24 @@ def now():
     return time.time()
 
 
+def rfc3339(seconds):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(seconds))
+
+
 def private_dir(path):
     path.mkdir(parents=True, exist_ok=True)
     path.chmod(0o700)
     return path
+
+
+def backbone_dir():
+    """Where the service keeps its profiles: BACKBONE_DIR, else the XDG data
+    directory, else ~/.local/share; relative values are ignored."""
+    for name, below in (("BACKBONE_DIR", None), ("XDG_DATA_HOME", "backbone")):
+        value = os.environ.get(name)
+        if value and Path(value).is_absolute():
+            return Path(value) / below if below else Path(value)
+    return ROOT / ".local/share/backbone"
 
 
 @contextmanager
@@ -90,105 +127,105 @@ def log(name, record):
         f.write(json.dumps(record) + "\n")
 
 
-def profile_paths(profile_id, legacy):
-    base = ROOT / "provider" if legacy else ROOT / "provider" / "profiles" / profile_id
-    return {
-        "base": base,
-        "socket": base / "run" / "api.sock",
-        "credential": base / ".env",
-        "tmux": base / "tmux" / "server.sock",
-    }
-
-
-def provision(profile_id, legacy, key):
-    paths = profile_paths(profile_id, legacy)
-    private_dir(paths["base"])
-    private_dir(paths["base"] / "run")
-    private_dir(paths["base"] / "tmux")
-    paths["credential"].write_text(f"BACKBONE_API_KEY={key}\n")
-    paths["credential"].chmod(0o600)
-    return paths
-
-
-def new_profile(profile_id, display_name, kind, accounts):
-    legacy = kind == "legacy_default"
-    key = "key-" + secrets.token_hex(12)
-    paths = provision(profile_id, legacy, key)
-    return {
-        "profile_id": profile_id,
-        "display_name": display_name,
-        "kind": kind,
-        "state": "creating",
-        "installation_id": f"installation-{profile_id}",
-        "lifecycle_id": f"lifecycle-{profile_id}-1",
-        "key": key,
-        "running": False,
-        "socket": str(paths["socket"]),
-        "credential": str(paths["credential"]),
-        "tmux": str(paths["tmux"]),
-        "agents": [],
-        "accounts": dict(accounts),
-    }
-
-
-def init(accounts):
-    """Fresh registry holding a ready, running Default profile with no agents."""
+def init():
+    """A machine whose service runs and serves no profile yet."""
     private_dir(FAKE)
     with locked() as holder:
-        default = new_profile("default", "Default", "legacy_default", accounts)
-        default["state"] = "ready"
-        default["running"] = True
-        # The legacy roster reads BACKBONE_DATA_DIR/backbone.db and run/api.sock.
-        (ROOT / "provider" / "backbone.db").touch()
         holder["state"] = {
-            "profiles": [default],
-            "operations": {},
+            "machine": {"id": secrets.token_hex(8), "name": "onboarding-smoke"},
+            "instance_id": None,
+            "started": None,
+            "profiles": [],
+            "creates": {},
             "setups": {},
-            "new_accounts": dict(accounts),
         }
-    return default
 
 
 def find(state, profile_id):
     return next((p for p in state["profiles"] if p["profile_id"] == profile_id), None)
 
 
-def identity(profile):
-    return {
-        "profile_id": profile["profile_id"],
-        "installation_id": profile["installation_id"],
-        "lifecycle_id": profile["lifecycle_id"],
-    }
+def new_profile(state, display_name):
+    profile_id = secrets.token_hex(6)
+    base = private_dir(private_dir(private_dir(backbone_dir()) / "profiles") / profile_id)
+    # The machine user's accounts for the machine's first profile, its own
+    # for each further one.
+    accounts = "own" if state["profiles"] else "machine_user"
+    profile = {"profile_id": profile_id, "display_name": display_name, "accounts": accounts,
+               "dir": str(base), "socket": str(base / "api.sock"),
+               "tmux_socket": str(base / "tmux.sock"), "agents": []}
+    state["profiles"].append(profile)
+    return profile
 
 
-def item(profile):
-    return {k: profile[k] for k in ("profile_id", "display_name", "kind", "state")}
+def discovery(state, profile):
+    """A served profile as its discovery file says it."""
+    return {"protocol_version": 1, "backbone_version": VERSION,
+            "profile_id": profile["profile_id"], "display_name": profile["display_name"],
+            "instance_id": state["instance_id"], "machine": dict(state["machine"]), "home": True,
+            "socket": profile["socket"], "tmux_socket": profile["tmux_socket"],
+            "credential_reference": {"type": "socket"}, "accounts": profile["accounts"]}
 
 
-def record(profile):
-    binding = None
-    if profile["state"] == "ready":
-        binding = {
-            "installation_id": profile["installation_id"],
-            "lifecycle_id": profile["lifecycle_id"],
-            "endpoint": {"kind": "unix", "path": profile["socket"]},
-            "credential_reference": {
-                "kind": "dotenv", "path": profile["credential"], "key": "BACKBONE_API_KEY"},
-            "tmux": {"socket_path": profile["tmux"]},
-        }
-    return {"schema_version": 1, **item(profile), "binding": binding, "git_identity": "none"}
+def entry(state, profile):
+    return {"state": "serving", **discovery(state, profile)}
+
+
+def wait_served(profile):
+    """The service answers once it serves the profile it made; one it never
+    serves stops the stand-in, so the check fails on it."""
+    deadline = time.monotonic() + 10
+    while not Path(profile["socket"]).exists():
+        if time.monotonic() >= deadline:
+            sys.stderr.write(f"stand-in backbone: profile {profile['profile_id']} was never served\n")
+            sys.exit(99)
+        time.sleep(0.05)
+
+
+def stored_login(state, profile, runtime):
+    """Whether a login is stored, as the service tells it on Linux from
+    metadata alone: Claude Code's and Codex's login files, in the machine
+    user's home or the profile's own accounts folder; Antigravity CLI's in
+    the home for every profile, else possibly in the keychain."""
+    home = Path(os.environ["HOME"])
+    if runtime == "antigravity":
+        token = home / ".gemini/antigravity-cli/antigravity-oauth-token"
+        return ("present" if token.is_file() else "unavailable",
+                "Antigravity CLI keeps its login in the machine user's home, so every "
+                "profile on this machine shares it")
+    own = Path(profile["dir"]) / "accounts"
+    files = {"claude": (own / "claude" if profile["accounts"] == "own" else home / ".claude") / ".credentials.json",
+             "codex": (own / "codex" if profile["accounts"] == "own" else home / ".codex") / "auth.json"}
+    return ("present" if files[runtime].is_file() else "missing"), None
 
 
 # ------------------------------------------------------------------ CLI ----
 
-def emit(value, code=0):
-    sys.stdout.write(json.dumps(value) + "\n")
+def emit(value):
+    # `--json` prints the service's reply as it came, pretty-printed.
+    sys.stdout.write(json.dumps(value, indent=2) + "\n")
     sys.stdout.flush()
+    return 0
+
+
+def line(value):
+    sys.stdout.write(json.dumps(value, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+
+def failed(message, code=1):
+    sys.stderr.write(f"backbone: {message}\n")
     return code
 
 
-def error(code, message, exit_code=1, **extra):
-    return emit({"schema_version": 1, **extra, "error": {"code": code, "message": message}}, exit_code)
+def served_state():
+    """The machine's state once its service answers, else None."""
+    with locked(write=False) as holder:
+        state = holder["state"]
+    return state if state and state["instance_id"] else None
+
+
+UNREACHABLE = "nothing is listening at the machine's service.sock; is `backbone daemon` running?"
 
 
 def option(args, name):
@@ -201,221 +238,189 @@ def option(args, name):
 
 
 def after_dashes(args):
-    return args[args.index("--") + 1] if "--" in args and args.index("--") + 1 < len(args) else (args[-1] if args else None)
+    return args[args.index("--") + 1] if "--" in args and args.index("--") + 1 < len(args) else None
 
 
 def cli(argv):
+    # Every command only as the app runs it, with --json; anything else is
+    # a usage error.
+    shapes = {
+        ("profiles", "list"): lambda a: a == ["--json"],
+        ("profiles", "show"): lambda a: len(a) == 3 and a[:2] == ["--json", "--"],
+        ("profiles", "create"): lambda a: len(a) == 7 and a[0::2][:3] == ["--starter", "--request-id", "--json"]
+                                           and a[5] == "--",
+        ("runtimes", "--json"): lambda a: a == [],
+    }
+    shape = shapes.get(tuple(argv[:2]))
+    if (argv[:1] == ["runtimes"] or argv[:1] == ["profiles"]) and not (shape and shape(argv[2:])):
+        return failed(f"usage: run as the app runs it, with --json, not {argv!r}", 2)
     if argv[:2] == ["profiles", "list"]:
-        with locked(write=False) as holder:
-            state = holder["state"]
-        if not state or not state["profiles"]:
-            return error("registry_absent", "No profiles exist yet.")
-        return emit({"schema_version": 1, "items": [item(p) for p in state["profiles"]]})
+        state = served_state()
+        if state is None:
+            return failed(UNREACHABLE, 3)
+        return emit({"profiles": [entry(state, p) for p in state["profiles"]]})
 
     if argv[:2] == ["profiles", "show"]:
+        state = served_state()
+        if state is None:
+            return failed(UNREACHABLE, 3)
         profile_id = after_dashes(argv[2:])
-        with locked(write=False) as holder:
-            profile = find(holder["state"] or {"profiles": []}, profile_id)
+        profile = find(state, profile_id)
         if profile is None:
-            return error("profile_not_found", "Profile was not found.")
-        return emit(record(profile))
+            return failed(f"profile {profile_id} is not on this machine; "
+                          "`backbone profiles list` shows the profiles here")
+        return emit(entry(state, profile))
 
-    if argv[:2] == ["profiles", "operation"]:
-        request_id = after_dashes(argv[2:])
-        with locked(write=False) as holder:
-            receipt = (holder["state"] or {"operations": {}})["operations"].get(request_id)
-        if receipt is None:
-            return error("operation_not_found", "Profile operation was not found.", request_id=request_id)
-        return emit(receipt, 0 if receipt["status"] != "failed" else 1)
-
-    if argv[:2] == ["profiles", "apply"]:
-        request = json.loads(Path(option(argv, "--file")).read_text())
-        log("lifecycle.jsonl", {"request": request})
-        return apply(request)
+    if argv[:2] == ["profiles", "create"]:
+        return create(argv[2:])
 
     if argv[:1] == ["runtimes"]:
-        return runtimes(argv)
+        return runtimes()
 
     if argv[:1] == ["setup"]:
-        request = json.loads(Path(option(argv, "--file")).read_text())
+        # Only as the app runs it: a request file, answered in JSON lines.
+        if len(argv) != 4 or argv[1] != "--file" or argv[3] != "--jsonl":
+            sys.stderr.write(f"stand-in backbone: setup is run as setup --file F --jsonl, not {argv!r}\n")
+            return 2
+        request = json.loads(Path(argv[2]).read_text())
         log("setup.jsonl", {"request": request})
         return setup(request)
 
     if argv[:1] in (["--version"], ["version"]):
-        print("agent-backbone 0.5.0 (stand-in)")
+        print(f"backbone {VERSION} (stand-in)")
         return 0
     sys.stderr.write(f"stand-in backbone: unsupported command {argv!r}\n")
     return 2
 
 
-def receipt_for(request, profile, status="succeeded", failure=None):
-    ids = identity(profile) if profile else {"profile_id": None, "installation_id": None, "lifecycle_id": None}
-    return {"schema_version": 1, "request_id": request["request_id"], "action": request["action"],
-            **ids, "status": status, "error": failure}
-
-
-def apply(request):
-    request_id = request["request_id"]
-    action = request["action"]
+def create(args):
+    name = after_dashes(args)
+    request_id = option(args, "--request-id")
+    if option(args, "--starter") != "core-v1" or not request_id or name is None:
+        return failed("usage: backbone profiles create NAME", 2)
+    if served_state() is None:
+        return failed(UNREACHABLE, 3)
     with locked() as holder:
         state = holder["state"]
-        previous = state["operations"].get(request_id)
-        if previous is not None:
-            return emit(previous, 0 if previous["status"] != "failed" else 1)
-        if action == "create":
-            if request.get("baseline_version") != BASELINE or not request.get("display_name", "").strip():
-                receipt = receipt_for(request, None, "failed", {"code": "invalid_request", "message": "The request is not valid."})
-                state["operations"][request_id] = receipt
-                return emit(receipt, 1)
-            profile_id = "p" + secrets.token_hex(4)
-            profile = new_profile(profile_id, request["display_name"].strip(), "isolated", state["new_accounts"])
-            state["profiles"].append(profile)
-            state["operations"][request_id] = receipt_for(request, profile, "pending")
+        made = state["creates"].get(request_id)
+        if made is not None:
+            # A repeat under the same request ID gets the first result.
+            profile = find(state, made)
+        elif not (1 <= len(name) <= 64) or name != name.strip():
+            return failed("the profile's name is not one the service takes (invalid_request)")
+        elif any(p["display_name"].lower() == name.lower() for p in state["profiles"]):
+            return failed(f"a profile is named {name} already (conflict)")
         else:
-            profile = find(state, request.get("profile_id"))
-            expected = {"profile_id": request.get("profile_id"),
-                        "installation_id": request.get("expected_installation_id"),
-                        "lifecycle_id": request.get("expected_lifecycle_id")}
-            if profile is None or identity(profile) != expected or profile["state"] != "ready":
-                receipt = receipt_for(request, profile, "failed",
-                                      {"code": "binding_mismatch", "message": "Profile binding does not match."})
-                if profile is None:
-                    receipt.update(expected)
-                state["operations"][request_id] = receipt
-                return emit(receipt, 1)
-            state["operations"][request_id] = receipt_for(request, profile, "pending")
-            profile["running"] = action == "start"
-    if action == "create":
-        time.sleep(CREATE_DELAY)  # provisioning
-        with locked() as holder:
-            state = holder["state"]
-            profile = find(state, profile_id)
-            profile["state"] = "ready"
-            receipt = receipt_for(request, profile)
-            state["operations"][request_id] = receipt
-        return emit(receipt)
-    if action == "start":
-        # The service answers before start reports success, as the real one does.
-        deadline = time.monotonic() + 10
-        socket = Path(profile["socket"])
-        while not socket.exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
-        time.sleep(START_DELAY)
-    with locked() as holder:
-        state = holder["state"]
-        profile = find(state, request["profile_id"])
-        ok = action != "start" or Path(profile["socket"]).exists()
-        receipt = receipt_for(request, profile, "succeeded" if ok else "failed",
-                              None if ok else {"code": "start_failed", "message": "The service did not answer."})
-        state["operations"][request_id] = receipt
-    return emit(receipt, 0 if ok else 1)
+            profile = new_profile(state, name)
+            state["creates"][request_id] = profile["profile_id"]
+        created = entry(state, profile)
+    wait_served(profile)
+    log("create.jsonl", {"argv": args, "entry": created})
+    return emit(created)
 
 
-def catalog_items(profile):
-    items = []
-    for runtime_id, name, installed in RUNTIMES:
-        supported = runtime_id != "shell"
-        compatible = installed and supported
-        items.append({
-            "id": runtime_id,
-            "display_name": name,
-            "available": installed,
-            "setup_supported": supported,
-            "reports_state": "hooks + terminal" if supported else "terminal",
-            "models": [],
-            "efforts": [],
-            "unattended": {"supported": False, "args": [], "sandboxed": False},
-            "authentication": profile["accounts"].get(runtime_id, "not_applicable" if runtime_id == "shell" else "unknown") if installed else "unavailable",
-            "setup_compatibility": {
-                "compatible": compatible,
-                "reason": "compatible" if compatible else ("setup_unsupported" if not supported else "runtime_missing"),
-                "message": "The selected runtime meets setup prerequisites; authentication is unverified." if compatible
-                           else ("First-agent setup is unavailable for this runtime." if not supported else "This runtime is not installed."),
-                "path": str(ROOT / ".local/bin" / runtime_id) if installed else None,
-                "version": VERSIONS.get(runtime_id) if installed else None,
-                "version_error": None,
-            },
-        })
-    return items
+def runtimes():
+    # No service is asked: what is on this PATH is available.
+    path = os.environ.get("PATH", "")
+    items = [{**r, "available": r["id"] == "shell"
+              or shutil.which(EXECUTABLES[r["id"]], path=path) is not None}
+             for r in RUNTIMES]
+    return emit({"schema_version": 1, "items": items})
 
 
-def runtimes(argv):
-    profile_id = option(argv, "--profile")
-    expected = {"profile_id": profile_id,
-                "installation_id": option(argv, "--expected-installation-id"),
-                "lifecycle_id": option(argv, "--expected-lifecycle-id")}
-    log("cli-runtimes.jsonl", {"argv": argv})
-    with locked(write=False) as holder:
-        profile = find(holder["state"], profile_id)
-    if profile is None or identity(profile) != expected:
-        return error("binding_mismatch", "Profile binding does not match.")
-    return emit({"schema_version": 2, **identity(profile), "items": catalog_items(profile)})
+# ---------------------------------------------------------------- setup ----
+
+def exit_code(result):
+    if result["code"] == "invalid_request":
+        return 2
+    return {"completed": 0, "failed": 1, "action_required": 3}.get(result["status"], 1)
+
+
+def events(request, steps, result):
+    """Setup's JSON lines: each step, then the result."""
+    head = {"schema_version": 3, "request_id": request["request_id"]}
+    lines = [{**head, "seq": seq, "type": "step", "step": step, "status": status}
+             for seq, (step, status) in enumerate(steps, start=1)]
+    lines.append({**head, "seq": len(lines) + 1, "type": "result", "action": request["action"], **result})
+    return lines
 
 
 def setup(request):
-    action = request["action"]
-    ids = {"profile_id": request["profile_id"],
-           "installation_id": request["expected_installation_id"],
-           "lifecycle_id": request["expected_lifecycle_id"]}
+    key = f"{request['action']}:{request['request_id']}"
+    with locked(write=False) as holder:
+        done = holder["state"]["setups"].get(key)
+    if done is None:
+        if request["action"] == "initialize":
+            done = initialize(request)
+        elif request["action"] == "first_agent":
+            done = first_agent(request)
+        else:
+            return 2
+        with locked() as holder:
+            holder["state"]["setups"][key] = done
+    for value in done:
+        time.sleep(STEP_DELAY if value["type"] == "step" else 0)
+        line(value)
+    return exit_code(done[-1])
+
+
+def initialize(request):
+    """A machine with no profile makes its first one and serves it."""
+    with locked() as holder:
+        state = holder["state"]
+        if state["profiles"]:
+            existing = [entry(state, p) for p in state["profiles"]]
+            return events(request, [("profile", "running"), ("profile", "completed")], {
+                "status": "completed", "code": "existing_preserved",
+                "message": "this machine has a profile already, kept as it was",
+                "data": {"backbone_dir": str(backbone_dir()), "installation": "existing_preserved",
+                         "profile": discovery(state, state["profiles"][0]), "existing": existing,
+                         "service_state": "running", "health": "healthy"},
+                "completed_steps": ["profile"], "retry": "none"})
+        profile = new_profile(state, request["profile_name"])
+        served = discovery(state, profile)
+    wait_served(profile)
+    steps = ["preflight", "service", "profile", "starter"]
+    return events(request, [(step, status) for step in steps for status in ("running", "completed")], {
+        "status": "completed", "code": "initialized",
+        "message": "this machine is ready: its service runs, and its first profile is served",
+        "data": {"backbone_dir": str(backbone_dir()), "installation": "created", "profile": served,
+                 "service_state": "running", "health": "healthy"},
+        "completed_steps": steps, "retry": "none"})
+
+
+def first_agent(request):
+    """The profile runs the request, then setup says each step it completed."""
     agent = request["agent"]
-    base = {"schema_version": 2, "request_id": request["request_id"], **ids, "action": action}
     with locked() as holder:
         state = holder["state"]
         profile = find(state, request["profile_id"])
-        done = state["setups"].get(f"{action}:{request['request_id']}")
-    if done is not None:
-        return emit(done, 0 if done["status"] == "completed" else 3)
-    if profile is None or identity(profile) != ids:
-        return emit({**base, "seq": 1, "type": "result", "status": "failed", "code": "binding_mismatch",
-                     "message": "Profile binding does not match.", "retry": "none",
-                     "completed_steps": [], "data": {}}, 1)
-    if action == "cancel_first_agent":
-        result = {**base, "seq": 1, "type": "result", "status": "completed", "code": "request_cancelled",
-                  "message": "This setup request is cancelled; a new request may be submitted.",
-                  "retry": "new_request", "completed_steps": [],
-                  "data": {"cancelled_request_id": request["request_id"], "can_start_new_request": True}}
-        with locked() as holder:
-            holder["state"]["setups"][f"{action}:{request['request_id']}"] = result
-        return emit(result)
-    seq = 0
-    completed = []
-    steps = ["preflight", "hooks", "agent", "launch", "ready"]
-    for step in steps:
-        if step == "hooks" and not request.get("hooks"):
-            seq += 1
-            emit({**base, "seq": seq, "type": "step", "step": step, "status": "skipped"})
-            continue
-        seq += 1
-        emit({**base, "seq": seq, "type": "step", "step": step, "status": "running"})
-        time.sleep(STEP_DELAY)
-        if step == "agent":
-            if agent.get("create_directory"):
-                Path(agent["directory"]).mkdir(parents=True, exist_ok=True)
-            with locked() as holder:
-                p = find(holder["state"], request["profile_id"])
-                p["agents"] = [a for a in p["agents"] if a["name"] != agent["name"]] + [{
-                    "name": agent["name"], "state": "starting", "runtime": agent["runtime"],
-                    "registration_id": secrets.token_hex(16), "cwd": agent["directory"],
-                    "since": now()}]
-        if step == "ready":
-            with locked() as holder:
-                p = find(holder["state"], request["profile_id"])
-                for a in p["agents"]:
-                    if a["name"] == agent["name"]:
-                        a["state"] = "idle"
-                        a["since"] = now()
-        seq += 1
-        completed.append(step)
-        emit({**base, "seq": seq, "type": "step", "step": step, "status": "completed"})
-    seq += 1
-    result = {**base, "seq": seq, "type": "result", "status": "completed", "code": "agent_ready",
-              "message": "Agent started; it may show its own first-run screens in its terminal. Any greeting receipt records submission only.",
-              "retry": "none", "completed_steps": completed,
-              "data": {"agent_name": agent["name"], "launch_id": "launch-" + secrets.token_hex(6),
-                       "ready": "ready", "greeting_delivery_id": None, "evidence": []}}
-    with locked() as holder:
-        holder["state"]["setups"][f"{action}:{request['request_id']}"] = result
-    return emit(result)
+        if profile is None:
+            return events(request, [], {
+                "status": "action_required", "code": "service_unavailable",
+                "message": f"profile {request['profile_id']} is not served on this machine",
+                "data": {}, "completed_steps": [], "retry": "same_request"})
+        if agent["create_directory"]:
+            Path(agent["directory"]).mkdir(parents=True, exist_ok=True)
+        # The agent as the service's roster lists one, every field of its row.
+        profile["agents"] = [a for a in profile["agents"] if a["name"] != agent["name"]] + [{
+            "name": agent["name"], "session": agent["name"], "registration_id": secrets.token_hex(16),
+            "configured": True, "runtime": agent["runtime"], "model": agent["model"],
+            "model_source": "runtime_default", "dir": agent["directory"], "repo": "", "tags": [],
+            "description": "", "watches": [], "state": "idle", "reason": None, "current_issue": None,
+            "current_repo": None, "online": True, "plan_file": None, "plan_title": None,
+            "tmux_created": rfc3339(now()), "tmux_attached": False, "tmux_windows": 1,
+            "last_activity": now(), "state_since": now(), "last_message": None, "detail": None,
+            "state_source": "push", "evidence": [], "machine": dict(state["machine"]), "waiting": None,
+            "background": {"running": 0, "queued": 0, "processes": 0}, "role": None,
+            "superior": None, "mode": "sandboxed", "grants": [], "ceiling": [], "takes_issues": True}]
+    steps = ["preflight", "agent", "launch", "ready"] + (["greeting"] if request["start_greeting"] else [])
+    return events(request, [(step, "completed") for step in steps], {
+        "status": "completed", "code": "agent_ready",
+        "message": "the agent's CLI is running; it may ask the person something first",
+        "data": {"agent_name": agent["name"], "ready": "ready", "launch_id": secrets.token_hex(16),
+                 "greeting_delivery_id": 1 if request["start_greeting"] else None, "evidence": "idle"},
+        "completed_steps": steps, "retry": "none"})
 
 
 # --------------------------------------------------------------- server ----
@@ -432,6 +437,10 @@ def respond(handler, status, value):
     return status
 
 
+def refused(handler, status, code, message):
+    return respond(handler, status, {"detail": {"code": code, "message": message}})
+
+
 def make_handler(profile_id):
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -441,11 +450,13 @@ def make_handler(profile_id):
 
         def handle_request(self, method):
             length = int(self.headers.get("Content-Length") or 0)
-            body = self.rfile.read(length) if length else b""
-            status = self.route(method, body)
+            if length:
+                self.rfile.read(length)
+            self.said = None
+            status = self.route(method)
             log("http.jsonl", {"profile": profile_id, "method": method, "path": self.path,
-                               "status": status,
-                               "bound": "X-Backbone-Profile-ID" in self.headers})
+                               "status": status, "bound": "X-Backbone-Profile-ID" in self.headers,
+                               **({"said": self.said} if self.said else {})})
 
         def do_GET(self):
             self.handle_request("GET")
@@ -453,54 +464,41 @@ def make_handler(profile_id):
         def do_POST(self):
             self.handle_request("POST")
 
-        def do_DELETE(self):
-            self.handle_request("DELETE")
-
-        def route(self, method, body):
+        def route(self, method):
             with locked(write=False) as holder:
-                profile = find(holder["state"], profile_id)
-            if profile is None or not profile["running"]:
-                return respond(self, 503, {"detail": {"code": "unavailable", "message": "Not running."}})
-            if self.headers.get("Authorization") != f"Bearer {profile['key']}":
-                return respond(self, 401, {"detail": "Unauthorized"})
-            sent = {"profile_id": self.headers.get("X-Backbone-Profile-ID"),
-                    "installation_id": self.headers.get("X-Backbone-Installation-ID"),
-                    "lifecycle_id": self.headers.get("X-Backbone-Lifecycle-ID")}
-            ids = identity(profile)
-            if any(sent.values()):
-                if sent != ids:
-                    return respond(self, 409, {"detail": {"code": "binding_mismatch", "message": "Profile binding does not match."}})
-            elif profile["kind"] != "legacy_default":
-                return respond(self, 409, {"detail": {"code": "binding_required", "message": "Profile binding is required."}})
+                state = holder["state"]
+            profile = find(state, profile_id)
             url = urllib.parse.urlsplit(self.path)
             query = dict(urllib.parse.parse_qsl(url.query))
-            path = url.path
-            if method == "GET" and path == "/api/profile":
-                return respond(self, 200, {"schema_version": 1, **ids, "baseline_version": BASELINE,
-                                           "tmux": {"socket_path": profile["tmux"]}})
-            if method == "GET" and path == "/api/agents":
-                items = [{"name": a["name"], "state": a["state"], "online": True, "configured": True,
-                          "runtime": a["runtime"], "registration_id": a["registration_id"],
-                          "reason": None, "current_issue": None, "state_since": a["since"],
-                          "cwd": a["cwd"]} for a in profile["agents"]]
-                return respond(self, 200, {"items": items, "has_more": False, "next_cursor": None})
-            if method == "GET" and path == "/api/profile/accounts/status":
+            if method == "GET" and url.path == "/health":
+                return respond(self, 200, {"healthy": True, "components": {
+                    "home": {"healthy": True}, "service": {"healthy": True}},
+                    "version": VERSION, "started": state["started"]})
+            # The owner-only socket is the credential; every request names its profile.
+            named = self.headers.get("X-Backbone-Profile-ID")
+            if named is None:
+                return refused(self, 409, "binding_required", "name the profile this request is for")
+            if named != profile_id:
+                return refused(self, 409, "binding_mismatch", "this socket serves another profile")
+            if method == "GET" and url.path == "/api/profile":
+                served = discovery(state, profile)
+                return respond(self, 200, {k: served[k] for k in (
+                    "protocol_version", "backbone_version", "profile_id", "display_name",
+                    "instance_id", "machine", "home")})
+            if method == "GET" and url.path == "/api/agents":
+                return respond(self, 200, {"items": profile["agents"], "total": len(profile["agents"])})
+            if method == "GET" and url.path == "/api/profile/accounts/status":
                 runtime = query.get("runtime", "")
-                if runtime not in profile["accounts"] and runtime not in dict((r[0], r) for r in RUNTIMES):
-                    return respond(self, 422, {"detail": {"code": "runtime_unavailable", "message": "This runtime cannot be signed in here."}})
-                return respond(self, 200, {"schema_version": 1, "runtime": runtime,
-                                           "authentication": profile["accounts"].get(runtime, "not_authenticated")})
-            if method == "POST" and path == "/api/profile/accounts/sign-in":
-                runtime = json.loads(body or b"{}").get("runtime")
-                return respond(self, 200, {"schema_version": 1, **ids, "runtime": runtime,
-                                           "session": f"sign-in-{runtime}", "created": True})
-            if method == "POST" and path == "/api/profile/shells":
-                shell_id = json.loads(body or b"{}").get("shell_id")
-                return respond(self, 200, {"schema_version": 1, **ids, "shell_id": shell_id,
-                                           "session": f"shell-{shell_id}", "created": True})
-            if method == "GET":
-                return respond(self, 200, {"items": [], "has_more": False, "next_cursor": None})
-            return respond(self, 404, {"detail": "Not Found"})
+                if runtime not in SETUP_RUNTIMES:
+                    return refused(self, 422, "invalid_request", "this runtime keeps no account here")
+                storage, message = stored_login(state, profile, runtime)
+                self.said = storage
+                return respond(self, 200, {"schema_version": 1, "profile_id": profile_id,
+                                           "instance_id": state["instance_id"], "runtime": runtime,
+                                           "storage": storage, **({"message": message} if message else {})})
+            # Every other route, the push stream among them, is not this
+            # stand-in's; the app goes on without it.
+            return respond(self, 404, {"detail": {"code": "not_found", "message": "not found"}})
 
     return Handler
 
@@ -510,21 +508,22 @@ class Server(socketserver.ThreadingUnixStreamServer):
 
 
 def serve():
-    """Bind each running profile's socket, and keep doing so as profiles start."""
+    """The service: a new run of it, serving each profile's socket, and each
+    profile made while it runs."""
+    # Sockets are owner-only from the moment they exist, as the app checks.
+    os.umask(0o177)
+    with locked() as holder:
+        holder["state"]["instance_id"] = secrets.token_hex(16)
+        holder["state"]["started"] = rfc3339(now())
     servers = {}
     (FAKE / "serve.pid").write_text(str(os.getpid()))
     while True:
-        try:
-            with locked(write=False) as holder:
-                profiles = list(holder["state"]["profiles"])
-        except (json.JSONDecodeError, FileNotFoundError, TypeError):
-            time.sleep(0.05)
-            continue
+        with locked(write=False) as holder:
+            profiles = list(holder["state"]["profiles"])
         for profile in profiles:
             key = profile["profile_id"]
-            if profile["running"] and key not in servers:
+            if key not in servers:
                 socket = Path(profile["socket"])
-                private_dir(socket.parent)
                 if socket.exists():
                     socket.unlink()
                 server = Server(str(socket), make_handler(key))
@@ -532,10 +531,6 @@ def serve():
                 threading.Thread(target=server.serve_forever, daemon=True).start()
                 servers[key] = server
                 log("serve.jsonl", {"bound": key, "socket": str(socket)})
-            elif not profile["running"] and key in servers:
-                servers.pop(key).shutdown()
-                Path(profile["socket"]).unlink(missing_ok=True)
-                log("serve.jsonl", {"stopped": key})
         time.sleep(0.05)
 
 
@@ -544,9 +539,8 @@ def main():
     if argv[:1] == ["serve"]:
         serve()
         return 0
-    if argv[:1] == ["init"]:
-        accounts = json.loads(argv[1]) if len(argv) > 1 else {}
-        print(json.dumps(record(init(accounts))))
+    if argv == ["init"]:
+        init()
         return 0
     started = time.monotonic()
     code = 99

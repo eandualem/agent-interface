@@ -250,6 +250,21 @@ impl LiveAgents {
             .unwrap_or_else(|| current.unknown.clone())
     }
 
+    /// The folders the newest observation's agents work in.
+    pub fn folders(&self) -> Vec<std::path::PathBuf> {
+        let current = self.0.current.borrow();
+        let Some(snapshot) = &current.snapshot else {
+            return Vec::new();
+        };
+        snapshot
+            .details
+            .values()
+            .filter_map(|details| details.dir.as_deref())
+            .filter(|dir| !dir.is_empty())
+            .map(std::path::PathBuf::from)
+            .collect()
+    }
+
     pub fn active(&self) -> Option<Rc<HashMap<String, AgentState>>> {
         self.0.current.borrow().active.clone()
     }

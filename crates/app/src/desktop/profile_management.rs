@@ -483,18 +483,10 @@ impl Management {
                         Some(cx.new(|cx| setup::Pane::from_controller(controller, profile, cx)))
                     }
                     choices::Event::Submit => {
-                        if let Some(request) = form.update(cx, |form, _| form.take_served()) {
-                            Some(cx.new(|cx| setup::Pane::served(request, "Back", cx)))
-                        } else {
-                            let Some((prepared, controller)) =
-                                form.update(cx, |form, _| form.take_prepared())
-                            else {
-                                return;
-                            };
-                            Some(cx.new(|cx| {
-                                setup::Pane::from_prepared(controller, prepared, "Back", cx)
-                            }))
-                        }
+                        let Some(request) = form.update(cx, |form, _| form.take_served()) else {
+                            return;
+                        };
+                        Some(cx.new(|cx| setup::Pane::served(request, "Back", cx)))
                     }
                 };
                 pane.choices = None;

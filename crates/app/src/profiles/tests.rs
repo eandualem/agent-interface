@@ -269,3 +269,78 @@ fn an_unbounded_writer_hits_the_pipe_collection_limit() {
         Err(Error::TooLarge)
     );
 }
+
+/// A first agent `name` of the profile `profile_id`, which the Rust service
+/// serves, under `request_id`, with the choices of the service's
+/// first-agent fixture.
+pub(super) fn first_agent(
+    request_id: &str,
+    profile_id: &str,
+    name: &str,
+) -> profiles::setup::Prepared {
+    use profiles::setup::{Agent, Brief, Prepared};
+    let entry = json!({
+        "state": "serving", "protocol_version": 1, "backbone_version": "0.1.0",
+        "profile_id": profile_id, "display_name": "Work",
+        "instance_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d",
+        "machine": {"id": "5f2c9e0d1b7a4e38", "name": "laptop"}, "home": true,
+        "socket": "/run/profile/api.sock", "tmux_socket": "/run/profile/tmux.sock",
+        "credential_reference": {"type": "socket"}
+    });
+    let profile = Profile::parse(&serde_json::to_vec(&entry).unwrap()).unwrap();
+    let agent = Agent {
+        name: name.into(),
+        directory: "/home/user/projects/site".into(),
+        create_directory: true,
+        runtime: "codex".into(),
+        model: None,
+        brief: Brief::Template {
+            template: "orchestrator-v1".into(),
+        },
+    };
+    Prepared::first_agent(request_id, &profile, agent, true).unwrap()
+}
+/// The `n`th request ID, of the form the service takes.
+pub(super) fn request(n: u8) -> String {
+    format!("019a8f3f1a2b7c3d8e4f5a6b7c8d9e{n:02x}")
+}
+/// The ready result of the agent `guide`, built in the roster crate from the
+/// setup guide, for `request_id`.
+pub(super) fn ready(request_id: &str) -> Value {
+    let mut value: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../roster/src/profiles/setup/fixtures/first-agent-result.json"
+    )))
+    .unwrap();
+    value["request_id"] = request_id.into();
+    value
+}
+/// A result of `action` for `request_id`, with no data.
+pub(super) fn answer(
+    request_id: &str,
+    action: &str,
+    status: &str,
+    code: &str,
+    retry: &str,
+) -> Value {
+    json!({"schema_version": 3, "request_id": request_id, "seq": 1, "type": "result",
+        "action": action, "status": status, "code": code, "message": "", "data": {},
+        "completed_steps": [], "retry": retry})
+}
+/// The setup guide's one answer that confirms a cancellation.
+pub(super) fn cancelled(request_id: &str) -> Value {
+    let mut value = answer(
+        request_id,
+        "cancel_first_agent",
+        "completed",
+        "request_cancelled",
+        "new_request",
+    );
+    value["data"] = json!({"cancelled_request_id": request_id, "can_start_new_request": true});
+    value
+}
+/// A completed step, as the command prints it once the profile answered.
+pub(super) fn step(request_id: &str, seq: u64, step: &str) -> Value {
+    json!({"schema_version": 3, "request_id": request_id, "seq": seq, "type": "step",
+        "step": step, "status": "completed"})
+}
