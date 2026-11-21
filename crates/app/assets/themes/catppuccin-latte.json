@@ -2,6 +2,8 @@
   "name": "Catppuccin Latte",
   "extends": "light",
   "color": {
+    "outgoing_surface": "#d9dce4",
+    "outgoing_border": "#bcc0cc",
     "ground": "#dce0e8",
     "panel": "#e6e9ef",
     "surface": "#eff1f5",

@@ -146,6 +146,7 @@ fn write_object(out: &mut String, indent: usize, fields: &[(&str, &dyn Json)]) {
 group!(
     /// One theme's colours.
     Colors {
+        outgoing_surface: Rgba = color, outgoing_border: Rgba = color,
         ground: Rgba = color, panel: Rgba = color, surface: Rgba = color,
         field: Rgba = color, hover: Rgba = color, selected: Rgba = color,
         line: Rgba = color, line_strong: Rgba = color, edge: Rgba = color,
@@ -217,6 +218,7 @@ group!(
 group!(
     /// Component sizes.
     Size {
+        connections_rail: f32 = number, connections_split: f32 = number,
         titlebar: f32 = number, window_controls_x: f32 = number,
         window_controls_y: f32 = number, panel_width: f32 = number, panel_min: f32 = number,
         panel_max: f32 = number, workspace_tile: f32 = number, row: f32 = number,

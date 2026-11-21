@@ -42,6 +42,7 @@ mod artifacts;
 mod bound_policies;
 mod bound_skills;
 mod clock;
+mod connections;
 mod conversation;
 mod documents;
 mod interactions;
@@ -192,6 +193,7 @@ pub(super) struct ViewPane {
     folders: Folders,
     pub view: View,
     source: Option<Source>,
+    connections: Option<Entity<connections::Pane>>,
     /// Immutable origin for retained content and every operation it opens.
     connection: Option<Connection>,
     data: Option<Data>,
@@ -329,6 +331,7 @@ impl ViewPane {
             agents,
             folders,
             source: None,
+            connections: None,
             connection,
             data: None,
             error: None,
@@ -410,10 +413,7 @@ impl ViewPane {
             return pane;
         };
         if pane.view.kind == ViewKind::Connections {
-            // Until the profile service supplies connection records, distinguish
-            // unavailable data from a successful read with no connected peers.
-            pane.error =
-                Some("This version of Agent Interface cannot read profile connections yet.");
+            pane.connections = Some(cx.new(|cx| connections::Pane::new(window, cx)));
             return pane;
         }
         if matches!(pane.view.kind, ViewKind::Skills | ViewKind::Reports) {
@@ -1003,6 +1003,9 @@ impl Render for ViewPane {
             selection.begin();
             selection.finish();
             return div().size_full().child(card);
+        }
+        if let Some(connections) = &self.connections {
+            return div().size_full().child(connections.clone());
         }
         if let Some(artifacts) = &self.artifacts {
             return div().size_full().child(artifacts.clone());
