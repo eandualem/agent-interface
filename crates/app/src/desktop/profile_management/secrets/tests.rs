@@ -146,11 +146,7 @@ fn a_change_keeps_its_own_result_when_the_list_cant_be_read_again() {
 
 #[test]
 fn a_refusal_because_the_service_changed_says_so_on_both_paths() {
-    for error in [
-        Error::BindingRequired,
-        Error::BindingMismatch,
-        Error::Unsupported,
-    ] {
+    for error in [Error::BindingRequired, Error::BindingMismatch] {
         assert_eq!(outcome(Err(AddError::Connection(error))), CHANGED);
         assert_eq!(
             listed(Err(AddError::Connection(error))),

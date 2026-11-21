@@ -207,7 +207,6 @@ fn reconcile_selection(
 
 pub(super) fn sign_in_refusal(error: ProfileError) -> &'static str {
     match error {
-        ProfileError::Unsupported => "This provider does not support CLI account sign-in.",
         ProfileError::Refused(422) => "This CLI is not available in this profile.",
         ProfileError::Refused(503) => "The profile could not start the sign-in session.",
         ProfileError::Refused(_) => "The profile refused the sign-in.",

@@ -239,7 +239,7 @@ fn path_lookup(path_env: &str, home: Option<&Path>) -> (Vec<(&'static str, PathB
 /// moment; call off the UI thread.
 pub fn answers(client: Option<crate::profiles::Client>) -> Backbone {
     use agent_interface_roster::profiles::State;
-    const UNANSWERED: &str = "The Default profile is not answering";
+    const UNANSWERED: &str = "The first serving profile is not answering";
     let live = || true;
     let Some(client) = client else {
         return Backbone::NotSetUp;
@@ -489,7 +489,10 @@ mod tests {
         let shown = entry("0a1b2c3d4e5f");
         let client = stub(&root, &listed.to_string(), &shown.to_string());
         // Its socket isn't there, so it doesn't answer, and the next is not asked.
-        assert!(matches!(answers(Some(client)), Backbone::Unreachable(_)));
+        assert_eq!(
+            answers(Some(client)),
+            Backbone::Unreachable("The first serving profile is not answering")
+        );
         assert_eq!(
             std::fs::read_to_string(root.join("calls")).unwrap(),
             "profiles list --json\nprofiles show --json -- 0a1b2c3d4e5f\n"

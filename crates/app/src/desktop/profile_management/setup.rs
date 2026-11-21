@@ -351,7 +351,7 @@ fn answer(result: Result<Started, AddError>) -> Answer {
             Answer::Stopped(format!("The profile refused the start ({status})."))
         }
         Err(AddError::Connection(
-            Error::BindingRequired | Error::BindingMismatch | Error::Unsupported,
+            Error::BindingRequired | Error::BindingMismatch,
         )) => Answer::Stopped(
             "This profile's service changed. Go back and open the profile again.".into(),
         ),
