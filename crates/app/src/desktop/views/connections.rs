@@ -30,7 +30,7 @@ pub(super) struct Pane {
     show_thread: bool,
     copied: bool,
     error: Option<&'static str>,
-    _search: Subscription,
+    _subscriptions: [Subscription; 2],
 }
 
 impl Pane {
@@ -43,6 +43,16 @@ impl Pane {
                 cx.notify();
             }
         });
+        let editor_keys = cx.subscribe_in(
+            &input,
+            window,
+            |this, _, event: &NameEvent, window, cx| match event {
+                NameEvent::Cancel => this.edit(Editor::None, window, cx),
+                NameEvent::Save if this.editor == Editor::Connect => this.connect(cx),
+                NameEvent::Save => this.submit_revision(cx),
+                NameEvent::Changed(_) => {}
+            },
+        );
         Self {
             preview: false,
             peers: Vec::new(),
@@ -55,7 +65,7 @@ impl Pane {
             show_thread: false,
             copied: false,
             error: None,
-            _search: search,
+            _subscriptions: [search, editor_keys],
         }
     }
 
@@ -114,6 +124,29 @@ impl Pane {
         cx.notify();
     }
 
+    fn submit_revision(&mut self, cx: &mut Context<Self>) {
+        let Editor::Revise(n) = self.editor else {
+            return;
+        };
+        let Some(peer) = self
+            .peers
+            .iter_mut()
+            .find(|p| Some(&p.id) == self.selected.as_ref())
+        else {
+            return;
+        };
+        let note = self.input.read(cx).value().to_owned();
+        if note.trim().is_empty() {
+            self.error = Some("Enter a revision note.");
+        } else {
+            peer.review(n, Decision::Revise(note));
+            self.error = None;
+            self.editor = Editor::None;
+            self.reconcile(cx);
+        }
+        cx.notify();
+    }
+
     fn connect(&mut self, cx: &mut Context<Self>) {
         let id = self.input.read(cx).value().trim().to_owned();
         if id.is_empty()
@@ -154,6 +187,8 @@ impl Pane {
                     if self.copied { "Copied" } else { "Copy ID" },
                     ui::Button::Secondary,
                 )
+                .focusable()
+                .tab_stop(true)
                 .on_click(cx.listener(|this, _, _, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string("sample-local".into()));
                     this.copied = true;
@@ -173,12 +208,17 @@ impl Pane {
                     .gap(px(t.space.s8))
                     .child(
                         ui::button("request-peer", "Send", ui::Button::Primary)
+                            .focusable()
+                            .tab_stop(true)
                             .on_click(cx.listener(|this, _, _, cx| this.connect(cx))),
                     )
                     .child(
-                        ui::button("close-connect", "Cancel", ui::Button::Secondary).on_click(
-                            cx.listener(|this, _, window, cx| this.edit(Editor::None, window, cx)),
-                        ),
+                        ui::button("close-connect", "Cancel", ui::Button::Secondary)
+                            .focusable()
+                            .tab_stop(true)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.edit(Editor::None, window, cx)
+                            })),
                     ),
             )
     }
@@ -265,16 +305,19 @@ impl Pane {
                     .items_center()
                     .child("Peers")
                     .child(
-                        ui::button("connect-peer", "＋", ui::Button::Secondary).on_click(
-                            cx.listener(|this, _, window, cx| {
+                        ui::button("connect-peer", "＋", ui::Button::Secondary)
+                            .focusable()
+                            .tab_stop(true)
+                            .on_click(cx.listener(|this, _, window, cx| {
                                 this.edit(Editor::Connect, window, cx)
-                            }),
-                        ),
+                            })),
                     ),
             )
             .child(div().flex().gap(px(t.space.s4)).children(
                 [(false, "All"), (true, "Needs you")].map(|(needs, label)| {
                     ui::row(format!("filter-{needs}"), self.needs_you == needs)
+                        .focusable()
+                        .tab_stop(true)
                         .child(label)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.needs_you = needs;
@@ -313,6 +356,8 @@ impl Render for Pane {
                         "Preview with sample data",
                         ui::Button::Secondary,
                     )
+                    .focusable()
+                    .tab_stop(true)
                     .on_click(cx.listener(|this, _, _, cx| this.preview(true, cx))),
                 ),
             );
@@ -365,6 +410,8 @@ impl Render for Pane {
                     )
                     .child(
                         ui::button("exit-preview", "Exit preview", ui::Button::Secondary)
+                            .focusable()
+                            .tab_stop(true)
                             .on_click(cx.listener(|this, _, _, cx| this.preview(false, cx))),
                     ),
             )

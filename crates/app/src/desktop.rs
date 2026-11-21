@@ -2884,6 +2884,13 @@ impl Render for Browser {
                         .is_some_and(|layout| saved_view(layout.model(), id, &pane.view)))
         });
         for (id, view) in shown.clone() {
+            if view.kind == agent_interface_core::ViewKind::Connections
+                && self.views.get(&id).is_some_and(|(_, events)| {
+                    !events.belongs_to(self.pane_navigation_origin(&id).as_ref())
+                })
+            {
+                self.views.remove(&id);
+            }
             if !self.views.contains_key(&id) {
                 let Ok(connection) = self.pane_connection(&id) else {
                     continue;

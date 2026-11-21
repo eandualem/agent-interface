@@ -29,8 +29,12 @@ pub(super) struct ViewEvents {
 }
 
 impl ViewEvents {
+    pub fn belongs_to(&self, origin: Option<&Origin>) -> bool {
+        self.ticket.as_deref() == origin
+    }
+
     pub fn refresh(&mut self, origin: Option<Origin>) -> Option<Rc<Origin>> {
-        if self.ticket.as_deref() == origin.as_ref() {
+        if self.belongs_to(origin.as_ref()) {
             return None;
         }
         self.subscription = None;

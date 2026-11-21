@@ -12,6 +12,8 @@ pub(super) enum Receipt {
     Delivered,
     Notified,
     Passed,
+    Missing,
+    Uncertain,
     Declined,
     Revision,
     Queued,
@@ -184,6 +186,25 @@ pub(super) fn sample() -> Vec<Peer> {
                 "Please share the new runner image digest when it is ready.",
                 Queued,
             )],
+        ),
+        peer(
+            "release-check",
+            "sample-release",
+            Link::Connected,
+            vec![
+                message(
+                    Outgoing,
+                    "13:08",
+                    "Can you confirm the release checksum?",
+                    Receipt::Missing,
+                ),
+                message(
+                    Incoming,
+                    "13:15",
+                    "The checksum matches the signed release.",
+                    Receipt::Uncertain,
+                ),
+            ],
         ),
         peer("old-staging", "sample-staging", Link::Refused, vec![]),
     ]

@@ -59,7 +59,10 @@ impl Pane {
 
     fn gates(&self, p: &Peer, draft: Gates, cx: &Context<Self>) -> Div {
         let t = tokens();
-        let mut menu = ui::menu().child(ui::menu_heading("Delivery gate"));
+        let mut menu = ui::menu()
+            .min_w_0()
+            .max_w_full()
+            .child(ui::menu_heading("Delivery gate"));
         for (incoming, label, auto) in [
             (true, "Incoming", draft.incoming_auto),
             (false, "Outgoing", draft.outgoing_auto),
@@ -231,18 +234,10 @@ impl Pane {
                         "Send note to main",
                         ui::Button::Primary,
                         cx,
-                        move |this, i, _, cx| {
-                            if this.editor != Editor::Revise(n) {
-                                return;
+                        move |this, _, _, cx| {
+                            if this.editor == Editor::Revise(n) {
+                                this.submit_revision(cx);
                             }
-                            let note = this.input.read(cx).value().to_owned();
-                            if note.trim().is_empty() {
-                                this.error = Some("Enter a revision note.");
-                                return;
-                            }
-                            this.peers[i].review(n, Decision::Revise(note));
-                            this.editor = Editor::None;
-                            this.error = None;
                         },
                     ))
                     .child(self.cancel(p, cx));
@@ -277,20 +272,24 @@ impl Pane {
                     move |this, _, window, cx| this.edit(Editor::Decline(n), window, cx),
                 ));
             }
-            card =
-                card.child(actions)
-                    .child(
-                        ui::text(div().text_color(c.muted), &t.text.meta).child(if outgoing {
-                            format!("Sends unchanged to {}", p.name)
-                        } else {
-                            "Makes available & notifies main".into()
-                        }),
-                    );
+            let consequence = match self.editor {
+                Editor::Decline(index) if index == n => "Declines this message.".to_owned(),
+                Editor::Revise(index) if index == n => {
+                    "Returns the revision note to main.".to_owned()
+                }
+                _ if outgoing => format!("Sends unchanged to {}", p.name),
+                _ => "Makes available & notifies main".to_owned(),
+            };
+            card = card
+                .child(actions)
+                .child(ui::text(div().text_color(c.muted), &t.text.meta).child(consequence));
         } else {
             let label = match m.receipt {
                 Receipt::Delivered => "Delivered",
                 Receipt::Notified => "main notified",
                 Receipt::Passed => "Passed · awaiting receipt",
+                Receipt::Missing => "Receipt missing · delivery unknown",
+                Receipt::Uncertain => "Delivery uncertain · held for confirmation",
                 Receipt::Declined => "Declined",
                 Receipt::Revision => "Sent back to main to revise",
                 Receipt::Queued if p.link == Link::StoppedHere => {
@@ -320,12 +319,13 @@ impl Pane {
             .gap(px(t.space.s8))
             .when(self.compact, |el| {
                 el.child(
-                    ui::back_button("back-to-peers", "All").on_click(cx.listener(
-                        |this, _, _, cx| {
+                    ui::back_button("back-to-peers", "All")
+                        .focusable()
+                        .tab_stop(true)
+                        .on_click(cx.listener(|this, _, _, cx| {
                             this.show_thread = false;
                             cx.notify();
-                        },
-                    )),
+                        })),
                 )
             })
             .child(ui::profile_mark(&p.name, t.size.workspace_tile))
@@ -371,6 +371,7 @@ impl Pane {
                         if this.peers[n].link == Link::IncomingRequest {
                             this.peers[n].link = Link::Connected;
                             this.peers[n].gates = Gates::default();
+                            this.needs_you = false;
                         }
                     },
                 );
@@ -400,6 +401,7 @@ impl Pane {
                         div()
                             .flex()
                             .gap(px(t.space.s8))
+                            .flex_wrap()
                             .child(accept)
                             .child(decline),
                     );
