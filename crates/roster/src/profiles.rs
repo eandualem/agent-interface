@@ -364,10 +364,12 @@ impl Connection {
             return Err(Error::Invalid);
         }
         let query = format!("expected_registration_id={registration}");
-        let response = self.response(
+        // Stop can wait for an in-flight start and for the workspace to be sealed.
+        let response = self.response_within(
             &format!("/api/agents/{name}/stop?{query}"),
             Some(Vec::new()),
             RESPONSE_LIMIT,
+            Duration::from_secs(45),
         )?;
         if response.status == 404 {
             return Ok(());

@@ -362,7 +362,7 @@ fn removing_an_agent_stops_it_first_and_treats_a_missing_one_as_removed() {
     let (profile, identity) = profile_at(directory.path(), &socket);
     let stopped = json!({"ok": true, "session": "worker"});
     let changed = json!({"detail": {"code": "registration_changed"}});
-    let server = serve(
+    let server = serve_with_hook(
         listener,
         vec![
             (200, identity.clone()),
@@ -380,6 +380,12 @@ fn removing_an_agent_stops_it_first_and_treats_a_missing_one_as_removed() {
             (200, stopped),
             (409, changed),
         ],
+        |index| {
+            if index == 1 {
+                // A busy stop outlasts the ordinary 15-second write timeout.
+                thread::sleep(Duration::from_secs(16));
+            }
+        },
     );
     let connection = profile.connect().unwrap();
     // Removed; a 404 on stop ends there; a 404 on delete counts as removed.
