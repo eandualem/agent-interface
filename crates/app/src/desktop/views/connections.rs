@@ -20,6 +20,7 @@ enum Editor {
 
 pub(super) struct Pane {
     preview: bool,
+    entry: gpui::FocusHandle,
     peers: Vec<Peer>,
     selected: Option<String>,
     needs_you: bool,
@@ -35,8 +36,16 @@ pub(super) struct Pane {
 
 impl Pane {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let filter = cx.new(|cx| NameField::filter(window, cx));
-        let input = cx.new(|cx| NameField::feedback(window, cx));
+        let filter = cx.new(|cx| {
+            let mut field = NameField::filter(window, cx);
+            field.focus = field.focus.clone().tab_stop(true);
+            field
+        });
+        let input = cx.new(|cx| {
+            let mut field = NameField::feedback(window, cx);
+            field.focus = field.focus.clone().tab_stop(true);
+            field
+        });
         let search = cx.subscribe(&filter, |this, _, event: &NameEvent, cx| {
             if matches!(event, NameEvent::Changed(_)) {
                 this.reconcile(cx);
@@ -55,6 +64,7 @@ impl Pane {
         );
         Self {
             preview: false,
+            entry: cx.focus_handle().tab_stop(true),
             peers: Vec::new(),
             selected: None,
             needs_you: false,
@@ -67,6 +77,14 @@ impl Pane {
             error: None,
             _subscriptions: [search, editor_keys],
         }
+    }
+
+    pub(super) fn is_tab(key: &gpui::Keystroke) -> bool {
+        key.key == "tab" && key.modifiers.number_of_modifiers() == u8::from(key.modifiers.shift)
+    }
+
+    pub(super) fn focus_entry(&self, window: &mut Window, cx: &mut gpui::App) {
+        window.focus(&self.entry, cx);
     }
 
     fn matches(&self, peer: &Peer, cx: &gpui::App) -> bool {
@@ -336,6 +354,17 @@ impl Render for Pane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (t, c) = (tokens(), colors());
         let frame = div()
+            .tab_group()
+            .capture_key_down(|event: &gpui::KeyDownEvent, window, cx| {
+                if Self::is_tab(&event.keystroke) {
+                    if event.keystroke.modifiers.shift {
+                        window.focus_prev(cx);
+                    } else {
+                        window.focus_next(cx);
+                    }
+                    cx.stop_propagation();
+                }
+            })
             .size_full()
             .min_w_0()
             .min_h_0()
@@ -356,8 +385,7 @@ impl Render for Pane {
                         "Preview with sample data",
                         ui::Button::Secondary,
                     )
-                    .focusable()
-                    .tab_stop(true)
+                    .track_focus(&self.entry)
                     .on_click(cx.listener(|this, _, _, cx| this.preview(true, cx))),
                 ),
             );
@@ -408,14 +436,13 @@ impl Render for Pane {
                     .py(px(t.space.s4))
                     .bg(c.field)
                     .child(
-                        ui::text(div().min_w_0().text_color(c.muted), &t.text.meta)
-                            .child("Sample data · actions apply only to this preview"),
+                        ui::button("exit-preview", "Exit preview", ui::Button::Secondary)
+                            .track_focus(&self.entry)
+                            .on_click(cx.listener(|this, _, _, cx| this.preview(false, cx))),
                     )
                     .child(
-                        ui::button("exit-preview", "Exit preview", ui::Button::Secondary)
-                            .focusable()
-                            .tab_stop(true)
-                            .on_click(cx.listener(|this, _, _, cx| this.preview(false, cx))),
+                        ui::text(div().min_w_0().text_color(c.muted), &t.text.meta)
+                            .child("Sample data · actions apply only to this preview"),
                     ),
             )
             .when(self.editor == Editor::Connect, |el| {

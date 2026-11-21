@@ -912,6 +912,12 @@ impl ViewPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if let Some(pane) = &self.connections
+            && connections::Pane::is_tab(key)
+        {
+            pane.update(cx, |pane, cx| pane.focus_entry(window, cx));
+            return true;
+        }
         if let Some(view) = self
             .interactions
             .clone()
