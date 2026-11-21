@@ -598,12 +598,26 @@ mod tests {
             marked.join(".shell-server.json"),
         )
         .unwrap();
-        fs::remove_dir_all(original).unwrap();
         let witness = fs::read_dir(&root)
             .unwrap()
             .map(|e| e.unwrap().path())
             .find(|p| p.extension() == Some(OsStr::new("witness")))
             .unwrap();
+        // A regular file at the recorded socket cannot carry a running shell.
+        // Preserve it and allow a live original's marked copy its own binding.
+        let other = base.path().join("another-copy");
+        fs::create_dir(&other).unwrap();
+        for file in ["layouts.db", ".shell-server.json"] {
+            fs::copy(original.join(file), other.join(file)).unwrap();
+        }
+        fs::write(&absent, b"preserve").unwrap();
+        assert_ne!(
+            creation_in(&root, uid, &other, &leaf, true).unwrap(),
+            absent
+        );
+        assert_eq!(fs::read(&absent).unwrap(), b"preserve");
+        fs::remove_file(&absent).unwrap();
+        fs::remove_dir_all(original).unwrap();
         fs::remove_file(&witness).unwrap();
         fs::create_dir(&witness).unwrap();
         for copy in [unmarked, marked] {

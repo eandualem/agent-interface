@@ -322,11 +322,20 @@ fn sessions_match(socket: &Path, leaves: &[String]) -> io::Result<bool> {
         .any(|name| sessions.contains(&name)))
 }
 
+/// Discovery considers only usable socket entries. A stale regular file or
+/// an unowned socket is not a candidate for a different library. Selection of
+/// the library's own socket still reports the validation error to its caller.
+fn candidate_socket(root: &Path, name: &str) -> io::Result<Option<PathBuf>> {
+    match existing_socket_in(root, uzers::get_current_uid(), name) {
+        Err(error) if error.kind() == io::ErrorKind::InvalidInput => Ok(None),
+        result => result,
+    }
+}
+
 fn unclaimed_match(root: &Path, records: &Registry, leaves: &[String]) -> io::Result<bool> {
     // Start with existing sockets, so obsolete owners on unavailable volumes
     // do not participate. Apply ownership to the final socket, including when
     // an old path-named alias points at it.
-    let uid = uzers::get_current_uid();
     let mut visited = BTreeSet::new();
     for entry in fs::read_dir(root)? {
         let name = entry?.file_name();
@@ -334,8 +343,7 @@ fn unclaimed_match(root: &Path, records: &Registry, leaves: &[String]) -> io::Re
         if socket_key(path).is_none() {
             continue;
         }
-        let Some(socket) = existing_socket_in(root, uid, name.to_str().expect("ASCII socket key"))?
-        else {
+        let Some(socket) = candidate_socket(root, name.to_str().expect("ASCII socket key"))? else {
             continue;
         };
         let key = socket_key(&socket).expect("validated shell socket");
@@ -494,11 +502,8 @@ pub(super) fn bind(root: &Path, library: &Path, mode: Use<'_>) -> io::Result<Opt
                 automatic: true,
                 ..
             }
-        ) && let Some(socket) = existing_socket_in(
-            root,
-            uzers::get_current_uid(),
-            &format!("{}-terminals.sock", mark.key),
-        )? && owner.may_have_moved(root)
+        ) && let Some(socket) = candidate_socket(root, &format!("{}-terminals.sock", mark.key))?
+            && owner.may_have_moved(root)
             && sessions_match(&socket, &leaves)?
         {
             return Err(io::Error::other(RECOVERY));
