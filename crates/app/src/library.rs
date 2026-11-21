@@ -54,19 +54,27 @@ impl Library {
         let worker = thread::Builder::new()
             .name("storage worker".into())
             .spawn(move || {
-                let store = match location::library_location(directory.as_deref())
-                    .and_then(|directory| Store::open_or_create(&directory))
-                {
-                    Ok(store) => store,
-                    Err(error) => {
-                        tracing::warn!(
-                            event = "library_open_failed",
-                            "Library could not be opened"
-                        );
-                        publish(&pending, Err(error), &wake);
-                        return;
-                    }
-                };
+                let store =
+                    match location::library_location(directory.as_deref()).and_then(|directory| {
+                        let store = Store::open_or_create(&directory)?;
+                        let binding = directory
+                            .canonicalize()
+                            .and_then(|path| shells::remember_server(&path));
+                        if let Err(error) = binding {
+                            tracing::warn!(%error, "Could not record the library's shell server");
+                        }
+                        Ok(store)
+                    }) {
+                        Ok(store) => store,
+                        Err(error) => {
+                            tracing::warn!(
+                                event = "library_open_failed",
+                                "Library could not be opened"
+                            );
+                            publish(&pending, Err(error), &wake);
+                            return;
+                        }
+                    };
                 tracing::debug!(event = "library_opened", "Library opened");
                 let mut version = None;
                 let mut last_error = None;

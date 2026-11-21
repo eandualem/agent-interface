@@ -1069,8 +1069,12 @@ window identifiers use `io.github.eandualem.agent-interface`; macOS uses the sam
 bundle identifier. The executable, workspace crates, package archives and new
 install, configuration and data directories use `agent-interface`. The installer
 replaces only an installation and launchers that carry its own marker, and rolls
-back the app and launchers on failure. Library directories stay in place: their
-absolute path determines the ordinary-shell socket hash.
+back the app and launchers on failure. A library's `.shell-server.json` marker
+moves with its database. The user's private socket directory records which
+database owns the server. A new location
+can reclaim the running shells after a move, while a copied library gets a
+separate server. Opening a library with a running path-named server records
+that binding for subsequent moves.
 The Linux launcher uses the packaged Agent Interface icon.
 Under WSL, the installer installs missing Ubuntu runtime packages through apt
 and registers its desktop entry in `/usr/share/applications`, which
