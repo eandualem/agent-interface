@@ -1,12 +1,15 @@
+mod binding;
+
 use sha2::{Digest, Sha256};
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
 /// Locate the server owning an exact ordinary session in a resolved library.
 ///
 /// Pass the absolute result of [`super::library_directory`]. The socket is
-/// named after a hash of the UTF-8 library path, in a directory of the current
+/// selected by the library's saved binding, in a directory of the current
 /// UID. That directory must be a real directory owned by that UID, with no
 /// group or other permissions. Missing directories or sessions return None. A
 /// bounded read-only query checks the socket without starting a server or
@@ -20,20 +23,61 @@ pub fn existing_shell_socket(
 }
 
 fn existing_library_socket(resolved_directory: &Path) -> io::Result<Option<PathBuf>> {
-    if !resolved_directory.is_absolute() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "shell lookup requires the resolved absolute library directory",
-        ));
-    }
-    let text = resolved_directory.to_str().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "shell lookup requires a UTF-8 library path",
-        )
-    })?;
     let uid = uzers::get_current_uid();
-    existing_socket_in(&socket_directory(uid), uid, &socket_name(text))
+    lookup_in(&socket_directory(uid), uid, resolved_directory)
+}
+
+fn lookup_in(root: &Path, uid: u32, resolved_directory: &Path) -> io::Result<Option<PathBuf>> {
+    binding::legacy_key(resolved_directory)?;
+    if !private_socket_directory(root, uid)? {
+        return Ok(None);
+    }
+    let Some(key) = binding::lookup(root, resolved_directory)? else {
+        return Ok(None);
+    };
+    existing_socket_in(root, uid, &format!("{key}-terminals.sock"))
+}
+
+/// Register a running pre-binding server before its library moves, or refresh
+/// the recorded location of a server whose library has already moved.
+pub(super) fn remember_server(library: &Path) -> io::Result<()> {
+    let uid = uzers::get_current_uid();
+    let root = socket_directory(uid);
+    if private_socket_directory(&root, uid)? {
+        binding::bind(&root, library, binding::Use::Open)?;
+    }
+    Ok(())
+}
+
+fn saved_leaves(model: &agent_interface_core::Layout) -> Vec<String> {
+    model
+        .workspaces
+        .iter()
+        .flat_map(|space| &space.tabs)
+        .flat_map(|tab| tab.tree.leaves())
+        .map(|leaf| leaf.id.clone())
+        .collect()
+}
+
+fn read_leaves(library: &Path) -> io::Result<Vec<String>> {
+    let document = agent_interface_store::Store::open(library)
+        .and_then(|store| store.load())
+        .map_err(io::Error::other)?;
+    Ok(saved_leaves(document.model()))
+}
+
+/// Reconnect a library moved before its first registration, using the former
+/// folder supplied by its owner. Only an existing saved session can be recovered.
+pub fn reconnect_shells_from(directory: Option<&Path>, former: &Path) -> io::Result<()> {
+    let library = super::library_directory(directory).map_err(io::Error::other)?;
+    let former = super::location::former_library(former)?;
+    let uid = uzers::get_current_uid();
+    let root = socket_directory(uid);
+    if !private_socket_directory(&root, uid)? {
+        return Err(io::Error::other("No ordinary shell servers found"));
+    }
+    binding::bind(&root, &library, binding::Use::Recover(&former))?;
+    Ok(())
 }
 
 fn socket_directory(uid: u32) -> PathBuf {
@@ -61,39 +105,72 @@ fn select_socket(
 /// lookup, this may create the private parent, but never repairs unsafe metadata.
 /// The caller must have saved an eligible ordinary leaf before using this path.
 pub fn shell_socket_for_creation(resolved_directory: &Path, leaf_id: &str) -> io::Result<PathBuf> {
-    if let Some(socket) =
-        select_socket(existing_library_socket(resolved_directory)?, leaf_id, true)?
-    {
-        return Ok(socket);
-    }
-    let text = resolved_directory
-        .to_str()
-        .filter(|_| resolved_directory.is_absolute())
-        .ok_or_else(|| io::Error::other("Shell creation requires a resolved UTF-8 library path"))?;
-    let uid = uzers::get_current_uid();
-    create_socket_in(&socket_directory(uid), uid, &socket_name(text))
+    prepare_shell(resolved_directory, leaf_id, false)
 }
 
-fn create_socket_in(directory: &Path, uid: u32, name: &str) -> io::Result<PathBuf> {
+pub(crate) fn prepare_shell(library: &Path, leaf_id: &str, automatic: bool) -> io::Result<PathBuf> {
+    let uid = uzers::get_current_uid();
+    creation_in(&socket_directory(uid), uid, library, leaf_id, automatic)
+}
+
+fn creation_in(
+    root: &Path,
+    uid: u32,
+    library: &Path,
+    leaf_id: &str,
+    automatic: bool,
+) -> io::Result<PathBuf> {
+    ordinary_session(leaf_id).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "Invalid saved shell identity")
+    })?;
+    binding::legacy_key(library)?;
+    ensure_socket_directory(root, uid)?;
+    let key = binding::bind(
+        root,
+        library,
+        binding::Use::Create {
+            automatic,
+            leaf: leaf_id,
+        },
+    )?
+    .expect("creation selects a server");
+    let name = format!("{key}-terminals.sock");
+    let existing = existing_socket_in(root, uid, &name)?;
+    Ok(select_socket(existing, leaf_id, true)?.unwrap_or_else(|| root.join(name)))
+}
+
+fn ensure_socket_directory(directory: &Path, uid: u32) -> io::Result<()> {
     match std::fs::DirBuilder::new().mode(0o700).create(directory) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(error),
     }
-    // Lookup validates a nonsymlink, privately owned parent and any existing socket.
-    existing_socket_in(directory, uid, name)?;
-    Ok(directory.join(name))
+    if private_socket_directory(directory, uid)? {
+        Ok(())
+    } else {
+        Err(io::Error::other("Missing shell socket directory"))
+    }
 }
 
-fn socket_name(resolved_directory: &str) -> String {
-    let hash = format!("{:x}", Sha256::digest(resolved_directory.as_bytes()));
+fn socket_name(resolved_directory: impl AsRef<std::ffi::OsStr>) -> String {
+    let hash = format!(
+        "{:x}",
+        Sha256::digest(resolved_directory.as_ref().as_bytes())
+    );
     format!("{}-terminals.sock", &hash[..16])
 }
 
-fn existing_socket_in(directory: &Path, uid: u32, name: &str) -> io::Result<Option<PathBuf>> {
+fn missing(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+    )
+}
+
+fn private_socket_directory(directory: &Path, uid: u32) -> io::Result<bool> {
     let metadata = match directory.symlink_metadata() {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if missing(&error) => return Ok(false),
         Err(error) => return Err(error),
     };
     if !metadata.is_dir() || metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
@@ -102,15 +179,42 @@ fn existing_socket_in(directory: &Path, uid: u32, name: &str) -> io::Result<Opti
             "shell socket directory must be a real private directory owned by the current user",
         ));
     }
+    Ok(true)
+}
+
+fn existing_socket_in(directory: &Path, uid: u32, name: &str) -> io::Result<Option<PathBuf>> {
+    if !private_socket_directory(directory, uid)? {
+        return Ok(None);
+    }
     let socket = directory.join(name);
-    match socket.metadata() {
-        Ok(metadata) if metadata.file_type().is_socket() => Ok(Some(socket)),
-        Ok(_) => Err(io::Error::new(
+    let socket = match socket.symlink_metadata() {
+        Ok(meta) if meta.is_symlink() => {
+            let target = match socket.canonicalize() {
+                Ok(target) => target,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(e),
+            };
+            if target.parent() != Some(directory.canonicalize()?.as_path())
+                || binding::socket_key(&target).is_none()
+            {
+                return Err(io::Error::other(
+                    "Shell socket alias leaves the private shell namespace",
+                ));
+            }
+            target
+        }
+        Ok(_) => socket,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let metadata = socket.symlink_metadata()?;
+    if metadata.file_type().is_socket() && metadata.uid() == uid {
+        Ok(Some(socket))
+    } else {
+        Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "shell socket path is not a Unix socket",
-        )),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error),
+            "shell socket path is not an owned Unix socket",
+        ))
     }
 }
 
@@ -195,6 +299,332 @@ mod tests {
         assert!(!names.contains(&"terminal-0123456789ab".into()));
     }
 
+    fn expose_private_server(
+        root: &Path,
+        key_socket: &Path,
+        leaf: &str,
+    ) -> agent_interface_test_support::TmuxServer {
+        let server = agent_interface_test_support::TmuxServer::start().unwrap();
+        server
+            .run(&[
+                "new-session",
+                "-d",
+                "-s",
+                &ordinary_session(leaf).unwrap(),
+                "sh",
+            ])
+            .unwrap();
+        let socket = server
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap();
+        assert_eq!(key_socket.parent(), Some(root));
+        std::fs::hard_link(socket.trim_end(), key_socket).unwrap();
+        server
+    }
+
+    fn ensure_fixture_session(socket: &Path, leaf: &str) {
+        use agent_interface_tmux::shells::{Environment, Request, ensure};
+        let environment = Environment::capture().unwrap().prepared(|cmd| {
+            // Product ensure already specifies -S and clears the inherited environment.
+            let private = PathBuf::from(
+                cmd.get_args()
+                    .skip_while(|arg| *arg != "-S")
+                    .nth(1)
+                    .unwrap(),
+            )
+            .parent()
+            .unwrap()
+            .to_owned();
+            cmd.env("TMUX_TMPDIR", private);
+        });
+        ensure(
+            socket,
+            &[Request {
+                id: leaf.into(),
+                cwd: None,
+            }],
+            &environment,
+        )
+        .unwrap();
+    }
+
+    fn create_saved_shell(library: &Path) -> String {
+        use agent_interface_store::Store;
+        Store::open_or_create(library).unwrap();
+        let mut store = Store::open_existing_writable(library).unwrap();
+        let mut base = store.load().unwrap();
+        let mut model = base.model().clone();
+        model.add_tab(None, "/tmp".into(), false);
+        assert!(!store.save(&mut base, &model).unwrap().conflict);
+        model.tab().unwrap().focus.clone()
+    }
+
+    #[test]
+    fn moved_library_reuses_its_running_shell_and_copy_gets_a_separate_server() {
+        use agent_interface_tmux::discovery::read_attachment_policy;
+        use std::fs;
+        let base = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+        let original = base.path().join("original");
+        let root = base.path().join("sockets");
+        fs::create_dir(&original).unwrap();
+        let saved = create_saved_shell(&original);
+        let uid = uzers::get_current_uid();
+        ensure_socket_directory(&root, uid).unwrap();
+        let leaf = saved.as_str();
+        let session = ordinary_session(leaf).unwrap();
+        let legacy = root.join(socket_name(original.to_str().unwrap()));
+        let server = expose_private_server(&root, &legacy, leaf);
+        let before = read_attachment_policy(&legacy, &session).unwrap();
+        binding::bind(&root, &original, binding::Use::Open).unwrap();
+
+        let moved = base.path().join(if cfg!(target_os = "linux") {
+            OsStr::from_bytes(b"moved-\xff")
+        } else {
+            OsStr::new("moved")
+        });
+        fs::rename(&original, &moved).unwrap();
+        let copy = base.path().join("copy");
+        fs::create_dir(&copy).unwrap();
+        for file in ["layouts.db", ".shell-server.json"] {
+            fs::copy(moved.join(file), copy.join(file)).unwrap();
+        }
+        assert!(lookup_in(&root, uid, &copy).unwrap().is_none());
+        let copy_socket = creation_in(&root, uid, &copy, leaf, true).unwrap();
+        assert_ne!(copy_socket, legacy);
+        let second = expose_private_server(&root, &copy_socket, leaf);
+        ensure_fixture_session(&copy_socket, leaf);
+        assert_ne!(
+            read_attachment_policy(&copy_socket, &session)
+                .unwrap()
+                .server_pid,
+            before.server_pid
+        );
+        // Simulate losing the marker after committing the private registry.
+        fs::remove_file(moved.join(".shell-server.json")).unwrap();
+        let found = select_socket(lookup_in(&root, uid, &moved).unwrap(), leaf, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(creation_in(&root, uid, &moved, leaf, true).unwrap(), legacy);
+        ensure_fixture_session(&found, leaf);
+        assert_eq!(read_attachment_policy(&found, &session).unwrap(), before);
+        for server in [&server, &second] {
+            assert_eq!(
+                server
+                    .run(&["list-sessions", "-F", "#{session_name}"])
+                    .unwrap()
+                    .lines()
+                    .count(),
+                2
+            );
+            assert!(server.run(&["list-clients"]).unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn copy_then_remove_recovers_only_the_destination_chosen_by_the_owner() {
+        use std::fs;
+        let base = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+        let root = base.path().join("sockets");
+        let original = base.path().join("original");
+        let renamed = base.path().join("renamed");
+        let moved = base.path().join("new-volume");
+        let uid = uzers::get_current_uid();
+        ensure_socket_directory(&root, uid).unwrap();
+        fs::create_dir(&original).unwrap();
+        let saved = create_saved_shell(&original);
+        let leaf = saved.as_str();
+        let socket = creation_in(&root, uid, &original, leaf, false).unwrap();
+        let _server = expose_private_server(&root, &socket, leaf);
+        fs::rename(&original, &renamed).unwrap();
+        fs::create_dir(&moved).unwrap();
+        for file in ["layouts.db", ".shell-server.json"] {
+            fs::copy(renamed.join(file), moved.join(file)).unwrap();
+        }
+        // The old path disappeared, but the original still owns its marker.
+        assert!(
+            binding::bind(&root, &moved, binding::Use::Open)
+                .unwrap()
+                .is_none()
+        );
+        assert!(lookup_in(&root, uid, &moved).unwrap().is_none());
+        // A different library now occupies the former path.
+        fs::create_dir(&original).unwrap();
+        fs::write(original.join("layouts.db"), b"replacement").unwrap();
+        let backup = base.path().join("backup");
+        fs::create_dir(&backup).unwrap();
+        for file in ["layouts.db", ".shell-server.json"] {
+            fs::copy(renamed.join(file), backup.join(file)).unwrap();
+        }
+        fs::remove_dir_all(&renamed).unwrap();
+        for destination in [&backup, &moved] {
+            assert!(
+                binding::bind(&root, destination, binding::Use::Open)
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(
+                creation_in(&root, uid, destination, leaf, true)
+                    .unwrap_err()
+                    .to_string(),
+                binding::RECOVERY
+            );
+        }
+        let empty = base.path().join("empty");
+        fs::create_dir(&empty).unwrap();
+        std::os::unix::fs::symlink(&empty, &renamed).unwrap();
+        assert!(binding::bind(&root, &backup, binding::Use::Recover(&renamed)).is_err());
+        fs::remove_file(&renamed).unwrap();
+        std::os::unix::fs::symlink(&moved, &renamed).unwrap();
+        assert!(binding::bind(&root, &backup, binding::Use::Recover(&renamed)).is_err());
+        binding::bind(&root, &moved, binding::Use::Recover(&renamed)).unwrap();
+        assert_eq!(creation_in(&root, uid, &moved, leaf, true).unwrap(), socket);
+        ensure_fixture_session(&socket, leaf);
+    }
+
+    #[test]
+    fn pre_upgrade_move_needs_the_former_location_before_creating_a_replacement() {
+        use std::fs;
+        let base = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+        let root = base.path().join("sockets");
+        let original = base.path().join("original");
+        let moved = base.path().join("moved");
+        let uid = uzers::get_current_uid();
+        ensure_socket_directory(&root, uid).unwrap();
+        fs::create_dir(&moved).unwrap();
+        let saved = create_saved_shell(&moved);
+        let leaf = saved.as_str();
+        // The old location was reused. Its previous owner still holds the
+        // marker in a renamed folder. Its unresponsive socket must be skipped
+        // in both automatic discovery and explicit recovery.
+        fs::create_dir(&original).unwrap();
+        let older = create_saved_shell(&original);
+        assert!(creation_in(&root, uid, &original, leaf, true).is_err());
+        let parked_socket = creation_in(&root, uid, &original, &older, false).unwrap();
+        let _unresponsive = UnixListener::bind(&parked_socket).unwrap();
+        std::os::unix::fs::symlink(&parked_socket, root.join("fedcba9876543210-terminals.sock"))
+            .unwrap();
+        fs::rename(&original, base.path().join("parked")).unwrap();
+        let legacy = root.join(socket_name(original.to_str().unwrap()));
+        let _server = expose_private_server(&root, &legacy, leaf);
+        assert_eq!(
+            creation_in(&root, uid, &moved, leaf, true)
+                .unwrap_err()
+                .to_string(),
+            binding::RECOVERY
+        );
+        assert!(!moved.join(".shell-server.json").exists());
+        // A newly initialized library at the former path has unrelated panes.
+        create_saved_shell(&original);
+        let separate = creation_in(&root, uid, &moved, leaf, false).unwrap();
+        assert_ne!(separate, legacy);
+        let replacement = expose_private_server(&root, &separate, leaf);
+        assert!(
+            binding::bind(&root, &moved, binding::Use::Recover(&original))
+                .unwrap_err()
+                .to_string()
+                .contains("separate running shell server")
+        );
+        // Exited panes kept for scrollback still have sessions on this server.
+        replacement
+            .run(&["set-window-option", "-g", "remain-on-exit", "on"])
+            .unwrap();
+        for pane in replacement
+            .run(&["list-panes", "-a", "-F", "#{pane_id}"])
+            .unwrap()
+            .lines()
+        {
+            replacement
+                .run(&["respawn-pane", "-k", "-t", pane, "exit 0"])
+                .unwrap();
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while agent_interface_tmux::discovery::has_live_panes(&separate).unwrap() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fixture panes did not exit"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            !agent_interface_tmux::discovery::read_sessions(&separate)
+                .unwrap()
+                .is_empty()
+        );
+        // A registered replacement with the same pane IDs has a different
+        // socket. Its marker in the destination must not override the request.
+        let sibling = base.path().join("sibling");
+        fs::create_dir(&sibling).unwrap();
+        fs::copy(moved.join("layouts.db"), sibling.join("layouts.db")).unwrap();
+        let other_socket = creation_in(&root, uid, &sibling, leaf, false).unwrap();
+        let _other_server = expose_private_server(&root, &other_socket, leaf);
+        fs::remove_dir_all(&original).unwrap();
+        fs::rename(&sibling, &original).unwrap();
+        fs::copy(
+            original.join(".shell-server.json"),
+            moved.join(".shell-server.json"),
+        )
+        .unwrap();
+        binding::bind(&root, &moved, binding::Use::Recover(&original)).unwrap();
+        let recovered = creation_in(&root, uid, &moved, leaf, true).unwrap();
+        assert_eq!(recovered, legacy);
+        fs::remove_dir_all(&original).unwrap();
+        fs::write(&original, b"now a regular file").unwrap();
+        assert!(lookup_in(&root, uid, &original).unwrap().is_none());
+        assert_eq!(
+            binding::bind(&root, &moved, binding::Use::Recover(&original)).unwrap(),
+            binding::socket_key(&legacy).map(str::to_owned)
+        );
+        ensure_fixture_session(&recovered, leaf);
+    }
+
+    #[test]
+    fn a_missing_server_with_an_unreadable_witness_does_not_block_new_shells() {
+        use std::fs;
+        let base = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+        let root = base.path().join("sockets");
+        let original = base.path().join("original");
+        let marked = base.path().join("marked");
+        let unmarked = base.path().join("unmarked");
+        let uid = uzers::get_current_uid();
+        let leaf = create_saved_shell(&original);
+        let absent = creation_in(&root, uid, &original, &leaf, false).unwrap();
+        assert!(!absent.exists());
+        for copy in [&marked, &unmarked] {
+            fs::create_dir(copy).unwrap();
+            fs::copy(original.join("layouts.db"), copy.join("layouts.db")).unwrap();
+        }
+        fs::copy(
+            original.join(".shell-server.json"),
+            marked.join(".shell-server.json"),
+        )
+        .unwrap();
+        let witness = fs::read_dir(&root)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.extension() == Some(OsStr::new("witness")))
+            .unwrap();
+        // A regular file at the recorded socket cannot carry a running shell.
+        // Preserve it and allow a live original's marked copy its own binding.
+        let other = base.path().join("another-copy");
+        fs::create_dir(&other).unwrap();
+        for file in ["layouts.db", ".shell-server.json"] {
+            fs::copy(original.join(file), other.join(file)).unwrap();
+        }
+        fs::write(&absent, b"preserve").unwrap();
+        assert_ne!(
+            creation_in(&root, uid, &other, &leaf, true).unwrap(),
+            absent
+        );
+        assert_eq!(fs::read(&absent).unwrap(), b"preserve");
+        fs::remove_file(&absent).unwrap();
+        fs::remove_dir_all(original).unwrap();
+        fs::remove_file(&witness).unwrap();
+        fs::create_dir(&witness).unwrap();
+        for copy in [unmarked, marked] {
+            assert_ne!(creation_in(&root, uid, &copy, &leaf, true).unwrap(), absent);
+        }
+    }
+
     #[test]
     fn failed_discovery_does_not_authorize_creation() {
         // A socket in a private folder that accepts connections but never
@@ -213,16 +643,13 @@ mod tests {
     fn explicit_creation_makes_only_a_private_parent_and_rejects_unsafe_reuse() {
         let root = tempfile::tempdir().unwrap();
         let parent = root.path().join("shells");
-        let socket = create_socket_in(&parent, uzers::get_current_uid(), "fixture.sock").unwrap();
-        assert!(!socket.exists());
+        ensure_socket_directory(&parent, uzers::get_current_uid()).unwrap();
+        assert_eq!(parent.read_dir().unwrap().count(), 0);
         assert_eq!(parent.symlink_metadata().unwrap().mode() & 0o777, 0o700);
-        assert_eq!(
-            create_socket_in(&parent, uzers::get_current_uid(), "fixture.sock").unwrap(),
-            socket
-        );
+        ensure_socket_directory(&parent, uzers::get_current_uid()).unwrap();
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(
-            create_socket_in(&parent, uzers::get_current_uid(), "fixture.sock")
+            ensure_socket_directory(&parent, uzers::get_current_uid())
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::PermissionDenied
@@ -231,7 +658,7 @@ mod tests {
         let link = root.path().join("link");
         std::os::unix::fs::symlink(&parent, &link).unwrap();
         assert_eq!(
-            create_socket_in(&link, uzers::get_current_uid(), "fixture.sock")
+            ensure_socket_directory(&link, uzers::get_current_uid())
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::PermissionDenied
@@ -307,13 +734,7 @@ mod tests {
             assert!(ordinary_session(invalid).is_none());
         }
         assert!(existing_shell_socket(Path::new("relative"), "123456abcdef").is_err());
-        assert!(
-            existing_shell_socket(
-                Path::new(OsStr::from_bytes(b"/tmp/library-\xff")),
-                "123456abcdef"
-            )
-            .is_err()
-        );
+        assert!(binding::legacy_key(Path::new(OsStr::from_bytes(b"/tmp/library-\xff"))).is_ok());
 
         // Short private fixture path stays within macOS's Unix socket limit.
         let fixture = tempfile::Builder::new()
@@ -360,6 +781,13 @@ mod tests {
         assert!(existing_socket_in(&alias, uid, &name).is_err());
         drop(listener);
         std::fs::remove_file(&socket).unwrap();
+        let dangling = "0000000000000000-terminals.sock";
+        std::os::unix::fs::symlink(&socket, directory.join(dangling)).unwrap();
+        assert!(
+            existing_socket_in(&directory, uid, dangling)
+                .unwrap()
+                .is_none()
+        );
         std::fs::write(&socket, b"preserve").unwrap();
         assert!(existing_socket_in(&directory, uid, &name).is_err());
         assert_eq!(std::fs::read(&socket).unwrap(), b"preserve");

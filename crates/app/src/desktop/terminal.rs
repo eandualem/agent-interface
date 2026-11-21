@@ -443,6 +443,7 @@ impl LiveTerminal {
             return;
         }
         self.target.leaf = leaf;
+        self.restoring = false;
         self.start_window(self.selected_window.clone(), Some(environment), false, cx);
     }
 
@@ -570,6 +571,7 @@ impl LiveTerminal {
         self.connecting = true;
         let target = self.target.clone();
         let opened_shell = environment.is_some();
+        let automatic = self.restoring;
         let connection = cx.background_executor().spawn(async move {
             let attempt = CONNECTION_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let span = tracing::debug_span!("terminal_connect", attempt, pane_id = %target.leaf.id, attached = target.leaf.attachment.is_some(), explicit_open = environment.is_some());
@@ -584,7 +586,7 @@ impl LiveTerminal {
                     }
                     let directory = library::library_directory(target.directory.as_deref())
                         .map_err(|error| error.to_string())?;
-                    let socket = library::shell_socket_for_creation(&directory, &target.leaf.id)
+                    let socket = library::prepare_shell(&directory, &target.leaf.id, automatic)
                         .map_err(|error| error.to_string())?;
                     agent_interface_tmux::shells::ensure(
                         &socket,

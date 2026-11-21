@@ -1069,8 +1069,18 @@ window identifiers use `io.github.eandualem.agent-interface`; macOS uses the sam
 bundle identifier. The executable, workspace crates, package archives and new
 install, configuration and data directories use `agent-interface`. The installer
 replaces only an installation and launchers that carry its own marker, and rolls
-back the app and launchers on failure. Library directories stay in place: their
-absolute path determines the ordinary-shell socket hash.
+back the app and launchers on failure. The ordinary-shell registry in the user's private socket directory maps
+a library directory and database identity to its tmux socket. A rename preserves
+both identities. Registration is serialized and committed atomically before
+publishing the portable `.shell-server.json` marker. A hard link kept outside
+the library indicates whether the source still holds its marker. It lives
+beside the registry when possible, otherwise in a private sibling directory
+on the source volume. A different filesystem identity requires the owner's
+choice when the original disappears and matching sessions remain. This
+distinguishes an intended destination from a backup carrying the same marker.
+A legacy path-named socket at the original location is registered when it
+contains a saved pane's exact session. The guide covers recovery across
+volumes and after moving a library before registration.
 The Linux launcher uses the packaged Agent Interface icon.
 Under WSL, the installer installs missing Ubuntu runtime packages through apt
 and registers its desktop entry in `/usr/share/applications`, which

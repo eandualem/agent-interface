@@ -4,13 +4,21 @@
 
 use std::{ffi::OsString, path::PathBuf, process::ExitCode};
 
-const USAGE: &str = "Usage: agent-interface [--data-dir PATH]\n       agent-interface [--data-dir PATH] artifact publish FILE.html --title TITLE [--author NAME]\n\nOpen saved workspaces, or publish a self-contained HTML artifact to the\nlibrary without opening a window.\n";
+const USAGE: &str = "Usage: agent-interface [--data-dir PATH]\n       agent-interface [--data-dir PATH] --reconnect-shells-from FORMER_FOLDER\n       agent-interface [--data-dir PATH] artifact publish FILE.html --title TITLE [--author NAME]\n\nOpen saved workspaces, or publish a self-contained HTML artifact to the\nlibrary without opening a window.\n";
 
 fn main() -> ExitCode {
     match options(std::env::args_os().skip(1)) {
         Ok(Options::Open(directory)) => {
             if let Err(error) = agent_interface_app::desktop::run(directory) {
                 eprintln!("agent-interface: {}", error.escape_debug());
+                return ExitCode::FAILURE;
+            }
+        }
+        Ok(Options::Reconnect(directory, former)) => {
+            if let Err(error) =
+                agent_interface_app::library::reconnect_shells_from(directory.as_deref(), &former)
+            {
+                eprintln!("agent-interface: {}", error.to_string().escape_debug());
                 return ExitCode::FAILURE;
             }
         }
@@ -49,6 +57,7 @@ fn main() -> ExitCode {
 #[derive(Debug, PartialEq, Eq)]
 enum Options {
     Open(Option<PathBuf>),
+    Reconnect(Option<PathBuf>, PathBuf),
     Artifact {
         directory: Option<PathBuf>,
         file: PathBuf,
@@ -62,6 +71,7 @@ enum Options {
 fn options(mut arguments: impl Iterator<Item = OsString>) -> Result<Options, String> {
     use std::os::unix::ffi::OsStrExt;
     let mut directory = None;
+    let mut former = None;
     let (mut artifact, mut title, mut author) = (None, None, None);
     while let Some(argument) = arguments.next() {
         if argument == "--help" || argument == "-h" {
@@ -87,6 +97,11 @@ fn options(mut arguments: impl Iterator<Item = OsString>) -> Result<Options, Str
             } else {
                 author = Some(value);
             }
+        } else if argument == "--reconnect-shells-from" && former.is_none() {
+            former =
+                Some(PathBuf::from(arguments.next().ok_or(
+                    "--reconnect-shells-from needs the former library folder",
+                )?));
         } else if argument == "--data-dir" {
             directory = Some(PathBuf::from(
                 arguments.next().ok_or("--data-dir needs a path")?,
@@ -96,6 +111,12 @@ fn options(mut arguments: impl Iterator<Item = OsString>) -> Result<Options, Str
         } else {
             return Err(format!("unknown argument: {}", argument.to_string_lossy()));
         }
+    }
+    if let Some(path) = former {
+        if artifact.is_some() || title.is_some() || author.is_some() {
+            return Err("Choose either shell recovery or artifact publication".into());
+        }
+        return Ok(Options::Reconnect(directory, path));
     }
     if let Some(file) = artifact {
         return Ok(Options::Artifact {

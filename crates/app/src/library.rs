@@ -12,8 +12,10 @@ pub(crate) mod location;
 mod shells;
 mod window;
 pub use location::library_directory;
+pub(crate) use shells::prepare_shell;
 pub use shells::{
-    existing_shell_socket, ordinary_session, remember_shell_directory, shell_socket_for_creation,
+    existing_shell_socket, ordinary_session, reconnect_shells_from, remember_shell_directory,
+    shell_socket_for_creation,
 };
 pub use window::WindowLayout;
 
@@ -54,10 +56,10 @@ impl Library {
         let worker = thread::Builder::new()
             .name("storage worker".into())
             .spawn(move || {
-                let store = match location::library_location(directory.as_deref())
-                    .and_then(|directory| Store::open_or_create(&directory))
+                let (store, directory) = match location::library_location(directory.as_deref())
+                    .and_then(|path| Ok((Store::open_or_create(&path)?, path)))
                 {
-                    Ok(store) => store,
+                    Ok(result) => result,
                     Err(error) => {
                         tracing::warn!(
                             event = "library_open_failed",
@@ -76,6 +78,11 @@ impl Library {
                             return Ok(None);
                         }
                         let document = store.load()?;
+                        if version.is_none()
+                            && let Err(error) = shells::remember_server(&directory)
+                        {
+                            tracing::warn!(%error, "Could not record the library's shell server");
+                        }
                         // The token was read before load. A racing commit still
                         // changes the next poll, even if this read already saw it.
                         version = Some(current);
