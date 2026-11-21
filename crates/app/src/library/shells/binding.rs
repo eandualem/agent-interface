@@ -27,6 +27,8 @@ struct Owner {
     token: uuid::Uuid,
     library: PathBuf,
     identity: Identity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recovered_from: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -147,6 +149,14 @@ pub(super) fn legacy_key(library: &Path) -> io::Result<String> {
 }
 
 impl Owner {
+    fn at_recorded_path(&self) -> io::Result<bool> {
+        match Identity::read(&self.library) {
+            Ok(identity) => Ok(identity == self.identity),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     fn witness_dir(&self, root: &Path) -> io::Result<PathBuf> {
         if fs::metadata(root)?.dev() == self.identity.device {
             return Ok(root.to_owned());
@@ -230,8 +240,10 @@ fn owned_key(records: &Registry, library: &Path) -> io::Result<Option<String>> {
 /// path. Only a writer may transfer ownership across devices.
 pub(super) fn lookup(root: &Path, library: &Path) -> io::Result<Option<String>> {
     let legacy = legacy_socket_key(root, library)?;
-    let records = registry(root)?;
+    // Writers commit the registry before publishing the marker. Seeing the
+    // new marker must also let this read see the corresponding ownership.
     let mark = marker(library)?;
+    let records = registry(root)?;
     if records.is_empty() && mark.is_none() {
         return Ok(Some(legacy));
     }
@@ -294,7 +306,7 @@ fn unclaimed_match(root: &Path, records: &Registry, leaves: &[String]) -> io::Re
     // A marker write may have failed before the source was copied and removed.
     // A known server whose physical owner is gone also needs explicit recovery.
     for (key, owner) in records {
-        if !owner.library.join("layouts.db").try_exists()?
+        if !owner.at_recorded_path()?
             && owner.original_removed(root)? != Some(false)
             && live_match(root, key, leaves)?
         {
@@ -315,6 +327,59 @@ fn unclaimed_match(root: &Path, records: &Registry, leaves: &[String]) -> io::Re
         }
     }
     Ok(false)
+}
+
+// Several generations of a library can have occupied the same folder.
+// A marker identifies one generation. Without it only a unique live match
+// can settle which server the recovery request refers to.
+fn recovery_key(
+    root: &Path,
+    records: &Registry,
+    former: &Path,
+    identity: Identity,
+    marked: Option<(&Marker, &Owner)>,
+    leaves: &[String],
+) -> io::Result<String> {
+    let legacy = legacy_socket_key(root, former)?;
+    if let Some((key, _)) = records
+        .iter()
+        .find(|(_, o)| o.identity == identity && o.recovered_from.as_deref() == Some(former))
+        && live_match(root, key, leaves)?
+    {
+        return Ok(key.clone());
+    }
+    let mut candidates = Vec::new();
+    if let Some((m, owner)) = marked.filter(|(_, owner)| owner.library == former) {
+        candidates.push((m.key.as_str(), Some(owner)));
+    } else {
+        candidates.extend(
+            records
+                .iter()
+                .filter(|(_, owner)| owner.library == former)
+                .map(|(key, owner)| (key.as_str(), Some(owner))),
+        );
+        if !records.contains_key(&legacy) {
+            candidates.push((&legacy, None));
+        }
+    }
+    let mut found = None;
+    for (key, owner) in candidates {
+        if let Some(owner) = owner
+            && owner.identity != identity
+            && (owner.at_recorded_path()? || owner.original_removed(root)? == Some(false))
+        {
+            continue;
+        }
+        if live_match(root, key, leaves)? {
+            if found.is_some() {
+                return Err(io::Error::other(
+                    "Multiple live shell servers match the former library",
+                ));
+            }
+            found = Some(key.to_owned());
+        }
+    }
+    found.ok_or_else(|| io::Error::other("No saved shell matches that library's server"))
 }
 
 /// Serialize ownership changes across windows. The private registry is the
@@ -341,30 +406,10 @@ pub(super) fn bind(
         if former != library && former.join("layouts.db").try_exists()? {
             return Err(io::Error::other("The former library still exists"));
         }
-        let key = match marked {
-            Some((m, o)) if o.library == former => m.key.clone(),
-            _ => records
-                .iter()
-                .find(|(_, o)| o.library == former)
-                .map(|(key, _)| key.clone())
-                .map_or_else(|| legacy_socket_key(root, former), Ok)?,
-        };
+        let key = recovery_key(root, &records, former, identity, marked, leaves)?;
         if current.as_ref().is_some_and(|owned| owned != &key) {
             return Err(io::Error::other(
                 "This library already owns another shell server",
-            ));
-        }
-        if let Some(o) = records.get(&key)
-            && o.identity != identity
-            && (o.library != former || o.original_removed(root)? == Some(false))
-        {
-            return Err(io::Error::other(
-                "The shell server belongs to another library",
-            ));
-        }
-        if !live_match(root, &key, leaves)? {
-            return Err(io::Error::other(
-                "No saved shell matches that library's server",
             ));
         }
         key
@@ -372,13 +417,13 @@ pub(super) fn bind(
         key
     } else if let Some((mark, owner)) = marked {
         let released = owner.original_removed(root)?;
-        if released == Some(true) && !owner.library.join("layouts.db").try_exists()? {
+        if released == Some(true) && !owner.at_recorded_path()? {
             mark.key.clone()
         } else if matches!(mode, Use::Open) {
             return Ok(None);
         } else if matches!(mode, Use::Create { automatic: true })
             && released.is_none()
-            && !owner.library.join("layouts.db").try_exists()?
+            && !owner.at_recorded_path()?
         {
             return Err(io::Error::other(RECOVERY));
         } else {
@@ -417,6 +462,12 @@ pub(super) fn bind(
         token,
         library: library.to_owned(),
         identity,
+        recovered_from: match mode {
+            Use::Recover(former) => Some(former.to_owned()),
+            _ => previous
+                .filter(|o| o.identity == identity)
+                .and_then(|o| o.recovered_from.clone()),
+        },
     };
     if previous != Some(&owner) {
         records.insert(key.clone(), owner);

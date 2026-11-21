@@ -431,6 +431,9 @@ mod tests {
                 .is_none()
         );
         assert!(lookup_in(&root, uid, &moved).unwrap().is_none());
+        // A different library now occupies the former path.
+        fs::create_dir(&original).unwrap();
+        fs::write(original.join("layouts.db"), b"replacement").unwrap();
         fs::remove_dir_all(renamed).unwrap();
         binding::bind(&root, &moved, &leaves, binding::Use::Open).unwrap();
         assert_eq!(
@@ -453,6 +456,12 @@ mod tests {
         fs::write(moved.join("layouts.db"), b"fixture").unwrap();
         let leaf = "0123456789ab";
         let leaves = vec![leaf.to_owned()];
+        // A previous generation at the old location has a registry entry,
+        // but its server is gone. It must not mask the live legacy server.
+        fs::create_dir(&original).unwrap();
+        fs::write(original.join("layouts.db"), b"older").unwrap();
+        creation_in(&root, uid, &original, leaf, &leaves, false).unwrap();
+        fs::remove_dir_all(&original).unwrap();
         let legacy = root.join(socket_name(original.to_str().unwrap()));
         let _server = expose_private_server(&root, &legacy, leaf);
         assert_eq!(
@@ -465,6 +474,10 @@ mod tests {
         binding::bind(&root, &moved, &leaves, binding::Use::Recover(&original)).unwrap();
         let recovered = creation_in(&root, uid, &moved, leaf, &leaves, true).unwrap();
         assert_eq!(recovered, legacy);
+        assert_eq!(
+            binding::bind(&root, &moved, &leaves, binding::Use::Recover(&original)).unwrap(),
+            binding::socket_key(&legacy).map(str::to_owned)
+        );
         ensure_fixture_session(&recovered, leaf);
     }
 

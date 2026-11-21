@@ -443,6 +443,7 @@ impl LiveTerminal {
             return;
         }
         self.target.leaf = leaf;
+        self.restoring = false;
         self.start_window(self.selected_window.clone(), Some(environment), false, cx);
     }
 
