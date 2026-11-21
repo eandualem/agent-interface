@@ -1445,6 +1445,25 @@ mod tests {
     }
 
     #[test]
+    fn inspection_keeps_the_model_when_the_source_is_unfamiliar_or_mistyped() {
+        for (body, expected) in [
+            (
+                br#"{"name":"worker","model":"example","model_source":"future"}"#.as_slice(),
+                Some("future"),
+            ),
+            (
+                br#"{"name":"worker","model":"example","model_source":42}"#.as_slice(),
+                None,
+            ),
+            (br#"{"name":"worker","model":"example"}"#.as_slice(), None),
+        ] {
+            let agent = Agent::decode(body).unwrap();
+            assert_eq!(agent.model.as_deref(), Some("example"));
+            assert_eq!(agent.model_source.as_deref(), expected);
+        }
+    }
+
+    #[test]
     fn an_inspected_agent_carries_its_wait_and_background_from_the_services_fixture() {
         let agent =
             Agent::decode(include_bytes!("profiles/runs/fixtures/agent-inspect.json")).unwrap();
