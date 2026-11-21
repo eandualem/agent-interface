@@ -400,12 +400,15 @@ impl Render for Pane {
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .justify_between()
+                    .gap(px(t.space.s8))
                     .px(px(t.space.s12))
+                    .py(px(t.space.s4))
                     .bg(c.field)
                     .child(
-                        ui::text(div().text_color(c.muted), &t.text.meta)
+                        ui::text(div().min_w_0().text_color(c.muted), &t.text.meta)
                             .child("Sample data · actions apply only to this preview"),
                     )
                     .child(
