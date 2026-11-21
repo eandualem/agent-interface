@@ -1,47 +1,40 @@
-//! Immutable local lifecycle requests and origin-checked receipts. This module
-//! invokes no command. First-agent setup uses a separate versioned contract.
+//! An immutable request to create a profile, and what became of it. This
+//! module invokes no command. First-agent setup uses a separate versioned
+//! contract.
 
 use super::{Error, Identity, Profile, valid_id};
 
 mod recovery;
 
 use serde::Deserialize;
-use serde_json::{json, value::RawValue};
+use serde_json::json;
 
-/// Maximum bytes in a consumer-generated lifecycle request ID. Receipt lookup
-/// transports this ID as one command argument, even though submission uses a file.
+/// Maximum bytes in a consumer-generated request ID, which `profiles create`
+/// takes as one command argument.
 pub const REQUEST_ID_LIMIT: usize = 1024;
 
-/// Existing r2 local lifecycle actions. No action is inferred from a receipt.
+/// What a request asks of the service. No action is inferred from an answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
-    /// Reserve and provision a fresh isolated profile.
+    /// Make a new profile, which the service serves at once.
     Create,
-    /// Start the exact registered instance.
-    Start,
-    /// Stop the exact registered instance while preserving data.
-    Stop,
 }
 impl Action {
     fn name(self) -> &'static str {
         match self {
             Self::Create => "create",
-            Self::Start => "start",
-            Self::Stop => "stop",
         }
     }
 }
 
-/// Durable progress of one original request.
+/// The result of one original request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
-    /// The original operation has not finished.
-    Pending,
-    /// The provider recorded successful completion.
+    /// The service made the profile.
     Succeeded,
-    /// The provider recorded a failure without granting content authority.
+    /// The service made nothing; this grants no content authority.
     Failed,
 }
 
@@ -52,33 +45,17 @@ pub struct Receipt {
     pub request_id: String,
     /// The original action.
     pub action: Action,
-    /// Full reserved identity; absent only for create before reservation.
+    /// The new profile's identity; absent when nothing was made.
     pub identity: Option<Identity>,
-    /// Pending or a durable terminal result.
+    /// The terminal result.
     pub status: Status,
     /// A bounded failure category; raw provider messages are not retained.
     pub error_code: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct WireReceipt {
-    request_id: String,
-    action: Action,
-    profile_id: Box<RawValue>,
-    installation_id: Box<RawValue>,
-    lifecycle_id: Box<RawValue>,
-    status: Status,
-    error: Box<RawValue>,
-}
-#[derive(Deserialize)]
-struct Failure {
-    code: String,
-    message: String,
-}
-
-/// Original request bytes, target and progress. Selection changes cannot rewrite
-/// them. Create pins its first reserved identity; terminal results cannot regress.
-/// Keep this value across uncertain delivery and look up its original request ID.
+/// Original request bytes and progress. Selection changes cannot rewrite them.
+/// The first result is pinned and cannot change. Keep this value across
+/// uncertain delivery and ask again under its original request ID.
 pub struct Prepared {
     request_id: String,
     action: Action,
@@ -90,81 +67,42 @@ pub struct Prepared {
 impl Prepared {
     /// Capture a new-profile request without allocating identities or copying
     /// any existing profile's paths, environment, credentials or mutable data.
-    pub fn create(
-        request_id: &str,
-        display_name: &str,
-        baseline_version: &str,
-    ) -> Result<Self, Error> {
-        Self::create_request(request_id, display_name, baseline_version, false)
+    pub fn create(request_id: &str, display_name: &str) -> Result<Self, Error> {
+        Self::create_request(request_id, display_name, false)
     }
 
-    /// As [`Self::create`], and the provider copies only the person's Git
-    /// user.name and user.email into the new profile; nothing else of theirs.
+    /// As [`Self::create`], and records that the new profile is to get this
+    /// computer's Git user.name and user.email, which the app sets in it once
+    /// it is made; nothing else of theirs.
     pub fn create_copying_git_identity(
         request_id: &str,
         display_name: &str,
-        baseline_version: &str,
     ) -> Result<Self, Error> {
-        Self::create_request(request_id, display_name, baseline_version, true)
+        Self::create_request(request_id, display_name, true)
     }
 
     fn create_request(
         request_id: &str,
         display_name: &str,
-        baseline_version: &str,
         copy_git_identity: bool,
     ) -> Result<Self, Error> {
         if !valid_id(request_id)
-            || !valid_id(baseline_version)
             || display_name.trim().is_empty()
             || display_name.chars().any(char::is_control)
         {
             return Err(Error::Invalid);
         }
         let mut body = json!({
-            "schema_version":1,"request_id":request_id,"action":"create",
-            "display_name":display_name,"baseline_version":baseline_version,
+            "request_id":request_id,"action":"create","display_name":display_name,
         });
         // Omitted means none, so a request without the choice keeps its bytes.
         if copy_git_identity {
             body["git_identity"] = json!("copy");
         }
-        Self::prepare(request_id, Action::Create, None, body)
+        Self::prepare(request_id, Action::Create, body)
     }
 
-    /// Capture start's expected tuple from an atomic ready registry record.
-    /// Registry metadata is an expectation, not authenticated content authority.
-    pub fn start(request_id: &str, profile: &Profile) -> Result<Self, Error> {
-        Self::for_profile(request_id, Action::Start, profile)
-    }
-
-    /// Capture stop's expected tuple from an atomic ready registry record.
-    pub fn stop(request_id: &str, profile: &Profile) -> Result<Self, Error> {
-        Self::for_profile(request_id, Action::Stop, profile)
-    }
-
-    fn for_profile(request_id: &str, action: Action, profile: &Profile) -> Result<Self, Error> {
-        if !valid_id(request_id) {
-            return Err(Error::Invalid);
-        }
-        let binding = profile.binding.as_ref().ok_or(Error::NotReady)?;
-        let identity = Identity {
-            profile_id: profile.item.profile_id.clone(),
-            installation_id: binding.installation_id.clone(),
-            lifecycle_id: binding.lifecycle_id.clone(),
-        };
-        let body = json!({"schema_version":1,"request_id":request_id,"action":action.name(),
-            "profile_id":identity.profile_id,"expected_installation_id":identity.installation_id,
-            "expected_lifecycle_id":identity.lifecycle_id});
-        Self::prepare(request_id, action, Some(identity), body)
-    }
-
-    fn prepare(
-        request_id: &str,
-        action: Action,
-        identity: Option<Identity>,
-        body: serde_json::Value,
-    ) -> Result<Self, Error> {
+    fn prepare(request_id: &str, action: Action, body: serde_json::Value) -> Result<Self, Error> {
         if request_id.len() > REQUEST_ID_LIMIT {
             return Err(Error::Invalid);
         }
@@ -176,7 +114,7 @@ impl Prepared {
             request_id: request_id.into(),
             action,
             body,
-            identity,
+            identity: None,
             terminal: None,
         })
     }
@@ -190,7 +128,7 @@ impl Prepared {
         self.action
     }
 
-    /// The original durable lookup key; a timeout must not allocate a new one.
+    /// The original idempotency key; a timeout must not allocate a new one.
     pub fn request_id(&self) -> &str {
         &self.request_id
     }
@@ -199,83 +137,13 @@ impl Prepared {
         self.terminal.as_ref()
     }
 
-    /// Expected or reserved origin, never a verified connection.
+    /// The new profile's identity once made, never a verified connection.
     pub fn identity(&self) -> Option<&Identity> {
         self.identity.as_ref()
     }
 
-    /// Validate a lookup or submission receipt before changing retained progress.
-    /// Partial/foreign tuples, wrong actions/IDs and terminal regressions fail
-    /// without changing the original request or previously observed reservation.
-    /// Success still requires the normal identity handshake before content use.
-    pub fn observe(&mut self, bytes: &[u8]) -> Result<Receipt, Error> {
-        self.observe_wire(super::parse(bytes)?)
-    }
-
-    fn observe_wire(&mut self, wire: WireReceipt) -> Result<Receipt, Error> {
-        if wire.request_id != self.request_id || wire.action != self.action {
-            return Err(Error::Invalid);
-        }
-        let decode = |raw: &RawValue| {
-            serde_json::from_str::<Option<String>>(raw.get()).map_err(|_| Error::Invalid)
-        };
-        let identity = match (
-            decode(&wire.profile_id)?,
-            decode(&wire.installation_id)?,
-            decode(&wire.lifecycle_id)?,
-        ) {
-            (Some(profile_id), Some(installation_id), Some(lifecycle_id))
-                if valid_id(&profile_id)
-                    && valid_id(&installation_id)
-                    && valid_id(&lifecycle_id) =>
-            {
-                Some(Identity {
-                    profile_id,
-                    installation_id,
-                    lifecycle_id,
-                })
-            }
-            (None, None, None)
-                if self.action == Action::Create && wire.status != Status::Succeeded =>
-            {
-                None
-            }
-            _ => return Err(Error::Invalid),
-        };
-        // Derived structs also accept positional arrays; only the canonical
-        // object (or null) may establish terminal progress.
-        if wire.error.get() != "null" && !wire.error.get().starts_with('{') {
-            return Err(Error::Invalid);
-        }
-        let error: Option<Failure> =
-            serde_json::from_str(wire.error.get()).map_err(|_| Error::Invalid)?;
-        let error_code = match (wire.status, error) {
-            (Status::Failed, Some(failure))
-                if valid_id(&failure.code)
-                    && failure.code.len() <= 128
-                    && !failure.message.trim().is_empty()
-                    && failure.message.len() <= 4096 =>
-            {
-                Some(failure.code)
-            }
-            (Status::Pending | Status::Succeeded, None) => None,
-            _ => return Err(Error::Invalid),
-        };
-        self.record(Receipt {
-            request_id: wire.request_id,
-            action: wire.action,
-            identity,
-            status: wire.status,
-            error_code,
-        })
-    }
-
-    /// The new profile's name, for the Rust service, whose `profiles create`
-    /// takes it as an argument. None for a start or stop.
+    /// The new profile's name, which `profiles create` takes as an argument.
     pub fn display_name(&self) -> Option<String> {
-        if self.action != Action::Create {
-            return None;
-        }
         let body: serde_json::Value = serde_json::from_slice(&self.body).ok()?;
         body.get("display_name")?.as_str().map(str::to_owned)
     }
@@ -290,9 +158,6 @@ impl Prepared {
     /// Record the Rust service's answer to this create request: the entry of
     /// the profile it made, which it serves at once.
     pub fn observe_created(&mut self, profile: &Profile) -> Result<Receipt, Error> {
-        if self.action != Action::Create || !profile.served() {
-            return Err(Error::Invalid);
-        }
         self.record(Receipt {
             request_id: self.request_id.clone(),
             action: self.action,
@@ -305,7 +170,7 @@ impl Prepared {
     /// Record that the Rust service refused this create request, or could not
     /// be reached, so it made nothing; `code` names which.
     pub fn observe_refused(&mut self, code: &str) -> Result<Receipt, Error> {
-        if self.action != Action::Create || !valid_id(code) || code.len() > 128 {
+        if !valid_id(code) || code.len() > 128 {
             return Err(Error::Invalid);
         }
         self.record(Receipt {
@@ -317,8 +182,7 @@ impl Prepared {
         })
     }
 
-    /// Keep a validated observation: a reserved identity cannot change and a
-    /// terminal result cannot regress.
+    /// Keep a validated observation: the first result cannot change.
     fn record(&mut self, receipt: Receipt) -> Result<Receipt, Error> {
         if self
             .identity
@@ -335,9 +199,7 @@ impl Prepared {
             return Err(Error::Invalid);
         }
         self.identity = receipt.identity.clone();
-        if receipt.status != Status::Pending {
-            self.terminal = Some(receipt.clone());
-        }
+        self.terminal = Some(receipt.clone());
         Ok(receipt)
     }
 }

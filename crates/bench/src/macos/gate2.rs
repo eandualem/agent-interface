@@ -111,7 +111,7 @@ pub fn run(options: &Options) -> Result<(), String> {
     let programs = Programs::from_options(options)?;
     let environment = report::environment(&programs);
     let work = tempfile::Builder::new()
-        .prefix("tw-gate2-")
+        .prefix("ai-gate2-")
         .tempdir()
         .map_err(|error| error.to_string())?;
     let producer = work.path().join("producer.sh");

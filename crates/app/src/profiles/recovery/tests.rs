@@ -1,18 +1,20 @@
 use super::*;
 use crate::profiles::{Client, lifecycle::Operation, setup::Setup};
-use agent_interface_roster::profiles::{Profile, operations, setup};
+use agent_interface_roster::profiles::{operations, setup};
 use serde_json::{Value, json};
 use std::{fs, os::unix::fs::PermissionsExt};
 
-fn fixture() -> Value {
-    serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../roster/tests/fixtures/profiles-v1.json"
-    )))
-    .unwrap()
+/// A profile the Rust service lists as serving.
+fn entry() -> Value {
+    json!({
+        "state": "serving", "protocol_version": 1, "profile_id": "0a1b2c3d4e5f",
+        "display_name": "Work", "instance_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d",
+        "machine": {"id": "5f2c9e0d1b7a4e38"}, "socket": "/run/profile/api.sock",
+        "tmux_socket": "/run/profile/tmux.sock", "credential_reference": {"type": "socket"}
+    })
 }
-fn profile() -> Profile {
-    Profile::parse(&serde_json::to_vec(&fixture()["discovery"]["show_ready"]).unwrap()).unwrap()
+fn create() -> operations::Prepared {
+    operations::Prepared::create("operation-create-a", "Work").unwrap()
 }
 fn prepared_setup() -> setup::Prepared {
     crate::profiles::tests::first_agent(
@@ -41,10 +43,7 @@ fn client() -> (tempfile::TempDir, Client) {
 #[test]
 fn lifecycle_and_setup_recovery_match_kind_without_running_commands() {
     let (dir, client) = client();
-    let operation = Operation::new(
-        &client,
-        operations::Prepared::start("operation-start-a", &profile()).unwrap(),
-    );
+    let operation = Operation::new(&client, create());
     let checkpoint = operation.checkpoint().unwrap();
     let restored = Operation::restore(&client, &checkpoint).unwrap();
     assert_eq!(restored.request_bytes(), operation.request_bytes());
@@ -75,7 +74,7 @@ fn recovery_survives_a_relaunch_from_another_environment() {
     let (dir, client) = client();
     let checkpoint = Operation::new(
         &client,
-        operations::Prepared::create("create-1", "Work", "baseline").unwrap(),
+        operations::Prepared::create("create-1", "Work").unwrap(),
     )
     .checkpoint()
     .unwrap();
@@ -91,12 +90,7 @@ fn recovery_survives_a_relaunch_from_another_environment() {
 #[test]
 fn malformed_and_oversized_capsules_are_rejected() {
     let (_dir, client) = client();
-    let checkpoint = Operation::new(
-        &client,
-        operations::Prepared::start("operation-start-a", &profile()).unwrap(),
-    )
-    .checkpoint()
-    .unwrap();
+    let checkpoint = Operation::new(&client, create()).checkpoint().unwrap();
     for (key, value) in [
         ("version", json!(2)),
         ("kind", json!("unknown")),
@@ -127,11 +121,13 @@ fn discovery_and_restored_executors_use_the_captured_working_directory() {
         "EXPECTED_CWD".into(),
         client.directory.as_os_str().to_owned(),
     ));
-    let fixture = fixture();
-    let list = &fixture["discovery"]["list"];
-    let receipt = &fixture["lifecycle"]["succeeded"];
+    let entry = entry();
+    let list = json!({"profiles": [&entry]});
     let result = crate::profiles::tests::ready(&crate::profiles::tests::request(1));
-    fs::write(&client.executable,format!(r#"#!/bin/sh
+    fs::write(
+        &client.executable,
+        format!(
+            r#"#!/bin/sh
 test "$(/bin/pwd)" = "$EXPECTED_CWD" || exit 8
 printf '%s\n' "$*" >> "$CALLS"
 case "$1 $2" in
@@ -139,8 +135,8 @@ case "$1 $2" in
 {list}
 FIXTURE
 ;;
- 'profiles apply') /bin/cat "$4" >> "$CALLS.body"; printf '\n' >> "$CALLS.body"; /bin/cat <<'FIXTURE'
-{receipt}
+ 'profiles create') /bin/cat <<'FIXTURE'
+{entry}
 FIXTURE
 ;;
  'setup --file') /bin/cat "$3" >> "$CALLS.body"; printf '\n' >> "$CALLS.body"; /bin/cat <<'FIXTURE'
@@ -149,11 +145,11 @@ FIXTURE
 ;;
  *) exit 9;;
 esac
-"#)).unwrap();
-    let operation = Operation::new(
-        &client,
-        operations::Prepared::start("operation-start-a", &profile()).unwrap(),
-    );
+"#
+        ),
+    )
+    .unwrap();
+    let operation = Operation::new(&client, create());
     let mut restored = Operation::restore(&client, &operation.checkpoint().unwrap()).unwrap();
     let setup = Setup::new(&client, prepared_setup());
     let restored_setup = Setup::restore(&client, &setup.checkpoint().unwrap()).unwrap();
@@ -175,8 +171,7 @@ esac
     assert_eq!(
         bodies,
         format!(
-            "{}\n{}\n",
-            std::str::from_utf8(operation.request_bytes()).unwrap(),
+            "{}\n",
             std::str::from_utf8(setup.bytes(setup::Action::FirstAgent)).unwrap()
         )
     );

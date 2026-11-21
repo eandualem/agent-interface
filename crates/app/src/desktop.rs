@@ -726,7 +726,6 @@ struct Browser {
     shell_environment: Option<Result<agent_interface_tmux::shells::Environment, String>>,
     shell_after_save: Option<Leaf>,
     shell_to_open: Option<Leaf>,
-    profile_starting: bool,
     /// The pane Open terminal asked for, focused once its shell is attached.
     terminal_to_focus: Option<String>,
     resize: Option<split_resize::Drag>,

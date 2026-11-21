@@ -125,8 +125,6 @@ impl Plan {
 pub enum Error {
     /// Backbone could not provide current plans: it answered with an unexpected status.
     Unavailable,
-    /// The provider does not offer current plans yet.
-    Unsupported,
     /// The response violated the bounded contract.
     Unreadable,
     /// The captured profile connection refused or failed this read.
@@ -138,7 +136,6 @@ impl Error {
     pub fn message(self) -> &'static str {
         match self {
             Self::Unavailable => "Backbone could not provide current plans.",
-            Self::Unsupported => "This Agent Backbone does not offer current plans yet.",
             Self::Unreadable => "Backbone returned an unreadable plans response.",
             Self::Connection(
                 crate::profiles::Error::BindingRequired | crate::profiles::Error::BindingMismatch,
@@ -151,7 +148,7 @@ impl Error {
 /// The most pages read for one list, bounding a misbehaving cursor.
 const PAGES: usize = 20;
 
-/// Current-plan reads pinned to one verified profile and credential snapshot.
+/// Current-plan reads pinned to one verified profile connection.
 #[derive(Clone)]
 pub struct Client {
     connection: crate::profiles::Connection,
@@ -213,7 +210,6 @@ fn list_using(
         .map_err(Error::Connection)?;
     match response.status {
         200 => parse(&response.body),
-        404 => Err(Error::Unsupported),
         _ => Err(Error::Unavailable),
     }
 }

@@ -11,12 +11,11 @@ fn socket(server: &TmuxServer) -> PathBuf {
         .trim_end()
         .into()
 }
-fn identity(label: &str, socket: &std::path::Path) -> Reply {
+fn identity(label: &str) -> Reply {
     Reply::ok(
         "/api/profile",
-        json!({"schema_version":1,"profile_id":format!("profile-{label}"),
-        "installation_id":format!("installation-{label}"),"lifecycle_id":format!("lifecycle-{label}"),
-        "baseline_version":"fixture","tmux":{"socket_path":socket}}),
+        json!({"protocol_version":1,"profile_id":format!("profile-{label}"),
+        "instance_id":format!("instance-{label}"),"machine":{"id":format!("machine-{label}")}}),
     )
 }
 fn take(source: &SessionSource, ready: &mpsc::Receiver<()>) -> Observation {
@@ -25,7 +24,7 @@ fn take(source: &SessionSource, ready: &mpsc::Receiver<()>) -> Observation {
 }
 
 #[test]
-fn bound_session_polling_keeps_same_names_on_original_sockets_and_credentials() {
+fn bound_session_polling_keeps_same_names_on_original_sockets() {
     let tmux_a = TmuxServer::start().unwrap();
     let tmux_b = TmuxServer::start().unwrap();
     tmux_a.run(&["new-session", "-d", "-s", "only-a"]).unwrap();
@@ -39,16 +38,16 @@ fn bound_session_polling_keeps_same_names_on_original_sockets_and_credentials() 
         vec![
             Reply {
                 delay: Some((arrived, held)),
-                ..identity("a", &sa)
+                ..identity("a")
             },
-            identity("a", &sa),
-            identity("a", &sa),
-            identity("a", &sa),
+            identity("a"),
+            identity("a"),
+            identity("a"),
         ],
         Some(sa),
     );
     let (_dir_b, b, server_b) =
-        provider_with_tmux("b", vec![identity("b", &sb), identity("b", &sb)], Some(sb));
+        provider_with_tmux("b", vec![identity("b"), identity("b")], Some(sb));
     let (wake_a, ready_a) = mpsc::channel();
     let (wake_b, ready_b) = mpsc::channel();
     let source_a = SessionSource::start_bound(a.clone(), move || {
@@ -56,7 +55,6 @@ fn bound_session_polling_keeps_same_names_on_original_sockets_and_credentials() 
     })
     .unwrap();
     waiting.recv_timeout(Duration::from_secs(5)).unwrap();
-    std::fs::write(a.credential_reference(), "BACKBONE_API_KEY=rotated\n").unwrap();
     let source_b = SessionSource::start_bound(b.clone(), move || {
         let _ = wake_b.send(());
     })
@@ -90,7 +88,7 @@ fn post_query_binding_refusal_discards_even_successful_private_session_data() {
     let (_dir, connection, server) = provider_with_tmux(
         "a",
         vec![
-            identity("a", &socket),
+            identity("a"),
             Reply {
                 status: 409,
                 replace: true,
@@ -122,7 +120,7 @@ fn cancelled_identity_probe_never_publishes_or_runs_a_later_query_stage() {
         "a",
         vec![Reply {
             delay: Some((arrived, held)),
-            ..identity("a", &socket)
+            ..identity("a")
         }],
         Some(socket),
     );

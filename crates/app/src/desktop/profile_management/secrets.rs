@@ -248,7 +248,7 @@ fn listed(list: Result<Vec<Secret>, AddError>) -> List {
 fn unconnected(error: Error) -> String {
     match error {
         Error::BindingRequired | Error::BindingMismatch | Error::Unsupported => CHANGED.into(),
-        _ => "Start the profile to see its secrets.".into(),
+        _ => "The profile can't be reached, so its secrets can't be shown.".into(),
     }
 }
 
@@ -257,9 +257,7 @@ fn unconnected(error: Error) -> String {
 fn unread(error: AddError) -> String {
     match error {
         AddError::Refused(message) => message,
-        AddError::Connection(
-            Error::BindingRequired | Error::BindingMismatch | Error::Unsupported,
-        ) => CHANGED.into(),
+        AddError::Connection(Error::BindingRequired | Error::BindingMismatch) => CHANGED.into(),
         AddError::Connection(_) => "Couldn't read the profile's secrets.".into(),
     }
 }
@@ -307,9 +305,9 @@ fn outcome(changed: Result<Change, AddError>) -> String {
         Err(AddError::Connection(Error::Invalid)) => {
             "That value is too long, or the service's answer couldn't be read.".into()
         }
-        Err(AddError::Connection(
-            Error::BindingRequired | Error::BindingMismatch | Error::Unsupported,
-        )) => CHANGED.into(),
+        Err(AddError::Connection(Error::BindingRequired | Error::BindingMismatch)) => {
+            CHANGED.into()
+        }
         Err(AddError::Connection(_)) => "Couldn't reach the profile's service.".into(),
     }
 }

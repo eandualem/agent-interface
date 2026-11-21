@@ -10,7 +10,7 @@ use std::{
 
 /// Commands looked up through the user's own shell. tmux is not among them:
 /// terminals use the app's own resolver, so setup checks with that.
-const COMMANDS: &[&str] = &["git", "backbone", "claude", "codex", "gemini", "opencode"];
+const COMMANDS: &[&str] = &["git", "backbone", "claude", "codex", "opencode"];
 
 /// Agent tools Backbone can run: command, name, official install command.
 pub const TOOLS: &[(&str, &str, &str)] = &[
@@ -24,7 +24,6 @@ pub const TOOLS: &[(&str, &str, &str)] = &[
         "Codex",
         "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
     ),
-    ("gemini", "Gemini CLI", "npm install -g @google/gemini-cli"),
     (
         "opencode",
         "OpenCode",
@@ -40,7 +39,7 @@ const OUTPUT_LIMIT: usize = 256 * 1024;
 /// Whether Agent Backbone is set up and answering.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Backbone {
-    /// No Backbone database at its data directory.
+    /// No `backbone` command, or no profile served yet.
     NotSetUp,
     /// Set up, but the last request failed.
     Unreachable(&'static str),
@@ -79,6 +78,17 @@ impl Probe {
         // The same executable and PATH a second login shell would find.
         probe.backbone = answers(probe.client());
         probe
+    }
+
+    /// A check that found only `backbone` at `path`, with PATH `path_env`.
+    #[cfg(test)]
+    pub fn with_backbone(path: PathBuf, path_env: String) -> Self {
+        Self {
+            path_env,
+            found: vec![("backbone", path)],
+            tmux: None,
+            backbone: Backbone::NotSetUp,
+        }
     }
 
     /// A profile client for the Backbone this check found, with its PATH.
@@ -223,26 +233,26 @@ fn path_lookup(path_env: &str, home: Option<&Path>) -> (Vec<(&'static str, PathB
     (found, path_env)
 }
 
-/// Whether Agent Backbone's Default profile answers, read through its
+/// Whether the first profile Agent Backbone serves answers, read through its
 /// verified connection with a client already found, so the login shell is
-/// not asked again. Blocks for a moment; call off the UI thread.
+/// not asked again. First run makes the Default profile. Blocks for a
+/// moment; call off the UI thread.
 pub fn answers(client: Option<crate::profiles::Client>) -> Backbone {
-    use agent_interface_roster::profiles::Kind;
-    const UNANSWERED: &str = "The Default profile is not answering";
+    use agent_interface_roster::profiles::State;
+    const UNANSWERED: &str = "The first serving profile is not answering";
     let live = || true;
     let Some(client) = client else {
         return Backbone::NotSetUp;
     };
     let items = match client.list(&live) {
         Ok(items) => items,
-        Err(crate::profiles::Error::RegistryAbsent) => return Backbone::NotSetUp,
         Err(_) => return Backbone::Unreachable("Backbone did not list its profiles"),
     };
-    let Some(default) = items.iter().find(|item| item.kind == Kind::LegacyDefault) else {
+    let Some(served) = items.iter().find(|item| item.state == State::Ready) else {
         return Backbone::NotSetUp;
     };
     let roster = client
-        .show(&default.profile_id, &live)
+        .show(&served.profile_id, &live)
         .ok()
         .and_then(|profile| profile.connect().ok())
         .and_then(|connection| connection.roster().ok());
@@ -250,6 +260,36 @@ pub fn answers(client: Option<crate::profiles::Client>) -> Backbone {
         Some(_) => Backbone::Running,
         None => Backbone::Unreachable(UNANSWERED),
     }
+}
+
+/// The service's own sentence on why it does not serve `saved`, the first
+/// profile made before, when it lists that profile as failed. With nothing
+/// saved and none served, the first failed profile's. Blocks for a moment;
+/// call off the UI thread.
+pub fn saved_failure(
+    client: Option<crate::profiles::Client>,
+    saved: Option<&str>,
+) -> Option<String> {
+    use agent_interface_roster::profiles::State;
+    let client = client?;
+    let Some(saved) = saved else {
+        let items = client.list(&|| true).ok()?;
+        // With a profile served, its failed neighbours don't explain setup.
+        if items.iter().any(|item| item.state == State::Ready) {
+            return None;
+        }
+        let item = items.into_iter().find(|item| item.state == State::Failed)?;
+        tracing::warn!(event = "first_profile_not_served", profile_id = %item.profile_id, code = ?item.failure, "First profile not served");
+        return item.reason;
+    };
+    let profile = client.show(saved, &|| true).ok()?;
+    let item = profile.item();
+    if item.state != State::Failed {
+        return None;
+    }
+    // The stable code and the profile go to the log; the sentence never does.
+    tracing::warn!(event = "first_profile_not_served", profile_id = %item.profile_id, code = ?item.failure, "First profile not served");
+    item.reason.clone()
 }
 
 /// The PATH a new terminal has: the login shell's, plus the usual install
@@ -372,5 +412,90 @@ mod tests {
                 "{shell}"
             );
         }
+    }
+
+    /// A stub `backbone` in `root` that logs each call and prints `listed` for
+    /// a list and `shown` for a show.
+    fn stub(root: &std::path::Path, listed: &str, shown: &str) -> crate::profiles::Client {
+        use std::os::unix::fs::PermissionsExt;
+        // Executing a file that any process holds open for writing fails on Linux
+        // with ETXTBSY, and a child another test thread forks while this one writes
+        // inherits the descriptor. So `cp` writes the executed file, in its own
+        // process, and this process never opens it for writing.
+        let source = root.join("provider.sh");
+        std::fs::write(
+            &source,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$(dirname \"$0\")/calls\"\ncase \"$2\" in\n  list) printf '%s' '{listed}';;\n  show) printf '%s' '{shown}';;\nesac\n"
+            ),
+        )
+        .unwrap();
+        let provider = root.join("provider");
+        let copied = std::process::Command::new("/bin/cp")
+            .arg(&source)
+            .arg(&provider)
+            .status()
+            .unwrap();
+        assert!(copied.success());
+        std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o700)).unwrap();
+        crate::profiles::Client::new(provider, "/usr/bin:/bin".into()).unwrap()
+    }
+
+    #[test]
+    fn a_saved_profile_that_failed_gives_the_services_reason() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let failed = serde_json::json!({"state": "failed", "profile_id": "0a1b2c3d4e5f",
+            "code": "start_failed", "reason": "Its folder is not readable."});
+        let second = serde_json::json!({"state": "failed", "profile_id": "0a1b2c3d4e60",
+            "code": "start_failed", "reason": "Its settings are not readable."});
+        let listed = serde_json::json!({"profiles": [failed, second]});
+        let client = || stub(&root, &listed.to_string(), &failed.to_string());
+        assert_eq!(
+            saved_failure(Some(client()), Some("0a1b2c3d4e5f")).as_deref(),
+            Some("Its folder is not readable.")
+        );
+        // A fresh first run, with nothing saved: the first failed profile's.
+        assert_eq!(
+            saved_failure(Some(client()), None).as_deref(),
+            Some("Its folder is not readable.")
+        );
+        // With a profile served, no failed one explains setup.
+        let served = serde_json::json!({"state": "serving", "protocol_version": 1,
+            "profile_id": "0a1b2c3d4e61", "display_name": "Work",
+            "instance_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d", "machine": {"id": "5f2c9e0d1b7a4e38"},
+            "socket": root.join("api.sock"), "tmux_socket": root.join("tmux.sock"),
+            "credential_reference": {"type": "socket"}});
+        let listed = serde_json::json!({"profiles": [served, failed]});
+        let client = stub(&root, &listed.to_string(), &failed.to_string());
+        assert_eq!(saved_failure(Some(client), None), None);
+        assert_eq!(saved_failure(None, Some("0a1b2c3d4e5f")), None);
+    }
+
+    #[test]
+    fn only_the_first_serving_profile_is_probed() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let entry = |id: &str| {
+            serde_json::json!({"state": "serving", "protocol_version": 1, "profile_id": id,
+                "display_name": id, "instance_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d",
+                "machine": {"id": "5f2c9e0d1b7a4e38"}, "socket": root.join(format!("{id}.sock")),
+                "tmux_socket": root.join("tmux.sock"), "credential_reference": {"type": "socket"}})
+        };
+        let failed = serde_json::json!({"state": "failed", "profile_id": "0a1b2c3d4e5e",
+            "code": "start_failed", "reason": "It did not start."});
+        let listed =
+            serde_json::json!({"profiles": [failed, entry("0a1b2c3d4e5f"), entry("0a1b2c3d4e60")]});
+        let shown = entry("0a1b2c3d4e5f");
+        let client = stub(&root, &listed.to_string(), &shown.to_string());
+        // Its socket isn't there, so it doesn't answer, and the next is not asked.
+        assert_eq!(
+            answers(Some(client)),
+            Backbone::Unreachable("The first serving profile is not answering")
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("calls")).unwrap(),
+            "profiles list --json\nprofiles show --json -- 0a1b2c3d4e5f\n"
+        );
     }
 }

@@ -15,7 +15,7 @@
 //!   no replies;
 //! - uses only these sequences: CSI with a final `m`, `K`, `J`, `H`, `r`,
 //!   `L` or `M`, and ESC `M`, ESC `7` and ESC `8`;
-//! - never contains `~` or `tw-bench`, which the harness's markers use;
+//! - never contains `~` or `ai-bench`, which the harness's markers use;
 //! - ends with [`TAIL`].
 
 /// The end of every payload: default style, the whole screen as the scroll
@@ -163,7 +163,7 @@ fn push_cursor_position(out: &mut Vec<u8>, row: usize, col: usize) {
 }
 
 // ASCII text, shared by every kind. Words never contain `-`, so no output can
-// spell `tw-bench`; `-` appears only between the digits of a date.
+// spell `ai-bench`; `-` appears only between the digits of a date.
 
 const LOWER: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
 const HEX: &[u8] = b"0123456789abcdef";
@@ -789,7 +789,7 @@ mod tests {
                 assert!(!payload.contains(&b'~'), "{kind:?}");
                 assert!(!payload.contains(&b'\r'), "{kind:?}");
                 assert!(!payload.contains(&b'\t'), "{kind:?}");
-                assert!(!contains(&payload, b"tw-bench"), "{kind:?}");
+                assert!(!contains(&payload, b"ai-bench"), "{kind:?}");
                 assert_only_allowed_sequences(kind, &payload);
             }
         }

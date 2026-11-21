@@ -79,8 +79,6 @@ pub(super) struct Form {
     more: bool,
     /// What leaving the form is called where it is shown.
     skip: &'static str,
-    /// The tool to start on, when one is known to be signed in.
-    prefer: Option<String>,
     /// This is a profile's first agent: its guide, which starts named and
     /// with a folder made for it, both shown and editable in place.
     guide: bool,
@@ -115,7 +113,6 @@ impl Form {
         library: PathBuf,
         profile: Profile,
         skip: &'static str,
-        prefer: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -155,7 +152,6 @@ impl Form {
             folder_name: None,
             more: false,
             skip,
-            prefer,
             guide: false,
             first: false,
             installing: BTreeMap::new(),
@@ -177,14 +173,6 @@ impl Form {
         if self.finished {
             return;
         }
-        // Setup schema 3 is the Rust service's: an earlier provider takes none.
-        if !self.profile.served() {
-            self.state = State::Failed;
-            self.error = Some(
-                "This profile runs on an earlier Agent Backbone service, which this app no longer adds agents to.",
-            );
-            return;
-        }
         if !keep {
             self.state = State::Loading;
             self.runtime = None;
@@ -196,11 +184,10 @@ impl Form {
         let client = self.client.clone();
         let directory = self.library.clone();
         let expected = self.profile.expected_identity();
-        let served = self.profile.served();
         let setup = self.guide;
         let work = cx.background_executor().spawn(async move {
             let identity = expected.map_err(|_| "This profile has no ready instance for setup.")?;
-            load_choices(client, directory, &identity, served, setup, &|| {
+            load_choices(client, directory, &identity, setup, &|| {
                 worker.load(Ordering::Acquire)
             })
         });
@@ -213,8 +200,8 @@ impl Form {
                 match result {
                     Ok(state) => {
                         // Start on a tool that's ready to work: one just
-                        // installed, else the one asked for, else a signed-in
-                        // one, else any that can run, else none.
+                        // installed, else the one already chosen, else a
+                        // signed-in one, else any that can run, else none.
                         if let State::Ready { catalog, .. } = &state {
                             let setup = form.guide;
                             let ready = |id: &String| {
@@ -230,7 +217,6 @@ impl Form {
                                 .take()
                                 .filter(ready)
                                 .or(kept)
-                                .or_else(|| form.prefer.clone().filter(ready))
                                 .or_else(|| first_choice(catalog, setup));
                             // After a start, another tool is another request:
                             // Try again sends what the screen now shows.
@@ -310,8 +296,7 @@ impl Form {
     }
 
     /// Read which installed tools are signed in, once each, so a guide's
-    /// cards can say so. On the earlier provider each read starts the tool's
-    /// own check; the Rust service reads only whether a login is stored.
+    /// cards can say so. The service reads only whether a login is stored.
     fn read_accounts(&mut self, cx: &mut Context<Self>) {
         let (Some(connection), State::Ready { catalog, .. }) =
             (self.connection.clone(), &self.state)
@@ -582,7 +567,7 @@ impl Form {
             .and_then(|(pane, _)| pane.read(cx).saved_open());
         let held = self.guide && matches!(self.state, State::Ready { pending, .. } if pending > 0);
         may_start(saved_open, held, || {
-            if self.profile.served() && !self.guide {
+            if !self.guide {
                 self.served_start(cx).is_some()
             } else {
                 // Any request ID of the form setup takes.
@@ -641,8 +626,7 @@ impl Form {
             self.start_guide(cx);
             return;
         }
-        // Add agent starts with the Rust service's own start; a profile it
-        // doesn't serve takes none from this app.
+        // Add agent starts with the service's own start.
         let request_id = uuid::Uuid::now_v7().simple().to_string();
         let Some(request) = self.served_request(request_id, cx) else {
             return;
@@ -683,7 +667,6 @@ fn load_choices(
     client: Client,
     directory: PathBuf,
     identity: &agent_interface_roster::profiles::Identity,
-    served: bool,
     setup: bool,
     live: &dyn Fn() -> bool,
 ) -> Result<State, &'static str> {
@@ -701,12 +684,7 @@ fn load_choices(
     } else {
         (None, 0)
     };
-    let catalog = if served {
-        client.served_runtimes(identity, live)
-    } else {
-        client.runtimes(identity, live)
-    }
-    .map_err(
+    let catalog = client.served_runtimes(identity, live).map_err(
         |_| "The runtime catalog for this profile instance is unavailable. No setup was submitted.",
     )?;
     Ok(State::Ready {
@@ -796,21 +774,16 @@ fn folder_name(path: &std::path::Path) -> Option<String> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Field {
     Name,
-    Brief,
     Repository,
 }
-/// Where Tab goes from `at`: through the name, then the instructions and
-/// the repository when each is shown, back to the name. From no field, or
-/// one no longer shown, the name.
-fn next_field(at: Option<Field>, brief: bool, repository: bool) -> Field {
-    let shown: Vec<Field> = [
-        Some(Field::Name),
-        brief.then_some(Field::Brief),
-        repository.then_some(Field::Repository),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
+/// Where Tab goes from `at`: through the name, then the repository when it
+/// is shown, back to the name. From no field, or one no longer shown, the
+/// name.
+fn next_field(at: Option<Field>, repository: bool) -> Field {
+    let shown: Vec<Field> = [Some(Field::Name), repository.then_some(Field::Repository)]
+        .into_iter()
+        .flatten()
+        .collect();
     at.and_then(|at| shown.iter().position(|field| *field == at))
         .map_or(Field::Name, |at| shown[(at + 1) % shown.len()])
 }
@@ -849,12 +822,6 @@ fn guide_card(
             false,
             installable.then_some("Install"),
         ),
-        None if !eligible(runtime, true) => (
-            "Needs an update",
-            false,
-            false,
-            installable.then_some("Update"),
-        ),
         None if signed_in => ("Signed in", false, false, None),
         None => ("Sign in when it starts", false, false, None),
     }
@@ -866,10 +833,7 @@ fn eligible(runtime: &Runtime, setup: bool) -> bool {
     if setup {
         return runtime.available && SETUP_RUNTIMES.contains(&runtime.id.as_str());
     }
-    runtime.id != "shell"
-        && runtime.available
-        && runtime.setup_supported
-        && runtime.setup_compatibility.compatible
+    runtime.id != "shell" && runtime.available && runtime.setup_supported
 }
 /// The tools setup starts a first agent in.
 const SETUP_RUNTIMES: [&str; 3] = ["claude", "codex", "antigravity"];
@@ -920,7 +884,7 @@ impl Render for Form {
             State::Loading => body = body.child(note("Checking this profile's tools…".into())),
             State::Unchecked(_) => {
                 body = body
-                    .child(note("An earlier setup could not be read. Open it to finish or forget it, then check again.".into()))
+                    .child(note("A saved setup could not be read. Forget it under Earlier setups to continue, then check again.".into()))
                     .child(
                         div().flex().gap(px(t.space.s8))
                             .child(ui::button("recover-pending-setup", "Earlier setups", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.recover(cx))))
@@ -974,16 +938,7 @@ impl Render for Form {
                                 div()
                                     .flex()
                                     .flex_col()
-                                    .child(ui::text(div().text_color(c.text), &t.text.card_title).child("Your agent"))
-                                    // The Rust service takes no instructions yet.
-                                    .children((!self.profile.served()).then(|| note(
-                                        if self.custom_brief {
-                                            "Follows the instructions you give it below."
-                                        } else {
-                                            "Coordinates your other agents: it learns your goals and proposes project agents for you to approve."
-                                        }
-                                        .into(),
-                                    ))),
+                                    .child(ui::text(div().text_color(c.text), &t.text.card_title).child("Your agent")),
                             )
                             .child(line(
                                 "Name",
@@ -1055,24 +1010,11 @@ impl Render for Form {
                         note("No tool in this profile can set up an agent yet.".into()).into_any_element()
                     },
                 ));
-                // The Rust service's Add agent takes no instructions or greeting.
-                let served = self.profile.served();
-                if !served {
-                body = body.child(line(
-                    "Role",
-                    ui::segments()
-                        .child(ui::segment("brief-coordinating", "Coordinating agent", !self.custom_brief).on_click(cx.listener(|form, _, _, cx| { form.custom_brief = false; cx.notify(); })))
-                        .child(ui::segment("brief-own", "My own instructions", self.custom_brief).on_click(cx.listener(|form, _, _, cx| { form.custom_brief = true; cx.notify(); })))
-                        .into_any_element(),
-                ));
-                if self.custom_brief {
-                    body = body.child(line("", self.brief.clone().into_any_element()));
-                }
-                }
+                // The service's Add agent takes no instructions or greeting.
                 body = body.child(
                     div().id("setup-more").flex().items_center().gap(px(t.space.s6)).cursor_pointer().text_color(c.muted)
                         .child(ui::icon(if self.more { "chevron-down" } else { "chevron-right" }, t.size.icon, c.muted))
-                        .child(ui::text(div(), &t.text.meta).child(if served { "Model and repository" } else { "Model and greeting" }))
+                        .child(ui::text(div(), &t.text.meta).child("Model and repository"))
                         .on_click(cx.listener(|form, _, _, cx| { form.more = !form.more; cx.notify(); })),
                 );
                 if self.more {
@@ -1092,38 +1034,23 @@ impl Render for Form {
                         }
                         body = body.child(line("Model", models.into_any_element()));
                     }
-                    if served {
-                        let typed = self.repository.read(cx).value().trim().to_owned();
-                        body = body.child(line(
-                            "Repository",
-                            ui::field_frame(self.repository.read(cx).focus.is_focused(window))
-                                .flex_1()
-                                .child(div().flex_1().min_w_0().child(self.repository.clone()))
-                                .into_any_element(),
-                        ));
-                        body = body.child(line(
-                            "",
-                            if typed.is_empty() || repository(&typed) {
-                                note("Optional: a GitHub repository it watches, as owner/name".into())
-                            } else {
-                                ui::text(div().text_color(c.attention_text), &t.text.meta).child("Use owner/name, such as acme/app")
-                            }
+                    let typed = self.repository.read(cx).value().trim().to_owned();
+                    body = body.child(line(
+                        "Repository",
+                        ui::field_frame(self.repository.read(cx).focus.is_focused(window))
+                            .flex_1()
+                            .child(div().flex_1().min_w_0().child(self.repository.clone()))
                             .into_any_element(),
-                        ));
-                    }
-                    if !served {
-                        let expected = ticket.clone();
-                        body = body.child(line(
-                            "Greeting",
-                            div().flex().items_center().gap(px(t.space.s8))
-                                .child(ui::switch("Greeting", self.greeting).on_click(cx.listener(move |form, _, _, cx| {
-                                    if form.finished || !form.ticket.accepts(&expected) { return; }
-                                    form.greeting = !form.greeting; cx.notify();
-                                })))
-                                .child(note("Send the agent's greeting".into()))
-                                .into_any_element(),
-                        ));
-                    }
+                    ));
+                    body = body.child(line(
+                        "",
+                        if typed.is_empty() || repository(&typed) {
+                            note("Optional: a GitHub repository it watches, as owner/name".into())
+                        } else {
+                            ui::text(div().text_color(c.attention_text), &t.text.meta).child("Use owner/name, such as acme/app")
+                        }
+                        .into_any_element(),
+                    ));
                 }
             }
         }
@@ -1157,19 +1084,16 @@ impl Render for Form {
                         cx.stop_propagation();
                     }
                     "tab" if matches!(form.state, State::Ready { .. }) => {
-                        let served = form.profile.served();
                         let focus = |field: &Entity<NameField>| field.read(cx).focus.clone();
                         let fields = [
                             (Field::Name, focus(&form.name)),
-                            (Field::Brief, focus(&form.brief)),
                             (Field::Repository, focus(&form.repository)),
                         ];
                         let at = fields
                             .iter()
                             .find(|(_, handle)| handle.is_focused(window))
                             .map(|(field, _)| *field);
-                        let next =
-                            next_field(at, form.custom_brief && !served, served && form.more);
+                        let next = next_field(at, form.more);
                         if let Some((_, handle)) = fields.iter().find(|(field, _)| *field == next) {
                             window.focus(handle, cx);
                         }
@@ -1267,7 +1191,7 @@ impl Form {
             )
             .into_any_element(),
             State::Unchecked(_) => note(
-                "An earlier start in this profile could not be read. Open it under Earlier setups."
+                "A saved setup could not be read. Forget it under Earlier setups to continue."
                     .into(),
                 true,
             )

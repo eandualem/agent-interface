@@ -47,7 +47,7 @@ impl BoundRosterSource {
     /// Read immediately, then two seconds after each completed attempt, and
     /// at once when the Rust service's push stream reports a change. Runs
     /// are read after each roster is published, so states never wait on them.
-    /// The connection retains its verified tuple, endpoint and credential for
+    /// The connection retains its verified identity and socket for
     /// this worker's lifetime. `wake` runs after publishing a complete update.
     pub fn start(connection: Connection, wake: impl Fn() + Send + 'static) -> io::Result<Self> {
         let updates = Arc::new(Mutex::new(None));
@@ -125,7 +125,7 @@ impl BoundRosterSource {
             stream: None,
         };
         // Without a stream worker the roster is still polled.
-        source.stream = watch(watched, refresh).unwrap_or_else(|error| {
+        source.stream = watch(watched, refresh).map(Some).unwrap_or_else(|error| {
             tracing::warn!(event = "roster_stream_not_started", %error, "Agent state stream not followed");
             None
         });
@@ -153,14 +153,11 @@ fn standing(reported: Option<Error>, error: Error) -> Error {
 
 /// Follow the connection's push stream on a worker of its own, asking the
 /// polling worker for a read at each change. The stream is opened again two
-/// seconds after it breaks. A connection without one gets no worker.
+/// seconds after it breaks, and not again once the service says it has none.
 fn watch(
     connection: Connection,
     refresh: mpsc::Sender<bool>,
-) -> io::Result<Option<(Arc<AtomicBool>, JoinHandle<()>)>> {
-    if !connection.served() {
-        return Ok(None);
-    }
+) -> io::Result<(Arc<AtomicBool>, JoinHandle<()>)> {
     let live = Arc::new(AtomicBool::new(true));
     let wanted = Arc::clone(&live);
     let worker = thread::Builder::new()
@@ -180,7 +177,7 @@ fn watch(
                 }
             }
         })?;
-    Ok(Some((live, worker)))
+    Ok((live, worker))
 }
 
 impl Drop for BoundRosterSource {

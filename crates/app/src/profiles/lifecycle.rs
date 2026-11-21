@@ -14,11 +14,11 @@ use std::{
 };
 
 const TIMEOUT: Duration = Duration::from_secs(60);
-/// Longer than the provider's own 60-second limit, so its receipt arrives.
-const APPLY_TIMEOUT: Duration = Duration::from_secs(90);
+/// How long a create may take before its outcome is unknown.
+const CREATE_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// One operation owns both its exact request and captured executable/environment.
-/// Keep it after errors: only lookup or an explicit identical retry can resolve
+/// Keep it after errors: only asking again under the same ID can resolve
 /// uncertainty. No receipt is an authenticated content connection.
 pub struct Operation {
     client: Client,
@@ -76,23 +76,23 @@ impl Operation {
         self.prepared.terminal()
     }
 
-    /// Original or provider-reserved tuple, never content connection authority.
+    /// The new profile's identity once made, never content connection authority.
     pub fn identity(&self) -> Option<&profiles::Identity> {
         self.prepared.identity()
     }
 
-    /// Submit or explicitly retry the exact original request off the UI thread.
-    /// Cancellation only stops waiting for this invocation; it does not claim
-    /// that the provider rolled back or cancelled its durable operation.
+    /// Submit the exact original request off the UI thread. Cancellation
+    /// only stops waiting for this invocation; it does not claim that the
+    /// service undid anything.
     pub fn apply(&mut self, live: &dyn Fn() -> bool) -> Result<Receipt, Error> {
-        self.apply_with_timeout(live, APPLY_TIMEOUT)
+        self.apply_with_timeout(live, CREATE_TIMEOUT)
     }
 
     /// Send the exact original request again after an unknown outcome. Only
-    /// the earlier provider's receipt, or the Rust service's profile, settles
-    /// it, or a refusal, which the service gives only when nothing was made.
+    /// the profile the service made settles it, or a refusal, which the
+    /// service gives only when nothing was made.
     pub fn retry(&mut self, live: &dyn Fn() -> bool) -> Result<Receipt, Error> {
-        self.submit(live, APPLY_TIMEOUT, true)
+        self.submit(live, CREATE_TIMEOUT, true)
     }
 
     fn apply_with_timeout(
@@ -112,57 +112,7 @@ impl Operation {
         if !live() {
             return Err(Error::Cancelled);
         }
-        if self.served_create(live)? {
-            return self.create_served(live, timeout, repeat);
-        }
-        let input = super::invocation_file::InvocationFile::new(self.prepared.bytes())?;
-        let args: Vec<OsString> = vec![
-            "profiles".into(),
-            "apply".into(),
-            "--file".into(),
-            input.path().into(),
-            "--json".into(),
-        ];
-        // A start or stop that loses its command keeps its reservation in the
-        // provider, which then refuses every later one. Leaving a screen or quitting
-        // never stops it: the command finishes and releases the reservation itself.
-        // It may read `--file` only after this call returns, so the file goes with it.
-        let (status, bytes) = self.run(&args, live, timeout, Some(input))?;
-        self.observe(status, &bytes)
-    }
-
-    /// Read the original durable receipt without reissuing the action. Unknown
-    /// request replies remain errors and preserve all retained request state.
-    pub fn refresh(&mut self, live: &dyn Fn() -> bool) -> Result<Receipt, Error> {
-        // The Rust service keeps no operation to read. It answers the same
-        // request ID with its first result, so asking again reads that.
-        if self.served_create(live)? {
-            return self.create_served(live, TIMEOUT, true);
-        }
-        let args: Vec<OsString> = vec![
-            "profiles".into(),
-            "operation".into(),
-            "--json".into(),
-            "--".into(),
-            self.request_id().into(),
-        ];
-        let (status, bytes) = self.run(&args, live, TIMEOUT, None)?;
-        self.observe(status, &bytes)
-    }
-
-    /// Whether this is a create request for the Rust service, which makes a
-    /// profile with `profiles create` instead of `profiles apply`.
-    /// The earlier provider has no registry until its first profile is made,
-    /// so then `profiles apply` is tried as before. Any other failed list
-    /// stops here, before anything is sent.
-    fn served_create(&self, live: &dyn Fn() -> bool) -> Result<bool, Error> {
-        if self.prepared.action() != profiles::operations::Action::Create {
-            return Ok(false);
-        }
-        match self.client.served(live) {
-            Err(Error::RegistryAbsent) => Ok(false),
-            result => result,
-        }
+        self.create_served(live, timeout, repeat)
     }
 
     /// Make the profile with the Rust service under this request's own ID.
@@ -191,7 +141,7 @@ impl Operation {
             "--".into(),
             name.as_str().into(),
         ];
-        let (status, bytes) = self.run(&args, live, timeout, None)?;
+        let (status, bytes) = self.run(&args, live, timeout)?;
         // On a first send, 1 is a refusal and 3 a service it could not reach:
         // nothing was made. 2 is a request it could not read, refused before
         // sending, then and on any repeat. A repeat can be refused although
@@ -243,26 +193,11 @@ impl Operation {
         }))
     }
 
-    fn observe(&mut self, status: ExitStatus, bytes: &[u8]) -> Result<Receipt, Error> {
-        // A durable failure receipt may accompany a nonzero exit. A signal or
-        // unsuccessful process cannot establish successful/pending completion.
-        let value: serde_json::Value =
-            serde_json::from_slice(bytes).map_err(|_| Error::Profile(profiles::Error::Invalid))?;
-        if status.code().is_none()
-            || (!status.success()
-                && value.get("status").and_then(serde_json::Value::as_str) != Some("failed"))
-        {
-            return Err(Error::CommandFailed);
-        }
-        self.prepared.observe(bytes).map_err(Error::Profile)
-    }
-
     fn run(
         &self,
         args: &[OsString],
         live: &dyn Fn() -> bool,
         timeout: Duration,
-        keep_running: Option<super::invocation_file::InvocationFile>,
     ) -> Result<(ExitStatus, Vec<u8>), Error> {
         if !live() {
             return Err(Error::Cancelled);
@@ -280,10 +215,7 @@ impl Operation {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|_| Error::Unavailable)?;
-        let mut running = Invocation {
-            child: Some(child),
-            keep_running,
-        };
+        let mut running = Invocation { child: Some(child) };
         let deadline = Instant::now() + timeout;
         let mut bytes = Vec::new();
         loop {
@@ -337,8 +269,6 @@ fn drain(output: &std::fs::File, bytes: &mut Vec<u8>) -> Result<(), Error> {
 
 struct Invocation {
     child: Option<Child>,
-    /// Some to leave the child running, holding its request file until it exits.
-    keep_running: Option<super::invocation_file::InvocationFile>,
 }
 impl Invocation {
     fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
@@ -353,14 +283,6 @@ impl Drop for Invocation {
             return;
         };
         if child.try_wait().ok().flatten().is_some() {
-            return;
-        }
-        if let Some(input) = self.keep_running.take() {
-            // It writes to an anonymous file, so it outlives this process safely.
-            std::thread::spawn(move || {
-                let _ = child.wait();
-                drop(input);
-            });
             return;
         }
         let _ = child.kill();

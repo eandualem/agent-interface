@@ -914,7 +914,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_verified_connections_do_not_reuse_retained_credential_workers() {
+    fn fresh_verified_connections_do_not_reuse_retained_connection_workers() {
         use crate::roster::content::tests::provider;
 
         // Two independently authenticated snapshots report the same full identity.

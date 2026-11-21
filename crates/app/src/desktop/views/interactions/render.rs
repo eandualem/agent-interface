@@ -1322,11 +1322,7 @@ impl Render for Interactions {
                     .flex_1()
                     .child(ui::empty_state(
                         ui::empty_tile("arrow-left-right", c.selected, c.muted),
-                        if error == Error::Unsupported {
-                            "Interaction history isn’t available"
-                        } else {
-                            "Interaction history unavailable"
-                        },
+                        "Interaction history unavailable",
                         error.message(),
                     ))
                     .into_any_element(),

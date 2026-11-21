@@ -1,4 +1,5 @@
-//! Durable lifecycle coordination. Recovery never implicitly resubmits intent.
+//! Durable lifecycle coordination. A request is sent again only when the
+//! person asks for it.
 
 use super::{Client, journal, lifecycle::Operation};
 use agent_interface_roster::profiles::{
@@ -16,7 +17,7 @@ const LIMIT: usize = journal::LIMIT;
 pub enum Phase {
     /// Exact intent is durable, but this controller has not submitted it.
     Prepared,
-    /// Submission may have happened; recovery must look up the original request.
+    /// Submission may have happened; recovery asks again under the original request.
     Submitted,
 }
 
@@ -60,7 +61,7 @@ pub struct Snapshot {
     pub action: agent_interface_roster::profiles::operations::Action,
     /// The original provider idempotency key.
     pub request_id: String,
-    /// Original or reserved tuple; still requires the normal content handshake.
+    /// The new profile's identity; still requires the normal content handshake.
     pub identity: Option<Identity>,
     /// Validated terminal receipt, returned only after durable storage.
     pub terminal: Option<Receipt>,
@@ -152,19 +153,33 @@ impl Controller {
         Ok(self.load(key)?.snapshot())
     }
 
+    /// Forget a record that can't be read, without running any command: no
+    /// request could be sent or asked about from it. A readable record is
+    /// never forgotten this way.
+    pub fn forget_unreadable(&self, key: &str) -> Result<(), Error> {
+        match self.load(key) {
+            Ok(_) => return Err(Error::WrongPhase),
+            Err(Error::Missing) => return Ok(()),
+            Err(
+                Error::Invalid | Error::Storage(journal::Error::Invalid | journal::Error::TooLarge),
+            ) => {}
+            Err(error) => return Err(error),
+        }
+        match self.journal.delete(key, None) {
+            // Not a key this journal could hold, so nothing is kept under it.
+            Err(journal::Error::Invalid) => Ok(()),
+            result => result.map_err(Error::Storage),
+        }
+    }
+
     /// First submission only. The Submitted phase is synced before invocation.
     pub fn submit(&self, key: &str, live: &dyn Fn() -> bool) -> Result<Receipt, Error> {
         self.invoke(key, Invocation::Submit, live)
     }
 
-    /// Read the original receipt after an uncertain/pending submission. This is
-    /// the default recovery action and never reissues the original mutation.
-    pub fn refresh(&self, key: &str, live: &dyn Fn() -> bool) -> Result<Receipt, Error> {
-        self.invoke(key, Invocation::Refresh, live)
-    }
-
-    /// Explicitly resend identical bytes under the original ID and caller only.
-    /// Provider idempotency is required, including for concurrent explicit retries.
+    /// Explicitly resend identical bytes under the original ID and caller only,
+    /// after an uncertain submission. The service answers the same ID with its
+    /// first result, including for concurrent explicit retries.
     pub fn retry(&self, key: &str, live: &dyn Fn() -> bool) -> Result<Receipt, Error> {
         self.invoke(key, Invocation::Retry, live)
     }
@@ -179,7 +194,9 @@ impl Controller {
         {
             return Err(Error::Invalid);
         }
-        let operation = Operation::restore(&self.client, envelope.capsule.as_bytes())?;
+        // A record this app can't restore is invalid: it can only be forgotten.
+        let operation = Operation::restore(&self.client, envelope.capsule.as_bytes())
+            .map_err(|_| Error::Invalid)?;
         if Self::key(operation.request_id()) != key
             || (envelope.phase == Phase::Prepared && operation.terminal().is_some())
         {
@@ -204,7 +221,7 @@ impl Controller {
         }
         let expected_phase = match invocation {
             Invocation::Submit => Phase::Prepared,
-            Invocation::Refresh | Invocation::Retry => Phase::Submitted,
+            Invocation::Retry => Phase::Submitted,
         };
         if stored.phase != expected_phase {
             return Err(Error::WrongPhase);
@@ -213,7 +230,7 @@ impl Controller {
             return Err(Error::Client(super::Error::Cancelled));
         }
         // Claim a new revision for every invocation. A concurrent result can
-        // never overwrite another claim, reservation or terminal observation.
+        // never overwrite another claim or terminal observation.
         let bytes = encode(Phase::Submitted, &stored.operation)?;
         let claimed = self
             .journal
@@ -221,7 +238,6 @@ impl Controller {
         let receipt = match invocation {
             Invocation::Submit => stored.operation.apply(live),
             Invocation::Retry => stored.operation.retry(live),
-            Invocation::Refresh => stored.operation.refresh(live),
         }?;
         let bytes = encode(Phase::Submitted, &stored.operation)?;
         self.journal.save(key, Some(claimed.revision()), &bytes)?;
@@ -232,7 +248,6 @@ impl Controller {
 
 enum Invocation {
     Submit,
-    Refresh,
     Retry,
 }
 
@@ -252,4 +267,4 @@ fn encode(phase: Phase, operation: &Operation) -> Result<Vec<u8>, Error> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -174,7 +174,6 @@ mod tests {
         .unwrap();
         reading.recv_timeout(Duration::from_secs(5)).unwrap();
         source_a.set_request(views::Request::Response(8));
-        std::fs::write(a.credential_reference(), "BACKBONE_API_KEY=rotated\n").unwrap();
         let source_b = Source::start(
             &b,
             views::Request::Response(7),
@@ -259,7 +258,6 @@ mod tests {
         .unwrap();
         reading.recv_timeout(Duration::from_secs(5)).unwrap();
         source_a.set_request(views::Request::Usage(views::Range::Hour));
-        std::fs::write(a.credential_reference(), "BACKBONE_API_KEY=rotated\n").unwrap();
         let source_b = Source::start(
             &b,
             views::Request::Usage(views::Range::Day),

@@ -11,18 +11,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn identity(label: &str, directory: &Path) -> Value {
-    json!({"schema_version":1,"profile_id":format!("profile-{label}"),
-        "installation_id":format!("installation-{label}"),"lifecycle_id":format!("lifecycle-{label}"),
-        "baseline_version":"fixture","tmux":{"socket_path":directory.join("tmux.sock")}})
+fn identity(label: &str) -> Value {
+    json!({"protocol_version":1,"profile_id":format!("profile-{label}"),
+        "instance_id":format!("instance-{label}"),"machine":{"id":format!("machine-{label}")}})
 }
-fn client(directory: &Path, connection: &Connection) -> Client {
-    let record = json!({"schema_version":1,"profile_id":connection.identity().profile_id,
-        "display_name":"same label","kind":"isolated","state":"ready","binding":{
-            "installation_id":connection.identity().installation_id,"lifecycle_id":connection.identity().lifecycle_id,
-            "endpoint":{"kind":"unix","path":directory.join("api.sock")},
-            "credential_reference":{"kind":"dotenv","path":connection.credential_reference(),"key":"BACKBONE_API_KEY"},
-            "tmux":{"socket_path":connection.tmux_socket()}}});
+fn client(directory: &Path, label: &str, connection: &Connection) -> Client {
+    let record = json!({"state":"serving","protocol_version":1,
+        "profile_id":connection.identity().profile_id,"display_name":"same label",
+        "instance_id":format!("instance-{label}"),"machine":{"id":connection.identity().installation_id},
+        "socket":directory.join("api.sock"),"tmux_socket":connection.tmux_socket(),
+        "credential_reference":{"type":"socket"}});
     fs::write(
         directory.join("record.json"),
         serde_json::to_vec(&record).unwrap(),
@@ -53,15 +51,15 @@ fn fixture(
 ) {
     let (directory, connection, initial) = provider(label, vec![]);
     initial.join().unwrap();
-    let client = client(directory.path(), &connection);
+    let client = client(directory.path(), label, &connection);
     let path = directory.path().join("api.sock");
     fs::remove_file(&path).unwrap();
     let listener = UnixListener::bind(&path).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     listener.set_nonblocking(true).unwrap();
-    let mut body = identity(label, directory.path());
+    let mut body = identity(label);
     if mismatch {
-        body["lifecycle_id"] = json!("replacement");
+        body["machine"] = json!({"id": "replacement"});
     }
     let label = label.to_owned();
     let server = thread::spawn(move || {
@@ -91,14 +89,8 @@ fn fixture(
         }
         let request = String::from_utf8(bytes).unwrap().to_ascii_lowercase();
         assert!(request.starts_with("get /api/profile http/1.1\r\n"));
-        for expected in [
-            format!("x-backbone-profile-id: profile-{label}"),
-            format!("x-backbone-installation-id: installation-{label}"),
-            format!("x-backbone-lifecycle-id: lifecycle-{label}"),
-            format!("authorization: bearer fixture-{label}"),
-        ] {
-            assert!(request.contains(&expected), "missing {expected}");
-        }
+        let expected = format!("x-backbone-profile-id: profile-{label}");
+        assert!(request.contains(&expected), "missing {expected}");
         if let Some((arrived, held)) = delay {
             arrived.send(()).unwrap();
             held.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -125,7 +117,6 @@ fn delayed_selection_cannot_replace_a_later_verified_choice_or_existing_connecti
     let old = selection.begin(&client_a, "profile-a").unwrap();
     let job = thread::spawn(move || old.run());
     waiting.recv_timeout(Duration::from_secs(5)).unwrap();
-    fs::write(a.credential_reference(), "BACKBONE_API_KEY=rotated\n").unwrap();
     let next = selection.begin(&client_b, "profile-b").unwrap();
     let accepted = selection.accept(next.run()).unwrap().unwrap();
     release.send(()).unwrap();
@@ -164,7 +155,7 @@ fn repeating_same_choice_and_dropping_picker_cancel_obsolete_work_before_executi
 }
 
 #[test]
-fn registry_readiness_and_identity_refusals_never_yield_selection_authority() {
+fn readiness_and_identity_refusals_never_yield_selection_authority() {
     let (directory, _, client, server) = fixture("a", None, true);
     let mut selection = Selection::default();
     let attempt = selection.begin(&client, "profile-a").unwrap();
@@ -177,16 +168,19 @@ fn registry_readiness_and_identity_refusals_never_yield_selection_authority() {
     server.join().unwrap();
     let mut record: Value =
         serde_json::from_slice(&fs::read(directory.path().join("record.json")).unwrap()).unwrap();
-    record["state"] = json!("creating");
-    record["binding"] = Value::Null;
+    record = json!({"state": "failed", "profile_id": record["profile_id"],
+        "display_name": "same label", "code": "start_failed", "reason": "It did not start."});
     fs::write(
         directory.path().join("record.json"),
         serde_json::to_vec(&record).unwrap(),
     )
     .unwrap();
     let attempt = selection.begin(&client, "profile-a").unwrap();
+    let completion = attempt.run();
+    // The service's own sentence travels with the refusal.
+    assert_eq!(completion.reason(), Some("It did not start."));
     assert_eq!(
-        selection.accept(attempt.run()).unwrap().err(),
+        selection.accept(completion).unwrap().err(),
         Some(Error::Profile(
             agent_interface_roster::profiles::Error::NotReady
         ))

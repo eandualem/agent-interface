@@ -159,7 +159,7 @@ impl Book {
             .values()
             .filter_map(|details| details.background)
             .any(|counts| counts.running.saturating_add(counts.queued) > 0);
-        if self.unserved || !connection.served() || (!reported && self.runs.active.is_empty()) {
+        if self.unserved || (!reported && self.runs.active.is_empty()) {
             return Gone::default();
         }
         let deadline = now + LOOKING;
@@ -263,9 +263,6 @@ impl Connection {
         struct Listed {
             items: Vec<Box<RawValue>>,
         }
-        if !self.served {
-            return Err(Error::Unsupported);
-        }
         let response = self.response_within("/api/runs", None, RESPONSE_LIMIT, WAIT)?;
         if response.status == 404 {
             return Err(Error::Unsupported);
@@ -292,9 +289,6 @@ impl Connection {
     }
 
     fn run_within(&self, run_id: &str, wait: Duration) -> Result<Run, Error> {
-        if !self.served {
-            return Err(Error::Unsupported);
-        }
         if run_id.len() != 32 || !is_uuid(run_id) {
             return Err(Error::Invalid);
         }

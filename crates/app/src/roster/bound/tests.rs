@@ -20,24 +20,16 @@ fn provider(
     let path = directory.path().join("api.sock");
     let mut listener = UnixListener::bind(&path).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-    let credential = directory.path().join("profile.env");
-    fs::write(&credential, format!("BACKBONE_API_KEY=fixture-{label}\n")).unwrap();
-    fs::set_permissions(&credential, fs::Permissions::from_mode(0o600)).unwrap();
     let tmux = directory.path().join("tmux.sock");
     let profile = Profile::parse(
         &serde_json::to_vec(&json!({
-            "schema_version": 1,
+            "state": "serving", "protocol_version": 1,
             "profile_id": format!("profile-{label}"),
             "display_name": label,
-            "kind": "isolated",
-            "state": "ready",
-            "binding": {
-                "installation_id": format!("installation-{label}"),
-                "lifecycle_id": format!("lifecycle-{label}"),
-                "endpoint": {"kind": "unix", "path": path},
-                "credential_reference": {"kind": "dotenv", "path": credential, "key": "BACKBONE_API_KEY"},
-                "tmux": {"socket_path": tmux}
-            }
+            "instance_id": format!("instance-{label}"),
+            "machine": {"id": format!("machine-{label}")},
+            "socket": path, "tmux_socket": tmux,
+            "credential_reference": {"type": "socket"}
         }))
         .unwrap(),
     )
@@ -72,8 +64,17 @@ fn provider(
                 assert!(bytes.len() < 8192);
             }
             let request = String::from_utf8(bytes).unwrap().to_ascii_lowercase();
+            // This provider has no push stream, and says so without counting.
+            if request.starts_with("get /api/stream") {
+                write!(
+                    stream,
+                    "HTTP/1.1 404 Fixture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
+                continue;
+            }
             // The swarm read after each roster is answered without counting,
-            // and carries the same credential and binding as every request.
+            // and names the same profile as every request.
             let swarms = request.starts_with("get /api/swarms ");
             let target = if swarms {
                 "/api/swarms"
@@ -83,17 +84,7 @@ fn provider(
                 "/api/agents"
             };
             assert!(request.starts_with(&format!("get {target} http/1.1\r\n")));
-            for (header, value) in [
-                ("authorization", format!("bearer fixture-{label}")),
-                ("x-backbone-profile-id", format!("profile-{label}")),
-                (
-                    "x-backbone-installation-id",
-                    format!("installation-{label}"),
-                ),
-                ("x-backbone-lifecycle-id", format!("lifecycle-{label}")),
-            ] {
-                assert!(request.contains(&format!("{header}: {value}\r\n")));
-            }
+            assert!(request.contains(&format!("x-backbone-profile-id: profile-{label}\r\n")));
             if swarms {
                 write!(stream, "HTTP/1.1 200 Fixture\r\nContent-Length: 12\r\nConnection: close\r\n\r\n{{\"items\":[]}}").unwrap();
                 continue;
@@ -108,12 +99,10 @@ fn provider(
                 (
                     200,
                     json!({
-                        "schema_version": 1,
+                        "protocol_version": 1,
                         "profile_id": format!("profile-{label}"),
-                        "installation_id": format!("installation-{label}"),
-                        "lifecycle_id": format!("lifecycle-{label}"),
-                        "baseline_version": "fixture",
-                        "tmux": {"socket_path": tmux}
+                        "instance_id": format!("instance-{label}"),
+                        "machine": {"id": format!("machine-{label}")}
                     }),
                 )
             } else if attempt == 2 && replace {
@@ -144,14 +133,13 @@ fn provider(
 }
 
 #[test]
-fn bound_workers_keep_delayed_responses_credentials_and_stale_caches_separate() {
+fn bound_workers_keep_delayed_responses_and_stale_caches_separate() {
     let (arrived, reading) = mpsc::channel();
     let (release, delayed) = mpsc::channel();
     let (_directory_a, profile_a, server_a) = provider("a", Some((arrived, delayed)), true);
     let (_directory_b, profile_b, server_b) = provider("b", None, false);
     let connection_a = profile_a.connect().unwrap();
     let connection_b = profile_b.connect().unwrap();
-    let credential_a = connection_a.credential_reference().to_owned();
     let identity_a = connection_a.identity().clone();
     let identity_b = connection_b.identity().clone();
     let (wake_a, woken_a) = mpsc::channel();
@@ -166,9 +154,7 @@ fn bound_workers_keep_delayed_responses_credentials_and_stale_caches_separate() 
     })
     .unwrap();
     reading.recv_timeout(Duration::from_secs(5)).unwrap();
-    // A is in flight while B completes; changing A's credential locator cannot
-    // change the credential used by either existing worker on its next poll.
-    fs::write(credential_a, "BACKBONE_API_KEY=fixture-rotated\n").unwrap();
+    // A is in flight while B completes.
     let (wake_b, woken_b) = mpsc::channel();
     let (resume_b, resumed_b) = mpsc::channel();
     let source_b = BoundRosterSource::start(connection_b, move || {

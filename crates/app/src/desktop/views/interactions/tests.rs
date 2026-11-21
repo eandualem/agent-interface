@@ -84,7 +84,6 @@ fn bound_interaction_navigation_and_discussions_keep_the_snapshot_origin() {
     reading.recv_timeout(Duration::from_secs(5)).unwrap();
     let snapshot_b = source_b.read("start", "end", Some("worker")).unwrap();
     assert!(!source_a.accepts(&snapshot_b));
-    std::fs::write(a.credential_reference(), "BACKBONE_API_KEY=rotated\n").unwrap();
     release.send(()).unwrap();
     let snapshot_a = worker.join().unwrap().unwrap();
     assert!(source_a.accepts(&snapshot_a));

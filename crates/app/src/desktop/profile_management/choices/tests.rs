@@ -116,20 +116,6 @@ fn changed_origin_or_stale_runtime_model_cannot_prepare() {
     let mut selected = choice();
     selected.brief = Some(" ");
     assert!(freeze(REQUEST, &profile(), &catalog, selected).is_none());
-    // The earlier provider's profiles take no setup schema 3.
-    let fixtures: Value = serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../roster/tests/fixtures/profiles-v1.json"
-    )))
-    .unwrap();
-    let earlier =
-        Profile::parse(&serde_json::to_vec(&fixtures["discovery"]["show_ready"]).unwrap()).unwrap();
-    let theirs = Catalog::parse(
-        &serde_json::to_vec(&fixtures["runtime_catalog"]["catalog"]).unwrap(),
-        &earlier.expected_identity().unwrap(),
-    )
-    .unwrap();
-    assert!(freeze(REQUEST, &earlier, &theirs, choice()).is_none());
 }
 #[test]
 fn a_guide_starts_only_in_the_tools_setup_starts() {
@@ -207,7 +193,6 @@ fn an_open_request_leaves_new_choices_and_an_unreadable_one_precedes_the_catalog
             root.clone(),
             &profile().expected_identity().unwrap(),
             true,
-            true,
             &|| true,
         )
         .is_err()
@@ -220,14 +205,14 @@ fn an_open_request_leaves_new_choices_and_an_unreadable_one_precedes_the_catalog
         .unwrap();
     let mut other = profile().expected_identity().unwrap();
     other.profile_id = "0a1b2c3d4e60".into();
-    let state = load_choices(client.clone(), root.clone(), &other, true, true, &|| true).unwrap();
+    let state = load_choices(client.clone(), root.clone(), &other, true, &|| true).unwrap();
     let State::Unchecked(retained) = state else {
         panic!("an unreadable record must not expose a guide's choices")
     };
     assert_eq!(retained.ids().unwrap().len(), 2);
     assert!(!calls.exists());
     // Add agent saves nothing there, so it goes on to the profile's tools.
-    assert!(load_choices(client, root, &other, true, false, &|| true).is_err());
+    assert!(load_choices(client, root, &other, false, &|| true).is_err());
     assert!(calls.exists());
 }
 #[test]
@@ -333,20 +318,12 @@ fn a_served_profile_lists_the_rust_services_runtimes() {
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
     let client = Client::new(executable, "/usr/bin:/bin".into()).unwrap();
     let identity = profile().expected_identity().unwrap();
-    let State::Ready { catalog, .. } = load_choices(
-        client.clone(),
-        root.clone(),
-        &identity,
-        true,
-        false,
-        &|| true,
-    )
-    .unwrap() else {
+    let State::Ready { catalog, .. } =
+        load_choices(client.clone(), root.clone(), &identity, false, &|| true).unwrap()
+    else {
         panic!("a served catalog must give choices")
     };
     assert!(eligible(&catalog.items()[0], false));
-    // The earlier provider's catalog read is unchanged and refuses this list.
-    assert!(load_choices(client, root, &identity, false, false, &|| true).is_err());
 }
 
 #[test]
@@ -367,30 +344,14 @@ fn choosing_the_chosen_tool_again_changes_nothing() {
 
 #[test]
 fn tab_reaches_every_field_shown_in_order() {
-    // Without the repository field, as before: name, the instructions when
-    // shown, back to name.
-    assert_eq!(next_field(Some(Field::Name), false, false), Field::Name);
-    assert_eq!(next_field(Some(Field::Name), true, false), Field::Brief);
-    assert_eq!(next_field(Some(Field::Brief), true, false), Field::Name);
-    assert_eq!(next_field(None, true, false), Field::Name);
+    // Without the repository field: name, back to name.
+    assert_eq!(next_field(Some(Field::Name), false), Field::Name);
+    assert_eq!(next_field(None, false), Field::Name);
     // With it: name, then the repository, back to name.
-    assert_eq!(
-        next_field(Some(Field::Name), false, true),
-        Field::Repository
-    );
-    assert_eq!(
-        next_field(Some(Field::Repository), false, true),
-        Field::Name
-    );
-    assert_eq!(
-        next_field(Some(Field::Brief), true, true),
-        Field::Repository
-    );
+    assert_eq!(next_field(Some(Field::Name), true), Field::Repository);
+    assert_eq!(next_field(Some(Field::Repository), true), Field::Name);
     // A focused field that is no longer shown goes back to the name.
-    assert_eq!(
-        next_field(Some(Field::Repository), false, false),
-        Field::Name
-    );
+    assert_eq!(next_field(Some(Field::Repository), false), Field::Name);
 }
 
 #[test]
@@ -409,14 +370,7 @@ fn add_agent_needs_no_setup_journal_and_a_guide_does() {
     // Where the journal would be, a file: it can't be opened.
     fs::write(root.join("profile-setup"), "").unwrap();
     let identity = profile().expected_identity().unwrap();
-    let added = load_choices(
-        client.clone(),
-        root.clone(),
-        &identity,
-        true,
-        false,
-        &|| true,
-    );
+    let added = load_choices(client.clone(), root.clone(), &identity, false, &|| true);
     assert!(matches!(
         added,
         Ok(State::Ready {
@@ -425,7 +379,7 @@ fn add_agent_needs_no_setup_journal_and_a_guide_does() {
             ..
         })
     ));
-    assert!(load_choices(client, root, &identity, true, true, &|| true).is_err());
+    assert!(load_choices(client, root, &identity, true, &|| true).is_err());
 }
 
 #[test]

@@ -175,7 +175,7 @@ and the report, answer and document lists are read again three seconds after
 each read, Usage after 15 seconds, and Skills, Policies and Tags after 30; an
 open Document is read again only when you refresh it. Current plans and
 Interactions are read every 20 seconds while shown, and Sheets when opened or refreshed.
-An agent's card rereads its overview, permissions and connections every three
+An agent's card rereads its overview and connections every three
 seconds, its usage every 15 and its skills and policies every 30. A rotating
 ring marks working or starting agents; labels distinguish starting, working,
 blocked, needs you, idle and unknown. Failed requests show unavailable or stale
@@ -342,7 +342,7 @@ reference to the exact record being read, and the app checks that the author
 is still registered before sending. A message shows **Sending…** until Agent
 Backbone answers, then the time it was sent; **Not sent** offers **Retry**,
 and **Edit** to move the text back into an empty message field.
-When Agent Backbone keeps conversations, the thread is the record's stored
+When Agent Backbone knows the record, the thread is the record's stored
 conversation: your messages, the author's replies and the record's new
 revisions, in order, with a **new** divider before what arrived since you last
 looked. It is read every five seconds while open, and every 25 seconds while
@@ -351,7 +351,7 @@ ones. Retrying a message Backbone did not confirm is safe: it is stored once.
 A message whose delivery failed after Backbone stored it offers **Retry**,
 which delivers it again without adding it twice.
 
-With an Agent Backbone that does not keep conversations, the thread shows only
+When Agent Backbone has no record of the item, the thread shows only
 the messages sent from this pane, and if delivery is uncertain the message
 says so: check with the author before sending it again. Delivered or queued
 does not mean the author has read it. Threads and drafts remain with their
@@ -380,8 +380,7 @@ backbone documents publish --file explanation.html --title "Explanation"
 backbone documents publish --file revised.html --title "Explanation" --supersedes 7
 ```
 
-Documents need an Agent Backbone version with the Documents API. Older or
-unavailable providers show an explicit error. Rich HTML renders inside the app
+An Agent Backbone that can't provide Documents shows an explicit error. Rich HTML renders inside the app
 on macOS and Linux, including Windows through WSLg. Linux uses WebKitGTK 4.1
 and X11 (XWayland on Wayland desktops and WSLg).
 Self-contained HTML is limited to 4 MiB, including inline assets. Network
@@ -483,8 +482,7 @@ what the waiting steps wait on. Agents with something waiting come first; an
 agent that has not published a plan says so. Plans are what each agent
 declares it is doing, kept current by the agent; the view only reads them and
 rereads them every 20 seconds while open. A plan not updated for a day is
-marked stale, which does not mean it is complete. The section needs an Agent
-Backbone that offers current plans; an older one says it does not.
+marked stale, which does not mean it is complete.
 
 ## Sheets
 
@@ -495,7 +493,7 @@ Reports record progress, and Responses answer specific questions; link to the
 workbook from those artifacts so readers can inspect the underlying data.
 
 Open **Reports & updates → Sheets**, choose a workbook, then a tab. The workspace's
-profile must be served by an Agent Backbone that supports Sheets.
+profile must be one that Agent Backbone serves.
 The grid is read-only. Select a cell or use Shift-click or Shift-arrow to select a
 range. Arrow keys and Tab move the selection. Row and column paging keep large
 workbooks bounded; labels retain canonical A1 coordinates under saved views.

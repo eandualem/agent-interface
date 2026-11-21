@@ -61,18 +61,17 @@ fn provider_with_probe(
     let mut listener = UnixListener::bind(&path).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     let probe = listener.try_clone().unwrap();
-    let credential = directory.path().join("profile.env");
-    fs::write(&credential, format!("BACKBONE_API_KEY=fixture-{label}\n")).unwrap();
-    fs::set_permissions(&credential, fs::Permissions::from_mode(0o600)).unwrap();
-    let identity = json!({"schema_version":1,"profile_id":format!("profile-{label}"),
-        "installation_id":format!("installation-{label}"),"lifecycle_id":format!("lifecycle-{label}"),
-        "baseline_version":"fixture","tmux":{"socket_path":directory.path().join("tmux.sock")}});
-    let profile = Profile::parse(&serde_json::to_vec(&json!({"schema_version":1,
-        "profile_id":identity["profile_id"],"display_name":label,"kind":"isolated","state":"ready",
-        "binding":{"installation_id":identity["installation_id"],"lifecycle_id":identity["lifecycle_id"],
-            "endpoint":{"kind":"unix","path":path},
-            "credential_reference":{"kind":"dotenv","path":credential,"key":"BACKBONE_API_KEY"},
-            "tmux":identity["tmux"]}})).unwrap()).unwrap();
+    let identity = json!({"protocol_version":1,"profile_id":format!("profile-{label}"),
+        "instance_id":format!("instance-{label}"),"machine":{"id":format!("machine-{label}")}});
+    let profile = Profile::parse(
+        &serde_json::to_vec(&json!({"state":"serving",
+        "protocol_version":1,"profile_id":identity["profile_id"],"display_name":label,
+        "instance_id":identity["instance_id"],"machine":identity["machine"],"socket":path,
+        "tmux_socket":directory.path().join("tmux.sock"),
+        "credential_reference":{"type":"socket"}}))
+        .unwrap(),
+    )
+    .unwrap();
     let label = label.to_owned();
     let server = thread::spawn(move || {
         let mut steps = std::iter::once(Step::get("/api/profile", identity))
@@ -123,20 +122,10 @@ fn provider_with_probe(
                     "{headers}"
                 );
             }
-            for (header, value) in [
-                ("authorization", format!("bearer fixture-{label}")),
-                ("x-backbone-profile-id", format!("profile-{label}")),
-                (
-                    "x-backbone-installation-id",
-                    format!("installation-{label}"),
-                ),
-                ("x-backbone-lifecycle-id", format!("lifecycle-{label}")),
-            ] {
-                assert!(
-                    headers.contains(&format!("{header}: {value}\r\n")),
-                    "{headers}"
-                );
-            }
+            assert!(
+                headers.contains(&format!("x-backbone-profile-id: profile-{label}\r\n")),
+                "{headers}"
+            );
             if let Some(expected) = step.request {
                 let length = headers
                     .lines()
@@ -259,7 +248,6 @@ fn conversations_keep_delayed_sends_retries_pagination_and_markers_on_original_b
     let draft = message.clone();
     let sender = thread::spawn(move || pending.send(&draft));
     reading.recv_timeout(Duration::from_secs(5)).unwrap();
-    fs::write(a.credential_reference(), "BACKBONE_API_KEY=rotated\n").unwrap();
     let second = client_b.show(&Page::Newest).unwrap();
     assert!(format!("{:?}", second.entries).contains("sentinel-b"));
     assert!(matches!(
@@ -416,7 +404,6 @@ fn feedback_pins_author_verification_and_submission_and_preserves_unknown_delive
     ));
     let client_a = feedback::Client::new(a.clone(), a.identity(), item()).unwrap();
     let client_b = feedback::Client::new(b.clone(), b.identity(), item()).unwrap();
-    fs::write(a.credential_reference(), "BACKBONE_API_KEY=rotated\n").unwrap();
     assert!(matches!(
         client_a.send("Feedback"),
         feedback::Outcome::Unknown(_)
@@ -442,7 +429,7 @@ fn plan_page(label: &str, next: Option<&str>) -> Value {
 }
 
 #[test]
-fn plans_keep_delayed_pages_and_rotated_credentials_on_the_original_binding() {
+fn plans_keep_delayed_pages_on_the_original_binding() {
     use agent_interface_roster::plans;
     let (arrived, reading) = mpsc::channel();
     let (release, delayed) = mpsc::channel();
@@ -490,11 +477,6 @@ fn plans_keep_delayed_pages_and_rotated_credentials_on_the_original_binding() {
     });
     reading.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(b.list_all().unwrap().items[0].agent_name, "b");
-    fs::write(
-        _dir_a.path().join("profile.env"),
-        "BACKBONE_API_KEY=rotated\n",
-    )
-    .unwrap();
     release.send(()).unwrap();
     let pages = worker.join().unwrap().unwrap();
     assert_eq!(pages.items.len(), 2);
@@ -520,7 +502,7 @@ fn interaction_fixture(name: &str) -> Value {
 }
 
 #[test]
-fn interactions_retain_snapshot_credentials_for_delayed_history_and_detail_pages() {
+fn interactions_retain_snapshots_for_delayed_history_and_detail_pages() {
     use agent_interface_roster::interactions;
     let summary_path = "/api/interactions/summary?since=start&until=end";
     let history_path = "/api/interactions?since=start&until=end&agent_id=worker&direction=both&limit=200&snapshot=fixture-not-a-live-cursor";
@@ -584,11 +566,6 @@ fn interactions_retain_snapshot_credentials_for_delayed_history_and_detail_pages
             .as_deref(),
         Some("sentinel-a")
     );
-    fs::write(
-        _dir_a.path().join("profile.env"),
-        "BACKBONE_API_KEY=rotated\n",
-    )
-    .unwrap();
     release.send(()).unwrap();
     let a = worker.join().unwrap().unwrap();
     assert_eq!(a.identity(), &origin);
@@ -637,7 +614,7 @@ fn interaction_state_binding_refusal_invalidates_the_whole_snapshot() {
     let client = interactions::Client::new(connection);
     assert_eq!(
         client.read("start", "end", None).unwrap().state_error,
-        Some(interactions::Error::Unsupported)
+        Some(interactions::Error::Unavailable)
     );
     assert_eq!(
         client.read("start", "end", None).unwrap_err(),

@@ -13,8 +13,9 @@ use hyper_util::rt::TokioIo;
 use tokio::net::UnixStream;
 
 struct Authentication<'a> {
-    key: &'a str,
-    identity: &'a crate::profiles::Identity,
+    /// Sent as `x-backbone-profile-id`. The owner-only socket is the
+    /// credential, so nothing else authenticates a request.
+    profile_id: &'a str,
     /// Sent as `x-backbone-request-id`, so a repeat after a lost reply gets
     /// the first result. Left out, the Rust service makes one.
     request_id: Option<&'a str>,
@@ -30,14 +31,13 @@ pub(crate) struct Response {
 pub(crate) fn profile_response(
     socket: &str,
     path: &str,
-    credentials: (&str, &crate::profiles::Identity),
+    profile_id: &str,
     body: Option<Vec<u8>>,
     limit: usize,
     timeout: Duration,
 ) -> Result<Response, Option<u16>> {
     let auth = Authentication {
-        key: credentials.0,
-        identity: credentials.1,
+        profile_id,
         request_id: None,
     };
     exchange(socket, method(&body), path, auth, body, limit, timeout)
@@ -47,13 +47,12 @@ pub(crate) fn profile_response(
 pub(crate) fn profile_delete(
     socket: &str,
     path: &str,
-    credentials: (&str, &crate::profiles::Identity),
+    profile_id: &str,
     limit: usize,
     timeout: Duration,
 ) -> Result<Response, Option<u16>> {
     let auth = Authentication {
-        key: credentials.0,
-        identity: credentials.1,
+        profile_id,
         request_id: None,
     };
     exchange(socket, "DELETE", path, auth, None, limit, timeout)
@@ -66,15 +65,14 @@ pub(crate) fn profile_write(
     socket: &str,
     method: &'static str,
     path: &str,
-    credentials: (&str, &crate::profiles::Identity),
+    profile_id: &str,
     body: Option<Vec<u8>>,
     request_id: Option<&str>,
     limit: usize,
     timeout: Duration,
 ) -> Result<Response, Option<u16>> {
     let auth = Authentication {
-        key: credentials.0,
-        identity: credentials.1,
+        profile_id,
         request_id,
     };
     exchange(socket, method, path, auth, body, limit, timeout)
@@ -137,7 +135,7 @@ fn exchange(
                 tracing::debug!(event = "provider_peer_rejected", "Provider peer identity rejected");
                 return Err(None);
             }
-            // Check the connected peer before constructing/sending credentials.
+            // Check the connected peer before sending anything.
             let mut request = Request::builder()
                 .method(method)
                 .uri(path)
@@ -146,20 +144,7 @@ fn exchange(
             if body.is_some() {
                 request = request.header("Content-Type", "application/json");
             }
-            if !auth.key.is_empty() {
-                let mut value =
-                    http::HeaderValue::from_str(&format!("Bearer {}", auth.key)).map_err(|_| None)?;
-                value.set_sensitive(true);
-                request = request.header("Authorization", value);
-            }
-            request = request.header("X-Backbone-Profile-ID", &auth.identity.profile_id);
-            // A connection without a key is to the Rust service, which
-            // takes the profile alone.
-            if !auth.key.is_empty() {
-                request = request
-                    .header("X-Backbone-Installation-ID", &auth.identity.installation_id)
-                    .header("X-Backbone-Lifecycle-ID", &auth.identity.lifecycle_id);
-            }
+            request = request.header("X-Backbone-Profile-ID", auth.profile_id);
             if let Some(id) = auth.request_id {
                 request = request.header("X-Backbone-Request-ID", id);
             }
@@ -204,8 +189,7 @@ fn exchange(
 /// Read a response body that never ends, such as Server-Sent Events, until
 /// `live` is false, handing each chunk to `chunk` as it arrives. An error is a
 /// refusal's status, or none when the stream broke, `chunk` returned false or
-/// nothing arrived for `quiet`. The peer is the Rust service, which takes the
-/// profile alone.
+/// nothing arrived for `quiet`.
 pub(crate) fn stream(
     socket: &str,
     path: &str,

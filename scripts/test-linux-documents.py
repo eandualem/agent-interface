@@ -56,13 +56,13 @@ with tempfile.TemporaryDirectory(prefix="document-smoke-") as directory:
     (settings / "settings.toml").write_text(f'interface_size = {SCALE}\n[setup]\nintro_seen = true\ndone = true\n')
     # A stand-in for the Rust service: a `backbone` command that lists one
     # served profile, whose private socket below answers the reads.
-    provider = root / "provider"
-    provider.mkdir(mode=0o700)
-    (provider / "run").mkdir(mode=0o700)
+    provider = root / "backbone"
+    profile = provider / "profiles/0a1b2c3d4e5f"
+    profile.mkdir(mode=0o700, parents=True)
     served = dict(protocol_version=1, profile_id="0a1b2c3d4e5f",
                   instance_id="0190c3a2c1107a3b8c9d0e1f2a3b4c5d", machine=dict(id="5f2c9e0d1b7a4e38"))
     entry = dict(served, state="serving", display_name="Work", home=True,
-                 socket=str(provider / "run/api.sock"), tmux_socket=str(root / "tmux/profile.sock"),
+                 socket=str(profile / "api.sock"), tmux_socket=str(root / "tmux/profile.sock"),
                  credential_reference=dict(type="socket"))
     commands = root / ".local/bin"
     commands.mkdir(parents=True)
@@ -156,8 +156,8 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
     class Server(socketserver.ThreadingUnixStreamServer):
         daemon_threads = True
 
-    server = Server(str(provider / 'run/api.sock'), Provider)
-    os.chmod(provider / 'run/api.sock', 0o600)
+    server = Server(str(profile / 'api.sock'), Provider)
+    os.chmod(profile / 'api.sock', 0o600)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     library = root / 'library'
     library.mkdir()

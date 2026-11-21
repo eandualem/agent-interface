@@ -1,5 +1,5 @@
 use super::*;
-use agent_interface_roster::profiles::operations::Receipt;
+use agent_interface_roster::profiles::operations::{Prepared, Receipt};
 
 #[test]
 fn superseded_and_closed_controls_cannot_accept_delayed_results() {
@@ -21,25 +21,23 @@ fn superseded_and_closed_controls_cannot_accept_delayed_results() {
 #[test]
 fn unknown_storage_and_submission_never_enable_replacement_submission() {
     assert!(Command::Read.allowed(None));
-    for command in [Command::Submit, Command::Refresh, Command::Retry] {
+    for command in [Command::Submit, Command::Retry] {
         assert!(!command.allowed(None));
     }
     let mut snapshot = Snapshot {
         key: "key".into(),
         revision: 1,
         phase: Phase::Prepared,
-        action: Action::Start,
+        action: Action::Create,
         request_id: "request-a".into(),
         identity: None,
         terminal: None,
         copies_git_identity: false,
     };
     assert!(Command::Submit.allowed(Some(&snapshot)));
-    assert!(!Command::Refresh.allowed(Some(&snapshot)));
     assert!(!Command::Retry.allowed(Some(&snapshot)));
     snapshot.phase = Phase::Submitted;
     assert!(!Command::Submit.allowed(Some(&snapshot)));
-    assert!(Command::Refresh.allowed(Some(&snapshot)));
     assert!(Command::Retry.allowed(Some(&snapshot)));
     snapshot.terminal = Some(Receipt {
         request_id: snapshot.request_id.clone(),
@@ -48,7 +46,7 @@ fn unknown_storage_and_submission_never_enable_replacement_submission() {
         status: Status::Failed,
         error_code: Some("failed".into()),
     });
-    for command in [Command::Submit, Command::Refresh, Command::Retry] {
+    for command in [Command::Submit, Command::Retry] {
         assert!(!command.allowed(Some(&snapshot)));
     }
     assert!(Command::Read.allowed(Some(&snapshot)));
@@ -66,7 +64,7 @@ fn history_reads_one_page_and_preserves_individual_invalid_record_failures() {
     );
     for i in 0..35 {
         controller
-            .enqueue(Prepared::create(&format!("request-{i}"), "Example", "baseline").unwrap())
+            .enqueue(Prepared::create(&format!("request-{i}"), "Example").unwrap())
             .unwrap();
     }
     let ids = controller.ids().unwrap();
@@ -140,4 +138,39 @@ fn unsafe_lifecycle_storage_does_not_hide_independent_setup_recovery() {
         fs::metadata(lifecycle).unwrap().permissions().mode() & 0o777,
         0o755
     );
+}
+
+#[test]
+fn a_failed_profile_shows_its_reason_and_no_served_panes() {
+    use agent_interface_roster::profiles::Item;
+    let failed = Item {
+        profile_id: "0a1b2c3d4e5f".into(),
+        display_name: "Work".into(),
+        state: State::Failed,
+        reason: Some("Its folder can't be read.".into()),
+        failure: None,
+    };
+    assert_eq!(state_line(&failed), "Its folder can't be read.");
+    assert!(!has_served_panes(&failed));
+    let ready = Item {
+        state: State::Ready,
+        reason: None,
+        ..failed
+    };
+    assert!(has_served_panes(&ready));
+}
+
+#[test]
+fn every_unreadable_record_offers_forget() {
+    for error in [
+        controller::Error::Invalid,
+        controller::Error::Storage(journal::Error::Invalid),
+        controller::Error::Storage(journal::Error::TooLarge),
+    ] {
+        assert!(unreadable(error), "{error:?}");
+    }
+    assert!(!unreadable(controller::Error::Missing));
+    assert!(!unreadable(controller::Error::Storage(
+        journal::Error::Unavailable
+    )));
 }

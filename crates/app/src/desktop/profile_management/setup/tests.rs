@@ -556,7 +556,7 @@ fn an_unknown_start_is_not_headed_as_a_failure() {
         heading("guide", Some(&Answer::Stopped("guide is taken".into()))),
         "guide didn't start"
     );
-    // The earlier provider's starts keep their heading.
+    // A start read from the journal keeps its heading.
     assert_eq!(heading("guide", None), "guide didn't start");
 }
 
@@ -591,9 +591,7 @@ fn an_unreachable_profile_keeps_an_unresolved_start_and_its_request_id() {
     let unreached = attempt(&request, true);
     assert_eq!(
         unreached,
-        Answer::Unknown(Some(
-            "The profile could not be reached; start its service.".into()
-        ))
+        Answer::Unknown(Some("The profile could not be reached.".into()))
     );
     assert_eq!(
         heading("guide", Some(&unreached)),
@@ -636,4 +634,18 @@ fn a_fresh_start_sends_only_its_open_request_until_it_is_closed() {
         let s = answered(false, "action_required", "outcome_unknown", retry);
         assert_eq!(saved_open(Some(&s)), again, "{retry}");
     }
+}
+
+#[test]
+fn every_unreadable_setup_record_offers_forget() {
+    use crate::profiles::journal;
+    for error in [
+        Error::Invalid,
+        Error::Storage(journal::Error::Invalid),
+        Error::Storage(journal::Error::TooLarge),
+    ] {
+        assert!(unreadable(error), "{error:?}");
+    }
+    assert!(!unreadable(Error::Missing));
+    assert!(!unreadable(Error::Storage(journal::Error::Unavailable)));
 }

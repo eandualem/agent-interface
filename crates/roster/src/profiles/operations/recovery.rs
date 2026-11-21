@@ -1,43 +1,58 @@
 //! Private consumer checkpoints, distinct from provider wire contracts.
 
-use super::{Action, Error, Identity, Prepared, Status};
+use super::{Action, Error, Identity, Prepared, Receipt, Status};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 const CHECKPOINT_LIMIT: usize = 4 * crate::RESPONSE_LIMIT;
+
+/// The checkpoint's own version. A record saved under another one is
+/// `Invalid`, and is forgotten rather than replayed.
+const VERSION: u32 = 2;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Checkpoint {
     checkpoint_version: u32,
     request: String,
-    observation: Value,
+    observation: Option<Observation>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Observation {
+    identity: Option<CreatedProfile>,
+    status: Status,
+    error_code: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreatedProfile {
+    profile_id: String,
+    machine_id: String,
 }
 
 impl Prepared {
-    /// Encode exact request bytes and retained reservation/terminal progress.
-    /// The caller must durably save it before submission and after observations.
+    /// Encode exact request bytes and the retained result, if any. The caller
+    /// must durably save it before submission and after an observation.
     pub fn checkpoint(&self) -> Result<Vec<u8>, Error> {
-        let observation = if self.identity.is_some() || self.terminal.is_some() {
-            let status = self.terminal.as_ref().map_or(Status::Pending, |r| r.status);
-            let identity = self.identity.as_ref();
-            let error = self
-                .terminal
-                .as_ref()
-                .and_then(|r| r.error_code.as_ref())
-                .map(|code| json!({"code":code,"message":"Operation failed."}));
-            json!({"schema_version":1,"request_id":self.request_id,"action":self.action.name(),
-                "profile_id":identity.map(|i| &i.profile_id),
-                "installation_id":identity.map(|i| &i.installation_id),
-                "lifecycle_id":identity.map(|i| &i.lifecycle_id),
-                "status":match status {Status::Pending=>"pending",Status::Succeeded=>"succeeded",Status::Failed=>"failed"},
-                "error":error})
-        } else {
-            Value::Null
-        };
+        let observation = self.terminal.as_ref().map(|receipt| {
+            json!({
+                "identity": receipt.identity.as_ref().map(|identity| json!({
+                    "profile_id": identity.profile_id,
+                    "machine_id": identity.installation_id,
+                })),
+                "status": match receipt.status {
+                    Status::Succeeded => "succeeded",
+                    Status::Failed => "failed",
+                },
+                "error_code": receipt.error_code,
+            })
+        });
         let request = std::str::from_utf8(&self.body).map_err(|_| Error::Invalid)?;
         let bytes = serde_json::to_vec(
-            &json!({"checkpoint_version":1,"request":request,"observation":observation}),
+            &json!({"checkpoint_version":VERSION,"request":request,"observation":observation}),
         )
         .map_err(|_| Error::Invalid)?;
         if bytes.len() > CHECKPOINT_LIMIT {
@@ -48,8 +63,8 @@ impl Prepared {
 
     /// Validate a private checkpoint without discovery, ID allocation or I/O.
     /// Restored expectations are not authenticated content authority. Before
-    /// executing, the caller must separately verify the original operator and
-    /// registry context; restoring cannot authorize replay in a new context.
+    /// executing, the caller must separately verify the original operator
+    /// context; restoring cannot authorize replay in a new context.
     pub fn restore(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() > CHECKPOINT_LIMIT
             || !bytes
@@ -60,23 +75,38 @@ impl Prepared {
             return Err(Error::Invalid);
         }
         let checkpoint: Checkpoint = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
-        if checkpoint.checkpoint_version != 1 {
-            return Err(Error::Unsupported);
+        if checkpoint.checkpoint_version != VERSION {
+            return Err(Error::Invalid);
         }
         let mut prepared = Self::restore_request(checkpoint.request.as_bytes())?;
-        if !checkpoint.observation.is_null() {
-            if checkpoint.observation.get("schema_version") != Some(&json!(1)) {
-                return Err(Error::Unsupported);
+        if let Some(observation) = checkpoint.observation {
+            let valid = match (&observation.identity, &observation.error_code) {
+                (Some(identity), None) => {
+                    observation.status == Status::Succeeded
+                        && super::valid_id(&identity.profile_id)
+                        && super::valid_id(&identity.machine_id)
+                }
+                (None, Some(code)) => {
+                    observation.status == Status::Failed
+                        && super::valid_id(code)
+                        && code.len() <= 128
+                }
+                _ => false,
+            };
+            if !valid {
+                return Err(Error::Invalid);
             }
-            // Private synthesized observations may be slightly larger than a
-            // provider receipt (for example after replacing diagnostic prose).
-            // The complete checkpoint is already bounded; share semantic
-            // validation without applying the provider response byte limit.
-            let wire = serde_json::from_slice(
-                &serde_json::to_vec(&checkpoint.observation).map_err(|_| Error::Invalid)?,
-            )
-            .map_err(|_| Error::Invalid)?;
-            prepared.observe_wire(wire)?;
+            prepared.record(Receipt {
+                request_id: prepared.request_id.clone(),
+                action: prepared.action,
+                identity: observation.identity.map(|profile| Identity {
+                    profile_id: profile.profile_id,
+                    installation_id: profile.machine_id.clone(),
+                    lifecycle_id: profile.machine_id,
+                }),
+                status: observation.status,
+                error_code: observation.error_code,
+            })?;
         }
         if prepared.checkpoint()? != bytes {
             return Err(Error::Invalid);
@@ -85,48 +115,17 @@ impl Prepared {
     }
 
     fn restore_request(bytes: &[u8]) -> Result<Self, Error> {
-        let body: Value = super::super::parse(bytes)?;
+        let body: Value = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
         let field = |name: &str| body.get(name).and_then(Value::as_str).ok_or(Error::Invalid);
         let id = field("request_id")?;
-        if !super::valid_id(id) {
+        if field("action")? != Action::Create.name() {
             return Err(Error::Invalid);
         }
-        let prepared = match field("action")? {
-            "create" => {
-                let (name, baseline) = (field("display_name")?, field("baseline_version")?);
-                match body.get("git_identity").map(Value::as_str) {
-                    None => Self::create(id, name, baseline)?,
-                    Some(Some("copy")) => Self::create_copying_git_identity(id, name, baseline)?,
-                    Some(_) => return Err(Error::Invalid),
-                }
-            }
-            "start" | "stop" => {
-                let identity = Identity {
-                    profile_id: field("profile_id")?.into(),
-                    installation_id: field("expected_installation_id")?.into(),
-                    lifecycle_id: field("expected_lifecycle_id")?.into(),
-                };
-                if [
-                    &identity.profile_id,
-                    &identity.installation_id,
-                    &identity.lifecycle_id,
-                ]
-                .iter()
-                .any(|s| !super::valid_id(s))
-                {
-                    return Err(Error::Invalid);
-                }
-                let action = if field("action")? == "start" {
-                    Action::Start
-                } else {
-                    Action::Stop
-                };
-                let canonical = json!({"schema_version":1,"request_id":id,"action":action.name(),
-                    "profile_id":identity.profile_id,"expected_installation_id":identity.installation_id,
-                    "expected_lifecycle_id":identity.lifecycle_id});
-                Self::prepare(id, action, Some(identity), canonical)?
-            }
-            _ => return Err(Error::Invalid),
+        let name = field("display_name")?;
+        let prepared = match body.get("git_identity").map(Value::as_str) {
+            None => Self::create(id, name)?,
+            Some(Some("copy")) => Self::create_copying_git_identity(id, name)?,
+            Some(_) => return Err(Error::Invalid),
         };
         // Only bytes produced by the original preparation API are accepted.
         // This also rejects duplicate keys, extra fields and altered encoding;

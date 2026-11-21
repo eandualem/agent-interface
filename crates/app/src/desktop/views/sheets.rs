@@ -684,7 +684,6 @@ mod tests {
         });
         reading.recv_timeout(Duration::from_secs(5)).unwrap();
         let records_b = source_b.connect().list_all().unwrap();
-        std::fs::write(a.credential_reference(), "BACKBONE_API_KEY=rotated\n").unwrap();
         release.send(()).unwrap();
         let records_a = worker.join().unwrap();
         assert_eq!(records_a[0].title, "a");

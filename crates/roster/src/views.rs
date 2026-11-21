@@ -50,8 +50,6 @@ fn bounded_groups(entries: impl Iterator<Item = (usize, usize)>) -> bool {
 /// Why a view has no data: Backbone could not be reached, or did not answer
 /// with it. The text is fixed and contains no response content.
 pub const UNAVAILABLE: &str = "Backbone could not provide this view.";
-/// Backbone answered that it does not serve this read.
-pub const NOT_SERVED: &str = "This Backbone does not serve policies yet; it needs updating.";
 /// A response this version cannot read.
 pub const UNREADABLE: &str = "Backbone answered with data this version cannot read.";
 
@@ -202,7 +200,6 @@ fn instructions(api: &Api<'_>, name: &str) -> Result<Instructions, &'static str>
     let path = format!("/api/agents/{name}/instructions");
     match api.fetch(&path, VIEW_LIMIT) {
         Ok(body) => Instructions::decode(&body),
-        Err(Some(404 | 405)) => Err(NOT_SERVED),
         Err(_) => Err(UNAVAILABLE),
     }
 }
@@ -547,12 +544,9 @@ pub struct Activity {
 }
 
 /// The state history an activity read found.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum History {
-    /// This Backbone keeps no state history.
-    #[default]
-    NotServed,
-    /// Backbone keeps it, but it could not be read this time.
+    /// It could not be read this time.
     Failed(&'static str),
     /// Observations, oldest first, read from up to [`HISTORY_LOOKBACK`]
     /// before the hour so a state that began then is drawn from the hour's
@@ -564,6 +558,15 @@ pub enum History {
         /// Whether the read reached the oldest observation it asked for.
         complete: bool,
     },
+}
+
+impl Default for History {
+    fn default() -> Self {
+        Self::Observed {
+            changes: Vec::new(),
+            complete: true,
+        }
+    }
 }
 
 /// A state Backbone observed for an agent. `at` is when it was observed, not
@@ -638,7 +641,6 @@ fn history(api: &Api<'_>, since: u64) -> History {
         let path = format!("/api/agents/states?since={}&limit=500{cursor}", iso(since));
         let body = match api.fetch(&path, VIEW_LIMIT) {
             Ok(body) => body,
-            Err(Some(404 | 405)) => return History::NotServed,
             Err(_) => return History::Failed(UNAVAILABLE),
         };
         let (page, more, next) = match Change::page(&body) {
@@ -1402,7 +1404,8 @@ mod tests {
             "event_type":"comment_created","sender":"someone","summary":"a comment",
             "received_at":"2026-10-23T08:00:00Z","outcome":null}]}"#;
         let agents = br#"{"items":[{"name":"worker","state":"busy"}]}"#;
-        let activity = Activity::decode(deliveries, events, agents, History::NotServed).unwrap();
+        let activity =
+            Activity::decode(deliveries, events, agents, History::Failed(UNAVAILABLE)).unwrap();
         assert_eq!(activity.entries.len(), 2);
         assert!(activity.entries[0].inbound);
         assert_eq!(

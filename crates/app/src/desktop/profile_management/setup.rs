@@ -204,12 +204,19 @@ fn saved_open(snapshot: Option<&Snapshot>) -> Option<bool> {
         .filter(|s| !s.closed())
         .map(|s| Command::Submit.allowed(Some(s)) || Command::Retry.allowed(Some(s)))
 }
+/// Whether a saved setup record can't be read, so it can only be forgotten.
+fn unreadable(error: Error) -> bool {
+    matches!(
+        error,
+        Error::Invalid | Error::Storage(journal::Error::Invalid | journal::Error::TooLarge)
+    )
+}
+
 fn message(error: Error) -> &'static str {
     match error {
         Error::Missing => "The original saved request is missing. No replacement was created.",
-        Error::Invalid => "This saved setup request could not be validated.",
-        Error::Earlier => {
-            "This setup request was saved by an earlier version, and no service takes it now. Forget it."
+        Error::Invalid | Error::Storage(journal::Error::Invalid) => {
+            "This saved setup request could not be read. Forget it to add another agent."
         }
         Error::WrongPhase | Error::Completed => {
             "The saved request changed. Reload its original state."
@@ -221,6 +228,9 @@ fn message(error: Error) -> &'static str {
         Error::Storage(journal::Error::Unsafe) => "Setup storage is not private or safe to use.",
         Error::Storage(journal::Error::Busy | journal::Error::Conflict) => {
             "Another update won. Reload the original request."
+        }
+        Error::Storage(journal::Error::TooLarge) => {
+            "This saved setup request is too large, or setup storage is full. Forget it, or other requests, to continue."
         }
         Error::Storage(_) => "Saved setup state could not be confirmed. Reload before retrying.",
         Error::Client(_) => {
@@ -297,8 +307,8 @@ fn attempt(request: &Request, unresolved: bool) -> Answer {
         Ok(connection) => connection,
         Err(_) => {
             return unsent(
-                "The profile could not be reached. Start its service, then try again.",
-                "The profile could not be reached; start its service.",
+                "The profile could not be reached. Try again.",
+                "The profile could not be reached.",
             );
         }
     };
@@ -341,7 +351,7 @@ fn answer(result: Result<Started, AddError>) -> Answer {
             Answer::Stopped(format!("The profile refused the start ({status})."))
         }
         Err(AddError::Connection(
-            Error::BindingRequired | Error::BindingMismatch | Error::Unsupported,
+            Error::BindingRequired | Error::BindingMismatch,
         )) => Answer::Stopped(
             "This profile's service changed. Go back and open the profile again.".into(),
         ),
@@ -1214,9 +1224,7 @@ impl Render for Pane {
                             );
                         }
                     }
-                    if snapshot.is_some()
-                        || matches!(self.error, Some(Error::Invalid | Error::Earlier))
-                    {
+                    if snapshot.is_some() || self.error.is_some_and(unreadable) {
                         let ticket = ticket.clone();
                         body = body
                             .child(ui::group_note("Forgetting removes this saved request from the app. It does not stop or remove an agent."))

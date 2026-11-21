@@ -251,9 +251,6 @@ fn timeline(activity: &Activity, agents: &crate::desktop::agent_status::LiveAgen
                 .text_color(c.attention_text)
                 .child(format!("State history could not be read: {error}")),
         ),
-        History::NotServed => {
-            legend.child("state now on the right; this Backbone keeps no state history")
-        }
     })
 }
 
@@ -426,7 +423,7 @@ mod tests {
                 member("builder", "busy"),
                 member("waiter", "idle"),
             ],
-            history: History::NotServed,
+            history: History::Failed(agent_interface_roster::views::UNAVAILABLE),
         };
         let agents = crate::desktop::agent_status::LiveAgents::default();
         let mut snapshot = agent_interface_roster::Snapshot::default();

@@ -201,7 +201,7 @@ mod tests {
         // answers, so its sessions cannot be read. The folder is in /tmp so
         // the path stays within macOS's Unix socket limit.
         let root = tempfile::Builder::new()
-            .prefix("tw-s-")
+            .prefix("ai-s-")
             .tempdir_in("/tmp")
             .unwrap();
         let unresponsive = root.path().join("unresponsive.sock");
@@ -317,7 +317,7 @@ mod tests {
 
         // Short private fixture path stays within macOS's Unix socket limit.
         let fixture = tempfile::Builder::new()
-            .prefix("tw-s-")
+            .prefix("ai-s-")
             .tempdir_in("/tmp")
             .unwrap();
         let directory = fixture.path().join("s");

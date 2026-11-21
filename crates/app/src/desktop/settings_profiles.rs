@@ -1,17 +1,17 @@
-//! Settings › Profiles: every profile, and one profile's accounts, agents and
-//! service. Sessions it opens show in the main window.
+//! Settings › Profiles: every profile, and one profile's accounts and agents.
+//! Sessions it opens show in the main window.
 use super::{
     Browser, components as ui,
     design::{colors, tokens},
     profile_management::{Back, Management, Open},
 };
 use crate::profiles::Client;
-use agent_interface_roster::profiles::{Item, Kind, State};
+use agent_interface_roster::profiles::{Item, State};
 use gpui::{App, Context, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 
 enum List {
     Loading,
-    /// Agent Backbone is not installed, or has no profiles command.
+    /// Agent Backbone is not installed: no `backbone` command was found.
     Absent,
     Failed(&'static str),
     Ready(Vec<Item>),
@@ -151,7 +151,7 @@ impl Render for Profiles {
             .gap(px(t.space.s8))
             .child(ui::group_title(
                 "Profiles",
-                "Each one keeps its own accounts, agents, skills and policies.",
+                "Each one keeps its own agents, skills and policies.",
             ));
         match &self.list {
             List::Loading => page = page.child(ui::group_note("Loading profiles…")),
@@ -172,11 +172,9 @@ impl Render for Profiles {
                 let mut card = ui::group_card();
                 for (index, item) in items.iter().enumerate() {
                     let id = item.profile_id.clone();
-                    let state: SharedString = match (&item.state, &item.kind) {
-                        (State::Ready, Kind::LegacyDefault) => "Your own sign-ins".into(),
-                        (State::Ready, _) => "".into(),
-                        (State::Creating, _) => "Creating…".into(),
-                        (State::Failed, _) => "Didn't finish".into(),
+                    let state: SharedString = match item.state {
+                        State::Ready => "".into(),
+                        State::Failed => "Didn't finish".into(),
                     };
                     card =
                         card.child(
@@ -184,13 +182,8 @@ impl Render for Profiles {
                                 SharedString::from(format!("settings-profile-{id}")),
                                 index == 0,
                                 Some(
-                                    ui::profile_mark(
-                                        &id,
-                                        &item.display_name,
-                                        item.kind == Kind::LegacyDefault,
-                                        t.size.profile_mark,
-                                    )
-                                    .into_any_element(),
+                                    ui::profile_mark(&item.display_name, t.size.profile_mark)
+                                        .into_any_element(),
                                 ),
                                 item.display_name.clone(),
                                 div().text_color(c.muted).child(state),

@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use agent_interface_core::{View, ViewKind};
 use agent_interface_roster::{
-    profiles::{Connection, Error as ProfileError, Kind},
+    profiles::{Connection, Error as ProfileError},
     views::{Data, Member, Team},
 };
 use futures::{StreamExt, channel::mpsc};
@@ -29,14 +29,6 @@ use super::{
     name::{NameEvent, NameField},
     views::Section,
 };
-
-/// CLIs that can sign an account in inside a profile. The provider refuses any
-/// that is not installed there, and that refusal is shown.
-const SIGN_IN_RUNTIMES: [(&str, &str); 3] = [
-    ("claude", "Claude Code"),
-    ("codex", "Codex"),
-    ("opencode", "OpenCode"),
-];
 
 /// What the person chose.
 pub(super) enum NewPaneEvent {
@@ -112,7 +104,7 @@ const VIEWS: [ViewChoice; 7] = [
     ViewChoice {
         glyph: "⚿",
         label: "Agent",
-        description: "One agent: overview and runtime permissions",
+        description: "One agent: overview and connections",
         scope: "pick an agent",
         kind: ViewKind::Agent,
     },
@@ -215,7 +207,6 @@ fn reconcile_selection(
 
 pub(super) fn sign_in_refusal(error: ProfileError) -> &'static str {
     match error {
-        ProfileError::Unsupported => "This provider does not support CLI account sign-in.",
         ProfileError::Refused(422) => "This CLI is not available in this profile.",
         ProfileError::Refused(503) => "The profile could not start the sign-in session.",
         ProfileError::Refused(_) => "The profile refused the sign-in.",
@@ -241,8 +232,6 @@ pub(super) struct NewPane {
     reveal: bool,
     sessions: Vec<String>,
     sessions_error: Option<String>,
-    sign_in_busy: bool,
-    sign_in_error: Option<&'static str>,
     loading: bool,
     team: Option<Team>,
     team_loading: bool,
@@ -352,8 +341,6 @@ impl NewPane {
             reveal: false,
             sessions: Vec::new(),
             sessions_error,
-            sign_in_busy: false,
-            sign_in_error: None,
             loading: session_source.is_some(),
             team: None,
             team_loading: team_source.is_some(),
@@ -366,35 +353,6 @@ impl NewPane {
             _updates: updates,
             _input: input,
         }
-    }
-
-    /// Ask the provider for the sign-in session off the UI thread, then attach to
-    /// it like any other session. Closing the chooser only drops the attachment.
-    fn sign_in(&mut self, runtime: &'static str, cx: &mut Context<Self>) {
-        let Some(connection) = self.origin.connection().cloned() else {
-            return;
-        };
-        if self.sign_in_busy {
-            return;
-        }
-        self.sign_in_busy = true;
-        self.sign_in_error = None;
-        let work = cx
-            .background_executor()
-            .spawn(async move { connection.sign_in_session(runtime) });
-        cx.spawn(async move |this, cx| {
-            let result = work.await;
-            let _ = this.update(cx, |chooser, cx| {
-                chooser.sign_in_busy = false;
-                match result {
-                    Ok(session) => cx.emit(NewPaneEvent::Attach(session)),
-                    Err(error) => chooser.sign_in_error = Some(sign_in_refusal(error)),
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-        cx.notify();
     }
 
     pub fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
@@ -645,33 +603,6 @@ impl Render for NewPane {
         };
         reconcile_selection(&rows, &mut self.selected, &mut self.disarmed, refreshing);
         let views = matches!(self.mode, Mode::Views | Mode::Agents);
-        let mut sign_in = div()
-            .flex()
-            .flex_wrap()
-            .flex_shrink_0()
-            .gap(px(t.space.s10));
-        // Default keeps its existing CLI sign-ins, so only isolated profiles offer this.
-        if self
-            .origin
-            .connection()
-            .is_some_and(|connection| *connection.kind() == Kind::Isolated)
-        {
-            for (runtime, label) in SIGN_IN_RUNTIMES {
-                sign_in = sign_in.child(
-                    ui::choice_button(
-                        SharedString::from(format!("new-pane-sign-in-{runtime}")),
-                        "terminal",
-                        format!("Sign in {label} account"),
-                        "",
-                        false,
-                    )
-                    .on_click(cx.listener(move |chooser, _, _, cx| {
-                        cx.stop_propagation();
-                        chooser.sign_in(runtime, cx);
-                    })),
-                );
-            }
-        }
         let buttons = div()
             .flex()
             .flex_wrap()
@@ -897,10 +828,6 @@ impl Render for NewPane {
                     .pt(px(t.space.s20))
                     .px(px(t.space.s28))
                     .child(buttons)
-                    .child(sign_in)
-                    .when_some(self.sign_in_error, |pane, error| {
-                        pane.child(ui::group_note(error))
-                    })
                     .child(
                         ui::filter_frame()
                             .child(div().flex_1().min_w_0().child(self.field.clone())),

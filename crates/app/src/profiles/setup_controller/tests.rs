@@ -1,6 +1,6 @@
 use super::*;
 use crate::profiles::tests::{answer, cancelled, first_agent, ready, request, step};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf};
 
 /// The profile requests are for, and two others.
@@ -555,48 +555,48 @@ fn a_retry_this_app_does_not_know_keeps_the_request_open_without_a_retry() {
 }
 
 #[test]
-fn a_request_saved_under_schema_2_holds_nothing_back_and_can_be_forgotten() {
-    let fixtures: Value = serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../roster/tests/fixtures/profiles-v1.json"
-    )))
-    .unwrap();
-    let setup = &fixtures["setup"];
-    let saved = json!({
-        "checkpoint_version": 1,
-        "first": setup["first_agent"].to_string(),
-        "cancel": setup["cancel_first_agent"].to_string(),
-    });
-    let capsule = crate::profiles::recovery::checkpoint(
-        crate::profiles::recovery::Kind::Setup,
-        &serde_json::to_vec(&saved).unwrap(),
-    )
-    .unwrap();
-    let envelope = Envelope {
-        format: 1,
-        kind: "setup".into(),
-        phase: Phase::Prepared,
-        capsule: String::from_utf8(capsule).unwrap(),
-        first: None,
-        cancel: None,
-    };
+fn a_request_of_an_unknown_schema_holds_back_every_request_until_forgotten() {
     let fixture = Fixture::new("");
     let controller = fixture.controller();
-    let key = Controller::key(setup["first_agent"]["request_id"].as_str().unwrap());
-    journal::Journal::open(&fixture.journal)
-        .unwrap()
-        .save(&key, None, &serde_json::to_vec(&envelope).unwrap())
+    let key = controller.enqueue(intent()).unwrap().key;
+    // The same record, saved under a schema this app doesn't read.
+    let journal = journal::Journal::open(&fixture.journal).unwrap();
+    let record = journal.read(&key).unwrap().unwrap();
+    let mut envelope: Envelope = serde_json::from_slice(record.payload()).unwrap();
+    let state = crate::profiles::recovery::restore_checkpoint(
+        crate::profiles::recovery::Kind::Setup,
+        envelope.capsule.as_bytes(),
+    )
+    .unwrap();
+    let mut state: Value = serde_json::from_slice(&state).unwrap();
+    for body in ["first", "cancel"] {
+        let mut request: Value = serde_json::from_str(state[body].as_str().unwrap()).unwrap();
+        request["schema_version"] = 99.into();
+        state[body] = request.to_string().into();
+    }
+    let capsule = crate::profiles::recovery::checkpoint(
+        crate::profiles::recovery::Kind::Setup,
+        &serde_json::to_vec(&state).unwrap(),
+    )
+    .unwrap();
+    envelope.capsule = String::from_utf8(capsule).unwrap();
+    journal
+        .save(
+            &key,
+            Some(record.revision()),
+            &serde_json::to_vec(&envelope).unwrap(),
+        )
         .unwrap();
-    assert_eq!(controller.read(&key), Err(Error::Earlier));
-    // It holds back no other request, of this profile or another, and stays
-    // listed until it is forgotten.
-    assert_eq!(controller.pending(PROFILE, &|| true), Ok(Vec::new()));
-    let added = controller.enqueue(intent()).unwrap();
-    controller.enqueue(intent_for(2, OTHER)).unwrap();
-    assert_eq!(controller.pending(PROFILE, &|| true).unwrap(), vec![added]);
-    assert_eq!(controller.ids().unwrap().len(), 3);
+    assert_eq!(controller.read(&key), Err(Error::Invalid));
+    // It holds back a request of any profile until it is forgotten.
+    assert_eq!(controller.pending(PROFILE, &|| true), Err(Error::Invalid));
+    assert_eq!(
+        controller.enqueue(intent_for(2, OTHER)),
+        Err(Error::Invalid)
+    );
     controller.forget(&key, None).unwrap();
     assert_eq!(controller.read(&key), Err(Error::Missing));
+    controller.enqueue(intent_for(2, OTHER)).unwrap();
     assert_eq!(fixture.calls(), "");
 }
 
@@ -634,7 +634,7 @@ fn an_expired_cancellation_releases_the_profile_and_keeps_what_is_unknown() {
 }
 
 #[test]
-fn an_outcome_of_an_earlier_schema_under_this_request_fails_closed() {
+fn an_outcome_of_another_schema_under_this_request_fails_closed() {
     let fixture = Fixture::new("");
     let controller = fixture.controller();
     let key = controller.enqueue(intent()).unwrap().key;
@@ -646,7 +646,7 @@ fn an_outcome_of_an_earlier_schema_under_this_request_fails_closed() {
     let first = envelope.first.as_ref().unwrap();
     let mut outcome: Value = serde_json::from_str(first).unwrap();
     let mut result: Value = serde_json::from_str(outcome["result"].as_str().unwrap()).unwrap();
-    result["schema_version"] = 2.into();
+    result["schema_version"] = 4.into();
     outcome["result"] = result.to_string().into();
     envelope.first = Some(outcome.to_string());
     journal
@@ -656,6 +656,22 @@ fn an_outcome_of_an_earlier_schema_under_this_request_fails_closed() {
             &serde_json::to_vec(&envelope).unwrap(),
         )
         .unwrap();
-    // Only the request's own schema makes a record an earlier one's.
     assert_eq!(controller.read(&key), Err(Error::Invalid));
+}
+
+#[test]
+fn a_damaged_setup_record_can_be_forgotten() {
+    let fixture = Fixture::new("");
+    let controller = fixture.controller();
+    let key = Controller::key(&id());
+    let path = fixture.journal.join(&key);
+    fs::write(&path, b"damaged").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        controller.read(&key),
+        Err(Error::Storage(journal::Error::Invalid))
+    );
+    controller.forget(&key, None).unwrap();
+    assert_eq!(controller.read(&key), Err(Error::Missing));
+    assert_eq!(fixture.calls(), "");
 }

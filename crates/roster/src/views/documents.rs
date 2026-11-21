@@ -11,7 +11,6 @@ use super::{Api, ReportContent, ReportItem, ReportPage, ReportQuery, UNAVAILABLE
 pub const DOCUMENT_HTML_LIMIT: usize = 4 * 1024 * 1024;
 const METADATA_LIMIT: usize = 8192;
 const WIRE_LIMIT: usize = 6 * DOCUMENT_HTML_LIMIT + METADATA_LIMIT;
-const NOT_SERVED: &str = "This Backbone does not serve Documents yet; update Agent Backbone.";
 const NOT_FOUND: &str = "This document revision is no longer available from Agent Backbone.";
 
 /// Server-owned identity and immutable publication metadata.
@@ -192,7 +191,6 @@ fn fetch(api: &Api<'_>, path: &str, limit: usize, detail: bool) -> Result<Vec<u8
         Ok(bytes) if bytes.len() <= limit => Ok(bytes),
         Ok(_) => Err(UNREADABLE),
         Err(Some(404)) if detail => Err(NOT_FOUND),
-        Err(Some(404 | 405)) => Err(NOT_SERVED),
         Err(_) => Err(UNAVAILABLE),
     }
 }
@@ -255,8 +253,8 @@ mod tests {
     }
 
     #[test]
-    fn missing_documents_endpoint_is_an_upgrade_state_not_an_empty_catalog() {
-        for (detail, expected) in [(false, NOT_SERVED), (true, NOT_FOUND)] {
+    fn a_missing_list_is_an_error_not_an_empty_catalog() {
+        for (detail, expected) in [(false, UNAVAILABLE), (true, NOT_FOUND)] {
             let (_directory, connection, listener) = crate::transport::tests::served_connection();
             let server = crate::transport::tests::serve_on(
                 listener,

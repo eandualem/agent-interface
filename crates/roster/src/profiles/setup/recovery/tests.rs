@@ -134,42 +134,6 @@ fn unsupported_malformed_and_normalized_checkpoints_cannot_be_replayed() {
 }
 
 #[test]
-fn a_request_saved_under_schema_2_is_unsupported() {
-    let fixture: Value = serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/profiles-v1.json"
-    )))
-    .unwrap();
-    let setup = &fixture["setup"];
-    let saved = json!({
-        "checkpoint_version": 1,
-        "first": setup["first_agent"].to_string(),
-        "cancel": setup["cancel_first_agent"].to_string(),
-    });
-    assert_eq!(
-        Prepared::restore(&bytes(&saved)).err(),
-        Some(Error::Unsupported)
-    );
-    // A schema to come, or a format this app didn't write, fails closed.
-    let mut later = saved.clone();
-    later["first"] = json!(
-        setup["first_agent"]
-            .to_string()
-            .replace("\"schema_version\":2", "\"schema_version\":4")
-    );
-    assert_eq!(
-        Prepared::restore(&bytes(&later)).err(),
-        Some(Error::Invalid)
-    );
-    let mut format = saved;
-    format["checkpoint_version"] = json!(2);
-    assert_eq!(
-        Prepared::restore(&bytes(&format)).err(),
-        Some(Error::Invalid)
-    );
-}
-
-#[test]
 fn the_largest_requests_remain_restorable() {
     // Every character of the brief escaped, and a request of the most bytes.
     round_trip(&with_brief(Brief::Text {

@@ -1,6 +1,6 @@
 use super::*;
 use agent_interface_roster::views::{
-    Data, Range,
+    Data, History, Range, UNAVAILABLE,
     bound::{self, Request},
 };
 
@@ -16,7 +16,7 @@ fn prefix(path: &'static str, reply: Value) -> Step {
 }
 
 #[test]
-fn general_view_chains_keep_original_identity_and_credentials() {
+fn general_view_chains_keep_original_identity() {
     let (arrived, reading) = mpsc::channel();
     let (release, delayed) = mpsc::channel();
     let (_dir_a, a, server_a) = provider(
@@ -72,7 +72,6 @@ fn general_view_chains_keep_original_identity_and_credentials() {
     let read_b = bound::read(&b, &Request::Team, &|| true);
     assert_eq!(read_b.identity, *b.identity());
     assert!(format!("{:?}", read_b.result).contains("sentinel-b"));
-    fs::write(a.credential_reference(), "BACKBONE_API_KEY=rotated\n").unwrap();
     release.send(()).unwrap();
     let read_a = worker.join().unwrap();
     assert_eq!(read_a.identity, *a.identity());
@@ -95,7 +94,9 @@ fn general_view_chains_keep_original_identity_and_credentials() {
             (Request::Tags, Data::Tags(library)) => assert_eq!(library.global, ["sentinel-a"]),
             (Request::Usage(_), Data::Usage(usage)) => assert_eq!(usage.totals.total, 37),
             (Request::Activity, Data::Activity(activity)) => {
-                assert_eq!(activity.members[0].repo, "sentinel-a")
+                assert_eq!(activity.members[0].repo, "sentinel-a");
+                // A failed history read leaves the timeline and says why.
+                assert_eq!(activity.history, History::Failed(UNAVAILABLE));
             }
             other => panic!("unexpected read: {other:?}"),
         }

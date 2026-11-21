@@ -66,7 +66,7 @@ impl Session {
     pub fn start(version: (u32, u32)) -> Result<Self, String> {
         let server = TmuxServer::start().map_err(|error| format!("starting tmux: {error}"))?;
         let work = tempfile::Builder::new()
-            .prefix("tw-gate5-")
+            .prefix("ai-gate5-")
             .tempdir()
             .map_err(|error| error.to_string())?;
         let session = Self {

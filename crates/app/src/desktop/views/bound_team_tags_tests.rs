@@ -52,7 +52,6 @@ fn team_to_tags_navigation_and_visibility_keep_original_profile_generation() {
     let (source_a, ready_a) = start(&a, views::Request::Team);
     reading.recv_timeout(Duration::from_secs(5)).unwrap();
     source_a.set_request(views::Request::Tags);
-    std::fs::write(a.credential_reference(), "BACKBONE_API_KEY=rotated\n").unwrap();
     let (source_b, ready_b) = start(&b, views::Request::Tags);
     take_tags(&source_b, &ready_b, "b-tags");
     release.send(()).unwrap();

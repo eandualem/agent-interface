@@ -1,11 +1,11 @@
-//! Profile-specific runtime observations. These describe compatibility and
-//! authentication observations; they never authorize launches or imply readiness.
+//! Profile-specific runtime observations: what each runtime is and whether it
+//! is signed in. They never authorize launches or imply readiness.
 
 use super::{Error, Identity, valid_id};
 use serde::Deserialize;
 use std::collections::HashSet;
 
-/// Authentication is independent of executable availability and compatibility.
+/// Authentication is independent of executable availability and setup support.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Authentication {
@@ -41,20 +41,6 @@ pub struct Runtime {
     pub efforts: Vec<String>,
     /// Explicit provider authentication observation.
     pub authentication: Authentication,
-    /// Result of the requested setup compatibility check.
-    pub setup_compatibility: Compatibility,
-}
-
-/// Compatibility is separate from authentication and from agent readiness.
-/// Executable paths, launch arguments and provider prose are not retained.
-#[derive(Clone, Debug, Deserialize)]
-pub struct Compatibility {
-    /// Whether setup prerequisites passed in the provider's profile context.
-    pub compatible: bool,
-    /// Machine-readable reason code; display uses consumer-owned text.
-    pub reason: String,
-    /// Optional observed runtime version, for display only.
-    pub version: Option<String>,
 }
 
 /// An immutable full-origin catalog for delayed UI consumers.
@@ -64,48 +50,13 @@ pub struct Catalog {
     items: Vec<Runtime>,
 }
 
-#[derive(Deserialize)]
-struct Wire {
-    #[serde(flatten)]
-    identity: Identity,
-    items: Vec<Runtime>,
-}
-
 impl Catalog {
-    /// Decode only successful schema-2 output for the exact expected tuple.
-    /// This does no filesystem, account or provider access.
-    pub fn parse(bytes: &[u8], expected: &Identity) -> Result<Self, Error> {
-        if bytes.len() > 1024 * 1024
-            || !valid_id(&expected.profile_id)
-            || !valid_id(&expected.installation_id)
-            || !valid_id(&expected.lifecycle_id)
-        {
-            return Err(Error::Invalid);
-        }
-        let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
-        match value
-            .get("schema_version")
-            .and_then(serde_json::Value::as_u64)
-        {
-            Some(2) => (),
-            Some(_) => return Err(Error::Unsupported),
-            None => return Err(Error::Invalid),
-        }
-        let wire: Wire = serde_json::from_value(value).map_err(|_| Error::Invalid)?;
-        if wire.identity != *expected {
-            return Err(Error::BindingMismatch);
-        }
-        Self::checked(wire.identity, wire.items)
-    }
-
     /// Decode the Rust service's `backbone runtimes --json` (schema 1) for the
     /// profile `expected`. It names no profile and runs no setup check: what
-    /// it lists is this machine's, and a runtime is compatible when it is
-    /// installed and the service lists it as supporting setup.
+    /// it lists is this machine's.
     pub fn served(bytes: &[u8], expected: &Identity) -> Result<Self, Error> {
         #[derive(Deserialize)]
         struct Served {
-            schema_version: u32,
             items: Vec<Item>,
         }
         #[derive(Deserialize)]
@@ -118,22 +69,26 @@ impl Catalog {
             efforts: Vec<String>,
             authentication: Authentication,
         }
-        if bytes.len() > 1024 * 1024 {
+        #[derive(Deserialize)]
+        struct Version {
+            schema_version: u32,
+        }
+        // Only the object the service writes; a derived struct also accepts a
+        // positional array.
+        if bytes.len() > 1024 * 1024 || bytes.trim_ascii_start().first() != Some(&b'{') {
             return Err(Error::Invalid);
         }
-        let served: Served = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
-        if served.schema_version != 1 {
+        // The version comes first, so a newer shape is told apart from a
+        // malformed one.
+        let version: Version = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
+        if version.schema_version != 1 {
             return Err(Error::Unsupported);
         }
+        let served: Served = serde_json::from_slice(bytes).map_err(|_| Error::Invalid)?;
         let items = served
             .items
             .into_iter()
             .map(|item| Runtime {
-                setup_compatibility: Compatibility {
-                    compatible: item.available && item.setup_supported,
-                    reason: "served".into(),
-                    version: None,
-                },
                 id: item.id,
                 display_name: item.display_name,
                 available: item.available,
@@ -159,18 +114,8 @@ impl Catalog {
                 || !ids.insert(&item.id)
                 || item.display_name.trim().is_empty()
                 || item.display_name.chars().any(char::is_control)
-                || !valid_id(&item.setup_compatibility.reason)
-                || item
-                    .setup_compatibility
-                    .version
-                    .as_ref()
-                    .is_some_and(|version| {
-                        version.is_empty() || version.chars().any(char::is_control)
-                    })
                 || !valid_choices(&item.models)
                 || !valid_choices(&item.efforts)
-                || (item.setup_compatibility.compatible
-                    && (!item.available || !item.setup_supported))
             {
                 return Err(Error::Invalid);
             }

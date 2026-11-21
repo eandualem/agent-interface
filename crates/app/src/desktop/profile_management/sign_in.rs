@@ -123,7 +123,7 @@ impl Pane {
 fn open_shell(profile: &Profile) -> Result<(String, Check), &'static str> {
     let connection = profile
         .connect()
-        .map_err(|_| "The profile could not be reached. Start its service, then try again.")?;
+        .map_err(|_| "The profile could not be reached. Try again.")?;
     let session = connection
         .ensure_shell(&shell_id(), None)
         .map_err(|_| "The profile's shell could not be started. Try again.")?;

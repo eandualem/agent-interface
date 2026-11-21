@@ -115,7 +115,7 @@ pub fn run(options: &Options) -> Result<(), String> {
         }
         Err(_) => {
             temporary = tempfile::Builder::new()
-                .prefix("tw-bench-")
+                .prefix("ai-bench-")
                 .tempdir()
                 .map_err(|error| error.to_string())?;
             temporary.path().to_owned()

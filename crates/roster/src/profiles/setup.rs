@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-/// The setup schema the Rust service takes; it refuses 1 and 2.
+/// The setup schema the Rust service takes.
 const SCHEMA_VERSION: u32 = 3;
 const REQUEST_LIMIT: usize = 32_768;
 /// A request of the most bytes, with its action changed to the longer one.
@@ -101,18 +101,13 @@ pub struct Prepared {
 }
 
 impl Prepared {
-    /// Capture a profile the Rust service serves and explicit setup choices.
-    /// Only that service takes setup schema 3, so any other profile is
-    /// `Unsupported`.
+    /// Capture a profile and explicit setup choices.
     pub fn first_agent(
         request_id: &str,
         profile: &Profile,
         agent: Agent,
         start_greeting: bool,
     ) -> Result<Self, Error> {
-        if !profile.served() {
-            return Err(Error::Unsupported);
-        }
         Self::prepare(request_id, &profile.item.profile_id, agent, start_greeting)
     }
 
@@ -231,23 +226,6 @@ fn choices(agent: &Agent) -> bool {
         && runtime
         && model
         && brief
-}
-
-/// The schema a saved body says it was written for, read before the body.
-#[derive(Deserialize)]
-struct Version {
-    schema_version: u32,
-}
-
-/// Why a body saved under schema `version` is refused: `Unsupported` for
-/// the earlier schemas 1 and 2, which the service no longer takes; any
-/// other is not one this app wrote, and `Invalid`.
-fn refused(version: u32) -> Error {
-    if matches!(version, 1 | 2) {
-        Error::Unsupported
-    } else {
-        Error::Invalid
-    }
 }
 
 /// A value setup's events may carry that the app keeps as it came: a step's

@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn discovery_preserves_names_excludes_helpers_and_never_attaches_or_creates() {
         let server = TmuxServer::start().unwrap();
-        for name in [" a ", "=leading", "café", "tw-ordinary", "helper"] {
+        for name in [" a ", "=leading", "café", "ai-ordinary", "helper"] {
             server
                 .run(&["new-session", "-d", "-s", name, "sleep 60"])
                 .unwrap();
@@ -375,7 +375,7 @@ mod tests {
             " a ",
             "=leading",
             "café",
-            "tw-ordinary",
+            "ai-ordinary",
             TmuxServer::SESSION,
         ];
         expected.sort();

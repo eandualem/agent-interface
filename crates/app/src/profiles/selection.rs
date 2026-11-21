@@ -1,4 +1,4 @@
-//! A cancellable selection handoff. Registry metadata alone never activates a
+//! A cancellable selection handoff. Profile metadata alone never activates a
 //! workspace; only an accepted authenticated connection can be handed to it.
 
 use super::{Client, Error, validate_id};
@@ -15,11 +15,11 @@ pub struct Selected {
     connection: Connection,
 }
 impl Selected {
-    /// Metadata from the same atomic registry show that supplied the binding.
+    /// Metadata from the same profile record that supplied the socket.
     pub fn item(&self) -> &Item {
         &self.item
     }
-    /// Authenticated endpoint, credentials and full lifecycle identity.
+    /// The verified socket and identity.
     pub fn connection(&self) -> &Connection {
         &self.connection
     }
@@ -57,7 +57,7 @@ impl Selection {
             live,
         })
     }
-    /// The requested registry ID while verification is pending, never authority.
+    /// The requested profile ID while verification is pending, never authority.
     pub fn pending(&self) -> Option<&str> {
         self.pending
             .as_ref()
@@ -82,7 +82,7 @@ impl Selection {
     }
 }
 
-/// One off-thread registry lookup followed by the original identity handshake.
+/// One off-thread profile lookup followed by verification of the socket it names.
 /// It owns the captured executable/environment and never retries through Default.
 pub struct Attempt {
     client: Client,
@@ -95,10 +95,12 @@ impl Attempt {
     /// cancelled before completion. No service or account sign-in commands are run.
     pub fn run(self) -> Completion {
         let live = || self.live.load(Ordering::Acquire);
+        let mut reason = None;
         let result = self
             .client
             .show(&self.profile_id, &live)
             .and_then(|profile| {
+                reason.clone_from(&profile.item().reason);
                 if !live() {
                     return Err(Error::Cancelled);
                 }
@@ -115,6 +117,7 @@ impl Attempt {
             profile_id: self.profile_id,
             live: self.live,
             result,
+            reason,
         }
     }
 }
@@ -125,6 +128,15 @@ pub struct Completion {
     profile_id: String,
     live: Arc<AtomicBool>,
     result: Result<Selected, Error>,
+    reason: Option<String>,
+}
+
+impl Completion {
+    /// The service's sentence on why it does not serve the profile, when the
+    /// attempt read one.
+    pub fn reason(&self) -> Option<&str> {
+        self.reason.as_deref()
+    }
 }
 
 #[cfg(test)]

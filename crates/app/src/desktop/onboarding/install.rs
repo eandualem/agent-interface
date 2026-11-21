@@ -444,9 +444,6 @@ fn explain(line: &str) -> String {
     if line.is_empty() {
         return "It stopped with an error. Try again.".into();
     }
-    if line.contains("npm: not found") || line.contains("npm: command not found") {
-        return "It needs Node.js 20 or newer with npm. Install Node.js, then try again.".into();
-    }
     let line: String = line.chars().take(200).collect();
     format!("It stopped with an error: {line}")
 }
@@ -514,7 +511,7 @@ mod tests {
         for printed in [
             changed("request_id", "019a8f3e7c2b7d4e9a1f2b3c4d5e6f71".into()),
             changed("seq", 1.into()),
-            changed("schema_version", 2.into()),
+            changed("schema_version", 99.into()),
             changed("action", "first_agent".into()),
             changed("data", serde_json::Value::Null),
             changed("data", "none".into()),
@@ -944,18 +941,6 @@ mod tests {
         assert_eq!(
             silent,
             Outcome::Failed("It stopped with an error. Try again.".into())
-        );
-    }
-
-    #[test]
-    fn a_missing_npm_says_what_to_install() {
-        let (_directory, path) = temporary_path();
-        let outcome = tool("echo 'sh: 1: npm: not found' >&2; exit 127", &path);
-        assert_eq!(
-            outcome,
-            Outcome::Failed(
-                "It needs Node.js 20 or newer with npm. Install Node.js, then try again.".into()
-            )
         );
     }
 

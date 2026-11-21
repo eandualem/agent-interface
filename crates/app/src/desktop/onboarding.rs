@@ -290,7 +290,7 @@ impl Onboarding {
         let Some(probe) = self.probe.clone() else {
             return;
         };
-        if matches!(probe.backbone, Backbone::Running) && probe.client().is_some() {
+        if matches!(probe.backbone, Backbone::Running) {
             self.service = Service::Ready;
             if self.flow.is_none() {
                 self.pending_flow = probe.client();
@@ -310,8 +310,9 @@ impl Onboarding {
         self.repaired = true;
         self.service = Service::Starting;
         let mut request = self.setup_request.take();
+        let saved = self.resume.clone();
         let work = cx.background_executor().spawn(async move {
-            let result = start(&probe, &mut request);
+            let result = start(&probe, &mut request, saved.as_deref());
             (result, request)
         });
         cx.spawn(async move |view, cx| {
@@ -324,7 +325,8 @@ impl Onboarding {
                         view.check(cx);
                     }
                     Err(reason) => {
-                        tracing::warn!(event = "setup_service_failed", %reason, "Agent service not started");
+                        // The reason may be the service's own words, which stay out of the log.
+                        tracing::warn!(event = "setup_service_failed", "Agent service not started");
                         view.service = Service::Failed(reason);
                     }
                 }
@@ -379,6 +381,8 @@ impl Onboarding {
                     settings.setup_identity = typed;
                 });
             }
+            // Nothing brings the forgotten request back after a restart.
+            flow::Event::Forgotten => remember(forget_request),
             flow::Event::Close => {}
         });
         if let Some(id) = self.resume.take() {
@@ -894,33 +898,34 @@ impl Render for Onboarding {
     }
 }
 
+/// Clear the first profile's saved request and the Git name and email typed
+/// for it.
+fn forget_request(settings: &mut Settings) {
+    settings.setup_request = None;
+    settings.setup_identity = None;
+}
+
 /// Start the agent service, or set it up, and wait for it to answer.
 /// Setup decides what this computer is: it keeps a profile it has, or makes
 /// the first one and starts this installation's service. `request` is this
 /// run's setup request, kept for Try again while setup says it may follow.
-/// Blocks; runs off the UI thread.
-fn start(probe: &Probe, request: &mut Option<String>) -> Result<(), String> {
-    match &probe.backbone {
-        Backbone::Running => Err(format!(
-            "Agent Backbone answered, but its backbone command was not found on this computer's PATH ({}).",
-            probe.path_env
-        )),
-        Backbone::Unreachable(_) | Backbone::NotSetUp => {
-            let Some(backbone) = probe.path("backbone") else {
-                return Err(
-                    "Agent Backbone isn't installed. Run the Agent Interface installer again."
-                        .into(),
-                );
-            };
-            install::initialize_backbone(backbone, &probe.path_env, request)?;
-            answered().ok_or_else(|| {
-                format!(
-                    "Agent Backbone was set up but did not answer (waited {} s). Its log is service.log in Agent Backbone's directory.",
-                    SERVICE_WAIT.as_secs()
-                )
-            })
-        }
-    }
+/// When nothing answers, the service's own failure of `saved`, the first
+/// profile made before, is shown, or with nothing saved the first failed
+/// profile's. Blocks; runs off the UI thread.
+fn start(probe: &Probe, request: &mut Option<String>, saved: Option<&str>) -> Result<(), String> {
+    let Some(backbone) = probe.path("backbone") else {
+        return Err("Agent Backbone isn't installed on this computer.".into());
+    };
+    // A failed profile's own reason goes before setup's or the wait's.
+    let failure =
+        |otherwise: String| probe::saved_failure(probe.client(), saved).unwrap_or(otherwise);
+    install::initialize_backbone(backbone, &probe.path_env, request).map_err(failure)?;
+    answered().ok_or_else(|| {
+        failure(format!(
+            "Agent Backbone was set up but did not answer (waited {} s). Its log is service.log in Agent Backbone's directory.",
+            SERVICE_WAIT.as_secs()
+        ))
+    })
 }
 
 /// Wait for the agent service to answer, for up to [`SERVICE_WAIT`].
@@ -955,6 +960,50 @@ fn missing(probe: &Probe) -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_setup_shows_the_failed_profiles_reason() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let failed = serde_json::json!({"state": "failed", "profile_id": "0a1b2c3d4e5f",
+            "code": "start_failed", "reason": "Its folder is not readable."});
+        // Executing a file that any process holds open for writing fails on Linux
+        // with ETXTBSY, and a child another test thread forks while this one writes
+        // inherits the descriptor. So `cp` writes the executed file, in its own
+        // process, and this process never opens it for writing.
+        let source = root.join("backbone.sh");
+        std::fs::write(
+            &source,
+            format!("#!/bin/sh\ncase \"$1 $2\" in\n  'profiles show') printf '%s' '{failed}';;\n  *) exit 1;;\nesac\n"),
+        )
+        .unwrap();
+        let backbone = root.join("backbone");
+        let copied = std::process::Command::new("/bin/cp")
+            .arg(&source)
+            .arg(&backbone)
+            .status()
+            .unwrap();
+        assert!(copied.success());
+        std::fs::set_permissions(&backbone, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let probe = Probe::with_backbone(backbone, "/usr/bin:/bin".into());
+        assert_eq!(
+            start(&probe, &mut None, Some("0a1b2c3d4e5f")),
+            Err("Its folder is not readable.".into())
+        );
+    }
+
+    #[test]
+    fn forgetting_a_request_clears_it_and_its_git_identity() {
+        let mut settings = Settings {
+            setup_request: Some("not-a-journal-key".into()),
+            setup_identity: Some(("Sam".into(), "sam@example.com".into())),
+            ..Settings::default()
+        };
+        forget_request(&mut settings);
+        assert_eq!(settings.setup_request, None);
+        assert_eq!(settings.setup_identity, None);
+    }
 
     #[test]
     fn only_completed_setup_skips_onboarding() {

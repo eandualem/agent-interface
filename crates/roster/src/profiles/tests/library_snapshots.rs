@@ -13,18 +13,13 @@ fn snapshot(text: &str) -> Value {
 }
 
 #[test]
-fn retained_artifacts_keep_delayed_reads_credentials_and_same_id_origins_separate() {
+fn retained_artifacts_keep_delayed_reads_and_same_id_origins_separate() {
     let (a_dir, a_listener, a_socket) = crate::transport::tests::local_listener();
     let (a_profile, a_identity) = profile_at(a_dir.path(), &a_socket);
     let (b_dir, b_listener, b_socket) = crate::transport::tests::local_listener();
-    let (_, mut b_identity) = profile_at(b_dir.path(), &b_socket);
-    let mut b_record = fixture()["discovery"]["show_ready"].clone();
-    b_record["profile_id"] = json!("profile-b");
-    b_record["binding"]["endpoint"]["path"] = json!(&b_socket);
-    b_record["binding"]["credential_reference"]["path"] = json!(b_dir.path().join("profile.env"));
-    b_record["binding"]["tmux"] = b_identity["tmux"].clone();
+    let (mut b_profile, mut b_identity) = profile_at(b_dir.path(), &b_socket);
+    b_profile.item.profile_id = "profile-b".into();
     b_identity["profile_id"] = json!("profile-b");
-    let b_profile = Profile::parse(&serde_json::to_vec(&b_record).unwrap()).unwrap();
     let (arrived, wait) = std::sync::mpsc::channel();
     let (release, held) = std::sync::mpsc::channel();
     let a_server = serve_with_hook(
@@ -36,7 +31,7 @@ fn retained_artifacts_keep_delayed_reads_credentials_and_same_id_origins_separat
             (200, snapshot("A original")),
             (
                 409,
-                fixture()["http_errors"]["binding_mismatch"]["body"].clone(),
+                json!({"detail": {"code": "binding_mismatch", "message": "Profile binding does not match."}}),
             ),
         ],
         move |at| {
@@ -64,7 +59,6 @@ fn retained_artifacts_keep_delayed_reads_credentials_and_same_id_origins_separat
     let delayed = a_target.clone();
     let job = thread::spawn(move || delayed.latest(&|| true).unwrap());
     wait.recv_timeout(Duration::from_secs(5)).unwrap();
-    fs::write(a.credential_reference(), "BACKBONE_API_KEY=rotated\n").unwrap();
     let b = b_profile.connect().unwrap();
     let b_target = library::list(&b, Kind::Skill, &|| true)
         .unwrap()
@@ -85,17 +79,14 @@ fn retained_artifacts_keep_delayed_reads_credentials_and_same_id_origins_separat
         Some(ReadError::Connection(Error::BindingMismatch))
     );
     for (requests, kind, profile) in [
-        (a_server.join().unwrap(), "skills", "profile-a"),
+        (a_server.join().unwrap(), "skills", "0a1b2c3d4e5f"),
         (b_server.join().unwrap(), "skills", "profile-b"),
     ] {
         assert!(requests[1].starts_with(&format!("get /api/{kind} ")));
         assert!(requests[2].starts_with(&format!("get /api/{kind}/artifact-1/versions?limit=1 ")));
         assert!(requests[3].starts_with(&format!("get /api/{kind}/artifact-1/versions/7 ")));
         for request in requests {
-            assert!(request.contains("authorization: bearer fixture-original\r\n"));
             assert!(request.contains(&format!("x-backbone-profile-id: {profile}\r\n")));
-            assert!(request.contains("x-backbone-installation-id: installation-a\r\n"));
-            assert!(request.contains("x-backbone-lifecycle-id: lifecycle-a1\r\n"));
         }
     }
 }

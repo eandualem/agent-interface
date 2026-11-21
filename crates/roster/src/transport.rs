@@ -95,14 +95,6 @@ pub(super) mod tests {
         })
     }
 
-    fn identity() -> crate::profiles::Identity {
-        crate::profiles::Identity {
-            profile_id: "0a1b2c3d4e5f".into(),
-            installation_id: "5f2c9e0d1b7a4e38".into(),
-            lifecycle_id: "5f2c9e0d1b7a4e38".into(),
-        }
-    }
-
     #[test]
     fn a_socket_or_folder_open_to_others_gets_no_connection() {
         let (directory, listener, socket) = local_listener();
@@ -115,7 +107,7 @@ pub(super) mod tests {
             let response = super::local::profile_response(
                 &socket,
                 "/api/profile",
-                ("", &identity()),
+                "0a1b2c3d4e5f",
                 None,
                 1024,
                 Duration::from_secs(1),
@@ -142,7 +134,7 @@ pub(super) mod tests {
         let response = super::local::profile_response(
             &socket,
             "/api/agents",
-            ("", &identity()),
+            "0a1b2c3d4e5f",
             None,
             1024,
             Duration::from_secs(1),

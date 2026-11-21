@@ -222,5 +222,5 @@ printf '%s' '{"schema_version":1,"items":[{"id":"claude","display_name":"Claude 
     };
     let catalog = client.served_runtimes(&identity, &|| true).unwrap();
     assert_eq!(catalog.identity(), &identity);
-    assert!(catalog.items()[0].setup_compatibility.compatible);
+    assert!(catalog.items()[0].available && catalog.items()[0].setup_supported);
 }

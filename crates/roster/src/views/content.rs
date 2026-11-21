@@ -73,7 +73,7 @@ pub enum Error {
 /// One observation, always labelled with its original identity and request.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Read {
-    /// Full authenticated origin, including the accepting lifecycle.
+    /// The profile and machine that accepted the record.
     pub identity: Identity,
     /// Feed filters, cursor or detail ID answered by this observation.
     pub request: Request,

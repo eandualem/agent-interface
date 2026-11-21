@@ -82,7 +82,7 @@ impl Artifact {
     pub fn identity(&self) -> &Identity {
         self.connection.identity()
     }
-    /// Original connection for related discussions; it never reloads credentials.
+    /// Original connection for related discussions; it is never replaced.
     pub fn connection(&self) -> &Connection {
         &self.connection
     }

@@ -9,14 +9,13 @@ use agent_interface_store::Document;
 use serde_json::json;
 use std::{fs, os::unix::fs::PermissionsExt, path::Path, sync::mpsc, thread, time::Duration};
 
-fn handshake(label: &str, root: &Path) -> Reply {
+fn handshake(label: &str) -> Reply {
     Reply::ok(
         "/api/profile",
         json!({
-            "schema_version":1, "profile_id":format!("profile-{label}"),
-            "installation_id":format!("installation-{label}"),
-            "lifecycle_id":format!("lifecycle-{label}"), "baseline_version":"fixture",
-            "tmux":{"socket_path":root.join(format!("{label}.sock"))}
+            "protocol_version":1, "profile_id":format!("profile-{label}"),
+            "instance_id":format!("instance-{label}"),
+            "machine":{"id":format!("machine-{label}")}
         }),
     )
 }
@@ -24,15 +23,12 @@ fn handshake(label: &str, root: &Path) -> Reply {
 fn discovery(root: &Path, providers: &[(&Path, &Connection)]) -> Client {
     for (directory, connection) in providers {
         let identity = connection.identity();
+        let label = identity.profile_id.trim_start_matches("profile-");
         let record = json!({
-            "schema_version":1, "profile_id":identity.profile_id,
-            "display_name":"Same display name", "kind":"isolated", "state":"ready",
-            "binding":{
-                "installation_id":identity.installation_id, "lifecycle_id":identity.lifecycle_id,
-                "endpoint":{"kind":"unix","path":directory.join("api.sock")},
-                "credential_reference":{"kind":"dotenv","path":connection.credential_reference(),"key":"BACKBONE_API_KEY"},
-                "tmux":{"socket_path":connection.tmux_socket()}
-            }
+            "state":"serving", "protocol_version":1, "profile_id":identity.profile_id,
+            "display_name":"Same display name", "instance_id":format!("instance-{label}"),
+            "machine":{"id":identity.installation_id}, "socket":directory.join("api.sock"),
+            "tmux_socket":connection.tmux_socket(), "credential_reference":{"type":"socket"}
         });
         fs::write(
             root.join(format!("{}.json", identity.profile_id)),
@@ -42,7 +38,7 @@ fn discovery(root: &Path, providers: &[(&Path, &Connection)]) -> Client {
     }
     let executable = root.join("provider");
     // All paths derive from this disposable executable; inherited caller context
-    // is neither cleared nor used to find another provider or credential.
+    // is neither cleared nor used to find another provider.
     fs::write(
         &executable,
         r#"#!/bin/sh
@@ -87,13 +83,13 @@ fn restored_workspace_change_discards_in_flight_handshake_without_retargeting_si
     let root = tempfile::tempdir().unwrap();
     let (arrived, waiting) = mpsc::channel();
     let (release, held) = mpsc::channel();
-    let mut delayed = handshake("a", root.path());
+    let mut delayed = handshake("a");
     delayed.delay = Some((arrived, held));
     let (a_dir, a, a_server) =
         provider_with_tmux("a", vec![delayed], Some(root.path().join("a.sock")));
     let (b_dir, b, b_server) = provider_with_tmux(
         "b",
-        vec![handshake("b", root.path()), handshake("b", root.path())],
+        vec![handshake("b"), handshake("b")],
         Some(root.path().join("b.sock")),
     );
     let client = discovery(root.path(), &[(a_dir.path(), &a), (b_dir.path(), &b)]);
@@ -165,14 +161,11 @@ fn restoration_refusal_requires_explicit_retry_and_leaves_other_workspace_connec
     };
     let (a_dir, a, a_server) = provider_with_tmux(
         "a",
-        vec![refusal, handshake("a", root.path())],
+        vec![refusal, handshake("a")],
         Some(root.path().join("a.sock")),
     );
-    let (b_dir, b, b_server) = provider_with_tmux(
-        "b",
-        vec![handshake("b", root.path())],
-        Some(root.path().join("b.sock")),
-    );
+    let (b_dir, b, b_server) =
+        provider_with_tmux("b", vec![handshake("b")], Some(root.path().join("b.sock")));
     let client = discovery(root.path(), &[(a_dir.path(), &a), (b_dir.path(), &b)]);
     let mut browser = restored_browser(root.path(), &["profile-a", "profile-b"]);
     let saved = model(&browser);
@@ -242,7 +235,7 @@ fn restore_budget_and_removed_workspace_invalidate_queued_work_before_discovery(
         .map(|label| {
             provider_with_tmux(
                 label,
-                vec![handshake(label, root.path())],
+                vec![handshake(label)],
                 Some(root.path().join(format!("{label}.sock"))),
             )
         })
@@ -299,11 +292,8 @@ fn restore_budget_and_removed_workspace_invalidate_queued_work_before_discovery(
 #[test]
 fn workspaces_on_one_profile_share_one_connection() {
     let root = tempfile::tempdir().unwrap();
-    let (a_dir, a, server) = provider_with_tmux(
-        "a",
-        vec![handshake("a", root.path())],
-        Some(root.path().join("a.sock")),
-    );
+    let (a_dir, a, server) =
+        provider_with_tmux("a", vec![handshake("a")], Some(root.path().join("a.sock")));
     let client = discovery(root.path(), &[(a_dir.path(), &a)]);
     let browser = restored_browser(root.path(), &["profile-a", "profile-a", "profile-a"]);
     let saved = model(&browser);
@@ -327,6 +317,25 @@ fn workspaces_on_one_profile_share_one_connection() {
 }
 
 #[test]
+fn every_workspace_waiting_on_a_failed_profile_shows_the_services_reason() {
+    let root = tempfile::tempdir().unwrap();
+    let client = discovery(root.path(), &[]);
+    let failed = json!({"state": "failed", "profile_id": "profile-c",
+        "code": "start_failed", "reason": "Its folder can't be read."});
+    fs::write(root.path().join("profile-c.json"), failed.to_string()).unwrap();
+    let browser = restored_browser(root.path(), &["profile-c", "profile-c"]);
+    let saved = model(&browser);
+    let mut registry = Registry::default();
+    let work = registry.reconcile(&saved, Some(&client));
+    assert_eq!(work.len(), 1);
+    assert!(registry.accept(work.into_iter().next().unwrap().run()));
+    for space in &saved.workspaces {
+        assert!(registry.failure(space).is_some());
+        assert_eq!(registry.reason(space), Some("Its folder can't be read."));
+    }
+}
+
+#[test]
 fn a_failed_shared_attempt_waits_for_retry_in_every_workspace() {
     let root = tempfile::tempdir().unwrap();
     let refusal = Reply {
@@ -338,7 +347,7 @@ fn a_failed_shared_attempt_waits_for_retry_in_every_workspace() {
     };
     let (a_dir, a, server) = provider_with_tmux(
         "a",
-        vec![refusal, handshake("a", root.path())],
+        vec![refusal, handshake("a")],
         Some(root.path().join("a.sock")),
     );
     let client = discovery(root.path(), &[(a_dir.path(), &a)]);

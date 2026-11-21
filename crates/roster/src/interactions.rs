@@ -13,8 +13,6 @@ const PAGES: usize = 20;
 pub enum Error {
     /// Backbone could not provide the history: it answered with an unexpected status.
     Unavailable,
-    /// The provider does not implement interaction history.
-    Unsupported,
     /// This specific retained record no longer exists.
     Missing,
     /// Backbone answered that this app may not read the history.
@@ -30,9 +28,6 @@ impl Error {
     pub fn message(self) -> &'static str {
         match self {
             Self::Unavailable => "Backbone could not provide the interaction history.",
-            Self::Unsupported => {
-                "Interaction history isn’t available. This Backbone does not offer it yet."
-            }
             Self::Missing => "This message is no longer retained by Backbone.",
             Self::Forbidden => "Backbone did not let this app read the interaction history.",
             Self::Unreadable => "Backbone returned unreadable interaction history.",
@@ -85,7 +80,7 @@ impl std::fmt::Debug for Client {
 }
 
 impl Client {
-    /// Retain the verified binding and credentials for every follow-up request.
+    /// Retain the verified connection for every follow-up request.
     pub fn new(connection: crate::profiles::Connection) -> Self {
         Self { connection }
     }
@@ -124,11 +119,7 @@ fn decoded<T: serde::de::DeserializeOwned>(
 ) -> Result<T, Error> {
     match status {
         200 => parse(body),
-        404 => Err(if detail {
-            Error::Missing
-        } else {
-            Error::Unsupported
-        }),
+        404 if detail => Err(Error::Missing),
         401 | 403 => Err(Error::Forbidden),
         422 => Err(Error::Unreadable),
         _ => Err(Error::Unavailable),
@@ -979,10 +970,10 @@ mod tests {
     }
 
     #[test]
-    fn absent_routes_and_absent_records_are_different() {
+    fn a_missing_list_and_a_missing_record_are_different() {
         assert_eq!(
             decoded::<InteractionPage>(404, b"{}", false),
-            Err(Error::Unsupported)
+            Err(Error::Unavailable)
         );
         assert_eq!(
             decoded::<Interaction>(404, b"{}", true),

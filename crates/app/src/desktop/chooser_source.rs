@@ -4,7 +4,7 @@ use std::{io, path::PathBuf, time::Duration};
 
 use agent_interface_core::View;
 use agent_interface_roster::{
-    profiles::{Connection, Kind},
+    profiles::Connection,
     views::{Member, Request},
 };
 
@@ -79,12 +79,6 @@ impl Sessions {
     }
 }
 
-/// Artifacts live in the app-wide library, so an isolated profile never shows
-/// them: a demo profile must not reveal the person's own content.
-pub(super) fn shows_artifacts(kind: &Kind) -> bool {
-    *kind == Kind::LegacyDefault
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,7 +97,7 @@ mod tests {
             .unwrap()
             .trim_end()
             .into();
-        let identity = json!({"schema_version":1,"profile_id":"profile-a","installation_id":"installation-a","lifecycle_id":"lifecycle-a","baseline_version":"fixture","tmux":{"socket_path":socket}});
+        let identity = json!({"protocol_version":1,"profile_id":"profile-a","instance_id":"instance-a","machine":{"id":"machine-a"}});
         let (_dir, connection, server) = provider_with_tmux(
             "a",
             vec![
@@ -114,8 +108,6 @@ mod tests {
         );
         let origin = Origin::Bound(connection.clone());
         assert!(origin.has_provider());
-        assert!(super::shows_artifacts(&Kind::LegacyDefault));
-        assert!(!super::shows_artifacts(&Kind::Isolated));
         let (wake, ready) = mpsc::channel();
         let source = origin
             .sessions(move || {

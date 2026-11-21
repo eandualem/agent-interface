@@ -1,8 +1,6 @@
 //! Private setup request storage; this is not a provider result or authority.
 
-use super::{
-    Action, Agent, CANCEL_LIMIT, Error, Prepared, REQUEST_LIMIT, SCHEMA_VERSION, Version, refused,
-};
+use super::{Action, Agent, CANCEL_LIMIT, Error, Prepared, REQUEST_LIMIT};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -43,9 +41,7 @@ impl Prepared {
     }
 
     /// Restore exact original setup/cancellation choices without discovery,
-    /// new IDs or I/O. A request saved under schema 1 or 2 is
-    /// `Unsupported`: the service no longer takes it. The caller must
-    /// separately validate the original operator context before execution.
+    /// new IDs or I/O. The caller must separately validate the original operator context before execution.
     /// This does not restore an interrupted stream, establish readiness or
     /// claim that cancellation succeeded.
     pub fn restore(bytes: &[u8]) -> Result<Self, Error> {
@@ -58,11 +54,6 @@ impl Prepared {
         }
         if checkpoint.first.len() > REQUEST_LIMIT || checkpoint.cancel.len() > CANCEL_LIMIT {
             return Err(Error::Invalid);
-        }
-        let version: Version =
-            serde_json::from_str(&checkpoint.first).map_err(|_| Error::Invalid)?;
-        if version.schema_version != SCHEMA_VERSION {
-            return Err(refused(version.schema_version));
         }
         let request: Request =
             serde_json::from_str(&checkpoint.first).map_err(|_| Error::Invalid)?;

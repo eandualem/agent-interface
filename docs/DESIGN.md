@@ -223,7 +223,7 @@ All in `components.rs`; each takes its look from the tokens.
 | `button` | `Primary` (accent fill), `Secondary` (field with border), `Danger` (attention text) |
 | `dot` | Small filled mark: needs you on tabs and slots, the saved light |
 | `switch` | On and off: an `accent` track with the knob at its end when on, `line_strong` when off |
-| `profile_mark` | A profile's first letter on a rounded square: neutral for Default, otherwise an `info`, `violet`, `green` or `accent` tint chosen from the profile id |
+| `profile_mark` | A profile's first letter on a neutral rounded square |
 | `menu`, `menu_item`, `menu_heading`, `menu_rule` | Popover frame on `field` with shadow; item with mark slot, label and key; uppercase heading; rule |
 | `agent_symbol` | Needs you: filled `attention` circle with "!". Working/starting: rotating `accent` arc with a play mark (`motion.spinner_ms` per turn). Idle: `faint` ring. Unknown: dashed `muted` ring with "?" |
 | `minimap` | A tab's layout thumbnail: one frame, split once, or split twice |
@@ -324,7 +324,7 @@ shared popover and segment components. New activity waits for an explicit click,
 and the selected original stays open when filters hide its row. Peer pivots retain
 the window and a stack of prior selections. Discussion reuses the native
 conversation panel, including retained drafts, explicit recipient roles and
-stable message anchors. Loading, unsupported, empty and stale states are distinct.
+stable message anchors. Loading, error, empty and stale states are distinct.
 
 Sizes live in the `interaction_*` tokens. Drawing primitives are in
 `desktop/components/interactions.rs`; timeline geometry, row construction and

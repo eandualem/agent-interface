@@ -371,8 +371,9 @@ impl PolicyLibrary {
                     }
                     briefs.push(brief);
                 }
-                Err(error @ (super::NOT_SERVED | super::POLICY_LIMIT)) => return Err(error),
-                // One agent's brief failing leaves the rest of the library.
+                Err(error @ super::POLICY_LIMIT) => return Err(error),
+                // One agent's brief failing, or an agent removed since the
+                // roster was read, leaves the rest of the library.
                 Err(error) => failure = Some(error),
             }
         }
@@ -701,6 +702,37 @@ mod tests {
             assert_eq!(result.unwrap_err(), super::super::POLICY_LIMIT);
             assert_eq!(requests, 2);
         }
+    }
+
+    #[test]
+    fn an_agent_removed_since_the_roster_read_leaves_the_rest_of_the_policies() {
+        use crate::transport::tests::{ok, serve_on, served_connection};
+        let (_directory, connection, listener) = served_connection();
+        let gone = r#"{"detail":{"code":"not_found","message":"No agent named gone."}}"#;
+        let server = std::thread::spawn(move || {
+            let first = serve_on(
+                listener.try_clone().unwrap(),
+                None,
+                format!(
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{gone}",
+                    gone.len()
+                ),
+                Duration::ZERO,
+            )
+            .join()
+            .unwrap();
+            let second = serve_on(listener, None, ok(r#"{"sources":[]}"#), Duration::ZERO)
+                .join()
+                .unwrap();
+            (first, second)
+        });
+        let api = Api::new(&connection, &|| true);
+        let library = PolicyLibrary::read(&api, &[agent("gone", &[]), agent("kept", &[])])
+            .expect("one removed agent leaves the library");
+        let (first, second) = server.join().unwrap();
+        assert!(first.starts_with("GET /api/agents/gone/instructions "));
+        assert!(second.starts_with("GET /api/agents/kept/instructions "));
+        assert_eq!((library.read, library.agents), (1, 2));
     }
 
     fn source(name: &str, scope: &str) -> Source {

@@ -7,9 +7,6 @@ const REG: &str = "1234567890abcdef1234567890abcdef";
 fn inspect(label: &str) -> Value {
     json!({"name":"worker","registration_id":REG,"runtime":"codex","known":true,"repo":format!("sentinel-{label}")})
 }
-fn permissions(label: &str) -> Value {
-    json!({"schema_version":1,"profile_id":format!("profile-{label}"),"installation_id":format!("installation-{label}"),"lifecycle_id":format!("lifecycle-{label}"),"agent_name":"worker","registration_id":REG,"runtime":"codex","permissions":{"status":"available","files":[],"allow":[format!("sentinel-{label}")],"deny":[],"ask":[],"modes":[],"error":null}})
-}
 fn reader(connection: Connection) -> Reader {
     Reader {
         connection,
@@ -20,9 +17,8 @@ fn reader(connection: Connection) -> Reader {
 }
 
 #[test]
-fn native_cards_retain_registration_credentials_and_delayed_profile_origin() {
+fn native_cards_retain_registration_and_delayed_profile_origin() {
     let inspect_path = format!("/api/agents/worker/inspect?expected_registration_id={REG}");
-    let context_path = format!("/api/agents/worker/runtime-context?expected_registration_id={REG}");
     let (arrived, waiting) = std::sync::mpsc::channel();
     let (release, held) = std::sync::mpsc::channel();
     let (_a, a, server_a) = provider(
@@ -32,9 +28,7 @@ fn native_cards_retain_registration_credentials_and_delayed_profile_origin() {
                 delay: Some((arrived, held)),
                 ..Reply::ok(&inspect_path, inspect("a"))
             },
-            Reply::ok(&context_path, permissions("a")),
             Reply::ok(&inspect_path, inspect("a")),
-            Reply::ok(&context_path, permissions("a")),
             Reply {
                 status: 409,
                 ..Reply::ok(
@@ -44,56 +38,29 @@ fn native_cards_retain_registration_credentials_and_delayed_profile_origin() {
             },
         ],
     );
-    let (_b, b, server_b) = provider(
-        "b",
-        vec![
-            Reply::ok(&inspect_path, inspect("b")),
-            Reply::ok(&context_path, permissions("b")),
-        ],
-    );
-    let credential = a.credential_reference().to_owned();
+    let (_b, b, server_b) = provider("b", vec![Reply::ok(&inspect_path, inspect("b"))]);
     let worker = std::thread::spawn(move || {
         let mut reader = reader(a);
-        let snapshot = reader.read(AgentSection::Permissions).unwrap();
+        let snapshot = reader.read(AgentSection::Overview).unwrap();
         (reader, snapshot)
     });
     waiting.recv_timeout(Duration::from_secs(5)).unwrap();
-    std::fs::write(credential, "BACKBONE_API_KEY=rotated\n").unwrap();
-    let snapshot_b = reader(b).read(AgentSection::Permissions).unwrap();
+    let snapshot_b = reader(b).read(AgentSection::Overview).unwrap();
     release.send(()).unwrap();
     let (mut reader_a, snapshot_a) = worker.join().unwrap();
     assert_eq!(snapshot_a.agent.repo, "sentinel-a");
-    assert_eq!(snapshot_a.permissions.unwrap().allow, ["sentinel-a"]);
     assert_eq!(snapshot_b.agent.repo, "sentinel-b");
     assert_eq!(
-        reader_a.read(AgentSection::Permissions).unwrap().agent.repo,
+        reader_a.read(AgentSection::Overview).unwrap().agent.repo,
         "sentinel-a"
     );
     assert!(matches!(
-        reader_a.read(AgentSection::Permissions),
+        reader_a.read(AgentSection::Overview),
         Err(runtime_context::Error::RegistrationChanged)
     ));
     assert_eq!(reader_a.target.as_ref().unwrap().registration_id(), REG);
     server_a.join().unwrap();
     server_b.join().unwrap();
-}
-
-#[test]
-fn foreign_permission_context_cannot_publish_an_agent_snapshot() {
-    let inspect_path = format!("/api/agents/worker/inspect?expected_registration_id={REG}");
-    let context_path = format!("/api/agents/worker/runtime-context?expected_registration_id={REG}");
-    let (_a, a, server) = provider(
-        "a",
-        vec![
-            Reply::ok(&inspect_path, inspect("a")),
-            Reply::ok(&context_path, permissions("b")),
-        ],
-    );
-    assert!(matches!(
-        reader(a).read(AgentSection::Permissions),
-        Err(runtime_context::Error::Invalid)
-    ));
-    server.join().unwrap();
 }
 
 #[test]
@@ -129,7 +96,6 @@ fn removal_refuses_a_registration_replaced_after_the_check() {
 #[test]
 fn a_section_reads_on_the_card_connection_and_missing_parts_keep_the_card() {
     let inspect_path = format!("/api/agents/worker/inspect?expected_registration_id={REG}");
-    let context_path = format!("/api/agents/worker/runtime-context?expected_registration_id={REG}");
     let (_a, a, server) = provider(
         "a",
         vec![
@@ -138,21 +104,12 @@ fn a_section_reads_on_the_card_connection_and_missing_parts_keep_the_card() {
                 status: 503,
                 ..Reply::ok("/api/skills/preview/worker", json!({}))
             },
-            Reply::ok(&inspect_path, inspect("a")),
-            Reply {
-                status: 404,
-                ..Reply::ok(&context_path, json!({}))
-            },
         ],
     );
     let mut reader = reader(a);
-    // Only the Permissions section asks for permissions.
     let snapshot = reader.read(AgentSection::Skills).unwrap();
     assert_eq!(snapshot.agent.repo, "sentinel-a");
-    assert!(snapshot.permissions.is_none());
     assert!(matches!(snapshot.agent.skills, Some(Err(_))));
-    let snapshot = reader.read(AgentSection::Permissions).unwrap();
-    assert!(snapshot.permissions.unwrap().message().is_some());
     server.join().unwrap();
 }
 
@@ -180,7 +137,10 @@ fn removing_an_agent_that_is_already_gone_succeeds() {
         "a",
         vec![Reply {
             status: 404,
-            ..Reply::ok(&inspect_path, json!({"detail":"not found"}))
+            ..Reply::ok(
+                &inspect_path,
+                json!({"detail":{"code":"not_found","message":"No agent worker."}}),
+            )
         }],
     );
     assert_eq!(remove_checked(&a, "worker", REG), Ok(()));

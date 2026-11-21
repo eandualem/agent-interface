@@ -23,22 +23,22 @@ use crate::engine::Grid;
 
 /// The text the producer prints before the payload. The payload generator
 /// never writes `~`, so neither marker can appear in a payload.
-pub const START_MARKER: &[u8] = b"~tw-bench:start~";
+pub const START_MARKER: &[u8] = b"~ai-bench:start~";
 /// The text the producer prints after the payload: the last output of the
 /// pane, so every run's output ends at the same byte.
-pub const END_MARKER: &[u8] = b"~tw-bench:end~";
+pub const END_MARKER: &[u8] = b"~ai-bench:end~";
 
 /// The session that runs the producer.
 const SESSION: &str = "bench";
 /// The reply that shows the client has applied every command before it.
-const READY: &[u8] = b"tw-bench:ready";
+const READY: &[u8] = b"ai-bench:ready";
 /// How long a run may take before the recorder gives up.
 const TIMEOUT: Duration = Duration::from_secs(300);
 
 const PRODUCER: &str = r#"read -r _ < "$1"
-printf '%s\n' '~tw-bench:start~'
+printf '%s\n' '~ai-bench:start~'
 cat "$2"
-printf '%s' '~tw-bench:end~'
+printf '%s' '~ai-bench:end~'
 exec sleep 86400
 "#;
 
@@ -358,7 +358,7 @@ mod tests {
 
     #[test]
     fn output_must_be_the_payload_with_crs_added() {
-        let output = |text: &str| format!("~tw-bench:start~\r\n{text}~tw-bench:end~").into_bytes();
+        let output = |text: &str| format!("~ai-bench:start~\r\n{text}~ai-bench:end~").into_bytes();
         assert!(check_output(&output("a\r\nb\r\n"), b"a\nb\n").is_ok());
         assert!(check_output(&output("a\r\r\nb\r\n"), b"a\nb\n").is_ok());
         assert!(check_output(&output("a\nb\r\n"), b"a\nb\n").is_err());
