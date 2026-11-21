@@ -597,11 +597,12 @@ impl Restarts {
         }
         // A session attached: no ended one is shown any more.
         self.quiet = false;
-        // An attach after an end is a new session, which ends the restart,
-        // as does one begun after a ready answer: the replacement. Any
-        // other, such as a first attach begun before the answer, may still
-        // be the old session, so a read under way or a ready answer stays.
-        if matches!(self.left, Left::Ready { tried: true, .. }) || self.ended {
+        // Finishing a replacement attach satisfies a ready answer. If the
+        // inspection is still in flight, let its matching reply decide:
+        // the service can report a failure even after a client attached.
+        if let Left::Ready { tried, .. } = &self.left
+            && (*tried || self.ended)
+        {
             self.left = Left::Nothing;
         }
         self.renewed |= self.ended;
@@ -667,7 +668,7 @@ struct Ended {
     /// The connection's failure, in the attention colour.
     error: Option<String>,
     message: String,
-    /// Why its agent's restart failed, whole.
+    /// The restart failure or a separate profile verification problem.
     reason: Option<String>,
     /// Whether it offers Resume and Start new.
     launch: bool,
@@ -702,6 +703,11 @@ fn ended(
         message,
         reason: match restart {
             Some(RestartShown::Failed(reason)) if agent.is_some() => Some(reason.clone()),
+            Some(RestartShown::Restarting { .. })
+                if matches!(error, PROFILE_UNAVAILABLE | PROFILE_CHANGED) =>
+            {
+                Some(error.into())
+            }
             _ => None,
         },
         launch: agent.is_some() && restarting.is_none(),
@@ -2736,6 +2742,22 @@ mod tests {
         restarts.list(&seen(0, false, listed(&failed[0])), false);
         restarts.attempting(false);
         restarts.attach_failed(false);
+        let profile_error = drawn(
+            &restarts,
+            Some(PROFILE_UNAVAILABLE),
+            false,
+            false,
+            None,
+            true,
+            false,
+        );
+        assert_eq!(
+            profile_error.ended,
+            Some(Ended {
+                reason: Some(PROFILE_UNAVAILABLE.into()),
+                ..restarting()
+            })
+        );
         restarts.list(&seen(1, false, None), false);
         restarts.inspected(14, None, None, false);
         assert_eq!(stopped(&restarts, false).error.as_deref(), Some(PIPE));
@@ -2788,7 +2810,7 @@ mod tests {
             launch: false,
         };
         // The session ended before the first list showed the restart: that
-        // end counts, so the replacement attached during the read ends it.
+        // end counts, so a ready answer needs no further attach.
         let mut restarts = Restarts::default();
         restarts.connected(false);
         restarts.disconnected();
@@ -2799,9 +2821,31 @@ mod tests {
         );
         restarts.attempting(false);
         restarts.connected(false);
+        assert_eq!(
+            restarts.inspected(12, Some(&fresh[4]), None, false),
+            RestartStep::Nothing
+        );
         assert!(!restarts.under_way());
         restarts.disconnected();
         assert_eq!(stopped(&restarts, false), today);
+        // The inspection can instead fail after a short-lived replacement
+        // attaches and dies. Show the reason for that restart.
+        let failed = frames("stream-agent-restart-failed");
+        let mut restarts = Restarts::default();
+        restarts.connected(false);
+        restarts.list(&seen(0, false, listed(&failed[0])), false);
+        restarts.disconnected();
+        assert_eq!(
+            restarts.list(&seen(1, true, None), true),
+            RestartStep::Inspect(14)
+        );
+        restarts.connected(false);
+        restarts.disconnected();
+        restarts.inspected(14, Some(&failed[1]), None, true);
+        assert_eq!(
+            stopped(&restarts, true),
+            not_running(failed[1].result.as_ref().unwrap().reason.clone())
+        );
         // An answer that ends the restart after the old client closed but
         // before the pane heard of it: that end stays quiet.
         let mut restarts = Restarts::default();

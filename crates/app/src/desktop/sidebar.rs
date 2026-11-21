@@ -13,6 +13,14 @@ use super::{
 use crate::desktop::layout_edit::Create;
 use ui::AgentState;
 
+struct HeldDeliveryTip(&'static str);
+
+impl Render for HeldDeliveryTip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        ui::menu().child(self.0)
+    }
+}
+
 #[derive(Clone)]
 struct TabDrag {
     origin: Option<super::navigation_origin::Origin>,
@@ -705,6 +713,9 @@ impl Browser {
                     };
                     ui::row(SharedString::from(id), false)
                         .when(swarm.is_some(), |row| row.pl(px(t.space.s10 * 3.0)))
+                        .when_some(held, |row, why| {
+                            row.tooltip(move |_, cx| cx.new(|_| HeldDeliveryTip(why)).into())
+                        })
                         .child(ui::agent_symbol(state))
                         .child(
                             div()
