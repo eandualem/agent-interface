@@ -209,6 +209,7 @@ fn the_overview_read_carries_the_wait_counts_and_processes_from_the_services_fix
     .read(AgentSection::Overview)
     .unwrap();
     let agent = snapshot.agent;
+    assert_eq!(agent.model_source.as_deref(), Some("runtime_default"));
     assert_eq!(agent.waiting, None);
     assert_eq!(agent.background.map(|counts| counts.running), Some(1));
     assert_eq!(agent.processes[0].command, "cargo test --workspace");

@@ -886,8 +886,11 @@ pub struct Agent {
     pub online: bool,
     /// The CLI.
     pub runtime: String,
-    /// The configured model, when set.
+    /// The reported or configured model, when available.
     pub model: Option<String>,
+    /// The service's source for that model.
+    #[serde(default, deserialize_with = "crate::lenient")]
+    pub model_source: Option<String>,
     /// Its working directory.
     pub dir: String,
     /// The repository it owns.
@@ -1439,6 +1442,25 @@ mod tests {
         // An older service has none of the background fields.
         assert_eq!((agent.waiting, agent.background), (None, None));
         assert!(agent.processes.is_empty());
+    }
+
+    #[test]
+    fn inspection_keeps_the_model_when_the_source_is_unfamiliar_or_mistyped() {
+        for (body, expected) in [
+            (
+                br#"{"name":"worker","model":"example","model_source":"future"}"#.as_slice(),
+                Some("future"),
+            ),
+            (
+                br#"{"name":"worker","model":"example","model_source":42}"#.as_slice(),
+                None,
+            ),
+            (br#"{"name":"worker","model":"example"}"#.as_slice(), None),
+        ] {
+            let agent = Agent::decode(body).unwrap();
+            assert_eq!(agent.model.as_deref(), Some("example"));
+            assert_eq!(agent.model_source.as_deref(), expected);
+        }
     }
 
     #[test]
