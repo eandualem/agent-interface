@@ -334,6 +334,13 @@ impl TerminalView {
         self.panes.as_deref().expect("terminal entity is alive")
     }
 
+    pub(crate) fn set_agent_default(&mut self, size: Option<(u16, u16)>, cx: &mut Context<Self>) {
+        if self.panes().set_agent_default(size) {
+            self.grid.borrow_mut().requested = None;
+            cx.notify();
+        }
+    }
+
     /// A retained hidden view must not constrain a displayed client's size.
     pub(crate) fn hide(&mut self, cx: &mut Context<Self>) {
         let mut grid = self.grid.borrow_mut();

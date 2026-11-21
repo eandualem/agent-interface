@@ -92,6 +92,8 @@ struct State {
     gone: Vec<PaneId>,
     /// Last size queued for this client, retained when its view is hidden.
     declared_size: Option<(u16, u16)>,
+    /// A profile agent should return to its session default when the tile leaves.
+    agent_default: Option<(u16, u16)>,
     /// The default text and background colours tmux reports to each pane.
     colors: Option<Colors>,
     /// Whether the session's windows changed since they were last listed.
@@ -147,6 +149,7 @@ enum ReplyOwner {
     GeometrySubscription,
     SourceSubscription,
     Size,
+    IgnoreSize,
     Colors,
 }
 
@@ -200,6 +203,7 @@ fn write_commands(
     control: &Control,
     shared: &Shared,
 ) {
+    let mut sizing = false;
     while let Ok(WriteRequest::Command { line, owner, sent }) = requests.recv() {
         if shared.lock().cancelled {
             break;
@@ -223,11 +227,25 @@ fn write_commands(
         if let Some(sent) = sent {
             let _ = sent.send(result);
         }
+        if !failed {
+            match owner {
+                ReplyOwner::Size => sizing = true,
+                ReplyOwner::IgnoreSize => sizing = false,
+                _ => {}
+            }
+        }
         if failed {
             // Closing stdin ends the reader. Let the worker drain its final
             // output. The UI can also report the retained write error.
             break;
         }
+    }
+    // A direct close can precede a queued hide. Only a client whose size
+    // declaration actually reached tmux needs to withdraw on its own pipe.
+    let agent_default = shared.lock().agent_default;
+    if sizing && let Some((cols, rows)) = agent_default {
+        let _ = writeln!(stdin, "refresh-client -f ignore-size -C {cols}x{rows}");
+        let _ = stdin.flush();
     }
 }
 
@@ -788,12 +806,22 @@ impl Panes {
             .map_err(io::Error::other)
     }
 
+    /// Setting an agent policy never changes tmux until the tile declares a size.
+    pub(crate) fn set_agent_default(&self, size: Option<(u16, u16)>) -> bool {
+        let mut state = self.shared.lock();
+        let default = size.map(|(cols, rows)| (cols.max(80), rows));
+        let changed = state.agent_default != default;
+        state.agent_default = default;
+        changed
+    }
+
     /// Declares this client's size, as an ordinary tmux client in a terminal
     /// of `cols` by `rows` would. tmux then sizes the session's windows by its
     /// `window-size` option, counting this client from now on.
     pub fn set_size(&self, cols: u16, rows: u16) -> io::Result<()> {
         let mut state = self.shared.lock();
-        let size = (cols.max(1), rows.max(1));
+        let minimum = if state.agent_default.is_some() { 80 } else { 1 };
+        let size = (cols.max(minimum), rows.max(1));
         self.control.send(
             &format!(
                 "refresh-client -f '!ignore-size' -C {}x{}\n",
@@ -819,14 +847,15 @@ impl Panes {
     /// Keep the client connected without contributing to tmux window sizing.
     pub(crate) fn ignore_size(&self) -> io::Result<()> {
         let state = self.shared.lock();
-        let Some((cols, rows)) = state.declared_size else {
+        let Some(declared) = state.declared_size else {
             return Ok(());
         };
+        let (cols, rows) = state.agent_default.unwrap_or(declared);
         // Changing flags alone does not recalculate background windows.
         // Repeat the declared size to apply the flag to the whole session.
         self.control.send(
             &format!("refresh-client -f ignore-size -C {cols}x{rows}\n"),
-            ReplyOwner::Size,
+            ReplyOwner::IgnoreSize,
         )
     }
 
@@ -1426,7 +1455,7 @@ fn apply(
                 // A rejected size leaves the window as it was; the view scales.
                 // tmux before 3.5 rejects colour reports; programs then see
                 // its default answer.
-                Some(ReplyOwner::Size | ReplyOwner::Colors) => {
+                Some(ReplyOwner::Size | ReplyOwner::IgnoreSize | ReplyOwner::Colors) => {
                     pending.pop_front();
                 }
                 Some(ReplyOwner::Recovery) => {

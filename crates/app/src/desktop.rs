@@ -2842,7 +2842,7 @@ impl Render for Browser {
                 self.terminals.insert(leaf.id.clone(), terminal);
             }
             // A stopped Backbone agent's pane offers Resume and Start new.
-            let agent = leaf.attachment.as_ref().and_then(|attachment| {
+            let sizing = leaf.attachment.as_ref().and_then(|attachment| {
                 let connection = self.pane_connection(&leaf.id).ok()??;
                 // A session on another tmux server is not this profile's
                 // agent, whatever its name.
@@ -2854,12 +2854,21 @@ impl Render for Browser {
                     return None;
                 }
                 let space = self.layout.as_ref()?.model().workspace_for_pane(&leaf.id)?;
-                let status = self.workspace_agents(space)?.get(&attachment.session);
-                (status.state == components::AgentState::Offline)
-                    .then(|| attachment.session.clone())
+                let roster = self.workspace_agents(space);
+                let registered = roster.and_then(|r| r.registered(&attachment.session));
+                let stopped = roster.is_some_and(|r| {
+                    r.get(&attachment.session).state == components::AgentState::Offline
+                });
+                Some((
+                    stopped.then(|| attachment.session.clone()),
+                    registered.unwrap_or(true),
+                ))
             });
             if let Some(terminal) = self.terminals.get(&leaf.id) {
-                terminal.update(cx, |terminal, cx| terminal.set_agent(agent, cx));
+                let (stopped, protect_size) = sizing.unwrap_or_default();
+                terminal.update(cx, |terminal, cx| {
+                    terminal.set_agent(stopped, protect_size, cx)
+                });
             }
         }
         let shown: Vec<(String, View)> = drawn

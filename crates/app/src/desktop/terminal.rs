@@ -131,6 +131,7 @@ impl Target {
 }
 
 struct Ready {
+    default_size: (u16, u16),
     socket: PathBuf,
     panes: Option<Arc<Panes>>,
     layout: Option<agent_interface_tmux::layout::Change>,
@@ -250,6 +251,7 @@ fn connect_selected(
     )
     .map_err(|e| e.to_string())?;
     let ready = Ready {
+        default_size: connection.default_size,
         socket,
         panes: Some(Arc::new(panes)),
         window: connection.layout.window,
@@ -314,6 +316,8 @@ pub(super) struct LiveTerminal {
     /// The name of the stopped agent this attachment shows. A bound pane
     /// starts it through its connection.
     agent: Option<String>,
+    protect_size: bool,
+    default_size: Option<(u16, u16)>,
     launching: bool,
     launch_result: Option<agent_interface_roster::lifecycle::Outcome>,
     /// Whether the browser shows this terminal. A hidden one keeps its
@@ -351,7 +355,14 @@ impl LiveTerminal {
     }
 
     /// Only the browser knows whether an attachment is a registered agent.
-    pub fn set_agent(&mut self, agent: Option<String>, cx: &mut Context<Self>) {
+    pub fn set_agent(&mut self, agent: Option<String>, protect_size: bool, cx: &mut Context<Self>) {
+        if self.protect_size != protect_size {
+            self.protect_size = protect_size;
+            if let Some(view) = &self.view {
+                let size = self.default_size.filter(|_| protect_size);
+                view.update(cx, |view, cx| view.set_agent_default(size, cx));
+            }
+        }
         if self.agent != agent {
             self.agent = agent;
             self.launch_result = None;
@@ -470,6 +481,8 @@ impl LiveTerminal {
             environment,
             restoring: false,
             agent: None,
+            protect_size: false,
+            default_size: None,
             launching: false,
             launch_result: None,
             shown: true,
@@ -637,6 +650,10 @@ impl LiveTerminal {
                                 cx,
                             )
                         });
+                        terminal.default_size = Some(ready.default_size);
+                        if terminal.protect_size {
+                            view.update(cx, |view,cx| view.set_agent_default(terminal.default_size,cx));
+                        }
                         if terminal.hold_size {
                             view.update(cx, |view, cx| view.hold_size(true, cx));
                         }
@@ -1359,6 +1376,72 @@ mod tests {
                 .run(&["has-session", "-t", "=window-source:"])
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn an_agent_tile_limits_its_size_and_releases_it_on_hide_or_direct_close() {
+        let server = TmuxServer::start().unwrap();
+        server
+            .run(&[
+                "new-session",
+                "-d",
+                "-s",
+                "agent",
+                "-x",
+                "120",
+                "-y",
+                "40",
+                "cat",
+            ])
+            .unwrap();
+        let socket = server
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap();
+        let ready = connect(Target {
+            connection: None,
+            leaf: Leaf {
+                id: "abcdef123456".into(),
+                cwd: None,
+                empty: false,
+                view: None,
+                attachment: Some(Attachment {
+                    session: "agent".into(),
+                    source_socket: Some(socket.trim().into()),
+                }),
+            },
+            directory: None,
+            source: Err("use fixture socket".into()),
+        })
+        .unwrap();
+        let wait = |expected: &str| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let size = server
+                    .run(&[
+                        "display-message",
+                        "-p",
+                        "-t",
+                        "=agent:",
+                        "#{window_width}x#{window_height}",
+                    ])
+                    .unwrap();
+                if size.trim() == expected {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "expected {expected}, saw {size}");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        let panes = ready.panes.as_ref().unwrap();
+        panes.set_agent_default(Some(ready.default_size));
+        panes.set_size(20, 10).unwrap();
+        wait("80x10");
+        panes.ignore_size().unwrap();
+        wait("120x40");
+        panes.set_size(94, 33).unwrap();
+        wait("94x33");
+        drop(ready);
+        wait("120x40");
     }
 
     #[test]

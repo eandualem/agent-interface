@@ -231,6 +231,13 @@ pub(super) const TOLERANCE: std::time::Duration = std::time::Duration::from_secs
 pub(super) struct LiveAgents(Rc<Source>);
 
 impl LiveAgents {
+    /// A missing observation cannot establish that a saved attachment is an ordinary session.
+    pub fn registered(&self, name: &str) -> Option<bool> {
+        let current = self.0.current.borrow();
+        current.snapshot.as_ref().filter(|s| s.error.is_none())?;
+        Some(current.statuses.contains_key(name))
+    }
+
     pub fn get(&self, name: &str) -> Rc<Status> {
         let current = self.0.current.borrow();
         if name.is_empty() {
