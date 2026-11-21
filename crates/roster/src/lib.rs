@@ -45,6 +45,10 @@ const UNAVAILABLE: &str = "Backbone unavailable; states stale";
 pub struct AgentDetails {
     /// Whether the provider observes an online agent, including unknown states.
     pub online: Option<bool>,
+    /// The model reported by the service and where that value came from.
+    pub model: Option<String>,
+    /// Whether the runtime reported the model or the service used its configuration.
+    pub model_source: Option<String>,
     /// Why the agent is waiting or blocked.
     pub reason: Option<String>,
     /// The issue currently being worked on.
@@ -239,6 +243,9 @@ fn decode(response: &[u8]) -> Option<Decoded> {
             name.clone(),
             AgentDetails {
                 online: field("online").and_then(|value| serde_json::from_str(value).ok()),
+                model: field("model").and_then(|value| serde_json::from_str(value).ok()),
+                model_source: field("model_source")
+                    .and_then(|value| serde_json::from_str(value).ok()),
                 reason: field("reason").and_then(|value| serde_json::from_str(value).ok()),
                 current_issue: field("current_issue")
                     .and_then(|value| serde_json::from_str(value).ok()),
@@ -492,6 +499,8 @@ mod tests {
         let mut snapshot = Snapshot::default();
         snapshot.update(include_bytes!("profiles/runs/fixtures/agents.json"));
         let worker = &snapshot.details["worker"];
+        assert_eq!(worker.model.as_deref(), Some("gpt-example"));
+        assert_eq!(worker.model_source.as_deref(), Some("observed"));
         assert_eq!(
             worker.waiting,
             Some(Waiting {

@@ -886,8 +886,11 @@ pub struct Agent {
     pub online: bool,
     /// The CLI.
     pub runtime: String,
-    /// The configured model, when set.
+    /// The reported or configured model, when available.
     pub model: Option<String>,
+    /// The service's source for that model.
+    #[serde(default, deserialize_with = "crate::lenient")]
+    pub model_source: Option<String>,
     /// Its working directory.
     pub dir: String,
     /// The repository it owns.
