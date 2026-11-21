@@ -382,7 +382,8 @@ Connecting reads `GET /api/profile` and compares the profile, the machine and
 the service's `instance_id` with the entry just read. The instance changes at
 every service start, so later checks on the same connection compare only the
 profile and the machine; the machine ID fills the identity's installation and
-lifecycle fields, which saved workspace bindings keep. Its shell reply names
+lifecycle fields used in profile-scoped view keys. A saved workspace binds by
+profile ID. A create checkpoint records the profile and machine IDs. The shell reply names
 the profile and the service's run, so the profile alone is compared there.
 `Connection::roster` reads the agents endpoint on that same binding. A failed
 refresh must not present an old agent state as current. The core does not

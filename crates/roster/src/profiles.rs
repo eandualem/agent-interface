@@ -30,9 +30,9 @@ use crate::{RESPONSE_LIMIT, Snapshot, transport::local};
 pub struct Identity {
     /// Stable profile.
     pub profile_id: String,
-    /// The machine's ID, kept under this name in saved workspace bindings.
+    /// The machine ID used in profile-scoped view keys.
     pub installation_id: String,
-    /// The machine's ID again, kept under this name in saved workspace bindings.
+    /// The same machine ID in the lifecycle component of those keys.
     pub lifecycle_id: String,
 }
 

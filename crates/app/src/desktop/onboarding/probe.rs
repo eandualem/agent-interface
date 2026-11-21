@@ -10,7 +10,7 @@ use std::{
 
 /// Commands looked up through the user's own shell. tmux is not among them:
 /// terminals use the app's own resolver, so setup checks with that.
-const COMMANDS: &[&str] = &["git", "backbone", "claude", "codex", "gemini", "opencode"];
+const COMMANDS: &[&str] = &["git", "backbone", "claude", "codex", "opencode"];
 
 /// Agent tools Backbone can run: command, name, official install command.
 pub const TOOLS: &[(&str, &str, &str)] = &[
@@ -24,7 +24,6 @@ pub const TOOLS: &[(&str, &str, &str)] = &[
         "Codex",
         "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
     ),
-    ("gemini", "Gemini CLI", "npm install -g @google/gemini-cli"),
     (
         "opencode",
         "OpenCode",

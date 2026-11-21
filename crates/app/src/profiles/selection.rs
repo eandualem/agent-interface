@@ -1,4 +1,4 @@
-//! A cancellable selection handoff. Registry metadata alone never activates a
+//! A cancellable selection handoff. Profile metadata alone never activates a
 //! workspace; only an accepted authenticated connection can be handed to it.
 
 use super::{Client, Error, validate_id};
@@ -15,7 +15,7 @@ pub struct Selected {
     connection: Connection,
 }
 impl Selected {
-    /// Metadata from the same atomic registry show that supplied the binding.
+    /// Metadata from the same profile record that supplied the socket.
     pub fn item(&self) -> &Item {
         &self.item
     }
@@ -57,7 +57,7 @@ impl Selection {
             live,
         })
     }
-    /// The requested registry ID while verification is pending, never authority.
+    /// The requested profile ID while verification is pending, never authority.
     pub fn pending(&self) -> Option<&str> {
         self.pending
             .as_ref()
@@ -82,7 +82,7 @@ impl Selection {
     }
 }
 
-/// One off-thread registry lookup followed by the original identity handshake.
+/// One off-thread profile lookup followed by verification of the socket it names.
 /// It owns the captured executable/environment and never retries through Default.
 pub struct Attempt {
     client: Client,

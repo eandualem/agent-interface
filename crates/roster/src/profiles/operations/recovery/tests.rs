@@ -22,6 +22,12 @@ fn requests_and_their_results_round_trip_without_discovery() {
     restored(&create());
     let mut made = create();
     made.observe_created(&served()).unwrap();
+    let checkpoint: Value = serde_json::from_slice(&made.checkpoint().unwrap()).unwrap();
+    let identity = made.identity().unwrap();
+    assert_eq!(
+        checkpoint["observation"]["identity"],
+        json!({"profile_id": identity.profile_id, "machine_id": identity.installation_id})
+    );
     let mut made = restored(&made);
     // A restored result still cannot change.
     assert_eq!(
@@ -48,7 +54,7 @@ fn corrupt_or_unknown_checkpoints_do_not_normalize_or_replace_requests() {
         invalid["request"] = json!(request);
         assert!(Prepared::restore(&bytes(&invalid)).is_err());
     }
-    let identity = json!({"profile_id": "a", "installation_id": "b", "lifecycle_id": "c"});
+    let identity = json!({"profile_id": "a", "machine_id": "b"});
     for (field, value) in [
         ("checkpoint_version", json!(99)),
         ("extra", json!(true)),

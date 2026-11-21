@@ -21,9 +21,16 @@ struct Checkpoint {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Observation {
-    identity: Option<Identity>,
+    identity: Option<CreatedProfile>,
     status: Status,
     error_code: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreatedProfile {
+    profile_id: String,
+    machine_id: String,
 }
 
 impl Prepared {
@@ -34,8 +41,7 @@ impl Prepared {
             json!({
                 "identity": receipt.identity.as_ref().map(|identity| json!({
                     "profile_id": identity.profile_id,
-                    "installation_id": identity.installation_id,
-                    "lifecycle_id": identity.lifecycle_id,
+                    "machine_id": identity.installation_id,
                 })),
                 "status": match receipt.status {
                     Status::Succeeded => "succeeded",
@@ -77,13 +83,8 @@ impl Prepared {
             let valid = match (&observation.identity, &observation.error_code) {
                 (Some(identity), None) => {
                     observation.status == Status::Succeeded
-                        && [
-                            &identity.profile_id,
-                            &identity.installation_id,
-                            &identity.lifecycle_id,
-                        ]
-                        .iter()
-                        .all(|id| super::valid_id(id))
+                        && super::valid_id(&identity.profile_id)
+                        && super::valid_id(&identity.machine_id)
                 }
                 (None, Some(code)) => {
                     observation.status == Status::Failed
@@ -98,7 +99,11 @@ impl Prepared {
             prepared.record(Receipt {
                 request_id: prepared.request_id.clone(),
                 action: prepared.action,
-                identity: observation.identity,
+                identity: observation.identity.map(|profile| Identity {
+                    profile_id: profile.profile_id,
+                    installation_id: profile.machine_id.clone(),
+                    lifecycle_id: profile.machine_id,
+                }),
                 status: observation.status,
                 error_code: observation.error_code,
             })?;
