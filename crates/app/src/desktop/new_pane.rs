@@ -111,7 +111,7 @@ const VIEWS: [ViewChoice; 8] = [
     ViewChoice {
         glyph: "⇄",
         label: "Connections",
-        description: "Requests and conversations with other profiles",
+        description: "Profile requests and conversations are unavailable in this version",
         scope: "this profile",
         kind: ViewKind::Connections,
     },
@@ -222,6 +222,7 @@ pub(super) fn sign_in_refusal(error: ProfileError) -> &'static str {
 }
 
 pub(super) struct NewPane {
+    pub(super) placement: Option<(super::navigation_origin::Origin, String)>,
     agents: super::agent_status::LiveAgents,
     origin: Origin,
     pane: String,
@@ -337,6 +338,7 @@ impl NewPane {
             }
         });
         Self {
+            placement: None,
             agents,
             pane,
             field,
@@ -684,14 +686,12 @@ impl Render for NewPane {
                 )),
             );
         } else if self.mode == Mode::Views {
-            list = list.child(
-                ui::view_heading("AGENT BACKBONE · LIVE, READ-ONLY", "").child(back(
-                    &self.pane,
-                    "← back to sessions",
-                    Mode::Sessions,
-                    cx,
-                )),
-            );
+            list = list.child(ui::view_heading("AGENT BACKBONE", "").child(back(
+                &self.pane,
+                "← back to sessions",
+                Mode::Sessions,
+                cx,
+            )));
         } else if self.mode == Mode::Agents {
             list = list.child(ui::view_heading("WHICH AGENT?", "").child(back(
                 &self.pane,

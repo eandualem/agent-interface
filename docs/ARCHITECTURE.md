@@ -1298,7 +1298,10 @@ WebKitGTK's nonaccelerated drawing policy for headless/software environments.
 A Connections pane belongs to the selected workspace's profile. The sidebar,
 Jump and the new-pane chooser share one navigation path. It finds the pane by
 its saved view kind across the workspace's tabs. Opening it uses an empty pane
-or creates a tab through the library's normal save path. Folded sidebar sections
+or creates a tab through the library's normal save path. The store rejects
+concurrent edits that would leave two Connections panes in one workspace. It
+saves the pane as an extension on an empty chooser so earlier schema-v2 readers
+can reopen the library. Folded sidebar sections
 retain their state in each window's Browser. The pane shows an unavailable
 state until the profile service supplies peer and review records.
 

@@ -60,6 +60,18 @@ fn section_toggle(label: &'static str, collapsed: bool) -> gpui::Stateful<gpui::
     ui::text(
         div()
             .id(label)
+            .role(gpui::accesskit::Role::Button)
+            .aria_label(if collapsed {
+                format!("Expand {label}")
+            } else {
+                format!("Collapse {label}")
+            })
+            .focusable()
+            .tab_stop(true)
+            .focus_visible(|el| {
+                el.border(px(t.size.focus_ring))
+                    .border_color(colors().focus)
+            })
             .h(px(t.space.s28))
             .px(px(t.space.s10))
             .flex()

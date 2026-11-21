@@ -5,12 +5,23 @@ use agent_interface_core::{Layout, View, ViewKind, Workspace};
 use gpui::{Context, Window};
 
 fn existing_pane(space: &Workspace) -> Option<(&str, &str)> {
-    space.tabs.iter().find_map(|tab| {
-        tab.tree.leaves().into_iter().find_map(|leaf| {
-            let view = leaf.view.as_ref()?;
-            (view.kind == ViewKind::Connections).then_some((tab.id.as_str(), leaf.id.as_str()))
+    space
+        .connections_panes()
+        .next()
+        .map(|(tab, leaf)| (tab.id.as_str(), leaf.id.as_str()))
+}
+
+fn visible_empty(model: &Layout) -> Option<&str> {
+    let tab = model.tab()?;
+    model
+        .pane()
+        .filter(|pane| pane.empty)
+        .or_else(|| {
+            (!model.focus_mode())
+                .then(|| tab.tree.leaves().into_iter().find(|pane| pane.empty))
+                .flatten()
         })
-    })
+        .map(|leaf| leaf.id.as_str())
 }
 
 fn add_connections_tab(model: &mut Layout) -> bool {
@@ -62,8 +73,15 @@ impl Browser {
         {
             return;
         }
-        if let Some((tab, leaf)) = existing_pane(space) {
-            let (tab, leaf) = (tab.to_owned(), leaf.to_owned());
+        let existing = existing_pane(space).map(|(tab, leaf)| (tab.to_owned(), leaf.to_owned()));
+        self.editing = None;
+        self.chooser = None;
+        self.tab_menu = None;
+        self.workspace_menu = false;
+        if let Some(focus) = &self.navigation {
+            window.focus(focus, cx);
+        }
+        if let Some((tab, leaf)) = existing {
             let model = self.layout.as_mut().unwrap().model_mut();
             model.choose_tab(&tab);
             model.choose_pane(&leaf);
@@ -75,9 +93,8 @@ impl Browser {
         let empty = self
             .layout
             .as_ref()
-            .and_then(|layout| layout.model().pane())
-            .filter(|leaf| leaf.empty)
-            .map(|leaf| leaf.id.clone());
+            .and_then(|layout| visible_empty(layout.model()))
+            .map(str::to_owned);
         if let Some(pane) = chooser.or(empty.as_deref()) {
             self.open_view(pane, View::of(ViewKind::Connections), window, cx);
             return;
@@ -97,6 +114,18 @@ impl Browser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sidebar_reuses_a_visible_empty_sibling() {
+        let mut model = Layout::initial("/".into());
+        let terminal = model.pane().unwrap().id.clone();
+        assert!(model.split(agent_interface_core::Direction::Right, "/".into(), true));
+        let chooser = model.pane().unwrap().id.clone();
+        assert!(model.choose_pane(&terminal));
+        assert_eq!(visible_empty(&model), Some(chooser.as_str()));
+        model.set_focus_mode(true);
+        assert_eq!(visible_empty(&model), None);
+    }
 
     #[test]
     fn navigation_finds_the_saved_view_in_its_own_workspace() {

@@ -106,13 +106,28 @@ impl<'a> Projection<'a> {
                         .as_ref()
                         .and_then(|a| a.source_socket.as_deref()),
                 );
-                if leaf.empty {
+                let view = leaf.view.as_ref();
+                let connections =
+                    view.is_some_and(|v| v.kind == agent_interface_core::ViewKind::Connections);
+                if connections && leaf.empty {
+                    return Err(format!("{}: a view pane cannot also be empty", leaf.id));
+                }
+                if connections {
+                    item.insert("connections_pane".into(), value(true));
+                } else if matches!(item.get("connections_pane"), Some(Field::Raw(raw)) if raw.get() == "true")
+                {
+                    item.remove("connections_pane");
+                }
+                if leaf.empty || connections {
                     item.insert("empty".into(), value(true));
                 } else {
                     item.remove("empty");
                 }
-                let view = leaf.view.as_ref();
-                optional(&mut item, "view", view.map(|view| view.kind.as_str()));
+                optional(
+                    &mut item,
+                    "view",
+                    view.filter(|_| !connections).map(|v| v.kind.as_str()),
+                );
                 optional(
                     &mut item,
                     "view_agent",

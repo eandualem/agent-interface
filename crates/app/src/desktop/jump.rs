@@ -147,7 +147,11 @@ impl Browser {
             .as_ref()
             .map(|jump| jump.query.to_lowercase())
             .unwrap_or_default();
-        let matches = |text: &str| query.is_empty() || text.to_lowercase().contains(&query);
+        self.jump_hits_for(&query)
+    }
+
+    pub(super) fn jump_hits_for(&self, query: &str) -> Vec<Hit> {
+        let matches = |text: &str| query.is_empty() || text.to_lowercase().contains(query);
         let mut hits = Vec::new();
         let states = self.agent_states();
         if let Some(layout) = &self.layout {
@@ -213,13 +217,18 @@ impl Browser {
             && self.connections_workspace().is_some()
             && let Some(target) = self.creation_target()
         {
-            hits.push(Hit {
+            let hit = Hit {
                 group: "COMMANDS",
                 label: "Connections".into(),
                 meta: String::new(),
                 agent: None,
                 target: Target::Connections(target),
-            });
+            };
+            if query == "connections" {
+                hits.insert(0, hit);
+            } else {
+                hits.push(hit);
+            }
         }
         for (label, target) in [
             (

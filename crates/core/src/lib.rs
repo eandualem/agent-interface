@@ -43,6 +43,15 @@ pub struct Workspace {
     pub selected: String,
 }
 
+impl Workspace {
+    /// Connections panes across all saved tabs in this workspace.
+    pub fn connections_panes(&self) -> impl Iterator<Item = (&Tab, &Leaf)> {
+        self.tabs
+            .iter()
+            .flat_map(|tab| tab.connections_panes().map(move |leaf| (tab, leaf)))
+    }
+}
+
 /// A named split tree.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tab {
@@ -56,6 +65,17 @@ pub struct Tab {
     pub focus: String,
     /// Show only this tab's selected pane in the current window.
     pub expanded: bool,
+}
+
+impl Tab {
+    /// Leaves containing this workspace's profile connections view.
+    pub fn connections_panes(&self) -> impl Iterator<Item = &Leaf> {
+        self.tree.leaves().into_iter().filter(|leaf| {
+            leaf.view
+                .as_ref()
+                .is_some_and(|view| view.kind == ViewKind::Connections)
+        })
+    }
 }
 
 /// One terminal area or a split between two areas.
