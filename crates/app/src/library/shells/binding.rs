@@ -1,14 +1,20 @@
-//! A library carries its shell-server key when moved. The socket directory keeps
-//! the current owner's location so a copy can be given a separate server.
+//! The private socket registry maps the identity of a library directory to a
+//! server. Its portable marker can outlive a filesystem move. A hard link to
+//! the marker lets us distinguish removal of the original from a mere copy.
+use super::{existing_socket_in, ordinary_session};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
+    collections::BTreeMap,
     fs::{self, OpenOptions},
     io::{self, Read, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 const MARKER: &str = ".shell-server.json";
+const REGISTRY: &str = "library-shell-owners.json";
+pub(super) const RECOVERY: &str = "Existing shells may belong to this library. To reconnect them, use --reconnect-shells-from with the former library folder. Choose Open terminal for a separate shell server.";
 
 #[derive(Serialize, Deserialize)]
 struct Marker {
@@ -20,11 +26,33 @@ struct Marker {
 struct Owner {
     token: uuid::Uuid,
     library: PathBuf,
-    device: u64,
-    inode: u64,
+    identity: Identity,
 }
 
-fn read<T: DeserializeOwned>(path: &Path) -> io::Result<Option<T>> {
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
+struct Identity {
+    device: u64,
+    directory: u64,
+    database: u64,
+    created: Option<std::time::SystemTime>,
+}
+
+impl Identity {
+    fn read(library: &Path) -> io::Result<Self> {
+        let dir = fs::metadata(library)?;
+        let db = fs::metadata(library.join("layouts.db"))?;
+        Ok(Self {
+            device: dir.dev(),
+            directory: dir.ino(),
+            database: db.ino(),
+            created: db.created().ok(),
+        })
+    }
+}
+
+type Registry = BTreeMap<String, Owner>;
+
+fn read<T: DeserializeOwned>(path: &Path, limit: u64) -> io::Result<Option<T>> {
     let file = match OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -38,59 +66,69 @@ fn read<T: DeserializeOwned>(path: &Path) -> io::Result<Option<T>> {
         return Err(io::Error::other("Invalid shell-server record"));
     }
     let mut bytes = Vec::new();
-    file.take(8193).read_to_end(&mut bytes)?;
-    if bytes.len() > 8192 {
+    file.take(limit + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
         return Err(io::Error::other("Oversized shell-server record"));
     }
     Ok(Some(serde_json::from_slice(&bytes)?))
 }
 
-fn save(path: &Path, record: &impl Serialize) -> io::Result<()> {
-    let mut temp = tempfile::NamedTempFile::new_in(path.parent().expect("record directory"))?;
-    temp.write_all(&serde_json::to_vec(record)?)?;
+const REGISTRY_LIMIT: u64 = 8 * 1024 * 1024;
+
+fn save(path: &Path, record: &impl Serialize, limit: u64) -> io::Result<()> {
+    let bytes = serde_json::to_vec(record)?;
+    if bytes.len() as u64 > limit {
+        return Err(io::Error::other("Oversized shell-server record"));
+    }
+    let parent = path.parent().expect("record directory");
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    temp.write_all(&bytes)?;
     temp.as_file().sync_all()?;
     temp.persist(path)?;
-    Ok(())
+    fs::File::open(parent)?.sync_all()
 }
 
-fn owner_path(root: &Path, key: &str) -> PathBuf {
-    root.join(format!("{key}.owner"))
+fn valid_key(key: &str) -> bool {
+    matches!(key.len(), 16 | 32)
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+pub(super) fn socket_key(path: &Path) -> Option<&str> {
+    path.file_name()?
+        .to_str()?
+        .strip_suffix("-terminals.sock")
+        .filter(|key| valid_key(key))
+}
+
+fn legacy_socket_key(root: &Path, library: &Path) -> io::Result<String> {
+    let key = legacy_key(library)?;
+    let socket = existing_socket_in(
+        root,
+        uzers::get_current_uid(),
+        &format!("{key}-terminals.sock"),
+    )?;
+    Ok(socket
+        .as_deref()
+        .and_then(socket_key)
+        .map_or(key, str::to_owned))
+}
+
+fn registry(root: &Path) -> io::Result<Registry> {
+    let records: Registry = read(&root.join(REGISTRY), REGISTRY_LIMIT)?.unwrap_or_default();
+    if records.keys().any(|key| !valid_key(key)) {
+        return Err(io::Error::other("Invalid shell-server registry"));
+    }
+    Ok(records)
 }
 
 fn marker(library: &Path) -> io::Result<Option<Marker>> {
-    let marker: Option<Marker> = read(&library.join(MARKER))?;
-    if marker.as_ref().is_some_and(|m| {
-        !matches!(m.key.len(), 16 | 32)
-            || !m
-                .key
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    }) {
+    let mark: Option<Marker> = read(&library.join(MARKER), 8192)?;
+    if mark.as_ref().is_some_and(|m| !valid_key(&m.key)) {
         return Err(io::Error::other("Invalid shell-server key"));
     }
-    Ok(marker)
-}
-
-impl Owner {
-    fn same_database(&self, db: &fs::Metadata) -> bool {
-        (self.device, self.inode) == (db.dev(), db.ino())
-    }
-
-    fn belongs_to(&self, library: &Path, db: &fs::Metadata) -> io::Result<bool> {
-        if self.same_database(db) {
-            return Ok(true);
-        }
-        // A copy on the same volume has a different database identity. For
-        // a cross-volume move, the old filesystem object must also be gone.
-        if self.device == db.dev() || self.library == library {
-            return Ok(false);
-        }
-        match fs::metadata(self.library.join("layouts.db")) {
-            Ok(old) => Ok((old.dev(), old.ino()) != (self.device, self.inode)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(true),
-            Err(e) => Err(e),
-        }
-    }
+    Ok(mark)
 }
 
 pub(super) fn legacy_key(library: &Path) -> io::Result<String> {
@@ -108,94 +146,295 @@ pub(super) fn legacy_key(library: &Path) -> io::Result<String> {
         .to_owned())
 }
 
-/// Read-only resolution. A known copy or an unclaimed new library has no live server.
-pub(super) fn lookup(root: &Path, library: &Path, legacy: String) -> io::Result<Option<String>> {
-    let Some(mark) = marker(library)? else {
-        let owner: Option<Owner> = read(&owner_path(root, &legacy))?;
-        return match owner {
-            None => Ok(Some(legacy)),
-            Some(owner) if owner.same_database(&fs::metadata(library.join("layouts.db"))?) => {
-                Ok(Some(legacy))
+impl Owner {
+    fn witness_dir(&self, root: &Path) -> io::Result<PathBuf> {
+        if fs::metadata(root)?.dev() == self.identity.device {
+            return Ok(root.to_owned());
+        }
+        Ok(self
+            .library
+            .parent()
+            .ok_or_else(|| io::Error::other("Missing library parent"))?
+            .join(format!(
+                ".agent-interface-shells-{}",
+                uzers::get_current_uid()
+            )))
+    }
+
+    fn witness_name(&self) -> String {
+        format!("{}.witness", self.token.simple())
+    }
+
+    // A missing pathname alone cannot establish a move. A renamed original
+    // still holds its link to this token, even if a copy opens first.
+    fn original_removed(&self, root: &Path) -> io::Result<Option<bool>> {
+        let dir = self.witness_dir(root)?;
+        if !super::private_socket_directory(&dir, uzers::get_current_uid())? {
+            return Ok(None);
+        }
+        let path = dir.join(self.witness_name());
+        match fs::symlink_metadata(&path) {
+            Ok(meta)
+                if meta.is_file()
+                    && meta.dev() == self.identity.device
+                    && meta.uid() == uzers::get_current_uid() =>
+            {
+                Ok(Some(meta.nlink() == 1))
             }
-            Some(_) => Ok(None),
-        };
-    };
-    let Some(owner) = read::<Owner>(&owner_path(root, &mark.key))? else {
-        return Ok(None);
-    };
-    Ok((owner.token == mark.token
-        && owner.belongs_to(library, &fs::metadata(library.join("layouts.db"))?)?)
-    .then_some(mark.key))
+            Ok(_) => Err(io::Error::other("Invalid shell-server witness")),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn publish_marker(&self, root: &Path, key: &str, old: Option<&Marker>) -> io::Result<()> {
+        let marker_path = self.library.join(MARKER);
+        if !old.is_some_and(|m| m.key == key && m.token == self.token) {
+            save(
+                &marker_path,
+                &Marker {
+                    key: key.to_owned(),
+                    token: self.token,
+                },
+                8192,
+            )?;
+        }
+        let dir = self.witness_dir(root)?;
+        super::ensure_socket_directory(&dir, uzers::get_current_uid())?;
+        let witness = dir.join(self.witness_name());
+        match fs::hard_link(&marker_path, &witness) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                let source = fs::symlink_metadata(marker_path)?;
+                let linked = fs::symlink_metadata(witness)?;
+                if (source.dev(), source.ino()) == (linked.dev(), linked.ino()) {
+                    Ok(())
+                } else {
+                    Err(io::Error::other("Shell-server witness changed"))
+                }
+            }
+            Err(e) => Err(e),
+        }
+    }
 }
 
-/// Called with a validated private socket directory. Serialize the decision
-/// across windows. Save the owner before making its marker visible so readers
-/// never use a marker with a partially written owner record.
-pub(super) fn bind(root: &Path, library: &Path) -> io::Result<String> {
-    let legacy = legacy_key(library)?;
-    let db = fs::metadata(library.join("layouts.db"))?;
-    let lock = OpenOptions::new()
+fn owned_key(records: &Registry, library: &Path) -> io::Result<Option<String>> {
+    let identity = Identity::read(library)?;
+    Ok(records
+        .iter()
+        .find(|(_, owner)| owner.identity == identity)
+        .map(|(key, _)| key.clone()))
+}
+
+/// Reads can use a committed binding or the legacy socket at its original
+/// path. Only a writer may transfer ownership across devices.
+pub(super) fn lookup(root: &Path, library: &Path) -> io::Result<Option<String>> {
+    let legacy = legacy_socket_key(root, library)?;
+    let records = registry(root)?;
+    let mark = marker(library)?;
+    if records.is_empty() && mark.is_none() {
+        return Ok(Some(legacy));
+    }
+    if let Some(key) = owned_key(&records, library)? {
+        return Ok(Some(key));
+    }
+    Ok((mark.is_none() && !records.contains_key(&legacy)).then_some(legacy))
+}
+
+pub(super) enum Use<'a> {
+    Open,
+    Create { automatic: bool },
+    Recover(&'a Path),
+}
+
+fn lock(root: &Path) -> io::Result<fs::File> {
+    let file = OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(root.join("library-bindings.lock"))?;
-    let metadata = lock.metadata()?;
-    if !metadata.is_file() || metadata.uid() != uzers::get_current_uid() || metadata.nlink() != 1 {
+    let meta = file.metadata()?;
+    if !meta.is_file() || meta.uid() != uzers::get_current_uid() || meta.nlink() != 1 {
         return Err(io::Error::other("Invalid shell-server binding lock"));
     }
-    lock.try_lock()?;
-    let old = marker(library)?;
-    let candidate = old.as_ref().map_or(legacy.as_str(), |m| m.key.as_str());
-    let previous: Option<Owner> = read(&owner_path(root, candidate))?;
-    let reusable = match &previous {
-        Some(owner) => match &old {
-            Some(mark) => mark.token == owner.token && owner.belongs_to(library, &db)?,
-            None => owner.same_database(&db),
-        },
-        None if old.is_some()
-            && root
-                .join(format!("{candidate}-terminals.sock"))
-                .try_exists()? =>
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10))
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
+fn live_match(root: &Path, key: &str, leaves: &[String]) -> io::Result<bool> {
+    let Some(socket) = existing_socket_in(
+        root,
+        uzers::get_current_uid(),
+        &format!("{key}-terminals.sock"),
+    )?
+    else {
+        return Ok(false);
+    };
+    if leaves.is_empty() {
+        return Ok(false);
+    }
+    let sessions = agent_interface_tmux::discovery::read_sessions(&socket)?;
+    Ok(leaves
+        .iter()
+        .filter_map(|id| ordinary_session(id))
+        .any(|name| sessions.contains(&name)))
+}
+
+fn unclaimed_match(root: &Path, records: &Registry, leaves: &[String]) -> io::Result<bool> {
+    // A marker write may have failed before the source was copied and removed.
+    // A known server whose physical owner is gone also needs explicit recovery.
+    for (key, owner) in records {
+        if !owner.library.join("layouts.db").try_exists()?
+            && owner.original_removed(root)? != Some(false)
+            && live_match(root, key, leaves)?
         {
+            return Ok(true);
+        }
+    }
+    for entry in fs::read_dir(root)? {
+        let name = entry?.file_name();
+        if let Some(key) = name
+            .to_str()
+            .and_then(|name| name.strip_suffix("-terminals.sock"))
+            && key.len() == 16
+            && valid_key(key)
+            && !records.contains_key(key)
+            && live_match(root, key, leaves)?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Serialize ownership changes across windows. The private registry is the
+/// commit point. Its filesystem identity also recovers a missing sidecar.
+pub(super) fn bind(
+    root: &Path,
+    library: &Path,
+    leaves: &[String],
+    mode: Use<'_>,
+) -> io::Result<Option<String>> {
+    let legacy = legacy_socket_key(root, library)?;
+    let _lock = lock(root)?;
+    let mut records = registry(root)?;
+    let old = marker(library)?;
+    let identity = Identity::read(library)?;
+    let current = owned_key(&records, library)?;
+    let marked = old.as_ref().and_then(|m| {
+        records
+            .get(&m.key)
+            .filter(|o| o.token == m.token)
+            .map(|o| (m, o))
+    });
+    let key = if let Use::Recover(former) = mode {
+        if former != library && former.join("layouts.db").try_exists()? {
+            return Err(io::Error::other("The former library still exists"));
+        }
+        let key = match marked {
+            Some((m, o)) if o.library == former => m.key.clone(),
+            _ => records
+                .iter()
+                .find(|(_, o)| o.library == former)
+                .map(|(key, _)| key.clone())
+                .map_or_else(|| legacy_socket_key(root, former), Ok)?,
+        };
+        if current.as_ref().is_some_and(|owned| owned != &key) {
             return Err(io::Error::other(
-                "Cannot establish ownership of the existing shell server",
+                "This library already owns another shell server",
             ));
         }
-        None => true,
-    };
-    let key = if reusable {
-        candidate.to_owned()
+        if let Some(o) = records.get(&key)
+            && o.identity != identity
+            && (o.library != former || o.original_removed(root)? == Some(false))
+        {
+            return Err(io::Error::other(
+                "The shell server belongs to another library",
+            ));
+        }
+        if !live_match(root, &key, leaves)? {
+            return Err(io::Error::other(
+                "No saved shell matches that library's server",
+            ));
+        }
+        key
+    } else if let Some(key) = current {
+        key
+    } else if let Some((mark, owner)) = marked {
+        let released = owner.original_removed(root)?;
+        if released == Some(true) && !owner.library.join("layouts.db").try_exists()? {
+            mark.key.clone()
+        } else if matches!(mode, Use::Open) {
+            return Ok(None);
+        } else if matches!(mode, Use::Create { automatic: true })
+            && released.is_none()
+            && !owner.library.join("layouts.db").try_exists()?
+        {
+            return Err(io::Error::other(RECOVERY));
+        } else {
+            uuid::Uuid::new_v4().simple().to_string()
+        }
+    } else if !records.contains_key(&legacy) && live_match(root, &legacy, leaves)? {
+        legacy
     } else {
+        if matches!(mode, Use::Open) {
+            return Ok(None);
+        }
+        if matches!(mode, Use::Create { automatic: true })
+            && unclaimed_match(root, &records, leaves)?
+        {
+            return Err(io::Error::other(RECOVERY));
+        }
         uuid::Uuid::new_v4().simple().to_string()
     };
-    let token = if reusable {
-        previous
-            .as_ref()
-            .map(|o| o.token)
-            .or_else(|| old.as_ref().map(|m| m.token))
-    } else {
-        None
-    }
-    .unwrap_or_else(uuid::Uuid::new_v4);
+    let previous = records.get(&key);
+    let socket_device = fs::metadata(root)?.dev();
+    let token = previous
+        .filter(|o| {
+            o.identity == identity
+                && old
+                    .as_ref()
+                    .is_some_and(|m| m.token == o.token && m.key == key)
+                && (identity.device == socket_device || o.library.parent() == library.parent())
+        })
+        .map_or_else(uuid::Uuid::new_v4, |o| o.token);
+    let retired = previous.filter(|o| o.token != token).and_then(|o| {
+        o.witness_dir(root)
+            .ok()
+            .map(|dir| dir.join(o.witness_name()))
+    });
     let owner = Owner {
         token,
         library: library.to_owned(),
-        device: db.dev(),
-        inode: db.ino(),
+        identity,
     };
-    if previous.as_ref() != Some(&owner) {
-        save(&owner_path(root, &key), &owner)?;
+    if previous != Some(&owner) {
+        records.insert(key.clone(), owner);
+        save(&root.join(REGISTRY), &records, REGISTRY_LIMIT)?;
     }
-    if !old.is_some_and(|m| m.key == key && m.token == token) {
-        save(
-            &library.join(MARKER),
-            &Marker {
-                key: key.clone(),
-                token,
-            },
-        )?;
+    // Even on a read-only library or a filesystem without hard links the
+    // committed registry still covers renames on the same filesystem.
+    if let Err(error) = records[&key].publish_marker(root, &key, old.as_ref()) {
+        tracing::warn!(%error, "Could not record a portable shell-server marker");
     }
-    Ok(key)
+    if let Some(path) = retired
+        && path.parent().is_some_and(|dir| {
+            super::private_socket_directory(dir, uzers::get_current_uid()).unwrap_or(false)
+        })
+        && fs::symlink_metadata(&path)
+            .is_ok_and(|m| m.is_file() && m.nlink() == 1 && m.uid() == uzers::get_current_uid())
+    {
+        let _ = fs::remove_file(path);
+    }
+    Ok(Some(key))
 }

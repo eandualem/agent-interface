@@ -247,6 +247,14 @@ are not restarted by this action.
 
 Ordinary shells use the library's persistent tmux shell server; attachments use
 their saved source socket, or the source resolved from the launch environment.
+Move the whole library folder, including its hidden files, to keep its running
+ordinary shells. A copied library uses its own server. If the library moved
+before its first launch with this version, or its original filesystem could
+not retain the move information, close the app and run
+`agent-interface --data-dir NEW_FOLDER --reconnect-shells-from FORMER_FOLDER`.
+Use the previous absolute folder path. Reopen the library to use its existing
+sessions. Choose **Open terminal** to start a separate shell for a copy.
+
 Use **Attach a session** in an empty pane, **Attach session** in tab options, or
 Command-Shift-A, to
 choose an existing source session. Type to filter names, use Up/Down and Enter,
