@@ -133,8 +133,7 @@ Security reviews so far:
 
 - **October 2026, reported findings:** 14 findings from an automated security
   scan were checked and fixed in
-  [#116](https://github.com/eandualem/agent-interface/pull/116). That work
-  added the private, identity-checked Backbone socket described above.
+  [#116](https://github.com/eandualem/agent-interface/pull/116).
 - **October 2026, trust boundary review**
   ([#88](https://github.com/eandualem/agent-interface/issues/88)): a source
   review of tmux command construction, terminal output, clipboard and links,
