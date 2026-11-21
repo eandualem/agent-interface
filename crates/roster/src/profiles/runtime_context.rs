@@ -15,7 +15,7 @@ pub enum Error {
     RegistrationChanged,
     /// Malformed or inconsistent response metadata.
     Invalid,
-    /// The provider does not support this contract version or endpoint.
+    /// The inspect route answered 404 (the agent is not there).
     Unsupported,
     /// The agent has no durable registration to inspect.
     Unavailable,

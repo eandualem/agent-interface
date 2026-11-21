@@ -301,7 +301,7 @@ impl Card {
                         card.error = Some(match error {
                             runtime_context::Error::RegistrationChanged => REPLACED,
                             runtime_context::Error::Unsupported => {
-                                "This provider cannot supply the agent's profile context."
+                                "This agent is no longer available."
                             }
                             _ => "The original agent's profile context is unavailable.",
                         });

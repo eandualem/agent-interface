@@ -324,7 +324,7 @@ shared popover and segment components. New activity waits for an explicit click,
 and the selected original stays open when filters hide its row. Peer pivots retain
 the window and a stack of prior selections. Discussion reuses the native
 conversation panel, including retained drafts, explicit recipient roles and
-stable message anchors. Loading, unsupported, empty and stale states are distinct.
+stable message anchors. Loading, error, empty and stale states are distinct.
 
 Sizes live in the `interaction_*` tokens. Drawing primitives are in
 `desktop/components/interactions.rs`; timeline geometry, row construction and

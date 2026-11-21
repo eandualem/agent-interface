@@ -342,7 +342,7 @@ reference to the exact record being read, and the app checks that the author
 is still registered before sending. A message shows **Sending…** until Agent
 Backbone answers, then the time it was sent; **Not sent** offers **Retry**,
 and **Edit** to move the text back into an empty message field.
-When Agent Backbone keeps conversations, the thread is the record's stored
+When Agent Backbone knows the record, the thread is the record's stored
 conversation: your messages, the author's replies and the record's new
 revisions, in order, with a **new** divider before what arrived since you last
 looked. It is read every five seconds while open, and every 25 seconds while
@@ -351,7 +351,7 @@ ones. Retrying a message Backbone did not confirm is safe: it is stored once.
 A message whose delivery failed after Backbone stored it offers **Retry**,
 which delivers it again without adding it twice.
 
-With an Agent Backbone that does not keep conversations, the thread shows only
+When Agent Backbone has no record of the item, the thread shows only
 the messages sent from this pane, and if delivery is uncertain the message
 says so: check with the author before sending it again. Delivered or queued
 does not mean the author has read it. Threads and drafts remain with their
@@ -493,7 +493,7 @@ Reports record progress, and Responses answer specific questions; link to the
 workbook from those artifacts so readers can inspect the underlying data.
 
 Open **Reports & updates → Sheets**, choose a workbook, then a tab. The workspace's
-profile must be served by an Agent Backbone that supports Sheets.
+profile must be one that Agent Backbone serves.
 The grid is read-only. Select a cell or use Shift-click or Shift-arrow to select a
 range. Arrow keys and Tab move the selection. Row and column paging keep large
 workbooks bounded; labels retain canonical A1 coordinates under saved views.

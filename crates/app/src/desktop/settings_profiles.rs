@@ -1,5 +1,5 @@
-//! Settings › Profiles: every profile, and one profile's accounts, agents and
-//! service. Sessions it opens show in the main window.
+//! Settings › Profiles: every profile, and one profile's accounts and agents.
+//! Sessions it opens show in the main window.
 use super::{
     Browser, components as ui,
     design::{colors, tokens},
@@ -11,7 +11,7 @@ use gpui::{App, Context, Entity, SharedString, Subscription, Window, div, prelud
 
 enum List {
     Loading,
-    /// Agent Backbone is not installed, or has no profiles command.
+    /// Agent Backbone is not installed: no `backbone` command was found.
     Absent,
     Failed(&'static str),
     Ready(Vec<Item>),

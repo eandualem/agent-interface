@@ -1,6 +1,6 @@
 use super::*;
 use agent_interface_roster::views::{
-    Data, Range,
+    Data, History, Range, UNAVAILABLE,
     bound::{self, Request},
 };
 
@@ -94,7 +94,9 @@ fn general_view_chains_keep_original_identity() {
             (Request::Tags, Data::Tags(library)) => assert_eq!(library.global, ["sentinel-a"]),
             (Request::Usage(_), Data::Usage(usage)) => assert_eq!(usage.totals.total, 37),
             (Request::Activity, Data::Activity(activity)) => {
-                assert_eq!(activity.members[0].repo, "sentinel-a")
+                assert_eq!(activity.members[0].repo, "sentinel-a");
+                // A failed history read leaves the timeline and says why.
+                assert_eq!(activity.history, History::Failed(UNAVAILABLE));
             }
             other => panic!("unexpected read: {other:?}"),
         }

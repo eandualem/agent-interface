@@ -213,7 +213,7 @@ session-termination commands; navigation keeps them attached.
 Until setup is explicitly completed, an ordinary launch shows first run as a
 layer over the workspace window (`desktop/onboarding.rs`, hosted by
 `Browser::start_onboarding`). No other window opens or closes during first run.
-Existing libraries and preferences, including pre-rename data, are preserved
+Existing libraries and preferences are preserved
 and do not count as completed setup. An explicit `--data-dir` launch opens that
 library directly.
 
@@ -550,9 +550,8 @@ that began within those six hours is drawn from the hour's start; an older
 one is not known. It follows the `before_id` cursor for up to four pages of
 500, says so when that limit leaves the oldest observations unread, and stops
 when the pane closes. Deliveries are ticks and
-each agent's state now sits beside its lane. A Backbone that answers 404 or
-405 keeps no history and the timeline shows deliveries and current states;
-when history fails to load, the legend says so.
+each agent's state now sits beside its lane. When history fails to load, the
+timeline still shows deliveries and current states, and the legend says so.
 A saved view records the agent section it opens on (`view_section`); a pane
 saved by an earlier version as one agent's policies opens on that agent's
 Policies section and is written in the new form with the next change.
@@ -684,7 +683,7 @@ overlays close; native report lists retain their usual rendering cache.
 Only exact-document reads allow a response of `6 × 4 MiB + 8192` bytes, covering
 JSON escaping of the bounded UTF-8 HTML. The native adapter validates the decoded
 body size, metadata envelope, revision ID, byte count and SHA-256 before passing
-HTML to the same isolated system-webview surface. Missing API support is distinct from an empty catalog. No
+HTML to the same isolated system-webview surface. A missing list is an error, distinct from an empty catalog. No
 local artifact is automatically imported under an authenticated author name.
 
 A Document carries no code of its own. To show a change or a passage of code
@@ -1137,14 +1136,14 @@ installation and lifecycle identity. Workspace routing supplies the verified con
 profile connection for all list, history and detail pages. Bound interaction
 snapshots retain that client for later detail reads. Every bound request names
 the profile. Binding refusal from optional state-history enrichment invalidates
-the whole snapshot, while unsupported state history remains an optional error.
+the whole snapshot, while a failed state-history read remains an optional error.
 Plan pagination captures its connection once per complete read.
 Native profile panes consume these clients through their retained connection.
 
 `roster::plans` reads Backbone's `/api/current-plans` list over the same
 authenticated local transport as Sheets, on a worker, every 20 seconds while
 the Current plans section is open. It is read-only: it publishes, approves and
-changes nothing. A missing endpoint is reported as unsupported, and a failed
+changes nothing. A missing list is reported as unavailable, and a failed
 reread keeps the plans last read. Each refresh also reads the agents' runtime
 metadata; failure of either read preserves the last complete snapshot and shows
 the read-error notice in both the list and opened plan. Working states
@@ -1177,7 +1176,7 @@ Explicitly bound interaction panes retain one verified connection for summary,
 state/history reads, detail navigation and linked reports or responses. Deferred
 snapshots and link requests check the full origin. Interaction and referenced
 artifact discussions retain the same connection and profile-scoped draft keys;
-unsupported or refused bound reads are shown as such.
+unavailable or refused bound reads are shown as such.
 
 `desktop::views::interactions` owns the visible window, filters, selected original,
 peer-navigation stack and discussions. Reads run on a worker every 20 seconds
