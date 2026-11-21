@@ -55,6 +55,46 @@ fn reorder_tab_proposal(
     Some((base, proposed))
 }
 
+fn section_toggle(label: &'static str, collapsed: bool) -> gpui::Stateful<gpui::Div> {
+    let (t, c) = (tokens(), colors());
+    ui::text(
+        div()
+            .id(label)
+            .role(gpui::accesskit::Role::Button)
+            .aria_label(if collapsed {
+                format!("Expand {label}")
+            } else {
+                format!("Collapse {label}")
+            })
+            .focusable()
+            .tab_stop(true)
+            .focus_visible(|el| {
+                el.border(px(t.size.focus_ring))
+                    .border_color(colors().focus)
+            })
+            .h(px(t.space.s28))
+            .px(px(t.space.s10))
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s4))
+            .cursor_pointer()
+            .text_color(c.muted)
+            .hover(|el| el.bg(colors().hover)),
+        &t.text.label,
+    )
+    .child(ui::icon(
+        if collapsed {
+            "chevron-right"
+        } else {
+            "chevron-down"
+        },
+        t.size.icon,
+        c.muted,
+    ))
+    .child(div().flex_1().child(label))
+}
+
 impl Browser {
     fn drop_tab(&mut self, dragged: &TabDrag, destination: &str, cx: &mut Context<Self>) {
         if dragged.browser != cx.entity_id() || self.saving || self.save_failed {
@@ -218,6 +258,7 @@ impl Browser {
             )
             .child(self.tab_list(cx))
             .children(self.agents_block(window, cx))
+            .children(self.connections_block(cx))
             .child(self.switcher(width, cx))
             .child(
                 // The right edge resizes the panel.
@@ -638,6 +679,15 @@ impl Browser {
                 c.muted,
             ),
         };
+        let heading = section_toggle("AGENTS", self.agents_collapsed)
+            .child(ui::text(div().text_color(summary_color), &t.text.meta).child(summary))
+            .on_click(cx.listener(|browser, _, _, cx| {
+                browser.agents_collapsed = !browser.agents_collapsed;
+                cx.notify();
+            }));
+        if self.agents_collapsed {
+            return Some(heading.into_any_element());
+        }
         let quiet = |label: &'static str, icon: Option<&'static str>| {
             ui::text(
                 div()
@@ -881,12 +931,37 @@ impl Browser {
                 .border_color(c.line)
                 .pt(px(t.space.s4))
                 .pb(px(t.space.s8))
-                .child(
-                    ui::section("AGENTS").pr(px(t.space.s14)).child(
-                        ui::text(div().text_color(summary_color), &t.text.meta).child(summary),
-                    ),
-                )
+                .child(heading)
                 .child(rows)
+                .into_any_element(),
+        )
+    }
+
+    fn connections_block(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        self.connections_workspace()?;
+        let (t, c) = (tokens(), colors());
+        let target = self.creation_target();
+        let heading = section_toggle("CONNECTIONS", self.connections_collapsed)
+            .child(ui::text(div().text_color(c.muted), &t.text.meta).child("unavailable"))
+            .on_click(cx.listener(|browser, _, _, cx| {
+                browser.connections_collapsed = !browser.connections_collapsed;
+                cx.notify();
+            }));
+        Some(
+            div()
+                .flex_shrink_0()
+                .child(heading)
+                .when(!self.connections_collapsed, |section| {
+                    section.child(
+                        ui::row("show-profile-connections", false)
+                            .mx(px(t.space.s8))
+                            .child(ui::icon("link-2", t.size.icon, c.muted))
+                            .child("Open connections")
+                            .on_click(cx.listener(move |browser, _, window, cx| {
+                                browser.open_connections(target.as_ref(), None, window, cx);
+                            })),
+                    )
+                })
                 .into_any_element(),
         )
     }

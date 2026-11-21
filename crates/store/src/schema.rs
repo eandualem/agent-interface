@@ -191,6 +191,15 @@ fn node(
             return Err(format!("{at}.source_socket: socket without an attachment"));
         }
         let view = view(item, session.is_some() || empty, at)?;
+        // Previous schema-v2 readers show this extension as an empty chooser.
+        // An occupied leaf written by an older reader takes precedence.
+        let connections = empty && item.get("connections_pane") == Some(&Value::Bool(true));
+        let view = if connections {
+            Some(View::of(ViewKind::Connections))
+        } else {
+            view
+        };
+        let empty = empty && !connections;
         leaves.push(id.clone());
         Ok(Node::Leaf(Leaf {
             id,
@@ -363,7 +372,7 @@ fn read_layout(value: &Value, navigation: bool) -> Result<Layout> {
                 "{at}.selected: expected an existing tab identity (or empty for an empty workspace)"
             ));
         }
-        workspaces.push(Workspace {
+        let space = Workspace {
             id,
             name,
             icon,
@@ -371,7 +380,13 @@ fn read_layout(value: &Value, navigation: bool) -> Result<Layout> {
             profile_id,
             tabs,
             selected,
-        });
+        };
+        if space.connections_panes().nth(1).is_some() {
+            return Err(format!(
+                "{at}: a workspace may have only one Connections pane"
+            ));
+        }
+        workspaces.push(space);
     }
     let selected = if navigation {
         string(root, "selected", "layout")?

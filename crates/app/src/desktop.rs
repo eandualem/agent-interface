@@ -25,6 +25,7 @@ mod new_pane;
 use chooser::{Choice, SessionChooser};
 use layout_edit::{Create, Selection};
 mod components;
+mod connections;
 mod design;
 mod frame;
 mod icons;
@@ -699,6 +700,8 @@ struct Browser {
     jump: Option<jump::Jump>,
     /// A navigation panel drag: where it started and the width then.
     sidebar_drag: Option<(gpui::Pixels, gpui::Pixels, Option<u32>)>,
+    agents_collapsed: bool,
+    connections_collapsed: bool,
     reset_focus: bool,
     painted_pane_focus: Option<String>,
     navigation: Option<gpui::FocusHandle>,
@@ -1792,6 +1795,9 @@ impl Browser {
                     );
                 } else if layout.model_mut().transfer_tab(&destination) {
                     self.save(cx);
+                } else {
+                    self.save_notice =
+                        Some("The destination changed or already has a Connections pane.".into());
                 }
             }
         }
@@ -2998,7 +3004,15 @@ impl Render for Browser {
             .filter(|leaf| leaf.empty && leaf.attachment.is_none())
             .map(|leaf| leaf.id.clone())
             .collect();
-        self.new_panes.retain(|id, _| empty.contains(id));
+        let placement = self.selected_navigation_origin().zip(
+            self.layout
+                .as_ref()
+                .and_then(|layout| layout.model().tab())
+                .map(|tab| tab.id.clone()),
+        );
+        self.new_panes.retain(|id, (chooser, _)| {
+            empty.contains(id) && chooser.read(cx).placement == placement
+        });
         for id in empty {
             if !self.new_panes.contains_key(&id) {
                 let Ok(connection) = self.pane_connection(&id) else {
@@ -3019,12 +3033,16 @@ impl Render for Browser {
                 }
                 let socket = self.source.clone().and_then(Result::ok);
                 let pane = id.clone();
-                let chooser = cx.new(|cx| match connection {
-                    Some(connection) => {
-                        new_pane::NewPane::new_bound(pane, connection, agents, window, cx)
-                            .expect("matching workspace roster")
-                    }
-                    None => new_pane::NewPane::new(pane, socket, window, cx),
+                let chooser = cx.new(|cx| {
+                    let mut chooser = match connection {
+                        Some(connection) => {
+                            new_pane::NewPane::new_bound(pane, connection, agents, window, cx)
+                                .expect("matching workspace roster")
+                        }
+                        None => new_pane::NewPane::new(pane, socket, window, cx),
+                    };
+                    chooser.placement = placement.clone();
+                    chooser
                 });
                 let events =
                     cx.subscribe_in(&chooser, window, |browser, chooser, event, window, cx| {
@@ -3051,6 +3069,24 @@ impl Render for Browser {
                             }
                             new_pane::NewPaneEvent::Attach(name) => {
                                 browser.attach_into(&pane, name, window, cx)
+                            }
+                            new_pane::NewPaneEvent::OpenView(view)
+                                if view.kind == agent_interface_core::ViewKind::Connections =>
+                            {
+                                let Some((origin, tab)) = &chooser.placement else {
+                                    return;
+                                };
+                                if !browser.selected_origin_is_current(Some(origin))
+                                    || !browser
+                                        .layout
+                                        .as_ref()
+                                        .and_then(|layout| layout.model().tab())
+                                        .is_some_and(|selected| &selected.id == tab)
+                                {
+                                    return;
+                                }
+                                let target = browser.creation_target();
+                                browser.open_connections(target.as_ref(), Some(&pane), window, cx);
                             }
                             new_pane::NewPaneEvent::OpenView(view) => {
                                 browser.open_view(&pane, view.clone(), window, cx);
