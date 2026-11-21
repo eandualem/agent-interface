@@ -338,7 +338,7 @@ pub(super) fn message(error: &Error) -> &'static str {
             "The profile identity changed or its binding was refused. Refresh and try again."
         }
         Error::Profile(ProfileError::Unsupported) => {
-            "This provider does not support profile connections."
+            "The app cannot read this profile’s protocol version or state."
         }
         Error::Profile(
             ProfileError::Unavailable

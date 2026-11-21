@@ -25,7 +25,7 @@ pub enum Request {
 /// One observation labelled with the full origin and original request.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Read {
-    /// The authenticated profile, installation and lifecycle identity.
+    /// The authenticated profile and machine.
     pub identity: Identity,
     /// The view answered by this observation.
     pub request: Request,

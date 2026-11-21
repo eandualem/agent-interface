@@ -613,8 +613,8 @@ person chose.
 
 `roster::conversations::Client` owns a verified connection and one artifact's
 kind and ID; `roster::feedback::Client` owns a connection and the original
-record. Both compare the record's full profile, installation and lifecycle
-identity before construction. Clones retain the original connection; reads,
+record. Both verify that the record belongs to the same profile and machine
+before construction. Clones retain the original connection; reads,
 pagination, read markers, sends and redelivery never resolve the current
 selection. Callers retain the message's request ID, recipient and anchor when
 retrying an uncertain conversation send. Feedback verifies the author and
@@ -626,7 +626,7 @@ entity keeps its draft, pending sends and retry identities across hiding and
 navigation. Bound read workers check origin and selection generation before
 applying an update. Document revision navigation retains the same pane origin.
 
-Bound seen-state and discussion keys include profile, installation and lifecycle,
+Bound seen-state and discussion keys include the profile and machine IDs,
 so one profile's records are never marked seen by another's. The explicit
 constructor currently supports Reports,
 Responses, Documents, Usage, Activity and Skills and requires matching live-status
@@ -1129,8 +1129,7 @@ states its scope. Export uses an occluding deferred menu above the grid.
 No spreadsheet widget or formula engine is added. An explicitly bound Reports
 pane opens Sheets with the same verified connection. Shelf refreshes, navigation,
 exports and prepared feedback keep that original source and connection.
-Read markers and retained workbook conversations include the full profile,
-installation and lifecycle identity. Workspace routing supplies the verified connection when a profile workspace opens.
+Read markers and retained workbook conversations include the profile and machine IDs. Workspace routing supplies the verified connection when a profile workspace opens.
 
 `roster::plans::Client` and `roster::interactions::Client` retain a verified
 profile connection for all list, history and detail pages. Bound interaction
@@ -1151,7 +1150,7 @@ come from the shared live roster, independently of the plan refresh.
 Explicitly bound panes read plans and runtime metadata through the same captured
 connection. Plan frames reject another profile's deferred result, and discussions
 retain the connection, author, observed revision and step. Their draft keys include
-the full profile, installation and lifecycle identity; refreshing or switching
+the profile and machine IDs. Refreshing or switching
 sections cannot redirect an existing discussion. Workspace selection supplies the connection without rewriting an existing pane.
 The section draws through the pane, like the record readers, so
 an opened plan's text can be selected and copied. Its selected step uses the shared

@@ -41,7 +41,7 @@ pub struct Identity {
 pub enum Error {
     /// Malformed, oversized or inconsistent discovery/identity data.
     Invalid,
-    /// The provider or wire schema does not support bound connections.
+    /// The service returned an unsupported version or profile state.
     Unsupported,
     /// Provisioning is incomplete or failed.
     NotReady,
@@ -294,9 +294,6 @@ impl Connection {
         }))
         .map_err(|_| Error::Invalid)?;
         let response = self.response("/api/profile/shells", Some(body), RESPONSE_LIMIT)?;
-        if response.status == 404 {
-            return Err(Error::Unsupported);
-        }
         successful(&response)?;
         let reply: Reply = parse(&response.body)?;
         if reply.profile_id != self.identity.profile_id {
@@ -434,9 +431,6 @@ impl Connection {
 
     fn handshake(&self, instance: Option<&str>) -> Result<(), Error> {
         let response = self.response("/api/profile", None, RESPONSE_LIMIT)?;
-        if response.status == 404 {
-            return Err(Error::Unsupported);
-        }
         successful(&response)?;
         served::verify(&response.body, &self.identity, instance)
     }

@@ -24,7 +24,7 @@ const FILE_LIMIT: usize = 16 * 1024 * 1024;
 pub enum Error {
     /// The request was prepared on another profile connection.
     ProviderChanged,
-    /// The provider refused the original profile or lifecycle binding.
+    /// The provider refused the original profile binding.
     BindingRefused,
     /// A read did not complete: Backbone could not be reached, or the
     /// transport refused its reply.

@@ -223,7 +223,7 @@ fn bound_shell_request_carries_no_environment_and_checks_its_reply() {
     assert_eq!(ensure(None).err(), Some(Error::BindingMismatch));
     assert_eq!(ensure(None).err(), Some(Error::Invalid));
     assert_eq!(ensure(None).err(), Some(Error::Refused(503)));
-    assert_eq!(ensure(None).err(), Some(Error::Unsupported));
+    assert_eq!(ensure(None).err(), Some(Error::Refused(404)));
     let requests = server.join().unwrap();
     assert!(requests[1].starts_with("post /api/profile/shells "));
     let body = requests[1].rsplit("\r\n\r\n").next().unwrap();
@@ -514,7 +514,7 @@ fn handshake_rejects_another_profile_machine_or_run_and_an_unsupported_service()
     assert_eq!(profile.connect().err(), Some(Error::BindingMismatch));
     assert_eq!(profile.connect().err(), Some(Error::BindingMismatch));
     assert_eq!(profile.connect().err(), Some(Error::BindingMismatch));
-    assert_eq!(profile.connect().err(), Some(Error::Unsupported));
+    assert_eq!(profile.connect().err(), Some(Error::Refused(404)));
     assert_eq!(profile.connect().err(), Some(Error::BindingRequired));
     assert_eq!(profile.connect().err(), Some(Error::Unsupported));
     assert_eq!(server.join().unwrap().len(), 6);
