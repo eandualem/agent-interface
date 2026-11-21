@@ -4,7 +4,7 @@
 use super::{existing_socket_in, ordinary_session};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
     fs::{self, OpenOptions},
     io::{self, Read, Write},
@@ -301,10 +301,14 @@ fn live_match(root: &Path, key: &str, leaves: &[String]) -> io::Result<bool> {
     else {
         return Ok(false);
     };
+    sessions_match(&socket, leaves)
+}
+
+fn sessions_match(socket: &Path, leaves: &[String]) -> io::Result<bool> {
     if leaves.is_empty() {
         return Ok(false);
     }
-    let sessions = agent_interface_tmux::discovery::read_sessions(&socket)?;
+    let sessions = agent_interface_tmux::discovery::read_sessions(socket)?;
     Ok(leaves
         .iter()
         .filter_map(|id| ordinary_session(id))
@@ -312,26 +316,37 @@ fn live_match(root: &Path, key: &str, leaves: &[String]) -> io::Result<bool> {
 }
 
 fn unclaimed_match(root: &Path, records: &Registry, leaves: &[String]) -> io::Result<bool> {
-    // A marker write may have failed before the source was copied and removed.
-    // A known server whose physical owner is gone also needs explicit recovery.
-    for (key, owner) in records {
-        if !owner.at_recorded_path().unwrap_or(false)
-            && owner.original_removed(root)? != Some(false)
-            && live_match(root, key, leaves)?
-        {
-            return Ok(true);
-        }
-    }
+    // Start with existing sockets, so obsolete owners on unavailable volumes
+    // do not participate. Apply ownership to the final socket, including when
+    // an old path-named alias points at it.
+    let uid = uzers::get_current_uid();
+    let mut visited = BTreeSet::new();
     for entry in fs::read_dir(root)? {
         let name = entry?.file_name();
-        if let Some(key) = name
-            .to_str()
-            .and_then(|name| name.strip_suffix("-terminals.sock"))
-            && key.len() == 16
-            && valid_key(key)
-            && !records.contains_key(key)
-            && live_match(root, key, leaves)?
-        {
+        let path = Path::new(&name);
+        if socket_key(path).is_none() {
+            continue;
+        }
+        let Some(socket) = existing_socket_in(root, uid, name.to_str().expect("ASCII socket key"))?
+        else {
+            continue;
+        };
+        let key = socket_key(&socket).expect("validated shell socket");
+        if !visited.insert(key.to_owned()) {
+            continue;
+        }
+        match records.get(key) {
+            Some(owner)
+                if owner.at_recorded_path().unwrap_or(false)
+                    || owner.original_removed(root).ok().flatten() == Some(false) =>
+            {
+                continue;
+            }
+            None if key.len() != 16 => continue,
+            _ => {}
+        }
+        // Unknown ownership and an exact live match require explicit recovery.
+        if sessions_match(&socket, leaves)? {
             return Ok(true);
         }
     }
@@ -408,7 +423,11 @@ fn recovery_key(
     // only after exhausting the explicitly supplied location.
     if let Some((marker, owner)) = marked
         && owner.identity != identity
-        && Identity::existing(former)?.is_none_or(|id| former.is_symlink() && id == identity)
+        && match fs::symlink_metadata(former) {
+            Ok(meta) => meta.is_symlink() && Identity::existing(former)? == Some(identity),
+            Err(e) if super::missing(&e) => true,
+            Err(e) => return Err(e),
+        }
         && eligible(&marker.key, Some(owner))?
     {
         return Ok(marker.key.clone());

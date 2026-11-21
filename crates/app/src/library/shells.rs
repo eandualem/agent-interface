@@ -469,6 +469,11 @@ mod tests {
                 binding::RECOVERY
             );
         }
+        let empty = base.path().join("empty");
+        fs::create_dir(&empty).unwrap();
+        std::os::unix::fs::symlink(&empty, &renamed).unwrap();
+        assert!(binding::bind(&root, &backup, binding::Use::Recover(&renamed)).is_err());
+        fs::remove_file(&renamed).unwrap();
         std::os::unix::fs::symlink(&moved, &renamed).unwrap();
         assert!(binding::bind(&root, &backup, binding::Use::Recover(&renamed)).is_err());
         binding::bind(&root, &moved, binding::Use::Recover(&renamed)).unwrap();
@@ -495,7 +500,9 @@ mod tests {
         let older = create_saved_shell(&original);
         assert!(creation_in(&root, uid, &original, leaf, true).is_err());
         let parked_socket = creation_in(&root, uid, &original, &older, false).unwrap();
-        let _unresponsive = UnixListener::bind(parked_socket).unwrap();
+        let _unresponsive = UnixListener::bind(&parked_socket).unwrap();
+        std::os::unix::fs::symlink(&parked_socket, root.join("fedcba9876543210-terminals.sock"))
+            .unwrap();
         fs::rename(&original, base.path().join("parked")).unwrap();
         let legacy = root.join(socket_name(original.to_str().unwrap()));
         let _server = expose_private_server(&root, &legacy, leaf);
