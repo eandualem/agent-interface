@@ -709,6 +709,7 @@ impl Render for NewPane {
             )));
         }
         let mut number = 0;
+        let mut selected_remote = false;
         // Children before the rows: the list's heading in the views lists.
         for (child, row) in (usize::from(self.mode != Mode::Sessions)..).zip(rows) {
             let selectable = Self::selectable(&row);
@@ -730,6 +731,9 @@ impl Render for NewPane {
             let element = match &row {
                 Row::Heading(label, note) => ui::view_heading(*label, *note).into_any_element(),
                 Row::Agent(member) => {
+                    if selected {
+                        selected_remote = self.origin.remote_profile(member).is_some();
+                    }
                     agent_row(id, member, &self.agents.get(&member.name), &key, selected)
                         .into_any_element()
                 }
@@ -819,6 +823,9 @@ impl Render for NewPane {
             );
         }
         let (enter, tab): (SharedString, SharedString) = match self.mode {
+            Mode::Sessions if selected_remote => {
+                ("open remote terminal".into(), "reports & updates".into())
+            }
             Mode::Sessions => ("attach here".into(), "reports & updates".into()),
             Mode::Reports => ("open here".into(), "skills, usage, team…".into()),
             Mode::Views => ("open view here".into(), "back to sessions".into()),
@@ -952,17 +959,16 @@ fn agent_row(
     selected: bool,
 ) -> gpui::Stateful<gpui::Div> {
     let (t, c) = (tokens(), colors());
-    let mut place = if member.repo.is_empty() {
+    let context = if member.repo.is_empty() {
         member.tags.join(" · ")
     } else {
         member.repo.clone()
     };
-    if let Some(machine) = member.machine.as_ref().filter(|m| !m.name.is_empty()) {
-        if !place.is_empty() {
-            place.push_str(" · ");
-        }
-        place.push_str(&machine.name);
-    }
+    let place = match member.machine.as_ref().filter(|m| !m.name.is_empty()) {
+        Some(machine) if context.is_empty() => machine.name.clone(),
+        Some(machine) => format!("{} · {context}", machine.name),
+        None => context,
+    };
     ui::choice_frame(id.clone(), selected)
         .child(ui::agent_symbol(status.state))
         .child(mono(member.name.clone()).flex_shrink_0().text_color(c.text))

@@ -984,20 +984,20 @@ impl Browser {
         self.start_reader(cx);
     }
 
-    /// Show the tab holding this agent's session: the current tab if it does,
-    /// else the first in saved order. Nothing is attached or started.
+    /// Focus the agent's existing pane or open a remote agent in a new tab.
     fn go_to_agent_target(
         &mut self,
         target: &navigation_origin::AgentTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.select_agent_target(target) {
+        let current = target.remote_profile.is_none() || self.remote_target_is_current(target);
+        if current && self.select_agent_target(target) {
             self.save_notice = None;
-        } else if target.remote_profile.is_some()
+        } else if current
+            && target.remote_profile.is_some()
             && !self.saving
             && !self.save_failed
-            && self.remote_target_is_current(target)
             && self.select_workspace_origin(&target.origin)
             && let Some(layout) = &self.layout
         {

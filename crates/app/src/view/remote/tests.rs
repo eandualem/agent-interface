@@ -86,6 +86,7 @@ fn fixture(
 #[test]
 fn saved_remote_attachment_drives_ghostty_with_the_granted_access() {
     for grant in ["type", "watch"] {
+        let (resize_checked, end_stream) = mpsc::channel();
         let (dir, profile, server) = fixture(grant, move |mut stream| {
             stream.get_mut().write_all(b"{\"type\":\"output\",\"data_b64\":\"cmVhZHkg4g==\"}\n{\"type\":\"output\",\"data_b64\":\"gqw=\"}\n{\"type\":\"repaint_end\"}\n").unwrap();
             if grant == "type" {
@@ -103,6 +104,7 @@ fn saved_remote_attachment_drives_ghostty_with_the_granted_access() {
                     .unwrap();
             }
             assert_eq!(command(&mut stream), json!({"type":"pause"}));
+            end_stream.recv_timeout(WAIT).unwrap();
             stream
                 .get_mut()
                 .write_all(b"{\"type\":\"ended\",\"reason\":\"access_ended\"}\n")
@@ -185,6 +187,7 @@ fn saved_remote_attachment_drives_ghostty_with_the_granted_access() {
         assert!(remote.set_size(0, 24).is_err());
         remote.set_size(100, 30).unwrap();
         assert!(remote.state.lock().unwrap().paused);
+        resize_checked.send(()).unwrap();
         while !remote.is_finished() {
             woken.recv_timeout(WAIT).unwrap();
         }
