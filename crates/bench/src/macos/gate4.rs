@@ -112,7 +112,7 @@ pub fn run(options: &Options) -> Result<(), String> {
     let programs = Programs::from_options(options)?;
     let environment = report::environment(&programs);
     let work = tempfile::Builder::new()
-        .prefix("tw-gate4-")
+        .prefix("ai-gate4-")
         .tempdir()
         .map_err(|error| error.to_string())?;
     let mut results = Vec::new();

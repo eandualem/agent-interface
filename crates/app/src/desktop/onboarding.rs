@@ -290,7 +290,7 @@ impl Onboarding {
         let Some(probe) = self.probe.clone() else {
             return;
         };
-        if matches!(probe.backbone, Backbone::Running) && probe.client().is_some() {
+        if matches!(probe.backbone, Backbone::Running) {
             self.service = Service::Ready;
             if self.flow.is_none() {
                 self.pending_flow = probe.client();
@@ -913,28 +913,19 @@ fn forget_request(settings: &mut Settings) {
 /// profile made before, is shown, or with nothing saved the first failed
 /// profile's. Blocks; runs off the UI thread.
 fn start(probe: &Probe, request: &mut Option<String>, saved: Option<&str>) -> Result<(), String> {
-    match &probe.backbone {
-        Backbone::Running => Err(format!(
-            "Agent Backbone answered, but its backbone command was not found on this computer's PATH ({}).",
-            probe.path_env
-        )),
-        Backbone::Unreachable(_) | Backbone::NotSetUp => {
-            let Some(backbone) = probe.path("backbone") else {
-                return Err("Agent Backbone isn't installed on this computer.".into());
-            };
-            // A failed profile's own reason goes before setup's or the wait's.
-            let failure = |otherwise: String| {
-                probe::saved_failure(probe.client(), saved).unwrap_or(otherwise)
-            };
-            install::initialize_backbone(backbone, &probe.path_env, request).map_err(failure)?;
-            answered().ok_or_else(|| {
-                failure(format!(
-                    "Agent Backbone was set up but did not answer (waited {} s). Its log is service.log in Agent Backbone's directory.",
-                    SERVICE_WAIT.as_secs()
-                ))
-            })
-        }
-    }
+    let Some(backbone) = probe.path("backbone") else {
+        return Err("Agent Backbone isn't installed on this computer.".into());
+    };
+    // A failed profile's own reason goes before setup's or the wait's.
+    let failure =
+        |otherwise: String| probe::saved_failure(probe.client(), saved).unwrap_or(otherwise);
+    install::initialize_backbone(backbone, &probe.path_env, request).map_err(failure)?;
+    answered().ok_or_else(|| {
+        failure(format!(
+            "Agent Backbone was set up but did not answer (waited {} s). Its log is service.log in Agent Backbone's directory.",
+            SERVICE_WAIT.as_secs()
+        ))
+    })
 }
 
 /// Wait for the agent service to answer, for up to [`SERVICE_WAIT`].

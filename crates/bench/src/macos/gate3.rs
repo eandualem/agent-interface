@@ -147,7 +147,7 @@ pub fn run(options: &Options) -> Result<(), String> {
     let programs = Programs::from_options(options)?;
     let environment = report::environment(&programs);
     let work = tempfile::Builder::new()
-        .prefix("tw-gate3-")
+        .prefix("ai-gate3-")
         .tempdir()
         .map_err(|error| error.to_string())?;
     let mut rng = Rng(settings.seed);

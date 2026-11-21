@@ -287,7 +287,7 @@ while :; do sleep 60; done
         }
         // The command that starts the server is prepared by the caller.
         let environment = environment.prepared(|command| {
-            command.env("TW_PREPARED", "1");
+            command.env("AGENT_INTERFACE_PREPARED", "1");
         });
         ensure(
             socket,
@@ -301,10 +301,10 @@ while :; do sleep 60; done
     .unwrap();
     assert_eq!(
         server
-            .run(&["show-environment", "-g", "TW_PREPARED"])
+            .run(&["show-environment", "-g", "AGENT_INTERFACE_PREPARED"])
             .unwrap()
             .trim(),
-        "TW_PREPARED=1"
+        "AGENT_INTERFACE_PREPARED=1"
     );
     let socket = server
         .run(&["display-message", "-p", "#{socket_path}"])

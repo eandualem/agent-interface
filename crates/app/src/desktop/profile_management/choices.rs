@@ -822,12 +822,6 @@ fn guide_card(
             false,
             installable.then_some("Install"),
         ),
-        None if !eligible(runtime, true) => (
-            "Needs an update",
-            false,
-            false,
-            installable.then_some("Update"),
-        ),
         None if signed_in => ("Signed in", false, false, None),
         None => ("Sign in when it starts", false, false, None),
     }

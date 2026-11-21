@@ -426,11 +426,11 @@ impl ServerRef {
 
 /// The start of the name of every private directory [`TmuxServer::start`]
 /// creates.
-const TMPDIR_PREFIX: &str = "tw-tmux-";
+const TMPDIR_PREFIX: &str = "ai-tmux-";
 
 /// The start of every socket name [`TmuxServer::start`] gives; the rest is
 /// two numbers joined by a hyphen.
-const SOCKET_PREFIX: &str = "tw-";
+const SOCKET_PREFIX: &str = "ai-";
 
 /// Returns a `tmux` command bound to one private server, before any command
 /// arguments. It stays private so that no caller can add `-L` or `-S` and
@@ -791,15 +791,15 @@ mod tests {
     #[test]
     fn a_server_ref_refuses_other_directories() {
         let other = tempfile::Builder::new()
-            .prefix("not-tw-")
+            .prefix("not-ai-")
             .tempdir_in("/tmp")
             .unwrap();
-        assert!(ServerRef::new(other.path(), "tw-1-0").is_err());
+        assert!(ServerRef::new(other.path(), "ai-1-0").is_err());
         let nested = tempfile::Builder::new()
             .prefix(TMPDIR_PREFIX)
             .tempdir_in(other.path())
             .unwrap();
-        assert!(ServerRef::new(nested.path(), "tw-1-0").is_err());
+        assert!(ServerRef::new(nested.path(), "ai-1-0").is_err());
     }
 
     #[test]
@@ -814,10 +814,10 @@ mod tests {
                     .trim(),
             )
         };
-        let link = socket(&server).with_file_name("tw-9-9");
+        let link = socket(&server).with_file_name("ai-9-9");
         std::os::unix::fs::symlink(socket(&other), &link).unwrap();
         let (tmpdir, _) = server.address();
-        assert!(ServerRef::new(tmpdir, "tw-9-9").is_err());
+        assert!(ServerRef::new(tmpdir, "ai-9-9").is_err());
     }
 
     #[test]
@@ -827,9 +827,9 @@ mod tests {
         for name in [
             "default",
             "../../tmux-501/default",
-            "tw-1/../x",
-            "tw-",
-            "tw-1-0 ",
+            "ai-1/../x",
+            "ai-",
+            "ai-1-0 ",
         ] {
             assert!(ServerRef::new(tmpdir, name).is_err(), "{name:?}");
         }

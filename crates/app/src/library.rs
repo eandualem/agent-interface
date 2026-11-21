@@ -172,7 +172,7 @@ mod tests {
             ])
             .env_clear()
             .env("HOME", home.path())
-            .env("TWS_FIRST_LAUNCH_FIXTURE", "1")
+            .env("AGENT_INTERFACE_FIRST_LAUNCH_FIXTURE", "1")
             .status()
             .unwrap();
         assert!(status.success());
@@ -185,7 +185,7 @@ mod tests {
 
     #[test]
     fn clean_first_launch_child() {
-        if std::env::var_os("TWS_FIRST_LAUNCH_FIXTURE").is_none() {
+        if std::env::var_os("AGENT_INTERFACE_FIRST_LAUNCH_FIXTURE").is_none() {
             return;
         }
         let (wake, woken) = mpsc::channel();

@@ -1085,8 +1085,8 @@ mod tests {
             Path::new("/tmp/w/bench-window.app"),
             Path::new("/tmp/w/terminal-1.out"),
             Path::new("/tmp/w/terminal-1.err"),
-            Path::new("/tmp/tw-tmux-1"),
-            "tw-1-0",
+            Path::new("/tmp/ai-tmux-1"),
+            "ai-1-0",
             Path::new("/tmp/w/terminal-1.conf"),
             (40, 60),
         );
@@ -1101,9 +1101,9 @@ mod tests {
             "/tmp/w/bench-window.app",
             "--args",
             "--tmux-tmpdir",
-            "/tmp/tw-tmux-1",
+            "/tmp/ai-tmux-1",
             "--tmux-socket",
-            "tw-1-0",
+            "ai-1-0",
             "--session",
             "bench",
             "--config",
@@ -1115,9 +1115,9 @@ mod tests {
         // The window is found again by its configuration file, even in a
         // directory whose name holds a space.
         let ps = "  202 /tmp/w/bench-window.app/Contents/MacOS/bench-window \
-                  --tmux-tmpdir /tmp/tw-tmux-1 --config /tmp/w/terminal-1.conf --origin 40,60\n\
+                  --tmux-tmpdir /tmp/ai-tmux-1 --config /tmp/w/terminal-1.conf --origin 40,60\n\
                   303 /tmp/a b/bench-window.app/Contents/MacOS/bench-window \
-                  --tmux-tmpdir /tmp/tw-tmux-2 --config /tmp/a b/terminal-1.conf --origin 40,60\n";
+                  --tmux-tmpdir /tmp/ai-tmux-2 --config /tmp/a b/terminal-1.conf --origin 40,60\n";
         let window = |directory: &str, config: &str| Program {
             executable: format!("{directory}/bench-window.app/Contents/MacOS/bench-window"),
             argument: format!("{directory}/{config}"),
