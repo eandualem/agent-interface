@@ -60,6 +60,8 @@ const POLICY_LIMIT: &str = "Backbone's policies exceed this view's limits.";
 pub enum Request {
     /// Every agent and the active swarms.
     Team,
+    /// Agent chooser rows from the roster independently of swarm discovery.
+    Members,
     /// Token usage over a recent period.
     Usage(Range),
     /// Recent deliveries and inbound events.
@@ -211,6 +213,10 @@ fn usage_path(range: Range) -> String {
 
 fn read_using(api: &Api<'_>, request: &bound::Request) -> Result<Data, &'static str> {
     match request {
+        bound::Request::Members => Ok(Data::Team(Team {
+            members: Team::members(&api.get("/api/agents")?)?,
+            swarms: Vec::new(),
+        })),
         bound::Request::Team => Ok(Data::Team(Team::decode(
             &api.get("/api/agents")?,
             &api.get("/api/swarms")?,
@@ -316,6 +322,13 @@ pub struct Swarm {
 }
 
 impl Team {
+    fn members(agents: &[u8]) -> Result<Vec<Member>, &'static str> {
+        Ok(items::<Member>(&document(agents)?)?
+            .into_iter()
+            .filter(|member| valid_agent(&member.name) && member.configured != Some(false))
+            .collect())
+    }
+
     fn decode(agents: &[u8], swarms: &[u8]) -> Result<Self, &'static str> {
         #[derive(Deserialize, Default)]
         #[serde(default)]
@@ -326,10 +339,7 @@ impl Team {
             status: String,
             members: Vec<Box<RawValue>>,
         }
-        let members = items::<Member>(&document(agents)?)?
-            .into_iter()
-            .filter(|member| valid_agent(&member.name) && member.configured != Some(false))
-            .collect();
+        let members = Self::members(agents)?;
         let swarms = items::<RawSwarm>(&document(swarms)?)?
             .into_iter()
             .filter(|swarm| !matches!(swarm.status.as_str(), "done" | "disbanded" | "failed"))

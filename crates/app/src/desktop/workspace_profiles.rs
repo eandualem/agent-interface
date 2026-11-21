@@ -64,6 +64,17 @@ impl Work {
 }
 
 impl Registry {
+    /// Re-resolve only workspaces still using the superseded verified instance.
+    pub fn expire_connection(&mut self, key: &agent_interface_roster::profiles::ConnectionKey) {
+        self.entries.retain(|_, entry| {
+            !entry
+                .result
+                .as_ref()
+                .and_then(|r| r.as_ref().ok())
+                .is_some_and(|c| c.connection_key() == *key)
+        });
+    }
+
     /// New native windows share successful snapshots, never a selected-profile pointer.
     pub fn inherit(&self) -> Self {
         Self {
@@ -1361,6 +1372,34 @@ mod tests {
         ));
         assert!(
             matches!(inherited.route(&layout.workspaces[0]), Route::Bound(c) if c.connection_key() == first.connection_key())
+        );
+    }
+
+    #[test]
+    fn a_restarted_instance_retires_only_workspaces_still_bound_to_it() {
+        let (_a, old, s1) = provider("a", vec![]);
+        let (_b, new, s2) = provider("a", vec![]);
+        s1.join().unwrap();
+        s2.join().unwrap();
+        let mut layout = Layout::initial("/".into());
+        layout.workspaces[0].profile_id = Some("profile-a".into());
+        layout.add_workspace("Another".into());
+        layout.workspaces[1].profile_id = Some("profile-a".into());
+        let mut registry = Registry::default();
+        for space in &layout.workspaces {
+            assert!(registry.bind(space, old.clone()));
+        }
+        registry.expire_connection(&old.connection_key());
+        assert!(
+            layout
+                .workspaces
+                .iter()
+                .all(|s| matches!(registry.route(s), Route::Unavailable))
+        );
+        assert!(registry.bind(&layout.workspaces[0], new.clone()));
+        registry.expire_connection(&old.connection_key());
+        assert!(
+            matches!(registry.route(&layout.workspaces[0]),Route::Bound(c) if c.connection_key()==new.connection_key())
         );
     }
 

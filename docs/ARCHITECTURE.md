@@ -40,6 +40,9 @@ A reader decodes bounded newline-delimited JSON frames and preserves output byte
 across frame boundaries. A separate worker owns one Ghostty engine and publishes
 screen updates to the same native grid used for local terminals.
 
+Older layout readers retain the agent name with a directory as its socket field,
+so replacing or detaching it clears the stream target. A restarted profile
+instance is resolved again for each workspace that shared its binding.
 Hiding a remote pane pauses its view. A buffer overrun triggers a full repaint.
 A watch grant keeps the host's grid dimensions. Only a typing grant permits
 encoded input and resize requests. Closing the pane detaches the socket. A

@@ -310,7 +310,7 @@ impl Retry {
 
 pub(super) struct LiveTerminal {
     pub target: Target,
-    discovery: Option<crate::profiles::Client>,
+    refresh_on_reopen: bool,
     access: Option<agent_interface_roster::profiles::terminal::Access>,
     view: Option<Entity<TerminalView>>,
     error: Option<String>,
@@ -344,12 +344,14 @@ pub(super) struct LiveTerminal {
 }
 
 pub(super) struct Detach;
+pub(super) struct RefreshProfile;
 /// The sign-in session this pane showed is over.
 pub(super) struct SignInEnded;
 pub(super) struct OpenTerminal;
 /// The terminal's session is attached and can take the keyboard.
 pub(super) struct Connected;
 
+impl gpui::EventEmitter<RefreshProfile> for LiveTerminal {}
 impl gpui::EventEmitter<Detach> for LiveTerminal {}
 impl gpui::EventEmitter<SignInEnded> for LiveTerminal {}
 impl gpui::EventEmitter<OpenTerminal> for LiveTerminal {}
@@ -484,14 +486,13 @@ impl LiveTerminal {
 
     pub fn new(
         target: Target,
-        discovery: Option<crate::profiles::Client>,
         selected: Option<SessionWindow>,
         environment: Option<agent_interface_tmux::shells::Environment>,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut terminal = Self {
             target,
-            discovery,
+            refresh_on_reopen: false,
             view: None,
             access: None,
             error: None,
@@ -590,7 +591,7 @@ impl LiveTerminal {
         }
     }
 
-    fn start_remote(&mut self, reopen: bool, cx: &mut Context<Self>) {
+    fn start_remote(&mut self, cx: &mut Context<Self>) {
         use crate::view::remote::{PANE, Remote, layout};
         self.closed = None;
         self.view = None;
@@ -598,7 +599,7 @@ impl LiveTerminal {
         self.error = None;
         self.connecting = true;
         let target = self.target.clone();
-        let discovery = reopen.then(|| self.discovery.clone()).flatten();
+        self.refresh_on_reopen = false;
         let work = cx.background_executor().spawn(async move {
             let profile = target.remote().unwrap();
             let connection = target
@@ -606,19 +607,6 @@ impl LiveTerminal {
                 .as_ref()
                 .filter(|c| c.identity().profile_id == profile)
                 .ok_or_else(|| std::io::Error::other(PROFILE_UNAVAILABLE))?;
-            // A restarted service has a new instance ID. Resolve the same profile
-            // again for an explicit reopen and verify its local machine identity.
-            let fresh = discovery
-                .map(|client| {
-                    client
-                        .show(profile, &|| true)
-                        .ok()
-                        .and_then(|p| p.connect().ok())
-                        .filter(|c| c.identity() == connection.identity())
-                        .ok_or_else(|| std::io::Error::other(PROFILE_UNAVAILABLE))
-                })
-                .transpose()?;
-            let connection = fresh.as_ref().unwrap_or(connection);
             let agent = &target.leaf.attachment.as_ref().unwrap().session;
             let (stream, writer, close) = connection.open_terminal(agent)?;
             let (wake, updates) = mpsc::unbounded();
@@ -668,7 +656,14 @@ impl LiveTerminal {
                         terminal.view = Some(view);
                         cx.emit(Connected);
                     }
-                    Err(error) => terminal.error = Some(error.to_string()),
+                    Err(error) => {
+                        terminal.refresh_on_reopen =
+                            error.kind() == std::io::ErrorKind::NotConnected;
+                        if error.kind() == std::io::ErrorKind::AddrNotAvailable {
+                            cx.emit(RefreshProfile);
+                        }
+                        terminal.error = Some(error.to_string());
+                    }
                 }
                 cx.notify();
             });
@@ -683,7 +678,7 @@ impl LiveTerminal {
         cx: &mut Context<Self>,
     ) {
         if self.target.remote().is_some() {
-            self.start_remote(reconnect, cx);
+            self.start_remote(cx);
             return;
         }
         self.closed = None;
@@ -917,8 +912,15 @@ impl Render for LiveTerminal {
                 self.error.is_some() && self.target.remote().is_some(),
                 |el| {
                     el.child(
-                        ui::button("reopen-remote", "Open again", ui::Button::Primary)
-                            .on_click(cx.listener(|terminal, _, _, cx| terminal.start(cx))),
+                        ui::button("reopen-remote", "Open again", ui::Button::Primary).on_click(
+                            cx.listener(|terminal, _, _, cx| {
+                                if terminal.refresh_on_reopen {
+                                    cx.emit(RefreshProfile)
+                                } else {
+                                    terminal.start(cx)
+                                }
+                            }),
+                        ),
                     )
                     .child(
                         ui::button("detach-remote", "Detach", ui::Button::Secondary)

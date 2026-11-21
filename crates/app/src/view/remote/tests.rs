@@ -62,22 +62,31 @@ fn command(stream: &mut BufReader<UnixStream>) -> Value {
     serde_json::from_str(&line).unwrap()
 }
 
+fn fixture(
+    grant: &'static str,
+    serve: impl FnOnce(BufReader<UnixStream>) + Send + 'static,
+) -> (tempfile::TempDir, Profile, thread::JoinHandle<()>) {
+    let dir = tempfile::tempdir().unwrap();
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = dir.path().join("api.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).unwrap();
+    let info = json!({"state":"serving","protocol_version":1,"profile_id":"fixture-profile","display_name":"Fixture","instance_id":"instance-a","machine":{"id":"local","name":"Mac"},"home":true,"socket":socket,"tmux_socket":dir.path().join("unused.sock"),"credential_reference":{"type":"socket"}});
+    let profile = Profile::parse(&serde_json::to_vec(&info).unwrap()).unwrap();
+    let server = thread::spawn(move || {
+        reply(&listener, "GET /api/profile", &info);
+        reply(&listener, "GET /api/profile", &info);
+        let mut stream = receive(&listener, "POST /api/terminals/open");
+        write!(stream.get_mut(),"HTTP/1.1 101 Switching Protocols\r\nConnection: upgrade\r\nUpgrade: backbone-terminal-v1\r\n\r\n{{\"type\":\"opened\",\"agent\":\"worker\",\"access\":\"{grant}\",\"cols\":80,\"rows\":24}}\n").unwrap();
+        reply(&listener, "GET /api/profile", &info);
+        serve(stream);
+    });
+    (dir, profile, server)
+}
 #[test]
 fn saved_remote_attachment_drives_ghostty_with_the_granted_access() {
     for grant in ["type", "watch"] {
-        let dir = tempfile::tempdir().unwrap();
-        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
-        let socket = dir.path().join("api.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
-        fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).unwrap();
-        let info = json!({"state":"serving","protocol_version":1,"profile_id":"fixture-profile","display_name":"Fixture","instance_id":"instance-a","machine":{"id":"local","name":"Mac"},"home":true,"socket":socket,"tmux_socket":dir.path().join("unused.sock"),"credential_reference":{"type":"socket"}});
-        let profile = Profile::parse(&serde_json::to_vec(&info).unwrap()).unwrap();
-        let server = thread::spawn(move || {
-            reply(&listener, "GET /api/profile", &info);
-            reply(&listener, "GET /api/profile", &info);
-            let mut stream = receive(&listener, "POST /api/terminals/open");
-            write!(stream.get_mut(),"HTTP/1.1 101 Switching Protocols\r\nConnection: upgrade\r\nUpgrade: backbone-terminal-v1\r\n\r\n{{\"type\":\"opened\",\"agent\":\"worker\",\"access\":\"{grant}\",\"cols\":80,\"rows\":24}}\n").unwrap();
-            reply(&listener, "GET /api/profile", &info);
+        let (dir, profile, server) = fixture(grant, move |mut stream| {
             stream.get_mut().write_all(b"{\"type\":\"output\",\"data_b64\":\"cmVhZHkg4g==\"}\n{\"type\":\"output\",\"data_b64\":\"gqw=\"}\n{\"type\":\"repaint_end\"}\n").unwrap();
             if grant == "type" {
                 assert_eq!(
@@ -114,6 +123,32 @@ fn saved_remote_attachment_drives_ghostty_with_the_granted_access() {
         let restored =
             agent_interface_store::Document::parse(saved.raw_json().into(), &path).unwrap();
         assert_eq!(restored.model().pane(), model.pane());
+        // A previous version retains unknown fields. Its known local
+        // attachment and later chooser must both retire the stream target.
+        let mut older: Value = serde_json::from_str(saved.raw_json()).unwrap();
+        let tree = &mut older["workspaces"][0]["tabs"][0]["tree"];
+        assert_eq!(tree["agent"], "worker");
+        assert_eq!(tree["source_socket"], "/");
+        tree["source_socket"] = json!("/tmp/fixture-local.sock");
+        let replaced = agent_interface_store::Document::parse(older.to_string(), &path).unwrap();
+        assert!(
+            replaced
+                .model()
+                .pane()
+                .unwrap()
+                .attachment
+                .as_ref()
+                .unwrap()
+                .remote_profile
+                .is_none()
+        );
+        let tree = &mut older["workspaces"][0]["tabs"][0]["tree"];
+        tree.as_object_mut().unwrap().remove("source_socket");
+        tree["agent"] = Value::Null;
+        tree["empty"] = json!(true);
+        let cleared = agent_interface_store::Document::parse(older.to_string(), &path).unwrap();
+        assert!(cleared.model().pane().unwrap().empty);
+        assert!(cleared.model().pane().unwrap().attachment.is_none());
         let attachment = restored
             .model()
             .pane()
@@ -165,4 +200,53 @@ fn saved_remote_attachment_drives_ghostty_with_the_granted_access() {
         );
         server.join().unwrap();
     }
+}
+
+#[test]
+fn a_stalled_repaint_ends_the_view_and_detaches_the_socket() {
+    let (_dir, profile, server) = fixture("type", |mut stream| {
+        stream
+            .get_mut()
+            .set_read_timeout(Some(REPAINT_TIMEOUT + WAIT))
+            .unwrap();
+        let mut byte = [0; 1];
+        assert_eq!(stream.read(&mut byte).unwrap(), 0);
+    });
+    let (stream, writer, close) = profile.connect().unwrap().open_terminal("worker").unwrap();
+    let (wake, done) = mpsc::channel();
+    let view = Remote::start(stream, writer, close, move || {
+        let _ = wake.send(());
+    })
+    .unwrap();
+    done.recv_timeout(REPAINT_TIMEOUT + WAIT).unwrap();
+    assert_eq!(
+        view.failure().as_deref(),
+        Some("Remote terminal repaint timed out")
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn final_frames_survive_a_viewport_write_to_a_closed_peer() {
+    let (_dir, profile, server) = fixture("type", |mut stream| {
+        stream
+            .get_mut()
+            .write_all(
+                b"{\"type\":\"repaint_end\"}\n{\"type\":\"ended\",\"reason\":\"process_exited\"}\n",
+            )
+            .unwrap();
+    });
+    let (mut stream, writer, _close) = profile.connect().unwrap().open_terminal("worker").unwrap();
+    server.join().unwrap();
+    let state = Mutex::new(State {
+        paused: true,
+        ..State::default()
+    });
+    let (tx, rx) = mpsc::sync_channel(3);
+    tx.send(Work::Wire(stream.read())).unwrap();
+    tx.send(Work::Wire(stream.read())).unwrap();
+    assert_eq!(
+        run(rx, writer, (80, 24), Access::Type, &state, &|| {}).unwrap(),
+        "Remote agent process exited"
+    );
 }

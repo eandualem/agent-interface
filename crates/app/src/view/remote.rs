@@ -15,6 +15,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+const REPAINT_TIMEOUT: Duration = Duration::from_secs(15);
+const CLOSE_GRACE: Duration = Duration::from_secs(1);
+
 pub(crate) const PANE: PaneId = PaneId(0);
 pub(crate) fn layout(size: (u16, u16)) -> PaneLayout {
     PaneLayout {
@@ -142,8 +145,11 @@ fn run(
     state: &Mutex<State>,
     wake: &dyn Fn(),
 ) -> io::Result<String> {
-    let mut terminal = Terminal::new(size.0, size.1, 10_000).map_err(io::Error::other)?;
+    let mut terminal = Terminal::for_stream(size.0, size.1).map_err(io::Error::other)?;
     let mut repaint = true;
+    // A healthy live or paused view may be silent indefinitely.
+    let mut repaint_deadline = Some(Instant::now() + REPAINT_TIMEOUT);
+    let mut write_failure: Option<(Instant, io::Error)> = None;
     let mut dirty = false;
     let mut paused = false;
     let mut sent_size = Some(size);
@@ -154,24 +160,55 @@ fn run(
             let shared = state.lock().unwrap();
             (shared.paused, shared.size)
         };
-        if hide != paused {
-            writer.pause(hide)?;
-            paused = hide;
+        if write_failure.is_none() {
+            let sent = (|| {
+                if hide != paused {
+                    writer.pause(hide)?;
+                    paused = hide;
+                    repaint_deadline =
+                        (repaint && !paused).then(|| Instant::now() + REPAINT_TIMEOUT);
+                }
+                if !paused
+                    && let Some(wanted) = requested
+                    && sent_size != Some(wanted)
+                {
+                    writer.resize(wanted.0, wanted.1)?;
+                    sent_size = Some(wanted);
+                }
+                Ok(())
+            })();
+            if let Err(error) = sent {
+                write_failure = Some((Instant::now() + CLOSE_GRACE, error));
+            }
         }
-        if !paused
-            && let Some(wanted) = requested
-            && sent_size != Some(wanted)
+        let now = Instant::now();
+        if write_failure
+            .as_ref()
+            .is_some_and(|(until, _)| now >= *until)
         {
-            writer.resize(wanted.0, wanted.1)?;
-            sent_size = Some(wanted);
+            return Err(write_failure.take().unwrap().1);
         }
-        if dirty && !repaint && last.elapsed() >= interval {
+        if repaint_deadline.is_some_and(|until| now >= until) {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Remote terminal repaint timed out",
+            ));
+        }
+        if dirty && !repaint && now >= last + interval {
             publish(&mut terminal, size, state, wake)?;
             dirty = false;
-            last = Instant::now();
+            last = now;
         }
-        let work = if dirty && !repaint {
-            match pending.recv_timeout(interval.saturating_sub(last.elapsed())) {
+        let deadline = [
+            repaint_deadline,
+            write_failure.as_ref().map(|(until, _)| *until),
+            (dirty && !repaint).then_some(last + interval),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        let work = if let Some(until) = deadline {
+            match pending.recv_timeout(until.saturating_duration_since(Instant::now())) {
                 Ok(work) => work,
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(_) => break,
@@ -192,12 +229,16 @@ fn run(
             }
             Work::Wire(Ok(Event::Dropped)) => {
                 let mut replacement =
-                    Terminal::new(size.0, size.1, 10_000).map_err(io::Error::other)?;
+                    Terminal::for_stream(size.0, size.1).map_err(io::Error::other)?;
                 replacement.invalidate_history_after(&terminal);
                 terminal = replacement;
+                if !repaint && !paused {
+                    repaint_deadline = Some(Instant::now() + REPAINT_TIMEOUT);
+                }
                 repaint = true;
             }
             Work::Wire(Ok(Event::RepaintEnd)) => {
+                repaint_deadline = None;
                 repaint = false;
                 dirty = true;
             }
@@ -224,7 +265,9 @@ fn run(
                 let _ = reply.send(result);
             }
             Work::Input(input, reply) => {
-                let result = if repaint {
+                let result = if write_failure.is_some() {
+                    Err(io::Error::other("Remote terminal stopped accepting input"))
+                } else if repaint {
                     Err(io::Error::other("Waiting for terminal repaint"))
                 } else if access == Access::Watch
                     && !matches!(input, Input::Scroll(_) | Input::Wheel(..))
@@ -237,8 +280,12 @@ fn run(
                     match terminal.encode_input(&input).map_err(io::Error::other) {
                         Ok(bytes) if !bytes.is_empty() && access == Access::Type => {
                             // A partial write cannot be retried without duplicating input.
-                            writer.input(&bytes)?;
-                            Ok(())
+                            writer.input(&bytes).inspect_err(|error| {
+                                write_failure = Some((
+                                    Instant::now() + CLOSE_GRACE,
+                                    io::Error::new(error.kind(), error.to_string()),
+                                ));
+                            })
                         }
                         result => result.map(|_| ()),
                     }

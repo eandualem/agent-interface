@@ -1011,6 +1011,7 @@ impl Browser {
                     source_socket: None,
                 }))
             {
+                self.creation_from = Some(Selection::capture(layout.model()));
                 self.save_edit((base, proposed), window, cx);
             }
         } else {
@@ -2786,18 +2787,20 @@ impl Render for Browser {
                             .cloned()
                     })
                     .flatten();
-                let terminal = cx.new(|cx| {
-                    LiveTerminal::new(
-                        target,
-                        self.profile_client
-                            .as_ref()
-                            .and_then(|result| result.as_ref().ok())
-                            .cloned(),
-                        selected,
-                        environment,
-                        cx,
-                    )
-                });
+                let terminal = cx.new(|cx| LiveTerminal::new(target, selected, environment, cx));
+                cx.subscribe(
+                    &terminal,
+                    |browser, terminal, _: &terminal::RefreshProfile, cx| {
+                        let target = &terminal.read(cx).target;
+                        if let Some(connection) = &target.connection {
+                            browser
+                                .workspace_profiles
+                                .expire_connection(&connection.connection_key());
+                            cx.notify();
+                        }
+                    },
+                )
+                .detach();
                 // A terminal made while panes move keeps its session's size too.
                 if self.pane_motion.is_some() {
                     terminal.update(cx, |terminal, cx| terminal.hold_size(true, cx));

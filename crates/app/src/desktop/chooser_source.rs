@@ -50,7 +50,7 @@ impl Origin {
         let Some(connection) = self.connection() else {
             return Ok(None);
         };
-        Source::start(connection, Request::Team, Duration::from_secs(3), wake).map(Some)
+        Source::start(connection, Request::Members, Duration::from_secs(3), wake).map(Some)
     }
 
     pub fn sessions(&self, wake: impl Fn() + Send + 'static) -> io::Result<Option<Sessions>> {
@@ -154,6 +154,36 @@ mod tests {
     }
 
     #[test]
+    fn remote_chooser_members_need_only_the_agents_endpoint() {
+        let (_dir, connection, server) = provider(
+            "a",
+            vec![Reply::ok(
+                "/api/agents",
+                serde_json::json!({"items":[{"name":"worker","machine":{"id":"remote","name":"Linux"}}]}),
+            )],
+        );
+        let origin = Origin::Bound(connection);
+        let (tx, rx) = mpsc::channel();
+        let source = origin
+            .team(move || {
+                let _ = tx.send(());
+            })
+            .unwrap()
+            .unwrap();
+        rx.recv_timeout(Duration::from_secs(8)).unwrap();
+        let (request, result) = source.take_update().unwrap();
+        assert_eq!(request, Request::Members);
+        let agent_interface_roster::views::Data::Team(team) = result.unwrap() else {
+            panic!("missing members")
+        };
+        assert_eq!(
+            origin.remote_profile(&team.members[0]).as_deref(),
+            Some("profile-a")
+        );
+        source.set_active(false);
+        server.join().unwrap();
+    }
+    #[test]
     fn chooser_team_read_keeps_binding_and_refuses_replacement() {
         let (_dir, connection, server) = provider(
             "a",
@@ -172,7 +202,7 @@ mod tests {
             .unwrap();
         ready.recv_timeout(Duration::from_secs(10)).unwrap();
         let (request, result) = source.take_update().unwrap();
-        assert_eq!(request, Request::Team);
+        assert_eq!(request, Request::Members);
         assert!(result.is_err());
         drop(source);
         server.join().unwrap();

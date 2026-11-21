@@ -39,6 +39,8 @@ fn name(item: &Object, at: &str) -> Result<String> {
     Ok(value)
 }
 
+/// A reserved directory, never a usable socket for an older layout reader.
+pub(super) const REMOTE_SOURCE: &str = "/";
 fn path(item: &Object, key: &str, at: &str) -> Result<Option<String>> {
     if !item.contains_key(key) {
         return Ok(None);
@@ -191,33 +193,30 @@ fn node(
             return Err(format!("{at}.source_socket: socket without an attachment"));
         }
         let view = view(item, session.is_some() || empty, at)?;
-        // Older readers see a chooser and cannot attach to a same-name local session.
-        let remote = if empty && item.contains_key("remote_agent") {
-            let field = |key: &str| {
-                item.get(key)
-                    .and_then(Value::as_str)
-                    .filter(|s| !s.is_empty() && s.len() <= 256 && printable(s))
-                    .map(str::to_owned)
-                    .ok_or_else(|| format!("{at}.{key}: invalid remote terminal"))
-            };
-            Some(Attachment {
-                session: field("remote_agent")?,
-                source_socket: None,
-                remote_profile: Some(field("remote_profile")?),
-            })
+        let remote_profile = if socket.as_deref() == Some(REMOTE_SOURCE) {
+            item.get("remote_profile")
+                .map(|value| {
+                    value
+                        .as_str()
+                        .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_graphic()))
+                        .map(str::to_owned)
+                        .ok_or_else(|| format!("{at}.remote_profile: invalid profile"))
+                })
+                .transpose()?
         } else {
             None
         };
-        let empty = empty && remote.is_none();
         leaves.push(id.clone());
         Ok(Node::Leaf(Leaf {
             id,
-            attachment: remote.or_else(|| {
-                session.map(|session| Attachment {
-                    remote_profile: None,
-                    session,
-                    source_socket: socket,
-                })
+            attachment: session.map(|session| Attachment {
+                source_socket: if remote_profile.is_some() {
+                    None
+                } else {
+                    socket
+                },
+                remote_profile,
+                session,
             }),
             cwd: path(item, "cwd", at)?,
             empty,

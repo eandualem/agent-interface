@@ -222,7 +222,15 @@ impl Connection {
         }
         let verify = || {
             self.handshake(Some(&self.instance))
-                .map_err(|_| io::Error::other("Workspace profile connection changed"))
+                .map_err(|error| match error {
+                    super::Error::BindingMismatch => io::Error::new(
+                        io::ErrorKind::AddrNotAvailable,
+                        "Workspace profile instance changed",
+                    ),
+                    _ => {
+                        io::Error::new(io::ErrorKind::NotConnected, "Workspace profile unavailable")
+                    }
+                })
         };
         verify()?;
         let stream = open(&self.socket, &self.identity.profile_id, agent, 80, 24)?;

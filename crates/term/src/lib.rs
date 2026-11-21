@@ -74,10 +74,23 @@ impl Terminal {
     /// keeps more, and output with very many styles on every line can keep
     /// fewer. [`Terminal::history`] says how many lines it holds.
     pub fn new(cols: u16, rows: u16, scrollback: usize) -> Result<Self, Error> {
+        Self::with_history(cols, rows, history_bytes(cols, scrollback))
+    }
+
+    /// A streamed terminal keeps at most 32 MiB of history regardless of host dimensions.
+    pub fn for_stream(cols: u16, rows: u16) -> Result<Self, Error> {
+        Self::with_history(
+            cols,
+            rows,
+            history_bytes(cols, 10_000).min(32 * 1024 * 1024),
+        )
+    }
+
+    fn with_history(cols: u16, rows: u16, max_scrollback: usize) -> Result<Self, Error> {
         let mut engine = Engine::new(Options {
             cols,
             rows,
-            max_scrollback: history_bytes(cols, scrollback),
+            max_scrollback,
         })
         .map_err(Error)?;
         // tmux treats a grapheme cluster, such as an emoji sequence, as one
