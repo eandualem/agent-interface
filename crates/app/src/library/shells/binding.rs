@@ -178,6 +178,13 @@ impl Owner {
             )))
     }
 
+    // Inconclusive ownership only matters when a live server has a saved
+    // session. Both automatic discovery paths use the same conservative test.
+    fn may_have_moved(&self, root: &Path) -> bool {
+        !self.at_recorded_path().unwrap_or(false)
+            && self.original_removed(root).ok().flatten() != Some(false)
+    }
+
     fn witness_name(&self) -> String {
         format!("{}.witness", self.token.simple())
     }
@@ -336,12 +343,7 @@ fn unclaimed_match(root: &Path, records: &Registry, leaves: &[String]) -> io::Re
             continue;
         }
         match records.get(key) {
-            Some(owner)
-                if owner.at_recorded_path().unwrap_or(false)
-                    || owner.original_removed(root).ok().flatten() == Some(false) =>
-            {
-                continue;
-            }
+            Some(owner) if !owner.may_have_moved(root) => continue,
             None if key.len() != 16 => continue,
             _ => {}
         }
@@ -492,9 +494,12 @@ pub(super) fn bind(root: &Path, library: &Path, mode: Use<'_>) -> io::Result<Opt
                 automatic: true,
                 ..
             }
-        ) && !owner.at_recorded_path()?
-            && owner.original_removed(root)? != Some(false)
-            && live_match(root, &mark.key, &leaves)?
+        ) && let Some(socket) = existing_socket_in(
+            root,
+            uzers::get_current_uid(),
+            &format!("{}-terminals.sock", mark.key),
+        )? && owner.may_have_moved(root)
+            && sessions_match(&socket, &leaves)?
         {
             return Err(io::Error::other(RECOVERY));
         }

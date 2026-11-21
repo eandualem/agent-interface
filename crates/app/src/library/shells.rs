@@ -578,6 +578,40 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_server_with_an_unreadable_witness_does_not_block_new_shells() {
+        use std::fs;
+        let base = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+        let root = base.path().join("sockets");
+        let original = base.path().join("original");
+        let marked = base.path().join("marked");
+        let unmarked = base.path().join("unmarked");
+        let uid = uzers::get_current_uid();
+        let leaf = create_saved_shell(&original);
+        let absent = creation_in(&root, uid, &original, &leaf, false).unwrap();
+        assert!(!absent.exists());
+        for copy in [&marked, &unmarked] {
+            fs::create_dir(copy).unwrap();
+            fs::copy(original.join("layouts.db"), copy.join("layouts.db")).unwrap();
+        }
+        fs::copy(
+            original.join(".shell-server.json"),
+            marked.join(".shell-server.json"),
+        )
+        .unwrap();
+        fs::remove_dir_all(original).unwrap();
+        let witness = fs::read_dir(&root)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.extension() == Some(OsStr::new("witness")))
+            .unwrap();
+        fs::remove_file(&witness).unwrap();
+        fs::create_dir(&witness).unwrap();
+        for copy in [unmarked, marked] {
+            assert_ne!(creation_in(&root, uid, &copy, &leaf, true).unwrap(), absent);
+        }
+    }
+
+    #[test]
     fn failed_discovery_does_not_authorize_creation() {
         // A socket in a private folder that accepts connections but never
         // answers, so its sessions cannot be read. The folder is in /tmp so
