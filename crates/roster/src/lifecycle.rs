@@ -28,6 +28,13 @@ impl Outcome {
     }
 }
 
+/// A service-provided refusal reason suitable for display in either start flow.
+pub fn start_reason(reason: Option<&str>) -> Option<String> {
+    reason
+        .map(crate::profiles::setup::one_line)
+        .filter(|line| !line.is_empty())
+}
+
 /// What a start reply means. `reply` is the body, or the refusing status if known.
 pub(crate) fn start_outcome(
     name: &str,
@@ -56,6 +63,7 @@ pub(crate) fn start_outcome(
         session: String,
         already_existed: bool,
         ready: String,
+        reason: Option<String>,
     }
     let Ok(reply) = serde_json::from_slice::<Reply>(&reply) else {
         return Outcome::Unknown;
@@ -63,15 +71,18 @@ pub(crate) fn start_outcome(
     if reply.session != name {
         return Outcome::Unknown;
     }
-    if reply.already_existed {
-        return Outcome::AlreadyRunning;
-    }
     if !reply.ok {
+        if let Some(reason) = start_reason(reply.reason.as_deref()) {
+            return Outcome::Refused(reason);
+        }
         return refused(if resume {
             not_resumed
         } else {
             "The agent could not start. Check its saved configuration in Backbone."
         });
+    }
+    if reply.already_existed {
+        return Outcome::AlreadyRunning;
     }
     match reply.ready.as_str() {
         "not_waited" | "ready" | "waiting_for_human" | "timeout" => {
@@ -111,6 +122,17 @@ mod tests {
             start_outcome("worker", false, reply(true)),
             Outcome::AlreadyRunning
         );
+    }
+
+    #[test]
+    fn start_and_resume_show_the_reason_from_a_refused_launch() {
+        let reply = include_bytes!("profiles/setup/fixtures/agent-started-refused.json");
+        for resume in [false, true] {
+            assert_eq!(
+                start_outcome("builder", resume, Ok(reply.to_vec())),
+                Outcome::Refused("the brief could not be written: no space left on device".into())
+            );
+        }
     }
 
     #[test]

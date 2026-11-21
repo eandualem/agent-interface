@@ -336,15 +336,9 @@ fn answer(result: Result<Started, AddError>) -> Answer {
     match result {
         Ok(started) if started.ok => Answer::Started(started.name),
         Ok(started) => Answer::Stopped(
-            started
-                .evidence
-                .first()
-                .map(|line| line.chars().filter(|c| !c.is_control()).take(200).collect::<String>())
-                .filter(|line| !line.trim().is_empty())
-                .map_or_else(
-                    || "The CLI exited right after starting, so the agent is not running. Run the CLI in a terminal in the agent's folder to see why, then start it again.".to_owned(),
-                    |line| format!("It stopped right after starting: {line}"),
-                ),
+            agent_interface_roster::lifecycle::start_reason(started.reason.as_deref()).unwrap_or_else(
+                || "The CLI exited right after starting, so the agent is not running. Run the CLI in a terminal in the agent's folder to see why, then start it again.".to_owned(),
+            ),
         ),
         Err(AddError::Refused(reason)) => Answer::Stopped(reason),
         Err(AddError::Connection(Error::Refused(status))) => {
