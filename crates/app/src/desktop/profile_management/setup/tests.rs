@@ -373,7 +373,7 @@ fn bounded_history_keeps_invalid_records_visible_and_never_invokes_provider() {
 #[test]
 fn a_served_start_opens_only_a_running_agent_and_asks_again_only_without_an_answer() {
     use agent_interface_roster::profiles::{Error as Profile, setup::start::Readiness};
-    let started = |ok, evidence: &[&str]| {
+    let started = |ok, reason: Option<&str>| {
         Ok(Started {
             ok,
             name: "guide-2".into(),
@@ -382,19 +382,20 @@ fn a_served_start_opens_only_a_running_agent_and_asks_again_only_without_an_answ
             } else {
                 Readiness::Exited
             },
-            evidence: evidence.iter().map(|line| line.to_string()).collect(),
+            reason: reason.map(str::to_owned),
+            evidence: vec!["First observation".into(), "Last observation".into()],
         })
     };
     // The pane opens by the name the service answered with.
     assert_eq!(
-        answer(started(true, &[])),
+        answer(started(true, None)),
         Answer::Started("guide-2".into())
     );
     assert_eq!(
-        answer(started(false, &["claude: not signed in\u{1b}[0m"])),
-        Answer::Stopped("It stopped right after starting: claude: not signed in[0m".into())
+        answer(started(false, Some("No space\nleft."))),
+        Answer::Stopped("No space left.".into())
     );
-    assert!(matches!(answer(started(false, &[])), Answer::Stopped(_)));
+    assert_eq!(answer(started(false, None)), Answer::Stopped("The CLI exited right after starting, so the agent is not running. Run the CLI in a terminal in the agent's folder to see why, then start it again.".into()));
     assert_eq!(
         answer(Err(AddError::Refused(
             "Directory does not exist: /x".into()
