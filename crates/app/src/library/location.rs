@@ -47,6 +47,7 @@ pub(crate) fn library_location(explicit: Option<&Path>) -> Result<PathBuf, Error
 /// Resolve the previous library location, including a folder whose ancestors
 /// no longer exist. Resolution must preserve the spelling used to name its server.
 pub(super) fn former_library(path: &Path) -> io::Result<PathBuf> {
+    validate_path_bytes(path)?;
     if path.as_os_str().is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -304,6 +305,7 @@ mod tests {
         assert_eq!(former_library(&former).unwrap(), former);
         assert!(former_library(Path::new("bad\0name")).is_err());
         assert!(former_library(Path::new(&"x".repeat(MAX_PATH_BYTES + 1))).is_err());
+        assert!(former_library(Path::new(&format!("~{}x", "/".repeat(MAX_PATH_BYTES)))).is_err());
     }
 
     #[test]

@@ -469,6 +469,7 @@ mod tests {
                 binding::RECOVERY
             );
         }
+        std::os::unix::fs::symlink(&moved, &renamed).unwrap();
         binding::bind(&root, &moved, binding::Use::Recover(&renamed)).unwrap();
         assert_eq!(creation_in(&root, uid, &moved, leaf, true).unwrap(), socket);
         ensure_fixture_session(&socket, leaf);
@@ -544,7 +545,8 @@ mod tests {
         let sibling = base.path().join("sibling");
         fs::create_dir(&sibling).unwrap();
         fs::copy(moved.join("layouts.db"), sibling.join("layouts.db")).unwrap();
-        creation_in(&root, uid, &sibling, leaf, false).unwrap();
+        let other_socket = creation_in(&root, uid, &sibling, leaf, false).unwrap();
+        let _other_server = expose_private_server(&root, &other_socket, leaf);
         fs::remove_dir_all(&original).unwrap();
         fs::rename(&sibling, &original).unwrap();
         fs::copy(

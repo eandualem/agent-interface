@@ -357,15 +357,13 @@ fn recovery_key(
         return Ok(key.clone());
     }
     let eligible = |key: &str, owner: Option<&Owner>| -> io::Result<bool> {
-        if !live_match(root, key, leaves)? {
-            return Ok(false);
-        }
         if let Some(owner) = owner
             && owner.identity != identity
+            && (owner.at_recorded_path()? || owner.original_removed(root)? == Some(false))
         {
-            return Ok(!owner.at_recorded_path()? && owner.original_removed(root)? != Some(false));
+            return Ok(false);
         }
-        Ok(true)
+        live_match(root, key, leaves)
     };
     if let Some((marker, owner)) = marked
         && owner.path() == former
@@ -410,7 +408,7 @@ fn recovery_key(
     // only after exhausting the explicitly supplied location.
     if let Some((marker, owner)) = marked
         && owner.identity != identity
-        && Identity::existing(former)?.is_none()
+        && (former.is_symlink() || Identity::existing(former)?.is_none())
         && eligible(&marker.key, Some(owner))?
     {
         return Ok(marker.key.clone());
