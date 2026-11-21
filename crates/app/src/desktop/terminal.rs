@@ -38,6 +38,12 @@ impl Target {
                 .as_ref()
                 .map(|c| c.identity().profile_id.as_str())
     }
+    fn remote_bound(&self) -> bool {
+        self.connection
+            .as_ref()
+            .is_some_and(|c| Some(c.identity().profile_id.as_str()) == self.remote())
+    }
+
     /// A provider's sign-in session. It does not come back once it ends.
     /// A session of that name on another tmux server is a person's own.
     pub fn is_sign_in(&self) -> bool {
@@ -606,7 +612,7 @@ impl LiveTerminal {
                 .connection
                 .as_ref()
                 .filter(|c| c.identity().profile_id == profile)
-                .ok_or_else(|| std::io::Error::other(PROFILE_UNAVAILABLE))?;
+                .ok_or_else(|| std::io::Error::other(format!("This terminal belongs to profile {profile}. Open it in a workspace bound to that profile.")))?;
             let agent = &target.leaf.attachment.as_ref().unwrap().session;
             let (stream, writer, close) = connection.open_terminal(agent)?;
             let (wake, updates) = mpsc::unbounded();
@@ -912,19 +918,28 @@ impl Render for LiveTerminal {
                 self.error.is_some() && self.target.remote().is_some(),
                 |el| {
                     el.child(
-                        ui::button("reopen-remote", "Open again", ui::Button::Primary).on_click(
-                            cx.listener(|terminal, _, _, cx| {
-                                if terminal.refresh_on_reopen {
-                                    cx.emit(RefreshProfile)
-                                } else {
-                                    terminal.start(cx)
-                                }
-                            }),
-                        ),
-                    )
-                    .child(
-                        ui::button("detach-remote", "Detach", ui::Button::Secondary)
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(Detach))),
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap(gpui::px(t.space.s8))
+                            .px(gpui::px(t.space.s12))
+                            .pb(gpui::px(t.space.s8))
+                            .when(self.target.remote_bound(), |row| {
+                                row.child(
+                                    ui::button("reopen-remote", "Open again", ui::Button::Primary)
+                                        .on_click(cx.listener(|terminal, _, _, cx| {
+                                            if terminal.refresh_on_reopen {
+                                                cx.emit(RefreshProfile)
+                                            } else {
+                                                terminal.start(cx)
+                                            }
+                                        })),
+                                )
+                            })
+                            .child(
+                                ui::button("detach-remote", "Detach", ui::Button::Secondary)
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(Detach))),
+                            ),
                     )
                 },
             )

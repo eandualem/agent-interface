@@ -125,6 +125,14 @@ impl Browser {
 
     pub(super) fn agent_target(&self, name: &str) -> Option<AgentTarget> {
         let space = self.layout.as_ref()?.model().workspace()?;
+        self.agent_target_in(space, name)
+    }
+
+    fn agent_target_in(
+        &self,
+        space: &agent_interface_core::Workspace,
+        name: &str,
+    ) -> Option<AgentTarget> {
         let remote = match self.workspace_profiles.route(space) {
             Route::Bound(connection) => self
                 .workspace_agents(space)
@@ -137,6 +145,25 @@ impl Browser {
             origin: self.navigation_origin(&space.id)?,
             name: name.to_owned(),
         })
+    }
+
+    /// Check a delayed sidebar click against its original roster before navigating.
+    pub(super) fn remote_target_is_current(&self, target: &AgentTarget) -> bool {
+        self.layout
+            .as_ref()
+            .and_then(|layout| {
+                layout
+                    .model()
+                    .workspaces
+                    .iter()
+                    .find(|space| space.id == target.origin.workspace)
+            })
+            .and_then(|space| self.agent_target_in(space, &target.name))
+            .is_some_and(|now| {
+                now.origin == target.origin
+                    && now.remote_profile.is_some()
+                    && now.remote_profile == target.remote_profile
+            })
     }
 
     /// Resolve the original agent row without consulting the selected profile.

@@ -182,6 +182,9 @@ fn saved_remote_attachment_drives_ghostty_with_the_granted_access() {
             }
         }
         remote.set_visible(false);
+        assert!(remote.set_size(0, 24).is_err());
+        remote.set_size(100, 30).unwrap();
+        assert!(remote.state.lock().unwrap().paused);
         while !remote.is_finished() {
             woken.recv_timeout(WAIT).unwrap();
         }

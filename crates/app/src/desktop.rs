@@ -997,10 +997,8 @@ impl Browser {
         } else if target.remote_profile.is_some()
             && !self.saving
             && !self.save_failed
+            && self.remote_target_is_current(target)
             && self.select_workspace_origin(&target.origin)
-            && self
-                .agent_target(&target.name)
-                .is_some_and(|now| now.remote_profile == target.remote_profile)
             && let Some(layout) = &self.layout
         {
             let (base, mut proposed) = layout.save_snapshot();

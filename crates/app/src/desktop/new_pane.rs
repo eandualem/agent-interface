@@ -415,7 +415,15 @@ impl NewPane {
                         self.origin.remote_profile(member).is_some()
                             || self.sessions.contains(&member.name)
                     })
-                    .filter(|member| self.matches(&member.name) || self.matches(&member.repo))
+                    .filter(|member| {
+                        self.matches(&member.name)
+                            || self.matches(&member.repo)
+                            || member.tags.iter().any(|tag| self.matches(tag))
+                            || member
+                                .machine
+                                .as_ref()
+                                .is_some_and(|m| self.matches(&m.name))
+                    })
                     .cloned()
                     .collect();
                 agents.sort_by_key(|member| {
@@ -944,13 +952,17 @@ fn agent_row(
     selected: bool,
 ) -> gpui::Stateful<gpui::Div> {
     let (t, c) = (tokens(), colors());
-    let place = if let Some(machine) = &member.machine {
-        machine.name.clone()
-    } else if member.repo.is_empty() {
+    let mut place = if member.repo.is_empty() {
         member.tags.join(" · ")
     } else {
         member.repo.clone()
     };
+    if let Some(machine) = member.machine.as_ref().filter(|m| !m.name.is_empty()) {
+        if !place.is_empty() {
+            place.push_str(" · ");
+        }
+        place.push_str(&machine.name);
+    }
     ui::choice_frame(id.clone(), selected)
         .child(ui::agent_symbol(status.state))
         .child(mono(member.name.clone()).flex_shrink_0().text_color(c.text))

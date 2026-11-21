@@ -83,7 +83,8 @@ fn invalid() -> io::Error {
     )
 }
 
-fn dimensions(cols: u16, rows: u16) -> bool {
+/// Whether a terminal size fits the supported visible grid.
+pub fn valid_dimensions(cols: u16, rows: u16) -> bool {
     cols > 0 && rows > 0 && usize::from(cols) * usize::from(rows) <= 1_048_576
 }
 
@@ -141,7 +142,7 @@ impl Writer {
         if self.access != Access::Type {
             return Ok(());
         }
-        if !dimensions(cols, rows) {
+        if !valid_dimensions(cols, rows) {
             return Err(invalid());
         }
         self.send(Command::Resize { cols, rows })
@@ -190,7 +191,7 @@ impl Stream {
                 self.repaint = false;
                 Ok(Event::RepaintEnd)
             }
-            Frame::Resized { cols, rows } if dimensions(cols, rows) => {
+            Frame::Resized { cols, rows } if valid_dimensions(cols, rows) => {
                 Ok(Event::Resized(cols, rows))
             }
             Frame::Ended { reason }
@@ -372,7 +373,7 @@ fn open(
     else {
         return Err(invalid());
     };
-    if opened != agent || !dimensions(cols, rows) {
+    if opened != agent || !valid_dimensions(cols, rows) {
         return Err(invalid());
     }
     let close = Close(socket.try_clone()?);

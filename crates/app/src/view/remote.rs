@@ -89,9 +89,11 @@ impl Remote {
         Ok(Self { state, work, close })
     }
 
-    fn viewport(&self, paused: bool, size: Option<(u16, u16)>) -> io::Result<()> {
+    fn viewport(&self, paused: Option<bool>, size: Option<(u16, u16)>) -> io::Result<()> {
         let mut state = self.state.lock().unwrap();
-        state.paused = paused;
+        if let Some(paused) = paused {
+            state.paused = paused;
+        }
         if size.is_some() {
             state.size = size;
         }
@@ -301,7 +303,7 @@ fn run(
 
 impl Backend for Remote {
     fn set_visible(&self, visible: bool) {
-        let _ = self.viewport(!visible, None);
+        let _ = self.viewport(Some(!visible), None);
     }
     fn take_update(&self) -> Option<Update> {
         self.state.lock().unwrap().latest.take()
@@ -333,7 +335,13 @@ impl Backend for Remote {
             .map_err(|_| io::Error::other("Remote terminal closed"))?
     }
     fn set_size(&self, cols: u16, rows: u16) -> io::Result<()> {
-        self.viewport(false, Some((cols, rows)))
+        if !agent_interface_roster::profiles::terminal::valid_dimensions(cols, rows) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Unsupported terminal dimensions",
+            ));
+        }
+        self.viewport(None, Some((cols, rows)))
     }
     fn ignore_size(&self) -> io::Result<()> {
         Ok(())
