@@ -13,6 +13,14 @@ use super::{
 use crate::desktop::layout_edit::Create;
 use ui::AgentState;
 
+struct HeldDeliveryTip(&'static str);
+
+impl Render for HeldDeliveryTip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        ui::menu().child(self.0)
+    }
+}
+
 #[derive(Clone)]
 struct TabDrag {
     origin: Option<super::navigation_origin::Origin>,
@@ -694,14 +702,26 @@ impl Browser {
                         .active_agents()
                         .and_then(|agents| agents.activity(name))
                         .and_then(|activity| activity.runs.clone());
+                    let deliveries = browser
+                        .active_agents()
+                        .and_then(|agents| agents.get(name).deliveries.clone());
+                    // How many deliveries wait keeps its width; why they are
+                    // held gives way first.
+                    let (waiting, held) = match deliveries {
+                        Some((count, why)) => (Some(count), why),
+                        None => (None, None),
+                    };
                     ui::row(SharedString::from(id), false)
                         .when(swarm.is_some(), |row| row.pl(px(t.space.s10 * 3.0)))
+                        .when_some(held, |row, why| {
+                            row.tooltip(move |_, cx| cx.new(|_| HeldDeliveryTip(why)).into())
+                        })
                         .child(ui::agent_symbol(state))
                         .child(
                             div()
-                                // With runs beside it the name keeps its width
-                                // and the runs give way first.
-                                .when(runs.is_none(), |name| name.flex_1())
+                                // With runs or a held reason beside it the
+                                // name keeps its width and they give way first.
+                                .when(runs.is_none() && held.is_none(), |name| name.flex_1())
                                 .min_w_0()
                                 .overflow_hidden()
                                 .text_ellipsis()
@@ -728,6 +748,33 @@ impl Browser {
                                     .text_ellipsis()
                                     .child(runs),
                             )
+                        }))
+                        .children(waiting.map(|count| {
+                            ui::text(
+                                div()
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(t.space.s4))
+                                    .whitespace_nowrap()
+                                    .text_color(c.muted),
+                                &t.text.meta,
+                            )
+                            .child(ui::icon("mail", t.size.icon - t.space.s2, c.muted))
+                            .child(count)
+                        }))
+                        .children(held.map(|why| {
+                            ui::text(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_color(c.muted),
+                                &t.text.meta,
+                            )
+                            .child(format!("· {why}"))
                         }))
                         .on_click(cx.listener(move |browser, _, window, cx| {
                             if let Some(target) = &target {

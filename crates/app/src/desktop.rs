@@ -2576,6 +2576,34 @@ impl Browser {
     }
 }
 
+impl Browser {
+    /// The Backbone agent a pane attaches, its roster status and the roster
+    /// it comes from: none for a session on another tmux server, whatever
+    /// its name, or a pane whose profile has no roster.
+    fn pane_agent(
+        &self,
+        leaf: &Leaf,
+    ) -> Option<(
+        String,
+        std::rc::Rc<agent_status::Status>,
+        agent_status::LiveAgents,
+    )> {
+        let attachment = leaf.attachment.as_ref()?;
+        let connection = self.pane_connection(&leaf.id).ok()??;
+        if attachment
+            .source_socket
+            .as_deref()
+            .is_some_and(|path| std::path::Path::new(path) != connection.tmux_socket())
+        {
+            return None;
+        }
+        let space = self.layout.as_ref()?.model().workspace_for_pane(&leaf.id)?;
+        let agents = self.workspace_agents(space)?.clone();
+        let status = agents.get(&attachment.session);
+        Some((attachment.session.clone(), status, agents))
+    }
+}
+
 impl Render for Browser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.refresh_profiles(cx);
@@ -2703,7 +2731,30 @@ impl Render for Browser {
                 .flat_map(|tab| tab.tree.leaves())
             {
                 if let Some(terminal) = self.terminals.get(&leaf.id) {
-                    terminal.update(cx, |terminal, _| terminal.set_cwd(leaf));
+                    // A hidden pane follows its agent's restart too, so it
+                    // does not miss the restart leaving the list, while it
+                    // still holds the connection that roster comes from.
+                    let hidden = !leaves.iter().any(|drawn| drawn.id == leaf.id);
+                    let current = self
+                        .pane_connection(&leaf.id)
+                        .ok()
+                        .flatten()
+                        .map(|connection| connection.connection_key());
+                    let held = terminal
+                        .read(cx)
+                        .target
+                        .connection
+                        .as_ref()
+                        .map(|connection| connection.connection_key());
+                    let status = (hidden && current.is_some() && held == current)
+                        .then(|| self.pane_agent(leaf))
+                        .flatten();
+                    terminal.update(cx, |terminal, cx| {
+                        terminal.set_cwd(leaf);
+                        if let Some((name, _, agents)) = status {
+                            terminal.set_restart(Some((name, agents)), cx);
+                        }
+                    });
                 }
             }
         }
@@ -2841,25 +2892,17 @@ impl Render for Browser {
                 .detach();
                 self.terminals.insert(leaf.id.clone(), terminal);
             }
-            // A stopped Backbone agent's pane offers Resume and Start new.
-            let agent = leaf.attachment.as_ref().and_then(|attachment| {
-                let connection = self.pane_connection(&leaf.id).ok()??;
-                // A session on another tmux server is not this profile's
-                // agent, whatever its name.
-                if attachment
-                    .source_socket
-                    .as_deref()
-                    .is_some_and(|path| std::path::Path::new(path) != connection.tmux_socket())
-                {
-                    return None;
-                }
-                let space = self.layout.as_ref()?.model().workspace_for_pane(&leaf.id)?;
-                let status = self.workspace_agents(space)?.get(&attachment.session);
-                (status.state == components::AgentState::Offline)
-                    .then(|| attachment.session.clone())
+            // A stopped Backbone agent's pane offers Resume and Start new,
+            // and a restarting one says so, whatever the roster's state.
+            let status = self.pane_agent(leaf);
+            let agent = status.as_ref().and_then(|(name, status, _)| {
+                (status.state == components::AgentState::Offline).then(|| name.clone())
             });
             if let Some(terminal) = self.terminals.get(&leaf.id) {
-                terminal.update(cx, |terminal, cx| terminal.set_agent(agent, cx));
+                terminal.update(cx, |terminal, cx| {
+                    terminal.set_agent(agent, cx);
+                    terminal.set_restart(status.map(|(name, _, agents)| (name, agents)), cx);
+                });
             }
         }
         let shown: Vec<(String, View)> = drawn

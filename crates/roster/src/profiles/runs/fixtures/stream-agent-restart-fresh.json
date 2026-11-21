@@ -1,0 +1,114 @@
+[
+  {
+    "event": "agent.restart",
+    "data": {
+      "id": 12,
+      "session": "builder",
+      "requested_by": "builder",
+      "requested_at": "2026-11-19T15:00:00Z",
+      "runtime": null,
+      "model": null,
+      "resume": false,
+      "start": true,
+      "delay_seconds": 120,
+      "start_at": null,
+      "message": "Resume from the handoff",
+      "status": "pending",
+      "phase": "waiting_for_turn",
+      "stopped_at": null,
+      "completed_at": null,
+      "result": {}
+    }
+  },
+  {
+    "event": "agent.restart",
+    "data": {
+      "id": 12,
+      "session": "builder",
+      "requested_by": "builder",
+      "requested_at": "2026-11-19T15:00:00Z",
+      "runtime": null,
+      "model": null,
+      "resume": false,
+      "start": true,
+      "delay_seconds": 120,
+      "start_at": null,
+      "message": "Resume from the handoff",
+      "status": "pending",
+      "phase": "stopping",
+      "stopped_at": null,
+      "completed_at": null,
+      "result": {}
+    }
+  },
+  {
+    "event": "agent.restart",
+    "data": {
+      "id": 12,
+      "session": "builder",
+      "requested_by": "builder",
+      "requested_at": "2026-11-19T15:00:00Z",
+      "runtime": null,
+      "model": null,
+      "resume": false,
+      "start": true,
+      "delay_seconds": 120,
+      "start_at": "2026-11-19T15:04:00Z",
+      "message": "Resume from the handoff",
+      "status": "pending",
+      "phase": "waiting",
+      "stopped_at": "2026-11-19T15:04:00Z",
+      "completed_at": null,
+      "result": {}
+    }
+  },
+  {
+    "event": "agent.restart",
+    "data": {
+      "id": 12,
+      "session": "builder",
+      "requested_by": "builder",
+      "requested_at": "2026-11-19T15:00:00Z",
+      "runtime": null,
+      "model": null,
+      "resume": false,
+      "start": true,
+      "delay_seconds": 120,
+      "start_at": "2026-11-19T15:04:00Z",
+      "message": "Resume from the handoff",
+      "status": "pending",
+      "phase": "starting",
+      "stopped_at": "2026-11-19T15:04:00Z",
+      "completed_at": null,
+      "result": {}
+    }
+  },
+  {
+    "event": "agent.restart",
+    "data": {
+      "id": 12,
+      "session": "builder",
+      "requested_by": "builder",
+      "requested_at": "2026-11-19T15:00:00Z",
+      "runtime": null,
+      "model": null,
+      "resume": false,
+      "start": true,
+      "delay_seconds": 120,
+      "start_at": "2026-11-19T15:04:00Z",
+      "message": "Resume from the handoff",
+      "status": "completed",
+      "phase": "ready",
+      "stopped_at": "2026-11-19T15:04:00Z",
+      "completed_at": "2026-11-19T15:04:09Z",
+      "result": {
+        "runtime": "claude",
+        "ready": "ready",
+        "evidence": [
+          "hook reported idle"
+        ],
+        "message": "delivered"
+      }
+    }
+  }
+]

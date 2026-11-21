@@ -398,8 +398,9 @@ the team-wide Usage view. Skill previews keep their 256 KiB limit.
 The service also pushes agent state changes on `GET /api/stream`, as
 Server-Sent Events. `Connection::watch` follows that stream on a worker of its
 own and reads only each frame's kind: the opening `hello`, `agent.state`,
-`agent.changed` (what an agent waits on, or its background counts), `run.changed`
-and `resync` each ask the roster worker for a read at once. A service that
+`agent.changed` (what an agent waits on, its background counts or its held
+deliveries), `agent.restart` (each step of an agent's own restart),
+`run.changed` and `resync` each ask the roster worker for a read at once. A service that
 does not know a kind ignores it. The frames' values are
 not applied and no cursor is kept, so a stream opened again simply reads the
 states again. A stream that breaks, or stays silent for 45 seconds against the

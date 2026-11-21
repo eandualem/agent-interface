@@ -921,6 +921,19 @@ pub struct Agent {
     /// How much it runs in the background; absent from an older service.
     #[serde(skip)]
     pub background: Option<crate::Background>,
+    /// What holds its terminal deliveries; absent when nothing does.
+    #[serde(skip)]
+    pub held_queue: Option<crate::HeldQueue>,
+    /// Messages waiting for its terminal, the held one included; 0 when an
+    /// older service does not say.
+    #[serde(skip)]
+    pub queued: u64,
+    /// Whether a delivery to it could go now, as a code such as `human_typing`.
+    #[serde(skip)]
+    pub delivery: Option<String>,
+    /// Its latest restart, finished or not.
+    #[serde(skip)]
+    pub restart: Option<crate::Restart>,
     /// Processes it started that still run.
     #[serde(skip)]
     pub processes: Vec<Process>,
@@ -1087,6 +1100,12 @@ impl Agent {
         let field = |name: &str| document.get(name).map(|raw| raw.get());
         agent.waiting = field("waiting").and_then(crate::object);
         agent.background = field("background").and_then(crate::Background::read);
+        agent.held_queue = field("held_queue").and_then(crate::object);
+        agent.queued = field("queued")
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .unwrap_or(0);
+        agent.delivery = field("delivery").and_then(|raw| serde_json::from_str(raw).ok());
+        agent.restart = field("restart").and_then(crate::object);
         agent.processes = field("processes")
             .and_then(|raw| serde_json::from_str::<Vec<&RawValue>>(raw).ok())
             .unwrap_or_default()
@@ -1483,5 +1502,44 @@ mod tests {
         assert_eq!(agent.processes[1].started_at, None);
         let agent = Agent::decode(br#"{"name":"worker","background":[1,0,0]}"#).unwrap();
         assert_eq!(agent.background, None);
+    }
+
+    #[test]
+    fn an_inspected_agent_carries_its_held_deliveries_from_the_services_fixtures() {
+        let decode = |body: &[u8]| Agent::decode(body).unwrap();
+        let held = decode(include_bytes!(
+            "profiles/runs/fixtures/agent-inspect-held-queue.json"
+        ));
+        assert_eq!(
+            (held.held_queue, held.queued, held.delivery.as_deref()),
+            (
+                Some(crate::HeldQueue {
+                    reason: Some("uncertain_delivery".into())
+                }),
+                8,
+                Some("agent_working")
+            )
+        );
+        let cleared = decode(include_bytes!(
+            "profiles/runs/fixtures/agent-inspect-held-queue-cleared.json"
+        ));
+        assert_eq!((cleared.held_queue, cleared.queued), (None, 0));
+        // Today's service gives neither field; mistyped ones leave the card.
+        let today = decode(include_bytes!("profiles/runs/fixtures/agent-inspect.json"));
+        assert_eq!((today.held_queue, today.queued), (None, 0));
+        let restarting = decode(include_bytes!(
+            "profiles/runs/fixtures/agent-inspect-restarting.json"
+        ));
+        let restart = restarting.restart.unwrap();
+        assert_eq!(
+            (restart.id, restart.phase.as_deref(), restart.result),
+            (Some(12), Some("waiting_for_turn"), Some(Default::default()))
+        );
+        assert_eq!(today.restart, None);
+        let mistyped = decode(br#"{"name":"worker","held_queue":[],"queued":"3","delivery":7}"#);
+        assert_eq!(
+            (mistyped.held_queue, mistyped.queued, mistyped.delivery),
+            (None, 0, None)
+        );
     }
 }
