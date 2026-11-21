@@ -62,10 +62,13 @@ pub(super) fn former_library(path: &Path) -> io::Result<PathBuf> {
         })?;
     // The final folder may now be a compatibility symlink pointing at the
     // destination. Its original name is the legacy socket lookup key.
-    match (expanded.parent(), expanded.file_name()) {
-        (Some(parent), Some(name)) => Ok(resolve_path(parent)?.join(name)),
-        _ => resolve_path(&expanded),
-    }
+    validate_path_bytes(&expanded)?;
+    let resolved = match (expanded.parent(), expanded.file_name()) {
+        (Some(parent), Some(name)) => resolve_path(parent)?.join(name),
+        _ => resolve_path(&expanded)?,
+    };
+    validate_path_bytes(&resolved)?;
+    Ok(resolved)
 }
 
 pub(crate) fn user_home(name: Option<&OsStr>) -> Option<PathBuf> {
@@ -161,27 +164,33 @@ fn resolve(
         })
 }
 
-pub(crate) fn resolve_path(path: &Path) -> io::Result<PathBuf> {
-    // Saved socket paths are untrusted. Bound both initial copying and work
-    // after symlink expansion; a missing prefix must not permit unlimited probes.
-    const MAX_PATH_BYTES: usize = 4096;
-    const MAX_COMPONENTS: usize = 4096;
-    let excessive = || {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "path resolution exceeds its limit",
-        )
-    };
+const MAX_PATH_BYTES: usize = 4096;
+
+fn excessive() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "path resolution exceeds its limit",
+    )
+}
+
+fn validate_path_bytes(path: &Path) -> io::Result<()> {
     if path.as_os_str().len() > MAX_PATH_BYTES {
         return Err(excessive());
     }
-    let mut components = 0;
     if path.as_os_str().as_bytes().contains(&0) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "path contains NUL",
         ));
     }
+    Ok(())
+}
+
+pub(crate) fn resolve_path(path: &Path) -> io::Result<PathBuf> {
+    // Bound initial copying and work after symlink expansion.
+    const MAX_COMPONENTS: usize = 4096;
+    validate_path_bytes(path)?;
+    let mut components = 0;
     enum Pending {
         Path(PathBuf),
         SaveLink(PathBuf),
@@ -293,6 +302,8 @@ mod tests {
         std::fs::create_dir(&moved).unwrap();
         std::os::unix::fs::symlink(&moved, &former).unwrap();
         assert_eq!(former_library(&former).unwrap(), former);
+        assert!(former_library(Path::new("bad\0name")).is_err());
+        assert!(former_library(Path::new(&"x".repeat(MAX_PATH_BYTES + 1))).is_err());
     }
 
     #[test]

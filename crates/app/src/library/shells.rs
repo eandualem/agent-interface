@@ -507,7 +507,12 @@ mod tests {
         let separate = creation_in(&root, uid, &moved, leaf, false).unwrap();
         assert_ne!(separate, legacy);
         let replacement = expose_private_server(&root, &separate, leaf);
-        assert!(binding::bind(&root, &moved, binding::Use::Recover(&original)).is_err());
+        assert!(
+            binding::bind(&root, &moved, binding::Use::Recover(&original))
+                .unwrap_err()
+                .to_string()
+                .contains("separate running shell server")
+        );
         // Exited panes kept for scrollback still have sessions on this server.
         replacement
             .run(&["set-window-option", "-g", "remain-on-exit", "on"])
@@ -534,6 +539,19 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        // A registered replacement with the same pane IDs has a different
+        // socket. Its marker in the destination must not override the request.
+        let sibling = base.path().join("sibling");
+        fs::create_dir(&sibling).unwrap();
+        fs::copy(moved.join("layouts.db"), sibling.join("layouts.db")).unwrap();
+        creation_in(&root, uid, &sibling, leaf, false).unwrap();
+        fs::remove_dir_all(&original).unwrap();
+        fs::rename(&sibling, &original).unwrap();
+        fs::copy(
+            original.join(".shell-server.json"),
+            moved.join(".shell-server.json"),
+        )
+        .unwrap();
         binding::bind(&root, &moved, binding::Use::Recover(&original)).unwrap();
         let recovered = creation_in(&root, uid, &moved, leaf, true).unwrap();
         assert_eq!(recovered, legacy);

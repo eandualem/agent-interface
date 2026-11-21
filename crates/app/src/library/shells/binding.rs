@@ -356,41 +356,44 @@ fn recovery_key(
     {
         return Ok(key.clone());
     }
-    let mut candidates = Vec::new();
-    if let Some((m, owner)) =
-        marked.filter(|(_, owner)| owner.path() == former || owner.identity != identity)
+    let eligible = |key: &str, owner: Option<&Owner>| -> io::Result<bool> {
+        if !live_match(root, key, leaves)? {
+            return Ok(false);
+        }
+        if let Some(owner) = owner
+            && owner.identity != identity
+        {
+            return Ok(!owner.at_recorded_path()? && owner.original_removed(root)? != Some(false));
+        }
+        Ok(true)
+    };
+    if let Some((marker, owner)) = marked
+        && owner.path() == former
+        && eligible(&marker.key, Some(owner))?
     {
-        candidates.push((m.key.as_str(), Some(owner)));
-    } else {
-        candidates.extend(
-            records
-                .iter()
-                .filter(|(_, owner)| owner.path() == former)
-                .map(|(key, owner)| (key.as_str(), Some(owner))),
-        );
-        if !records.contains_key(&legacy) && live_match(root, &legacy, leaves)? {
-            // A fresh library at the former location may coexist with the
-            // legacy server. Its own saved shells must take precedence.
-            let former_owns_legacy = match Identity::existing(former)? {
+        return Ok(marker.key.clone());
+    }
+    let mut candidates: Vec<_> = records
+        .iter()
+        .filter(|(_, owner)| owner.path() == former)
+        .map(|(key, owner)| (key.as_str(), Some(owner)))
+        .collect();
+    if !records.contains_key(&legacy) && live_match(root, &legacy, leaves)? {
+        // A symlink here opens its target, whose legacy key is different.
+        let former_owns_legacy = !former.is_symlink()
+            && match Identity::existing(former)? {
                 Some(id) if id != identity && owned_key(records, id).is_none() => {
                     live_match(root, &legacy, &super::read_leaves(former)?)?
                 }
                 _ => false,
             };
-            if !former_owns_legacy {
-                candidates.push((&legacy, None));
-            }
+        if !former_owns_legacy {
+            candidates.push((&legacy, None));
         }
     }
     let mut found = None;
     for (key, owner) in candidates {
-        if let Some(owner) = owner
-            && owner.identity != identity
-            && (owner.at_recorded_path()? || owner.original_removed(root)? == Some(false))
-        {
-            continue;
-        }
-        if live_match(root, key, leaves)? {
+        if eligible(key, owner)? {
             if found.is_some() {
                 return Err(io::Error::other(
                     "Multiple live shell servers match the former library",
@@ -399,7 +402,22 @@ fn recovery_key(
             found = Some(key.to_owned());
         }
     }
-    found.ok_or_else(|| io::Error::other("No saved shell matches that library's server"))
+    if let Some(key) = found {
+        return Ok(key);
+    }
+    // A same-volume rename followed by an offline cross-volume move may
+    // leave no record of the intermediate folder. Honor an eligible marker
+    // only after exhausting the explicitly supplied location.
+    if let Some((marker, owner)) = marked
+        && owner.identity != identity
+        && Identity::existing(former)?.is_none()
+        && eligible(&marker.key, Some(owner))?
+    {
+        return Ok(marker.key.clone());
+    }
+    Err(io::Error::other(
+        "No saved shell matches that library's server",
+    ))
 }
 
 /// Serialize ownership changes across windows. The private registry is the
