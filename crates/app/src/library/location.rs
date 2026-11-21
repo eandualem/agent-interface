@@ -60,7 +60,12 @@ pub(super) fn former_library(path: &Path) -> io::Result<PathBuf> {
                 "Cannot resolve the former library's home directory",
             )
         })?;
-    resolve_path(&expanded)
+    // The final folder may now be a compatibility symlink pointing at the
+    // destination. Its original name is the legacy socket lookup key.
+    match (expanded.parent(), expanded.file_name()) {
+        (Some(parent), Some(name)) => Ok(resolve_path(parent)?.join(name)),
+        _ => resolve_path(&expanded),
+    }
 }
 
 pub(crate) fn user_home(name: Option<&OsStr>) -> Option<PathBuf> {
@@ -278,6 +283,17 @@ fn expand_home(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_preserves_the_former_folder_name_if_it_is_now_a_symlink() {
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().canonicalize().unwrap();
+        let moved = root.join("moved");
+        let former = root.join("former");
+        std::fs::create_dir(&moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &former).unwrap();
+        assert_eq!(former_library(&former).unwrap(), former);
+    }
 
     #[test]
     fn library_is_in_the_data_directory_unless_the_environment_names_one() {

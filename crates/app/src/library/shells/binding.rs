@@ -5,8 +5,10 @@ use super::{existing_socket_in, ordinary_session};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     collections::BTreeMap,
+    ffi::OsStr,
     fs::{self, OpenOptions},
     io::{self, Read, Write},
+    os::unix::ffi::OsStrExt,
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -25,10 +27,10 @@ struct Marker {
 #[derive(PartialEq, Serialize, Deserialize)]
 struct Owner {
     token: uuid::Uuid,
-    library: PathBuf,
+    library: Vec<u8>,
     identity: Identity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    recovered_from: Option<PathBuf>,
+    recovered_from: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -142,23 +144,24 @@ fn marker(library: &Path) -> io::Result<Option<Marker>> {
 }
 
 pub(super) fn legacy_key(library: &Path) -> io::Result<String> {
-    let path = library
-        .to_str()
-        .filter(|_| library.is_absolute())
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Expected a resolved UTF-8 library path",
-            )
-        })?;
-    Ok(super::socket_name(path)
+    if !library.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Expected a resolved library path",
+        ));
+    }
+    Ok(super::socket_name(library)
         .trim_end_matches("-terminals.sock")
         .to_owned())
 }
 
 impl Owner {
+    fn path(&self) -> &Path {
+        Path::new(OsStr::from_bytes(&self.library))
+    }
+
     fn at_recorded_path(&self) -> io::Result<bool> {
-        Ok(Identity::existing(&self.library)? == Some(self.identity))
+        Ok(Identity::existing(self.path())? == Some(self.identity))
     }
 
     fn witness_dir(&self, root: &Path) -> io::Result<PathBuf> {
@@ -166,7 +169,7 @@ impl Owner {
             return Ok(root.to_owned());
         }
         Ok(self
-            .library
+            .path()
             .parent()
             .ok_or_else(|| io::Error::other("Missing library parent"))?
             .join(format!(
@@ -202,7 +205,7 @@ impl Owner {
     }
 
     fn publish_marker(&self, root: &Path, key: &str, old: Option<&Marker>) -> io::Result<()> {
-        let marker_path = self.library.join(MARKER);
+        let marker_path = self.path().join(MARKER);
         if !old.is_some_and(|m| m.key == key && m.token == self.token) {
             save(
                 &marker_path,
@@ -261,7 +264,7 @@ pub(super) fn lookup(root: &Path, library: &Path) -> io::Result<Option<String>> 
 
 pub(super) enum Use<'a> {
     Open,
-    Create { automatic: bool },
+    Create { automatic: bool, leaf: &'a str },
     Recover(&'a Path),
 }
 
@@ -347,28 +350,29 @@ fn recovery_key(
     leaves: &[String],
 ) -> io::Result<String> {
     let legacy = legacy_socket_key(root, former)?;
-    if let Some((key, _)) = records
-        .iter()
-        .find(|(_, o)| o.identity == identity && o.recovered_from.as_deref() == Some(former))
-        && live_match(root, key, leaves)?
+    if let Some((key, _)) = records.iter().find(|(_, o)| {
+        o.identity == identity && o.recovered_from.as_deref() == Some(former.as_os_str().as_bytes())
+    }) && live_match(root, key, leaves)?
     {
         return Ok(key.clone());
     }
     let mut candidates = Vec::new();
-    if let Some((m, owner)) = marked.filter(|(_, owner)| owner.library == former) {
+    if let Some((m, owner)) =
+        marked.filter(|(_, owner)| owner.path() == former || owner.identity != identity)
+    {
         candidates.push((m.key.as_str(), Some(owner)));
     } else {
         candidates.extend(
             records
                 .iter()
-                .filter(|(_, owner)| owner.library == former)
+                .filter(|(_, owner)| owner.path() == former)
                 .map(|(key, owner)| (key.as_str(), Some(owner))),
         );
         if !records.contains_key(&legacy) && live_match(root, &legacy, leaves)? {
             // A fresh library at the former location may coexist with the
             // legacy server. Its own saved shells must take precedence.
             let former_owns_legacy = match Identity::existing(former)? {
-                Some(id) if id != identity => {
+                Some(id) if id != identity && owned_key(records, id).is_none() => {
                     live_match(root, &legacy, &super::read_leaves(former)?)?
                 }
                 _ => false,
@@ -409,6 +413,13 @@ pub(super) fn bind(root: &Path, library: &Path, mode: Use<'_>) -> io::Result<Opt
     // Read the saved leaves from the generation we are binding, even when
     // a window still has a SQLite connection to a library that moved.
     let leaves = super::read_leaves(library)?;
+    if let Use::Create { leaf, .. } = mode
+        && !leaves.iter().any(|saved| saved == leaf)
+    {
+        return Err(io::Error::other(
+            "This pane is no longer in the library at this location",
+        ));
+    }
     let current = owned_key(&records, identity);
     let marked = old.as_ref().and_then(|m| {
         records
@@ -423,7 +434,7 @@ pub(super) fn bind(root: &Path, library: &Path, mode: Use<'_>) -> io::Result<Opt
                 root,
                 uzers::get_current_uid(),
                 &format!("{owned}-terminals.sock"),
-            )? && !agent_interface_tmux::discovery::read_sessions(&socket)?.is_empty()
+            )? && agent_interface_tmux::discovery::has_live_panes(&socket)?
             {
                 return Err(io::Error::other(
                     "This library has a separate running shell server. Exit its shells, then repeat recovery to reconnect the original server.",
@@ -440,8 +451,13 @@ pub(super) fn bind(root: &Path, library: &Path, mode: Use<'_>) -> io::Result<Opt
         }
         // After a copy-and-remove move a backup and the intended destination
         // can carry identical markers. Only the owner can choose between them.
-        if matches!(mode, Use::Create { automatic: true })
-            && !owner.at_recorded_path()?
+        if matches!(
+            mode,
+            Use::Create {
+                automatic: true,
+                ..
+            }
+        ) && !owner.at_recorded_path()?
             && owner.original_removed(root)? != Some(false)
             && live_match(root, &mark.key, &leaves)?
         {
@@ -454,8 +470,13 @@ pub(super) fn bind(root: &Path, library: &Path, mode: Use<'_>) -> io::Result<Opt
         if matches!(mode, Use::Open) {
             return Ok(None);
         }
-        if matches!(mode, Use::Create { automatic: true })
-            && unclaimed_match(root, &records, &leaves)?
+        if matches!(
+            mode,
+            Use::Create {
+                automatic: true,
+                ..
+            }
+        ) && unclaimed_match(root, &records, &leaves)?
         {
             return Err(io::Error::other(RECOVERY));
         }
@@ -474,7 +495,7 @@ pub(super) fn bind(root: &Path, library: &Path, mode: Use<'_>) -> io::Result<Opt
                 && old
                     .as_ref()
                     .is_some_and(|m| m.token == o.token && m.key == key)
-                && (identity.device == socket_device || o.library.parent() == library.parent())
+                && (identity.device == socket_device || o.path().parent() == library.parent())
         })
         .map_or_else(uuid::Uuid::new_v4, |o| o.token);
     let retired = previous.filter(|o| o.token != token).and_then(|o| {
@@ -484,10 +505,10 @@ pub(super) fn bind(root: &Path, library: &Path, mode: Use<'_>) -> io::Result<Opt
     });
     let owner = Owner {
         token,
-        library: library.to_owned(),
+        library: library.as_os_str().as_bytes().to_owned(),
         identity,
         recovered_from: match mode {
-            Use::Recover(former) => Some(former.to_owned()),
+            Use::Recover(former) => Some(former.as_os_str().as_bytes().to_owned()),
             _ => previous
                 .filter(|o| o.identity == identity)
                 .and_then(|o| o.recovered_from.clone()),

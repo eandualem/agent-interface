@@ -2,6 +2,7 @@ mod binding;
 
 use sha2::{Digest, Sha256};
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
@@ -124,8 +125,15 @@ fn creation_in(
     })?;
     binding::legacy_key(library)?;
     ensure_socket_directory(root, uid)?;
-    let key = binding::bind(root, library, binding::Use::Create { automatic })?
-        .expect("creation selects a server");
+    let key = binding::bind(
+        root,
+        library,
+        binding::Use::Create {
+            automatic,
+            leaf: leaf_id,
+        },
+    )?
+    .expect("creation selects a server");
     let name = format!("{key}-terminals.sock");
     let existing = existing_socket_in(root, uid, &name)?;
     Ok(select_socket(existing, leaf_id, true)?.unwrap_or_else(|| root.join(name)))
@@ -144,8 +152,11 @@ fn ensure_socket_directory(directory: &Path, uid: u32) -> io::Result<()> {
     }
 }
 
-fn socket_name(resolved_directory: &str) -> String {
-    let hash = format!("{:x}", Sha256::digest(resolved_directory.as_bytes()));
+fn socket_name(resolved_directory: impl AsRef<std::ffi::OsStr>) -> String {
+    let hash = format!(
+        "{:x}",
+        Sha256::digest(resolved_directory.as_ref().as_bytes())
+    );
     format!("{}-terminals.sock", &hash[..16])
 }
 
@@ -366,7 +377,11 @@ mod tests {
         let before = read_attachment_policy(&legacy, &session).unwrap();
         binding::bind(&root, &original, binding::Use::Open).unwrap();
 
-        let moved = base.path().join("moved");
+        let moved = base.path().join(if cfg!(target_os = "linux") {
+            OsStr::from_bytes(b"moved-\xff")
+        } else {
+            OsStr::new("moved")
+        });
         fs::rename(&original, &moved).unwrap();
         let copy = base.path().join("copy");
         fs::create_dir(&copy).unwrap();
@@ -440,7 +455,7 @@ mod tests {
         for file in ["layouts.db", ".shell-server.json"] {
             fs::copy(renamed.join(file), backup.join(file)).unwrap();
         }
-        fs::remove_dir_all(renamed).unwrap();
+        fs::remove_dir_all(&renamed).unwrap();
         for destination in [&backup, &moved] {
             assert!(
                 binding::bind(&root, destination, binding::Use::Open)
@@ -454,7 +469,7 @@ mod tests {
                 binding::RECOVERY
             );
         }
-        binding::bind(&root, &moved, binding::Use::Recover(&original)).unwrap();
+        binding::bind(&root, &moved, binding::Use::Recover(&renamed)).unwrap();
         assert_eq!(creation_in(&root, uid, &moved, leaf, true).unwrap(), socket);
         ensure_fixture_session(&socket, leaf);
     }
@@ -474,8 +489,9 @@ mod tests {
         // A previous generation at the old location has a registry entry,
         // but its server is gone. It must not mask the live legacy server.
         fs::create_dir(&original).unwrap();
-        create_saved_shell(&original);
-        creation_in(&root, uid, &original, leaf, false).unwrap();
+        let older = create_saved_shell(&original);
+        assert!(creation_in(&root, uid, &original, leaf, true).is_err());
+        creation_in(&root, uid, &original, &older, false).unwrap();
         fs::remove_dir_all(&original).unwrap();
         let legacy = root.join(socket_name(original.to_str().unwrap()));
         let _server = expose_private_server(&root, &legacy, leaf);
@@ -488,10 +504,35 @@ mod tests {
         assert!(!moved.join(".shell-server.json").exists());
         // A newly initialized library at the former path has unrelated panes.
         create_saved_shell(&original);
-        // Recovery still works after an explicit separate binding whose shells exited.
-        assert_ne!(
-            creation_in(&root, uid, &moved, leaf, false).unwrap(),
-            legacy
+        let separate = creation_in(&root, uid, &moved, leaf, false).unwrap();
+        assert_ne!(separate, legacy);
+        let replacement = expose_private_server(&root, &separate, leaf);
+        assert!(binding::bind(&root, &moved, binding::Use::Recover(&original)).is_err());
+        // Exited panes kept for scrollback still have sessions on this server.
+        replacement
+            .run(&["set-window-option", "-g", "remain-on-exit", "on"])
+            .unwrap();
+        for pane in replacement
+            .run(&["list-panes", "-a", "-F", "#{pane_id}"])
+            .unwrap()
+            .lines()
+        {
+            replacement
+                .run(&["respawn-pane", "-k", "-t", pane, "exit 0"])
+                .unwrap();
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while agent_interface_tmux::discovery::has_live_panes(&separate).unwrap() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fixture panes did not exit"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            !agent_interface_tmux::discovery::read_sessions(&separate)
+                .unwrap()
+                .is_empty()
         );
         binding::bind(&root, &moved, binding::Use::Recover(&original)).unwrap();
         let recovered = creation_in(&root, uid, &moved, leaf, true).unwrap();
@@ -615,13 +656,7 @@ mod tests {
             assert!(ordinary_session(invalid).is_none());
         }
         assert!(existing_shell_socket(Path::new("relative"), "123456abcdef").is_err());
-        assert!(
-            existing_shell_socket(
-                Path::new(OsStr::from_bytes(b"/tmp/library-\xff")),
-                "123456abcdef"
-            )
-            .is_err()
-        );
+        assert!(binding::legacy_key(Path::new(OsStr::from_bytes(b"/tmp/library-\xff"))).is_ok());
 
         // Short private fixture path stays within macOS's Unix socket limit.
         let fixture = tempfile::Builder::new()
