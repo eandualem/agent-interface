@@ -1073,13 +1073,14 @@ back the app and launchers on failure. The ordinary-shell registry in the user's
 a library directory and database identity to its tmux socket. A rename preserves
 both identities. Registration is serialized and committed atomically before
 publishing the portable `.shell-server.json` marker. A hard link kept outside
-the library lets a different filesystem claim its marker after the source was
-removed. A copy leaves the source link intact. The link lives beside the
-registry when possible, otherwise in a private sibling directory on the
-library's volume. If the link is unavailable, automatic recovery requires the
-original filesystem identity. A legacy path-named socket at the library's
-original location is registered when it contains a saved pane's exact session.
-See the guide for recovery when the library moved before registration.
+the library indicates whether the source still holds its marker. It lives
+beside the registry when possible, otherwise in a private sibling directory
+on the source volume. A different filesystem identity requires the owner's
+choice when the original disappears and matching sessions remain. This
+distinguishes an intended destination from a backup carrying the same marker.
+A legacy path-named socket at the original location is registered when it
+contains a saved pane's exact session. The guide covers recovery across
+volumes and after moving a library before registration.
 The Linux launcher uses the packaged Agent Interface icon.
 Under WSL, the installer installs missing Ubuntu runtime packages through apt
 and registers its desktop entry in `/usr/share/applications`, which

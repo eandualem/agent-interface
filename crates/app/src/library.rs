@@ -79,8 +79,7 @@ impl Library {
                         }
                         let document = store.load()?;
                         if version.is_none()
-                            && let Err(error) =
-                                shells::remember_server(&directory, document.model())
+                            && let Err(error) = shells::remember_server(&directory)
                         {
                             tracing::warn!(%error, "Could not record the library's shell server");
                         }

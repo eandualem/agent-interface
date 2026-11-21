@@ -228,12 +228,11 @@ impl Owner {
     }
 }
 
-fn owned_key(records: &Registry, library: &Path) -> io::Result<Option<String>> {
-    let identity = Identity::read(library)?;
-    Ok(records
+fn owned_key(records: &Registry, identity: Identity) -> Option<String> {
+    records
         .iter()
         .find(|(_, owner)| owner.identity == identity)
-        .map(|(key, _)| key.clone()))
+        .map(|(key, _)| key.clone())
 }
 
 /// Reads can use a committed binding or the legacy socket at its original
@@ -247,7 +246,7 @@ pub(super) fn lookup(root: &Path, library: &Path) -> io::Result<Option<String>> 
     if records.is_empty() && mark.is_none() {
         return Ok(Some(legacy));
     }
-    if let Some(key) = owned_key(&records, library)? {
+    if let Some(key) = owned_key(&records, Identity::read(library)?) {
         return Ok(Some(key));
     }
     Ok((mark.is_none() && !records.contains_key(&legacy)).then_some(legacy))
@@ -358,7 +357,7 @@ fn recovery_key(
                 .filter(|(_, owner)| owner.library == former)
                 .map(|(key, owner)| (key.as_str(), Some(owner))),
         );
-        if !records.contains_key(&legacy) {
+        if !records.contains_key(&legacy) && !former.join("layouts.db").try_exists()? {
             candidates.push((&legacy, None));
         }
     }
@@ -384,18 +383,16 @@ fn recovery_key(
 
 /// Serialize ownership changes across windows. The private registry is the
 /// commit point. Its filesystem identity also recovers a missing sidecar.
-pub(super) fn bind(
-    root: &Path,
-    library: &Path,
-    leaves: &[String],
-    mode: Use<'_>,
-) -> io::Result<Option<String>> {
+pub(super) fn bind(root: &Path, library: &Path, mode: Use<'_>) -> io::Result<Option<String>> {
     let legacy = legacy_socket_key(root, library)?;
     let _lock = lock(root)?;
     let mut records = registry(root)?;
     let old = marker(library)?;
     let identity = Identity::read(library)?;
-    let current = owned_key(&records, library)?;
+    // Read the saved leaves from the generation we are binding, even when
+    // a window still has a SQLite connection to a library that moved.
+    let leaves = super::read_leaves(library)?;
+    let current = owned_key(&records, identity);
     let marked = old.as_ref().and_then(|m| {
         records
             .get(&m.key)
@@ -403,45 +400,55 @@ pub(super) fn bind(
             .map(|o| (m, o))
     });
     let key = if let Use::Recover(former) = mode {
-        if former != library && former.join("layouts.db").try_exists()? {
-            return Err(io::Error::other("The former library still exists"));
-        }
-        let key = recovery_key(root, &records, former, identity, marked, leaves)?;
-        if current.as_ref().is_some_and(|owned| owned != &key) {
-            return Err(io::Error::other(
-                "This library already owns another shell server",
-            ));
+        let key = recovery_key(root, &records, former, identity, marked, &leaves)?;
+        if let Some(owned) = current.filter(|owned| owned != &key) {
+            if let Some(socket) = existing_socket_in(
+                root,
+                uzers::get_current_uid(),
+                &format!("{owned}-terminals.sock"),
+            )? && !agent_interface_tmux::discovery::read_sessions(&socket)?.is_empty()
+            {
+                return Err(io::Error::other(
+                    "This library has a separate running shell server. Exit its shells, then repeat recovery to reconnect the original server.",
+                ));
+            }
+            records.remove(&owned);
         }
         key
     } else if let Some(key) = current {
         key
     } else if let Some((mark, owner)) = marked {
-        let released = owner.original_removed(root)?;
-        if released == Some(true) && !owner.at_recorded_path()? {
-            mark.key.clone()
-        } else if matches!(mode, Use::Open) {
+        if matches!(mode, Use::Open) {
             return Ok(None);
-        } else if matches!(mode, Use::Create { automatic: true })
-            && released.is_none()
+        }
+        // After a copy-and-remove move a backup and the intended destination
+        // can carry identical markers. Only the owner can choose between them.
+        if matches!(mode, Use::Create { automatic: true })
             && !owner.at_recorded_path()?
+            && owner.original_removed(root)? != Some(false)
+            && live_match(root, &mark.key, &leaves)?
         {
             return Err(io::Error::other(RECOVERY));
-        } else {
-            uuid::Uuid::new_v4().simple().to_string()
         }
-    } else if !records.contains_key(&legacy) && live_match(root, &legacy, leaves)? {
+        uuid::Uuid::new_v4().simple().to_string()
+    } else if !records.contains_key(&legacy) && live_match(root, &legacy, &leaves)? {
         legacy
     } else {
         if matches!(mode, Use::Open) {
             return Ok(None);
         }
         if matches!(mode, Use::Create { automatic: true })
-            && unclaimed_match(root, &records, leaves)?
+            && unclaimed_match(root, &records, &leaves)?
         {
             return Err(io::Error::other(RECOVERY));
         }
         uuid::Uuid::new_v4().simple().to_string()
     };
+    if Identity::read(library)? != identity {
+        return Err(io::Error::other(
+            "The library changed during shell discovery. Reopen it to retry.",
+        ));
+    }
     let previous = records.get(&key);
     let socket_device = fs::metadata(root)?.dev();
     let token = previous
