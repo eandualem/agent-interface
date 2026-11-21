@@ -316,8 +316,8 @@ fn unclaimed_match(root: &Path, records: &Registry, leaves: &[String]) -> io::Re
     // A known server whose physical owner is gone also needs explicit recovery.
     for (key, owner) in records {
         if !owner.at_recorded_path().unwrap_or(false)
-            && live_match(root, key, leaves)?
             && owner.original_removed(root)? != Some(false)
+            && live_match(root, key, leaves)?
         {
             return Ok(true);
         }
@@ -408,7 +408,7 @@ fn recovery_key(
     // only after exhausting the explicitly supplied location.
     if let Some((marker, owner)) = marked
         && owner.identity != identity
-        && (former.is_symlink() || Identity::existing(former)?.is_none())
+        && Identity::existing(former)?.is_none_or(|id| former.is_symlink() && id == identity)
         && eligible(&marker.key, Some(owner))?
     {
         return Ok(marker.key.clone());

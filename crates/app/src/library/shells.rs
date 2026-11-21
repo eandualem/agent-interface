@@ -470,6 +470,7 @@ mod tests {
             );
         }
         std::os::unix::fs::symlink(&moved, &renamed).unwrap();
+        assert!(binding::bind(&root, &backup, binding::Use::Recover(&renamed)).is_err());
         binding::bind(&root, &moved, binding::Use::Recover(&renamed)).unwrap();
         assert_eq!(creation_in(&root, uid, &moved, leaf, true).unwrap(), socket);
         ensure_fixture_session(&socket, leaf);
@@ -487,13 +488,15 @@ mod tests {
         fs::create_dir(&moved).unwrap();
         let saved = create_saved_shell(&moved);
         let leaf = saved.as_str();
-        // A previous generation at the old location has a registry entry,
-        // but its server is gone. It must not mask the live legacy server.
+        // The old location was reused. Its previous owner still holds the
+        // marker in a renamed folder. Its unresponsive socket must be skipped
+        // in both automatic discovery and explicit recovery.
         fs::create_dir(&original).unwrap();
         let older = create_saved_shell(&original);
         assert!(creation_in(&root, uid, &original, leaf, true).is_err());
-        creation_in(&root, uid, &original, &older, false).unwrap();
-        fs::remove_dir_all(&original).unwrap();
+        let parked_socket = creation_in(&root, uid, &original, &older, false).unwrap();
+        let _unresponsive = UnixListener::bind(parked_socket).unwrap();
+        fs::rename(&original, base.path().join("parked")).unwrap();
         let legacy = root.join(socket_name(original.to_str().unwrap()));
         let _server = expose_private_server(&root, &legacy, leaf);
         assert_eq!(
