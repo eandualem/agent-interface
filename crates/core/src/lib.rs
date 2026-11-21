@@ -178,13 +178,15 @@ pub enum ViewKind {
     Tags,
     /// Authored progress updates and retained answers.
     Reports,
+    /// Conversations with other Backbone profiles.
+    Connections,
     /// Locally published HTML documents.
     Artifacts,
 }
 
 impl ViewKind {
     /// Every kind, in the order the new-pane chooser lists them.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Skills,
         Self::Policies,
         Self::Tags,
@@ -193,6 +195,7 @@ impl ViewKind {
         Self::Activity,
         Self::Agent,
         Self::Reports,
+        Self::Connections,
         Self::Artifacts,
     ];
 
@@ -207,6 +210,7 @@ impl ViewKind {
             Self::Policies => "policies",
             Self::Tags => "tags",
             Self::Reports => "reports",
+            Self::Connections => "connections",
             Self::Artifacts => "artifacts",
         }
     }

@@ -892,6 +892,7 @@ fn view_panes_round_trip_and_reject_mixed_or_unknown_views() {
     for (kind, name) in [
         (ViewKind::Usage, "usage"),
         (ViewKind::Reports, "reports"),
+        (ViewKind::Connections, "connections"),
         (ViewKind::Artifacts, "artifacts"),
     ] {
         let Node::Split { second, .. } = &mut model.workspaces[0].tabs[0].tree else {

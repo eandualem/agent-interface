@@ -75,6 +75,7 @@ pub(super) fn about(kind: ViewKind) -> About {
         ViewKind::Usage => ("chart-line", "Usage"),
         ViewKind::Activity => ("activity", "Activity"),
         ViewKind::Team => ("bot", "Team"),
+        ViewKind::Connections => ("link-2", "Connections"),
         ViewKind::Tags => ("hash", "Tags"),
         ViewKind::Reports => ("message-square", "Reports & updates"),
         ViewKind::Artifacts => ("layout-grid", "Artifacts"),
@@ -408,6 +409,13 @@ impl ViewPane {
             pane.error = Some("Choose a profile for this workspace to show this view.");
             return pane;
         };
+        if pane.view.kind == ViewKind::Connections {
+            // Until the profile service supplies connection records, distinguish
+            // unavailable data from a successful read with no connected peers.
+            pane.error =
+                Some("This version of Agent Interface cannot read profile connections yet.");
+            return pane;
+        }
         if matches!(pane.view.kind, ViewKind::Skills | ViewKind::Reports) {
             let field = cx.new(|cx| NameField::filter(window, cx));
             pane._search
@@ -479,6 +487,7 @@ impl ViewPane {
             ViewKind::Policies => Request::Policies,
             ViewKind::Tags => Request::Tags,
             ViewKind::Reports => reports_request(&self.reports),
+            ViewKind::Connections => unreachable!("connections do not use the team content source"),
             ViewKind::Artifacts => unreachable!("artifacts have no Backbone source"),
             // A profile's agent card reads through its own connection.
             ViewKind::Agent => unreachable!("agent cards have no view source"),
@@ -1185,7 +1194,11 @@ impl Render for ViewPane {
                         let state = match self.error {
                             Some(error) => ui::empty_state(
                                 ui::empty_tile("unplug", c.selected, c.muted),
-                                "No data",
+                                if self.view.kind == ViewKind::Connections {
+                                    "Connections unavailable"
+                                } else {
+                                    "No data"
+                                },
                                 error,
                             ),
                             None => ui::empty_state(

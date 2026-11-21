@@ -48,6 +48,7 @@ pub(super) enum Target {
     Agent(super::navigation_origin::AgentTarget),
     Command(Create, Option<super::creation_origin::Target>),
     NewWorkspace,
+    Connections(super::creation_origin::Target),
     Settings,
 }
 
@@ -208,6 +209,18 @@ impl Browser {
                 }
             }
         }
+        if matches("Connections")
+            && self.connections_workspace().is_some()
+            && let Some(target) = self.creation_target()
+        {
+            hits.push(Hit {
+                group: "COMMANDS",
+                label: "Connections".into(),
+                meta: String::new(),
+                agent: None,
+                target: Target::Connections(target),
+            });
+        }
         for (label, target) in [
             (
                 "New tab",
@@ -270,6 +283,7 @@ impl Browser {
             Target::Command(action, target) => {
                 self.create_from(action, target.as_ref(), window, cx)
             }
+            Target::Connections(target) => self.open_connections(Some(&target), None, window, cx),
             Target::NewWorkspace => self.begin_workspace(window, cx),
             Target::Settings => cx.defer(super::settings_window::show),
         }

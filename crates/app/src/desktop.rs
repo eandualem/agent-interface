@@ -25,6 +25,7 @@ mod new_pane;
 use chooser::{Choice, SessionChooser};
 use layout_edit::{Create, Selection};
 mod components;
+mod connections;
 mod design;
 mod frame;
 mod icons;
@@ -699,6 +700,8 @@ struct Browser {
     jump: Option<jump::Jump>,
     /// A navigation panel drag: where it started and the width then.
     sidebar_drag: Option<(gpui::Pixels, gpui::Pixels, Option<u32>)>,
+    agents_collapsed: bool,
+    connections_collapsed: bool,
     reset_focus: bool,
     painted_pane_focus: Option<String>,
     navigation: Option<gpui::FocusHandle>,
@@ -3051,6 +3054,12 @@ impl Render for Browser {
                             }
                             new_pane::NewPaneEvent::Attach(name) => {
                                 browser.attach_into(&pane, name, window, cx)
+                            }
+                            new_pane::NewPaneEvent::OpenView(view)
+                                if view.kind == agent_interface_core::ViewKind::Connections =>
+                            {
+                                let target = browser.creation_target();
+                                browser.open_connections(target.as_ref(), Some(&pane), window, cx);
                             }
                             new_pane::NewPaneEvent::OpenView(view) => {
                                 browser.open_view(&pane, view.clone(), window, cx);
