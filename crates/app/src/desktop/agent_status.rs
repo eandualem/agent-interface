@@ -215,7 +215,9 @@ pub(super) fn deliveries(
     let waiting = queued.max(1);
     Some(match held.reason.as_deref() {
         Some("uncertain_delivery") => {
-            format!("Deliveries held: a message may still be in its prompt · {waiting} waiting")
+            format!(
+                "Deliveries held: a message may still be in the original terminal · {waiting} waiting"
+            )
         }
         _ => format!("Deliveries are held · {waiting} waiting"),
     })
@@ -231,7 +233,9 @@ pub(super) fn row_deliveries(
         return (queued > 0).then(|| (format!("{queued} waiting"), None));
     };
     let why = match held.reason.as_deref() {
-        Some("uncertain_delivery") => "deliveries held: a message may still be in its prompt",
+        Some("uncertain_delivery") => {
+            "deliveries held: a message may still be in the original terminal"
+        }
         _ => "deliveries are held",
     };
     // The held one waits too.
@@ -862,7 +866,7 @@ mod tests {
         };
         assert_eq!(
             read(&fixture("agents-held-queue")).as_deref(),
-            Some("8 waiting · deliveries held: a message may still be in its prompt")
+            Some("8 waiting · deliveries held: a message may still be in the original terminal")
         );
         // The list does not say why a plain wait waits.
         assert_eq!(
@@ -901,7 +905,7 @@ mod tests {
         };
         assert_eq!(
             deliveries(Some(&held), 8, Some("human_typing")).as_deref(),
-            Some("Deliveries held: a message may still be in its prompt · 8 waiting")
+            Some("Deliveries held: a message may still be in the original terminal · 8 waiting")
         );
         assert_eq!(
             deliveries(Some(&Default::default()), 0, None).as_deref(),

@@ -375,6 +375,16 @@ impl Observation {
     }
 }
 
+/// A failed restart's answer, as the pane keeps it.
+#[derive(Clone, Debug, PartialEq)]
+struct Kept {
+    /// The service's reason, when it gave one.
+    reason: Option<String>,
+    /// Whether a live session of this pane held it, as when nothing was
+    /// stopped: that session's later end is then no error.
+    held: bool,
+}
+
 /// A pane's view of its agent's own restart: from the roster's list and,
 /// when the restart leaves the list, one read of the agent's inspection,
 /// which says how it ended. Nothing is decided from when the terminal's
@@ -384,9 +394,10 @@ struct Restarts {
     /// The unfinished restart the list carries now.
     listed: Option<Restart>,
     left: Left,
-    /// A failed answer, with its reason when it gave one, kept until a new
-    /// session attaches.
-    failed: Option<Option<String>>,
+    /// A failed answer, kept until the pane's next attach.
+    failed: Option<Kept>,
+    /// Whether a session this pane attached is attached now.
+    live: bool,
     /// Whether its session ended while a restart was under way or after it
     /// failed, so its end is no error until another session attaches.
     quiet: bool,
@@ -462,7 +473,12 @@ impl Restarts {
         newest: Option<Instant>,
         gone: bool,
     ) -> RestartStep {
-        let step = self.answered(id, answer, newest);
+        // An answer for a read no longer asked changes nothing at all.
+        if !matches!(&self.left, Left::Asking { restart, .. } if restart.id == Some(id)) {
+            return RestartStep::Nothing;
+        }
+        let held = self.live && !gone;
+        let step = self.answered(id, answer, newest, held);
         // An end that came while the restart was under way stays quiet, even
         // when the pane hears of it only after the answer.
         if gone && !self.under_way() {
@@ -476,13 +492,11 @@ impl Restarts {
         id: u64,
         answer: Option<&Restart>,
         newest: Option<Instant>,
+        held: bool,
     ) -> RestartStep {
         let Left::Asking { restart, at } = &self.left else {
             return RestartStep::Nothing;
         };
-        if restart.id != Some(id) {
-            return RestartStep::Nothing;
-        }
         let (restart, at) = (restart.clone(), newest.unwrap_or(*at).max(*at));
         self.left = Left::Nothing;
         // A later restart than the one that left says nothing of it.
@@ -515,12 +529,13 @@ impl Restarts {
                 RestartStep::Nothing
             }
             Some("failed") => {
-                self.failed = Some(
-                    answer
+                self.failed = Some(Kept {
+                    reason: answer
                         .and_then(|answer| answer.result.as_ref())
                         .and_then(|result| result.reason.clone())
                         .filter(|reason| !reason.trim().is_empty()),
-                );
+                    held,
+                });
                 RestartStep::Nothing
             }
             _ => RestartStep::Nothing,
@@ -535,7 +550,19 @@ impl Restarts {
     /// Whether the session's end is no error: it ended, or may end, as part
     /// of a restart.
     fn quiet(&self) -> bool {
-        self.under_way() || self.quiet || self.failed.is_some()
+        self.under_way() || self.quiet || self.held()
+    }
+
+    /// Whether a live session of this pane holds a failed answer.
+    fn held(&self) -> bool {
+        self.failed.as_ref().is_some_and(|kept| kept.held)
+    }
+
+    /// Whether the pane's printed error is no error: any while the restart
+    /// is under way, and its old session's `end` once it is over. An error
+    /// of an attach or a window switch shows once the restart is over.
+    fn hides(&self, end: bool) -> bool {
+        self.under_way() || (end && (self.quiet || self.held()))
     }
 
     /// The pane begins an attempt to attach. Showing another window of the
@@ -570,17 +597,18 @@ impl Restarts {
         }
         // A session attached: no ended one is shown any more.
         self.quiet = false;
-        // An attach after an end is a new session, which ends the restart
-        // and a kept failure, as does one begun after a ready answer: the
-        // replacement. Any other, such as a first attach begun before the
-        // answer, may still be the old session, so they stay.
+        // An attach after an end is a new session, which ends the restart,
+        // as does one begun after a ready answer: the replacement. Any
+        // other, such as a first attach begun before the answer, may still
+        // be the old session, so a read under way or a ready answer stays.
         if matches!(self.left, Left::Ready { tried: true, .. }) || self.ended {
             self.left = Left::Nothing;
         }
-        if self.ended {
-            self.renewed = true;
-            self.failed = None;
-        }
+        self.renewed |= self.ended;
+        // A failed answer belongs to the session attached when it came, or
+        // to none: it never carries to another one.
+        self.failed = None;
+        self.live = true;
     }
 
     /// The person starts the agent: the reason kept from its restart is
@@ -592,7 +620,8 @@ impl Restarts {
     /// The pane's session ended.
     fn disconnected(&mut self) {
         self.ended = true;
-        if self.under_way() || self.failed.is_some() {
+        self.live = false;
+        if self.under_way() || self.held() {
             self.quiet = true;
         }
     }
@@ -612,7 +641,11 @@ impl Restarts {
             Some(restart) => Some(RestartShown::Restarting {
                 resume: restart.resume == Some(true),
             }),
-            None => self.failed.clone().flatten().map(RestartShown::Failed),
+            None => self
+                .failed
+                .as_ref()
+                .and_then(|kept| kept.reason.clone())
+                .map(RestartShown::Failed),
         }
     }
 }
@@ -642,8 +675,7 @@ struct Ended {
 
 /// `agent` names the pane's stopped agent; `saved` is whether the pane has a
 /// saved attachment.
-/// `quiet` is whether the session ended while its agent restarted, which
-/// is no error.
+/// `quiet` is whether `error` is no error, as while its agent restarts.
 fn ended(
     error: &str,
     agent: Option<&str>,
@@ -688,10 +720,12 @@ struct Drawn {
 }
 
 /// `attached` is whether the pane shows a session whose client has not
-/// closed, whatever its error says; `error` is what the pane prints.
+/// closed, whatever its error says; `error` is what the pane prints, and
+/// `end` whether that is its session's end rather than an attach's error.
 fn drawn(
     restarts: &Restarts,
     error: Option<&str>,
+    end: bool,
     attached: bool,
     agent: Option<&str>,
     saved: bool,
@@ -699,8 +733,10 @@ fn drawn(
 ) -> Drawn {
     let restart = restarts.shown(attached);
     let quiet = restarts.quiet();
+    // While a session is attached its errors print as today.
+    let hide = !attached && restarts.hides(end);
     Drawn {
-        ended: error.map(|error| ended(error, agent, saved, sign_in, restart.as_ref(), quiet)),
+        ended: error.map(|error| ended(error, agent, saved, sign_in, restart.as_ref(), hide)),
         pending: restart == Some(RestartShown::Pending),
         quiet_end: quiet,
     }
@@ -724,6 +760,8 @@ pub(super) struct LiveTerminal {
     agent: Option<String>,
     /// Its agent's own restart, as the roster and one inspection tell it.
     restarts: Restarts,
+    /// Whether `error` is its session's end, not an attach's error.
+    error_is_end: bool,
     /// The roster its agent is followed in, once one has been given.
     roster: Option<super::agent_status::LiveAgents>,
     /// Whether the next connection shows another window of the session it
@@ -960,6 +998,7 @@ impl LiveTerminal {
             restoring: false,
             agent: None,
             restarts: Restarts::default(),
+            error_is_end: false,
             roster: None,
             switching: false,
             launching: false,
@@ -1115,6 +1154,7 @@ impl LiveTerminal {
                     Ok(mut ready) => {
                         terminal.retry = Retry::default();
                         terminal.error = None;
+                        terminal.error_is_end = false;
                         terminal.restarts.connected(switching);
                         terminal.restoring = false;
                         terminal.launch_result = None;
@@ -1142,6 +1182,7 @@ impl LiveTerminal {
                             &view,
                             |terminal, _, event: &crate::view::Disconnected, cx| {
                                 tracing::warn!(event = "terminal_disconnected", pane_id = %terminal.target.leaf.id, attached = terminal.target.leaf.attachment.is_some(), has_failure = event.0.is_some(), "Terminal connection ended");
+                                terminal.error_is_end = true;
                                 terminal.error = Some(
                                     event
                                         .0
@@ -1189,6 +1230,7 @@ impl LiveTerminal {
                             let session_gone =
                                 error != PROFILE_UNAVAILABLE && error != PROFILE_CHANGED;
                             terminal.error = Some(error);
+                            terminal.error_is_end = false;
                             terminal.restarts.attach_failed(switching);
                             if session_gone && terminal.target.is_sign_in() {
                                 cx.emit(SignInEnded);
@@ -1249,6 +1291,7 @@ impl Render for LiveTerminal {
         let drawn = drawn(
             &self.restarts,
             self.error.as_deref(),
+            self.error_is_end,
             attached,
             self.agent.as_deref(),
             self.target.leaf.attachment.is_some(),
@@ -2229,7 +2272,7 @@ mod tests {
     /// What a bound agent's pane says once its session ended.
     fn stopped(restarts: &Restarts, offline: bool) -> Ended {
         let agent = offline.then_some("builder");
-        drawn(restarts, Some(PIPE), false, agent, true, false)
+        drawn(restarts, Some(PIPE), true, false, agent, true, false)
             .ended
             .unwrap()
     }
@@ -2254,7 +2297,7 @@ mod tests {
 
     /// What the pane draws while its session is attached and shown.
     fn live(restarts: &Restarts) -> Drawn {
-        drawn(restarts, None, true, None, true, false)
+        drawn(restarts, None, false, true, None, true, false)
     }
 
     /// A restart listed as `frames` while the pane's session is attached,
@@ -2505,7 +2548,18 @@ mod tests {
         );
         assert_eq!(stopped(&restarts, true), not_running(reason.clone()));
         // The old session's end stays quiet under the stopped pane.
-        assert!(drawn(&restarts, Some(PIPE), false, Some("builder"), true, false).quiet_end);
+        assert!(
+            drawn(
+                &restarts,
+                Some(PIPE),
+                true,
+                false,
+                Some("builder"),
+                true,
+                false
+            )
+            .quiet_end
+        );
         assert_eq!(stopped(&restarts, false).error, None);
         // Attaching a session again clears it.
         restarts.connected(false);
@@ -2761,13 +2815,148 @@ mod tests {
         restarts.disconnected();
         assert_eq!(stopped(&restarts, false).error, None);
         // A failed window switch over a live window: still attached, so the
-        // terminal keeps its mark and no restart is said over it.
+        // terminal keeps its mark, no restart is said over it and the
+        // switch's error prints as today.
         let mut restarts = Restarts::default();
         restarts.connected(false);
         restarts.list(&seen(0, false, listed(&fresh[1])), false);
-        let shown = drawn(&restarts, Some("window gone"), true, None, true, false);
+        let shown = drawn(
+            &restarts,
+            Some("window gone"),
+            false,
+            true,
+            None,
+            true,
+            false,
+        );
         assert!(shown.pending);
-        assert_eq!(shown.ended.map(|ended| ended.error), Some(None));
+        assert_eq!(
+            shown.ended.and_then(|ended| ended.error).as_deref(),
+            Some("window gone")
+        );
+    }
+
+    #[test]
+    fn an_answer_to_a_read_no_longer_asked_changes_nothing() {
+        let failed = frames("stream-agent-restart-failed");
+        let mut restarts = Restarts::default();
+        restarts.connected(false);
+        restarts.list(&seen(0, false, listed(&failed[0])), false);
+        assert_eq!(
+            restarts.list(&seen(1, false, None), false),
+            RestartStep::Inspect(14)
+        );
+        // Another read's answer, even once the client closed, changes nothing.
+        let before = restarts.clone();
+        assert_eq!(
+            restarts.inspected(13, Some(&failed[1]), None, true),
+            RestartStep::Nothing
+        );
+        assert_eq!(restarts, before);
+        // Once answered, the same answer again changes nothing either.
+        restarts.inspected(14, Some(&failed[1]), None, false);
+        let before = restarts.clone();
+        assert_eq!(
+            restarts.inspected(14, Some(&failed[1]), None, true),
+            RestartStep::Nothing
+        );
+        assert_eq!(restarts, before);
+    }
+
+    #[test]
+    fn a_kept_failure_never_hides_an_attach_or_window_switch_error() {
+        let failed = frames("stream-agent-restart-failed");
+        // The failed answer came while the old session was attached.
+        let mut restarts = Restarts::default();
+        restarts.connected(false);
+        restarts.list(&seen(0, false, listed(&failed[0])), false);
+        restarts.list(&seen(1, false, None), false);
+        restarts.inspected(14, Some(&failed[1]), None, false);
+        // A window switch that fails over it prints its error.
+        let switch = drawn(
+            &restarts,
+            Some("window gone"),
+            false,
+            true,
+            None,
+            true,
+            false,
+        );
+        assert_eq!(
+            switch.ended.and_then(|ended| ended.error).as_deref(),
+            Some("window gone")
+        );
+        // Its session ended, quietly; an attach that then fails prints its
+        // error.
+        restarts.disconnected();
+        assert_eq!(stopped(&restarts, false).error, None);
+        restarts.attempting(false);
+        restarts.attach_failed(false);
+        let attach = drawn(
+            &restarts,
+            Some("no such session"),
+            false,
+            false,
+            None,
+            true,
+            false,
+        );
+        assert_eq!(
+            attach.ended.and_then(|ended| ended.error).as_deref(),
+            Some("no such session")
+        );
+    }
+
+    #[test]
+    fn a_kept_failure_ends_at_any_attach_that_is_not_a_window_switch() {
+        let failed = frames("stream-agent-restart-failed");
+        let reason = failed[1].result.as_ref().unwrap().reason.clone();
+        // A pane that never attached: the failure shows on its stopped pane,
+        // and with no client of its own ended nothing is quiet.
+        let mut restarts = Restarts::default();
+        restarts.list(&seen(0, true, listed(&failed[0])), false);
+        restarts.list(&seen(1, true, None), false);
+        restarts.inspected(14, Some(&failed[1]), None, false);
+        assert_eq!(stopped(&restarts, true), not_running(reason.clone()));
+        assert!(!restarts.quiet());
+        // Its attach error prints; an attach started elsewhere clears the
+        // failure, and that session's crash shows as today.
+        restarts.attempting(false);
+        restarts.attach_failed(false);
+        let attach = drawn(
+            &restarts,
+            Some("no such session"),
+            false,
+            false,
+            None,
+            true,
+            false,
+        );
+        assert_eq!(
+            attach.ended.and_then(|ended| ended.error).as_deref(),
+            Some("no such session")
+        );
+        restarts.connected(false);
+        assert_eq!(stopped(&restarts, true), not_running(None));
+        restarts.disconnected();
+        assert_eq!(stopped(&restarts, false).error.as_deref(), Some(PIPE));
+        // Held by the attached session: a window switch keeps it and that
+        // session's end is quiet.
+        let mut restarts = Restarts::default();
+        restarts.connected(false);
+        restarts.list(&seen(0, false, listed(&failed[0])), false);
+        restarts.list(&seen(1, false, None), false);
+        restarts.inspected(14, Some(&failed[1]), None, false);
+        restarts.connected(true);
+        restarts.disconnected();
+        assert_eq!(stopped(&restarts, true), not_running(reason));
+        assert_eq!(stopped(&restarts, false).error, None);
+        // The next attach clears it, and a crash of the session it attached
+        // shows as today.
+        restarts.connected(false);
+        assert_eq!(stopped(&restarts, true), not_running(None));
+        restarts.disconnected();
+        assert_eq!(stopped(&restarts, false).error.as_deref(), Some(PIPE));
     }
 
     #[test]
@@ -2841,7 +3030,7 @@ mod tests {
         restarts.launched();
         assert_eq!(stopped(&restarts, true), not_running(None));
         assert_eq!(stopped(&restarts, false).error, None);
-        assert!(drawn(&restarts, Some(PIPE), false, None, true, false).quiet_end);
+        assert!(drawn(&restarts, Some(PIPE), true, false, None, true, false).quiet_end);
         restarts.connected(false);
         assert!(!live(&restarts).quiet_end);
     }
@@ -2969,7 +3158,7 @@ mod tests {
         // No restart: the roster still says online and the error shows as
         // today, in the pane and in the terminal.
         assert_eq!(
-            drawn(&restarts, Some(PIPE), false, None, true, false),
+            drawn(&restarts, Some(PIPE), true, false, None, true, false),
             Drawn {
                 ended: Some(Ended {
                     error: Some(PIPE.into()),
@@ -2982,7 +3171,7 @@ mod tests {
             }
         );
         restarts.list(&seen(0, false, listed(&fresh[1])), true);
-        let restarting = drawn(&restarts, Some(PIPE), false, None, true, false);
+        let restarting = drawn(&restarts, Some(PIPE), true, false, None, true, false);
         assert_eq!(restarting.ended.unwrap().error, None);
         assert!(restarting.quiet_end && !restarting.pending);
         let resumed = frames("stream-agent-restart-resumed");
@@ -3033,6 +3222,7 @@ mod tests {
             drawn(
                 restarts,
                 error,
+                true,
                 error.is_none(),
                 offline.then_some("builder"),
                 true,
