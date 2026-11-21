@@ -34,6 +34,7 @@ use super::{
 pub(super) enum NewPaneEvent {
     OpenTerminal,
     Attach(String),
+    Remote(String, String),
     OpenView(View),
     /// Reports & updates, opening on one section.
     OpenSection(Section),
@@ -173,7 +174,7 @@ const SECTIONS: [SectionChoice; 7] = [
 
 enum Row {
     Heading(&'static str, &'static str),
-    Agent(Member),
+    Agent(Box<Member>),
     Session(String),
     View(usize),
     Section(usize),
@@ -401,7 +402,7 @@ impl NewPane {
         self.query.is_empty() || text.to_lowercase().contains(&self.query.to_lowercase())
     }
 
-    /// Agents with a running session, needing you first, then the others.
+    /// Local sessions and remote agent streams, needing attention first.
     fn rows(&self) -> Vec<Row> {
         let mut rows = Vec::new();
         match self.mode {
@@ -410,7 +411,10 @@ impl NewPane {
                     .team
                     .iter()
                     .flat_map(|team| team.members.iter())
-                    .filter(|member| self.sessions.contains(&member.name))
+                    .filter(|member| {
+                        self.origin.remote_profile(member).is_some()
+                            || self.sessions.contains(&member.name)
+                    })
                     .filter(|member| self.matches(&member.name) || self.matches(&member.repo))
                     .cloned()
                     .collect();
@@ -432,7 +436,7 @@ impl NewPane {
                     .collect();
                 if !agents.is_empty() {
                     rows.push(Row::Heading("BACKBONE AGENTS", "needs you first"));
-                    rows.extend(agents.into_iter().map(Row::Agent));
+                    rows.extend(agents.into_iter().map(Box::new).map(Row::Agent));
                 }
                 if !others.is_empty() {
                     rows.push(Row::Heading(
@@ -562,7 +566,10 @@ impl NewPane {
     fn choose(&mut self, row: Row, cx: &mut Context<Self>) {
         match row {
             Row::Heading(..) => {}
-            Row::Agent(member) => cx.emit(NewPaneEvent::Attach(member.name)),
+            Row::Agent(member) => match self.origin.remote_profile(&member) {
+                Some(remote) => cx.emit(NewPaneEvent::Remote(member.name, remote)),
+                None => cx.emit(NewPaneEvent::Attach(member.name)),
+            },
             Row::Session(name) => cx.emit(NewPaneEvent::Attach(name)),
             Row::View(index) => match VIEWS[index].kind {
                 ViewKind::Agent => self.set_mode(Mode::Agents, cx),
@@ -913,7 +920,11 @@ fn cycle(mode: Mode, back: bool) -> Mode {
 fn row_key(row: &Row) -> String {
     match row {
         Row::Heading(label, _) => (*label).to_owned(),
-        Row::Agent(member) => member.name.clone(),
+        Row::Agent(member) => format!(
+            "agent:{}:{}",
+            member.name,
+            member.machine.as_ref().map_or("", |m| m.id.as_str())
+        ),
         Row::Session(name) => name.clone(),
         Row::Pick(view) => format!(
             "agent:{}:{}",
@@ -933,7 +944,9 @@ fn agent_row(
     selected: bool,
 ) -> gpui::Stateful<gpui::Div> {
     let (t, c) = (tokens(), colors());
-    let place = if member.repo.is_empty() {
+    let place = if let Some(machine) = &member.machine {
+        machine.name.clone()
+    } else if member.repo.is_empty() {
         member.tags.join(" · ")
     } else {
         member.repo.clone()

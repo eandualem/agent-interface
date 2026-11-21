@@ -275,6 +275,9 @@ pub struct Team {
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Member {
+    /// Machine reported by this profile, absent on older services.
+    #[serde(default, deserialize_with = "crate::lenient_object")]
+    pub machine: Option<crate::Machine>,
     /// Agent name.
     pub name: String,
     /// Durable registration from a bound list, absent for unregistered rows.

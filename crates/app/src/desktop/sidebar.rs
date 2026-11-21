@@ -684,6 +684,11 @@ impl Browser {
                              state: AgentState,
                              swarm: Option<&str>| {
                     let target = browser.agent_target(name);
+                    let machine = target
+                        .as_ref()
+                        .and_then(|target| target.remote_profile.as_ref())
+                        .and_then(|_| browser.active_agents()?.machine(name))
+                        .map(|m| m.name);
                     let calm = matches!(state, AgentState::Idle | AgentState::Unknown);
                     let id = match swarm {
                         // Names never hold a slash, so these cannot collide.
@@ -708,6 +713,7 @@ impl Browser {
                                 .text_color(if calm { c.muted } else { c.text })
                                 .child(name.to_owned()),
                         )
+                        .when_some(machine, |row, name| row.child(ui::badge(name)))
                         .children(runs.map(|runs| {
                             ui::text(
                                 div()

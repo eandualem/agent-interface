@@ -107,6 +107,16 @@ impl Terminal {
         })
     }
 
+    /// Apply a stream host's confirmed terminal dimensions.
+    pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), Error> {
+        self.engine.resize(cols, rows, 1, 1).map_err(Error)
+    }
+
+    /// Feed an unmodified terminal byte stream directly to Ghostty.
+    pub fn write_stream(&mut self, bytes: &[u8]) {
+        self.engine.vt_write(bytes);
+    }
+
     /// Feeds pane output to the terminal, in the order the pane produced it.
     ///
     /// A window-rename sequence, `ESC k name ESC \`, is dropped as tmux

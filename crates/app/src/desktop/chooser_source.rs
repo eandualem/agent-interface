@@ -32,6 +32,12 @@ impl Origin {
         matches!(self, Self::Bound(_))
     }
 
+    /// A remote terminal is opened by agent name on this profile's socket.
+    pub fn remote_profile(&self, member: &Member) -> Option<String> {
+        let identity = self.connection()?.identity();
+        member.machine.as_ref()?.remote_profile(identity)
+    }
+
     /// Bind navigation to the registration in the displayed profile list.
     pub fn agent_view(&self, member: &Member) -> Option<View> {
         self.connection()?;
@@ -86,6 +92,28 @@ mod tests {
     use agent_interface_test_support::TmuxServer;
     use serde_json::json;
     use std::sync::mpsc;
+
+    #[test]
+    fn only_an_agent_on_a_different_machine_uses_a_profile_stream() {
+        let (_dir, connection, server) = provider("a", vec![]);
+        let identity = connection.identity().clone();
+        let origin = Origin::Bound(connection);
+        let mut member = Member::default();
+        assert!(origin.remote_profile(&member).is_none());
+        member.machine = Some(agent_interface_roster::Machine {
+            id: identity.installation_id.clone(),
+            name: "same label".into(),
+        });
+        assert!(origin.remote_profile(&member).is_none());
+        member.machine.as_mut().unwrap().id = "other".into();
+        assert_eq!(origin.remote_profile(&member), Some(identity.profile_id));
+        assert!(
+            Origin::Standalone { socket: None }
+                .remote_profile(&member)
+                .is_none()
+        );
+        server.join().unwrap();
+    }
 
     #[test]
     fn chooser_bound_session_discovery_uses_only_authenticated_socket() {

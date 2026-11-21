@@ -1301,6 +1301,7 @@ mod tests {
             AgentState::Working
         );
         let attachment = agent_interface_core::Attachment {
+            remote_profile: None,
             session: "same".into(),
             source_socket: None,
         };

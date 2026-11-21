@@ -200,6 +200,7 @@ mod tests {
         assert!(!result.active_tree_changed && !result.conflict);
 
         peer.attach(Some(Attachment {
+            remote_profile: None,
             session: "worker".into(),
             source_socket: None,
         }));
@@ -297,6 +298,7 @@ mod tests {
         assert_eq!(window.model().workspace().unwrap().name, "Peer 5");
 
         peer.attach(Some(Attachment {
+            remote_profile: None,
             session: "worker".into(),
             source_socket: None,
         }));

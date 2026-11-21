@@ -9,10 +9,10 @@ webview; the app runs no daemon.
 
 A **library** is a directory containing `layouts.db`. It stores workspaces,
 tabs and split layouts. Each leaf in a layout either opens an ordinary shell
-on the library's persistent tmux server or attaches to an existing tmux session.
+on the library's persistent tmux server, attaches to a local session, or opens a profile agent terminal stream.
 An empty leaf starts no shell.
 
-Leaves connect on first display and retain their control-mode clients (`tmux -C`)
+Local terminals connect on first display and retain their control-mode clients (`tmux -C`)
 when tabs or workspaces change. The owning native window keeps each connection
 until its target is removed or replaced, the library changes, or the window
 closes. Hidden terminals continue consuming output, preserving their state at
@@ -29,6 +29,21 @@ sizing participation at the current viewport dimensions. Resizing a viewport can
 change the geometry seen by other clients of the same window. Choosing a tmux
 window within an attachment is local to that native leaf; it does not switch
 another client's selected window.
+
+For a remote agent, the roster and new-pane chooser use the agent's machine ID
+and the verified profile's local machine ID to select the transport. The layout
+retains the agent name and profile ID. On restore, the client verifies the selected
+service instance. The profile home resolves the agent's current machine.
+The roster crate authenticates the Unix peer and upgrades a profile-scoped
+HTTP request to `backbone-terminal-v1`. The service grants watch or type access.
+A reader decodes bounded newline-delimited JSON frames and preserves output bytes
+across frame boundaries. A separate worker owns one Ghostty engine and publishes
+screen updates to the same native grid used for local terminals.
+
+Hiding a remote pane pauses its view. A buffer overrun triggers a full repaint.
+A watch grant keeps the host's grid dimensions. Only a typing grant permits
+encoded input and resize requests. Closing the pane detaches the socket. A
+refusal or ended stream leaves the reason and an explicit reopen action in the pane.
 
 ## Crate boundaries
 

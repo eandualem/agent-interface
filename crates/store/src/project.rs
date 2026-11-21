@@ -94,9 +94,27 @@ impl<'a> Projection<'a> {
         let object = match node {
             Node::Leaf(leaf) => {
                 let mut item = self.object(&leaf.id, &["first", "second", "direction", "ratio"])?;
+                let remote = leaf
+                    .attachment
+                    .as_ref()
+                    .and_then(|a| a.remote_profile.as_ref());
+                optional(&mut item, "remote_profile", remote.map(String::as_str));
+                optional(
+                    &mut item,
+                    "remote_agent",
+                    leaf.attachment
+                        .as_ref()
+                        .filter(|_| remote.is_some())
+                        .map(|a| a.session.as_str()),
+                );
                 item.insert(
                     "agent".into(),
-                    value(leaf.attachment.as_ref().map(|a| a.session.clone())),
+                    value(
+                        leaf.attachment
+                            .as_ref()
+                            .filter(|_| remote.is_none())
+                            .map(|a| a.session.clone()),
+                    ),
                 );
                 optional(&mut item, "cwd", leaf.cwd.as_deref());
                 optional(
@@ -106,7 +124,7 @@ impl<'a> Projection<'a> {
                         .as_ref()
                         .and_then(|a| a.source_socket.as_deref()),
                 );
-                if leaf.empty {
+                if leaf.empty || remote.is_some() {
                     item.insert("empty".into(), value(true));
                 } else {
                     item.remove("empty");
@@ -145,6 +163,8 @@ impl<'a> Projection<'a> {
                         "agent",
                         "cwd",
                         "source_socket",
+                        "remote_profile",
+                        "remote_agent",
                         "view",
                         "view_agent",
                         "view_section",

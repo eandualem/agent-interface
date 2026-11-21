@@ -19,6 +19,7 @@ pub(super) struct Origin {
 pub(super) struct AgentTarget {
     pub origin: Origin,
     pub name: String,
+    pub remote_profile: Option<String>,
 }
 
 /// A new subscription generation follows a moved pane; queued old events expire.
@@ -123,9 +124,17 @@ impl Browser {
     }
 
     pub(super) fn agent_target(&self, name: &str) -> Option<AgentTarget> {
-        let workspace = &self.layout.as_ref()?.model().workspace()?.id;
+        let space = self.layout.as_ref()?.model().workspace()?;
+        let remote = match self.workspace_profiles.route(space) {
+            Route::Bound(connection) => self
+                .workspace_agents(space)
+                .and_then(|agents| agents.machine(name))
+                .and_then(|machine| machine.remote_profile(connection.identity())),
+            _ => None,
+        };
         Some(AgentTarget {
-            origin: self.navigation_origin(workspace)?,
+            remote_profile: remote,
+            origin: self.navigation_origin(&space.id)?,
             name: name.to_owned(),
         })
     }
@@ -156,7 +165,8 @@ impl Browser {
                         .into_iter()
                         .find(|leaf| {
                             leaf.attachment.as_ref().is_some_and(|attachment| {
-                                attachment.session == target.name
+                                attachment.remote_profile == target.remote_profile
+                                    && attachment.session == target.name
                                     && attachment.source_socket.as_deref().is_none_or(|path| {
                                         std::path::Path::new(path) == connection.tmux_socket()
                                     })

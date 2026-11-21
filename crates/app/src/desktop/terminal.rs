@@ -27,6 +27,10 @@ pub(super) struct Target {
 }
 
 impl Target {
+    fn remote(&self) -> Option<&str> {
+        self.leaf.attachment.as_ref()?.remote_profile.as_deref()
+    }
+
     fn profile_matches(&self, space: &agent_interface_core::Workspace) -> bool {
         space.profile_id.as_deref()
             == self
@@ -39,7 +43,8 @@ impl Target {
     pub fn is_sign_in(&self) -> bool {
         self.connection.as_ref().is_some_and(|connection| {
             self.leaf.attachment.as_ref().is_some_and(|attachment| {
-                attachment.session.starts_with("sign-in-")
+                attachment.remote_profile.is_none()
+                    && attachment.session.starts_with("sign-in-")
                     && attachment
                         .source_socket
                         .as_deref()
@@ -180,6 +185,9 @@ fn connect_selected(
     selected: Option<SessionWindow>,
     reopened: bool,
 ) -> Result<Ready, String> {
+    if target.remote().is_some() {
+        return Err("Remote terminal requires a profile stream".into());
+    }
     let bound = target.connection.clone();
     if let Some(connection) = &bound {
         connection
@@ -302,6 +310,8 @@ impl Retry {
 
 pub(super) struct LiveTerminal {
     pub target: Target,
+    discovery: Option<crate::profiles::Client>,
+    access: Option<agent_interface_roster::profiles::terminal::Access>,
     view: Option<Entity<TerminalView>>,
     error: Option<String>,
     connecting: bool,
@@ -422,7 +432,10 @@ impl LiveTerminal {
 
     /// The browser shows this terminal again: follow the window list, and
     /// try a lost attachment at the next refresh.
-    pub fn show(&mut self) {
+    pub fn show(&mut self, cx: &gpui::App) {
+        if let Some(view) = &self.view {
+            view.read(cx).show();
+        }
         self.shown = true;
         self.retry = Retry::default();
     }
@@ -471,13 +484,16 @@ impl LiveTerminal {
 
     pub fn new(
         target: Target,
+        discovery: Option<crate::profiles::Client>,
         selected: Option<SessionWindow>,
         environment: Option<agent_interface_tmux::shells::Environment>,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut terminal = Self {
             target,
+            discovery,
             view: None,
+            access: None,
             error: None,
             connecting: false,
             windows: Vec::new(),
@@ -552,6 +568,7 @@ impl LiveTerminal {
                             }
                             if terminal.error.is_some()
                                 && terminal.target.leaf.attachment.is_some()
+                                && terminal.target.remote().is_none()
                                 && terminal.retry.due(terminal.shown)
                             {
                                 // Retry only the saved attachment. This never
@@ -573,6 +590,91 @@ impl LiveTerminal {
         }
     }
 
+    fn start_remote(&mut self, reopen: bool, cx: &mut Context<Self>) {
+        use crate::view::remote::{PANE, Remote, layout};
+        self.closed = None;
+        self.view = None;
+        self.access = None;
+        self.error = None;
+        self.connecting = true;
+        let target = self.target.clone();
+        let discovery = reopen.then(|| self.discovery.clone()).flatten();
+        let work = cx.background_executor().spawn(async move {
+            let profile = target.remote().unwrap();
+            let connection = target
+                .connection
+                .as_ref()
+                .filter(|c| c.identity().profile_id == profile)
+                .ok_or_else(|| std::io::Error::other(PROFILE_UNAVAILABLE))?;
+            // A restarted service has a new instance ID. Resolve the same profile
+            // again for an explicit reopen and verify its local machine identity.
+            let fresh = discovery
+                .map(|client| {
+                    client
+                        .show(profile, &|| true)
+                        .ok()
+                        .and_then(|p| p.connect().ok())
+                        .filter(|c| c.identity() == connection.identity())
+                        .ok_or_else(|| std::io::Error::other(PROFILE_UNAVAILABLE))
+                })
+                .transpose()?;
+            let connection = fresh.as_ref().unwrap_or(connection);
+            let agent = &target.leaf.attachment.as_ref().unwrap().session;
+            let (stream, writer, close) = connection.open_terminal(agent)?;
+            let (wake, updates) = mpsc::unbounded();
+            let (size, access) = (stream.size, stream.access);
+            let remote = Remote::start(stream, writer, close, move || {
+                let _ = wake.unbounded_send(());
+            })?;
+            Ok::<_, std::io::Error>((remote, size, access, updates))
+        });
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |terminal, cx| {
+                terminal.connecting = false;
+                match result {
+                    Ok((remote, size, access, updates)) => {
+                        terminal.access = Some(access);
+                        let view = cx.new(|cx| {
+                            TerminalView::embedded(
+                                Arc::new(remote),
+                                vec![layout(size)],
+                                PANE,
+                                appearance(),
+                                updates,
+                                cx,
+                            )
+                        });
+                        if terminal.hold_size {
+                            view.update(cx, |view, cx| view.hold_size(true, cx));
+                        }
+                        if !terminal.shown {
+                            view.update(cx, |view, cx| view.hide(cx));
+                        }
+                        terminal.closed = Some(cx.subscribe(
+                            &view,
+                            |terminal, _, event: &crate::view::Disconnected, cx| {
+                                terminal.error =
+                                    Some(event.0.clone().unwrap_or_else(|| {
+                                        "Remote terminal connection lost".into()
+                                    }));
+                                cx.notify();
+                            },
+                        ));
+                        cx.subscribe(&view, |_, _, _: &crate::view::Focus, cx| {
+                            cx.emit(crate::view::Focus)
+                        })
+                        .detach();
+                        terminal.view = Some(view);
+                        cx.emit(Connected);
+                    }
+                    Err(error) => terminal.error = Some(error.to_string()),
+                }
+                cx.notify();
+            });
+        }));
+    }
+
     fn start_window(
         &mut self,
         selected: Option<SessionWindow>,
@@ -580,6 +682,10 @@ impl LiveTerminal {
         reconnect: bool,
         cx: &mut Context<Self>,
     ) {
+        if self.target.remote().is_some() {
+            self.start_remote(reconnect, cx);
+            return;
+        }
         self.closed = None;
         // Keep the old client attached until its replacement is ready. A source
         // with destroy-unattached enabled must not disappear during navigation.
@@ -776,6 +882,20 @@ impl Render for LiveTerminal {
             .min_h_0()
             .overflow_hidden()
             .bg(c.surface)
+            .when_some(self.access, |el, access| {
+                el.child(line(
+                    match access {
+                        agent_interface_roster::profiles::terminal::Access::Watch => {
+                            "Remote terminal · Watch only"
+                        }
+                        agent_interface_roster::profiles::terminal::Access::Type => {
+                            "Remote terminal · Can type"
+                        }
+                    }
+                    .into(),
+                    c.muted,
+                ))
+            })
             .child(
                 div().flex_1().min_h_0().children(
                     (!self.connecting || self.error.is_some())
@@ -793,72 +913,94 @@ impl Render for LiveTerminal {
                     .filter(|_| self.agent.is_none() && !self.target.is_sign_in()),
                 |el, error| el.child(line(error, c.attention_text)),
             )
-            .when(self.error.is_some(), |el| {
-                let attached = self.target.leaf.attachment.is_some();
-                let launching = self.launching;
-                el.child(line(
-                    match (&self.agent, attached) {
-                        (Some(name), _) => format!("{name} is not running."),
-                        (None, true) if self.target.is_sign_in() => {
-                            "This sign-in has ended.".into()
-                        }
-                        (None, true) => {
-                            "Waiting for this session. Reconnecting automatically.".into()
-                        }
-                        (None, false) => "Could not start this terminal’s shell.".into(),
-                    },
-                    c.muted,
-                ))
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap(gpui::px(t.space.s8))
-                        .px(gpui::px(t.space.s12))
-                        .pb(gpui::px(t.space.s8))
-                        .when(self.agent.is_some(), |el| {
-                            el.child(
-                                ui::button("resume-agent", "Resume", ui::Button::Primary)
-                                    .when(launching, |el| el.opacity(0.4))
-                                    .on_click(cx.listener(|terminal, _, _, cx| {
-                                        terminal.launch_agent(true, cx)
-                                    })),
-                            )
-                            .child(
-                                ui::button("start-agent", "Start new", ui::Button::Secondary)
-                                    .when(launching, |el| el.opacity(0.4))
-                                    .on_click(cx.listener(|terminal, _, _, cx| {
-                                        terminal.launch_agent(false, cx)
-                                    })),
-                            )
-                        })
-                        .when(!attached, |el| {
-                            el.child(
-                                ui::button("open-terminal", "Open terminal", ui::Button::Secondary)
-                                    .on_click(cx.listener(|terminal, _, _, cx| {
-                                        // The provider starts a bound shell; connect asks it again.
-                                        if terminal.target.connection.is_some() {
-                                            terminal.start(cx);
-                                        } else {
-                                            cx.emit(OpenTerminal);
-                                        }
-                                    })),
-                            )
-                        })
-                        .when(attached, |el| {
-                            el.child(
-                                ui::button("detach", "Detach", ui::Button::Secondary)
-                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(Detach))),
-                            )
-                        }),
-                )
-                .when(launching, |el| {
-                    el.child(line("Asking Backbone…".into(), c.muted))
-                })
-                .when_some(self.launch_result.as_ref(), |el, result| {
-                    el.child(line(result.message(), c.muted))
-                })
-            })
+            .when(
+                self.error.is_some() && self.target.remote().is_some(),
+                |el| {
+                    el.child(
+                        ui::button("reopen-remote", "Open again", ui::Button::Primary)
+                            .on_click(cx.listener(|terminal, _, _, cx| terminal.start(cx))),
+                    )
+                    .child(
+                        ui::button("detach-remote", "Detach", ui::Button::Secondary)
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(Detach))),
+                    )
+                },
+            )
+            .when(
+                self.error.is_some() && self.target.remote().is_none(),
+                |el| {
+                    let attached = self.target.leaf.attachment.is_some();
+                    let launching = self.launching;
+                    el.child(line(
+                        match (&self.agent, attached) {
+                            (Some(name), _) => format!("{name} is not running."),
+                            (None, true) if self.target.is_sign_in() => {
+                                "This sign-in has ended.".into()
+                            }
+                            (None, true) => {
+                                "Waiting for this session. Reconnecting automatically.".into()
+                            }
+                            (None, false) => "Could not start this terminal’s shell.".into(),
+                        },
+                        c.muted,
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap(gpui::px(t.space.s8))
+                            .px(gpui::px(t.space.s12))
+                            .pb(gpui::px(t.space.s8))
+                            .when(self.agent.is_some(), |el| {
+                                el.child(
+                                    ui::button("resume-agent", "Resume", ui::Button::Primary)
+                                        .when(launching, |el| el.opacity(0.4))
+                                        .on_click(cx.listener(|terminal, _, _, cx| {
+                                            terminal.launch_agent(true, cx)
+                                        })),
+                                )
+                                .child(
+                                    ui::button("start-agent", "Start new", ui::Button::Secondary)
+                                        .when(launching, |el| el.opacity(0.4))
+                                        .on_click(cx.listener(|terminal, _, _, cx| {
+                                            terminal.launch_agent(false, cx)
+                                        })),
+                                )
+                            })
+                            .when(!attached, |el| {
+                                el.child(
+                                    ui::button(
+                                        "open-terminal",
+                                        "Open terminal",
+                                        ui::Button::Secondary,
+                                    )
+                                    .on_click(cx.listener(
+                                        |terminal, _, _, cx| {
+                                            // The provider starts a bound shell; connect asks it again.
+                                            if terminal.target.connection.is_some() {
+                                                terminal.start(cx);
+                                            } else {
+                                                cx.emit(OpenTerminal);
+                                            }
+                                        },
+                                    )),
+                                )
+                            })
+                            .when(attached, |el| {
+                                el.child(
+                                    ui::button("detach", "Detach", ui::Button::Secondary)
+                                        .on_click(cx.listener(|_, _, _, cx| cx.emit(Detach))),
+                                )
+                            }),
+                    )
+                    .when(launching, |el| {
+                        el.child(line("Asking Backbone…".into(), c.muted))
+                    })
+                    .when_some(self.launch_result.as_ref(), |el, result| {
+                        el.child(line(result.message(), c.muted))
+                    })
+                },
+            )
     }
 }
 
@@ -963,6 +1105,7 @@ mod tests {
         let mut model = agent_interface_core::Layout::initial("/tmp".into());
         model.workspaces[0].profile_id = Some("profile-a".into());
         model.attach(Some(Attachment {
+            remote_profile: None,
             session: "same-name".into(),
             source_socket: None,
         }));
@@ -1016,6 +1159,7 @@ mod tests {
         );
         let mut model = agent_interface_core::Layout::initial("/tmp".into());
         model.attach(Some(Attachment {
+            remote_profile: None,
             session: "fixture".into(),
             source_socket: None,
         }));
@@ -1043,6 +1187,7 @@ mod tests {
     fn attachment_survives_navigation_and_detach_returns_the_same_pane_to_its_chooser() {
         let mut model = agent_interface_core::Layout::initial("/work".into());
         model.attach(Some(Attachment {
+            remote_profile: None,
             session: "worker".into(),
             source_socket: Some("/fixture/source".into()),
         }));
@@ -1079,6 +1224,7 @@ mod tests {
             &tab,
             &target.leaf.id,
             Some(Attachment {
+                remote_profile: None,
                 session: "replacement".into(),
                 source_socket: Some("/fixture/source".into()),
             })
@@ -1104,6 +1250,7 @@ mod tests {
         layout.add_tab(Some("kept".into()), "/".into(), true);
         layout.add_tab(Some("sign-in-codex".into()), "/".into(), true);
         layout.attach(Some(Attachment {
+            remote_profile: None,
             session: "sign-in-codex".into(),
             source_socket: None,
         }));
@@ -1152,6 +1299,7 @@ mod tests {
                 empty: false,
                 view: None,
                 attachment: Some(Attachment {
+                    remote_profile: None,
                     session: "returning".into(),
                     source_socket: Some(socket.trim().into()),
                 }),
@@ -1277,6 +1425,7 @@ mod tests {
                 empty: false,
                 view: None,
                 attachment: Some(Attachment {
+                    remote_profile: None,
                     session: "window-source".into(),
                     source_socket: Some(socket.trim().into()),
                 }),
@@ -1552,6 +1701,7 @@ mod tests {
                 empty: false,
                 view: None,
                 attachment: Some(Attachment {
+                    remote_profile: None,
                     session: "sized".into(),
                     source_socket: Some(socket.trim().into()),
                 }),
@@ -1708,6 +1858,7 @@ mod tests {
                 empty: false,
                 view: None,
                 attachment: Some(Attachment {
+                    remote_profile: None,
                     session: session.into(),
                     source_socket: Some(socket.to_str().unwrap().into()),
                 }),

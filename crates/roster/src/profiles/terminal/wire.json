@@ -1,0 +1,226 @@
+{
+  "carrier": "backbone-terminal-v1",
+  "format": "Each wire string is the exact ASCII octet sequence after JSON string unescaping. Empty wire means EOF. TCP or Unix read boundaries may vary.",
+  "cases": {
+    "type_and_close": [
+      {
+        "direction": "client",
+        "octets": 233,
+        "wire": "POST /api/terminals/open HTTP/1.1\r\nHost: localhost\r\nx-backbone-profile-id: 0a1b2c3d4e5f\r\nConnection: Upgrade\r\nUpgrade: backbone-terminal-v1\r\nContent-Type: application/json\r\nContent-Length: 38\r\n\r\n{\"agent\":\"worker\",\"cols\":80,\"rows\":24}"
+      },
+      {
+        "direction": "service",
+        "octets": 254,
+        "wire": "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: backbone-terminal-v1\r\n\r\n{\"type\":\"opened\",\"agent\":\"worker\",\"access\":\"type\",\"cols\":80,\"rows\":24}\n{\"type\":\"output\",\"data_b64\":\"G2MbWz8xMDQ5aBtbMkobW0hyZWFkeRtbMTs2SA==\"}\n{\"type\":\"repaint_end\"}\n"
+      },
+      {
+        "direction": "client",
+        "octets": 55,
+        "wire": "{\"type\":\"input\",\"data_b64\":\"G1syMDB+Yf8ADRtbMjAxfg==\"}\n"
+      },
+      {
+        "direction": "service",
+        "octets": 72,
+        "wire": "{\"type\":\"output\",\"data_b64\":\"4g==\"}\n{\"type\":\"output\",\"data_b64\":\"gqz/\"}\n"
+      },
+      {
+        "direction": "client",
+        "octets": 39,
+        "wire": "{\"type\":\"resize\",\"cols\":100,\"rows\":30}\n"
+      },
+      {
+        "direction": "service",
+        "octets": 83,
+        "wire": "{\"type\":\"resized\",\"cols\":100,\"rows\":30}\n{\"type\":\"ended\",\"reason\":\"process_exited\"}\n"
+      },
+      {
+        "direction": "service",
+        "octets": 0,
+        "wire": ""
+      }
+    ],
+    "watch_pause_overrun_resume": [
+      {
+        "direction": "client",
+        "octets": 234,
+        "wire": "POST /api/terminals/open HTTP/1.1\r\nHost: localhost\r\nx-backbone-profile-id: 0a1b2c3d4e5f\r\nConnection: Upgrade\r\nUpgrade: backbone-terminal-v1\r\nContent-Type: application/json\r\nContent-Length: 39\r\n\r\n{\"agent\":\"worker\",\"cols\":120,\"rows\":40}"
+      },
+      {
+        "direction": "service",
+        "octets": 255,
+        "wire": "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: backbone-terminal-v1\r\n\r\n{\"type\":\"opened\",\"agent\":\"worker\",\"access\":\"watch\",\"cols\":80,\"rows\":24}\n{\"type\":\"output\",\"data_b64\":\"G2MbWz8xMDQ5aBtbMkobW0hyZWFkeRtbMTs2SA==\"}\n{\"type\":\"repaint_end\"}\n"
+      },
+      {
+        "direction": "client",
+        "octets": 91,
+        "wire": "{\"type\":\"input\",\"data_b64\":\"eA==\"}\n{\"type\":\"resize\",\"cols\":110,\"rows\":50}\n{\"type\":\"pause\"}\n"
+      },
+      {
+        "direction": "client",
+        "octets": 18,
+        "wire": "{\"type\":\"resume\"}\n"
+      },
+      {
+        "direction": "service",
+        "octets": 150,
+        "wire": "{\"type\":\"dropped\"}\n{\"type\":\"output\",\"data_b64\":\"G2MbWz8xMDQ5aBtbMkobW0hyZWFkeRtbMTs2SA==\"}\n{\"type\":\"repaint_end\"}\n{\"type\":\"output\",\"data_b64\":\"eA==\"}\n"
+      },
+      {
+        "direction": "service",
+        "octets": 41,
+        "wire": "{\"type\":\"ended\",\"reason\":\"access_ended\"}\n"
+      },
+      {
+        "direction": "service",
+        "octets": 0,
+        "wire": ""
+      }
+    ],
+    "ended_while_paused": [
+      {
+        "direction": "client",
+        "octets": 233,
+        "wire": "POST /api/terminals/open HTTP/1.1\r\nHost: localhost\r\nx-backbone-profile-id: 0a1b2c3d4e5f\r\nConnection: Upgrade\r\nUpgrade: backbone-terminal-v1\r\nContent-Type: application/json\r\nContent-Length: 38\r\n\r\n{\"agent\":\"worker\",\"cols\":80,\"rows\":24}"
+      },
+      {
+        "direction": "service",
+        "octets": 254,
+        "wire": "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: backbone-terminal-v1\r\n\r\n{\"type\":\"opened\",\"agent\":\"worker\",\"access\":\"type\",\"cols\":80,\"rows\":24}\n{\"type\":\"output\",\"data_b64\":\"G2MbWz8xMDQ5aBtbMkobW0hyZWFkeRtbMTs2SA==\"}\n{\"type\":\"repaint_end\"}\n"
+      },
+      {
+        "direction": "client",
+        "octets": 17,
+        "wire": "{\"type\":\"pause\"}\n"
+      },
+      {
+        "direction": "service",
+        "octets": 44,
+        "wire": "{\"type\":\"ended\",\"reason\":\"connection_lost\"}\n"
+      },
+      {
+        "direction": "service",
+        "octets": 0,
+        "wire": ""
+      }
+    ],
+    "abrupt_eof": [
+      {
+        "direction": "client",
+        "octets": 233,
+        "wire": "POST /api/terminals/open HTTP/1.1\r\nHost: localhost\r\nx-backbone-profile-id: 0a1b2c3d4e5f\r\nConnection: Upgrade\r\nUpgrade: backbone-terminal-v1\r\nContent-Type: application/json\r\nContent-Length: 38\r\n\r\n{\"agent\":\"worker\",\"cols\":80,\"rows\":24}"
+      },
+      {
+        "direction": "service",
+        "octets": 254,
+        "wire": "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: backbone-terminal-v1\r\n\r\n{\"type\":\"opened\",\"agent\":\"worker\",\"access\":\"type\",\"cols\":80,\"rows\":24}\n{\"type\":\"output\",\"data_b64\":\"G2MbWz8xMDQ5aBtbMkobW0hyZWFkeRtbMTs2SA==\"}\n{\"type\":\"repaint_end\"}\n"
+      },
+      {
+        "direction": "service",
+        "octets": 0,
+        "wire": ""
+      }
+    ],
+    "refused_not_found": [
+      {
+        "direction": "client",
+        "octets": 233,
+        "wire": "POST /api/terminals/open HTTP/1.1\r\nHost: localhost\r\nx-backbone-profile-id: 0a1b2c3d4e5f\r\nConnection: Upgrade\r\nUpgrade: backbone-terminal-v1\r\nContent-Type: application/json\r\nContent-Length: 38\r\n\r\n{\"agent\":\"worker\",\"cols\":80,\"rows\":24}"
+      },
+      {
+        "direction": "service",
+        "octets": 135,
+        "wire": "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 57\r\n\r\n{\"detail\":{\"code\":\"not_found\",\"message\":\"Unknown agent\"}}"
+      },
+      {
+        "direction": "service",
+        "octets": 0,
+        "wire": ""
+      }
+    ],
+    "refused_machine_unreachable": [
+      {
+        "direction": "client",
+        "octets": 233,
+        "wire": "POST /api/terminals/open HTTP/1.1\r\nHost: localhost\r\nx-backbone-profile-id: 0a1b2c3d4e5f\r\nConnection: Upgrade\r\nUpgrade: backbone-terminal-v1\r\nContent-Type: application/json\r\nContent-Length: 38\r\n\r\n{\"agent\":\"worker\",\"cols\":80,\"rows\":24}"
+      },
+      {
+        "direction": "service",
+        "octets": 167,
+        "wire": "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: 79\r\n\r\n{\"detail\":{\"code\":\"machine_unreachable\",\"message\":\"Agent machine unavailable\"}}"
+      },
+      {
+        "direction": "service",
+        "octets": 0,
+        "wire": ""
+      }
+    ],
+    "refused_home_unreachable": [
+      {
+        "direction": "client",
+        "octets": 233,
+        "wire": "POST /api/terminals/open HTTP/1.1\r\nHost: localhost\r\nx-backbone-profile-id: 0a1b2c3d4e5f\r\nConnection: Upgrade\r\nUpgrade: backbone-terminal-v1\r\nContent-Type: application/json\r\nContent-Length: 38\r\n\r\n{\"agent\":\"worker\",\"cols\":80,\"rows\":24}"
+      },
+      {
+        "direction": "service",
+        "octets": 163,
+        "wire": "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: 75\r\n\r\n{\"detail\":{\"code\":\"home_unreachable\",\"message\":\"Profile home unavailable\"}}"
+      },
+      {
+        "direction": "service",
+        "octets": 0,
+        "wire": ""
+      }
+    ],
+    "refused_unavailable": [
+      {
+        "direction": "client",
+        "octets": 233,
+        "wire": "POST /api/terminals/open HTTP/1.1\r\nHost: localhost\r\nx-backbone-profile-id: 0a1b2c3d4e5f\r\nConnection: Upgrade\r\nUpgrade: backbone-terminal-v1\r\nContent-Type: application/json\r\nContent-Length: 38\r\n\r\n{\"agent\":\"worker\",\"cols\":80,\"rows\":24}"
+      },
+      {
+        "direction": "service",
+        "octets": 162,
+        "wire": "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: 74\r\n\r\n{\"detail\":{\"code\":\"unavailable\",\"message\":\"Terminal service unavailable\"}}"
+      },
+      {
+        "direction": "service",
+        "octets": 0,
+        "wire": ""
+      }
+    ],
+    "refused_forbidden": [
+      {
+        "direction": "client",
+        "octets": 233,
+        "wire": "POST /api/terminals/open HTTP/1.1\r\nHost: localhost\r\nx-backbone-profile-id: 0a1b2c3d4e5f\r\nConnection: Upgrade\r\nUpgrade: backbone-terminal-v1\r\nContent-Type: application/json\r\nContent-Length: 38\r\n\r\n{\"agent\":\"worker\",\"cols\":80,\"rows\":24}"
+      },
+      {
+        "direction": "service",
+        "octets": 144,
+        "wire": "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: 66\r\n\r\n{\"detail\":{\"code\":\"forbidden\",\"message\":\"Terminal access denied\"}}"
+      },
+      {
+        "direction": "service",
+        "octets": 0,
+        "wire": ""
+      }
+    ],
+    "refused_outside_authority": [
+      {
+        "direction": "client",
+        "octets": 233,
+        "wire": "POST /api/terminals/open HTTP/1.1\r\nHost: localhost\r\nx-backbone-profile-id: 0a1b2c3d4e5f\r\nConnection: Upgrade\r\nUpgrade: backbone-terminal-v1\r\nContent-Type: application/json\r\nContent-Length: 38\r\n\r\n{\"agent\":\"worker\",\"cols\":80,\"rows\":24}"
+      },
+      {
+        "direction": "service",
+        "octets": 190,
+        "wire": "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: 111\r\n\r\n{\"detail\":{\"code\":\"outside_authority\",\"message\":\"Caller cannot watch this terminal\",\"action\":\"terminal.watch\"}}"
+      },
+      {
+        "direction": "service",
+        "octets": 0,
+        "wire": ""
+      }
+    ]
+  }
+}

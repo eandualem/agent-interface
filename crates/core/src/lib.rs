@@ -269,6 +269,8 @@ impl AgentSection {
 /// A session name on its original tmux server, even while offline.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Attachment {
+    /// Open this agent through the named profile. Its home resolves the current machine.
+    pub remote_profile: Option<String>,
     /// Raw session name, not a tmux command target.
     pub session: String,
     /// Explicit absolute socket path, or the default source server.

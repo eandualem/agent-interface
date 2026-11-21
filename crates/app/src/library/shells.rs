@@ -681,6 +681,7 @@ mod tests {
         let mut leaf = Leaf {
             id: "0123456789ab".into(),
             attachment: Some(Attachment {
+                remote_profile: None,
                 session: "external".into(),
                 source_socket: None,
             }),

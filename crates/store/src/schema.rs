@@ -191,12 +191,33 @@ fn node(
             return Err(format!("{at}.source_socket: socket without an attachment"));
         }
         let view = view(item, session.is_some() || empty, at)?;
+        // Older readers see a chooser and cannot attach to a same-name local session.
+        let remote = if empty && item.contains_key("remote_agent") {
+            let field = |key: &str| {
+                item.get(key)
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty() && s.len() <= 256 && printable(s))
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("{at}.{key}: invalid remote terminal"))
+            };
+            Some(Attachment {
+                session: field("remote_agent")?,
+                source_socket: None,
+                remote_profile: Some(field("remote_profile")?),
+            })
+        } else {
+            None
+        };
+        let empty = empty && remote.is_none();
         leaves.push(id.clone());
         Ok(Node::Leaf(Leaf {
             id,
-            attachment: session.map(|session| Attachment {
-                session,
-                source_socket: socket,
+            attachment: remote.or_else(|| {
+                session.map(|session| Attachment {
+                    remote_profile: None,
+                    session,
+                    source_socket: socket,
+                })
             }),
             cwd: path(item, "cwd", at)?,
             empty,
