@@ -59,6 +59,8 @@ pub struct Snapshot {
     pub phase: Phase,
     /// The action retained by the exact original request.
     pub action: agent_interface_roster::profiles::operations::Action,
+    /// The name in the saved create request.
+    pub display_name: Option<String>,
     /// The original provider idempotency key.
     pub request_id: String,
     /// The new profile's identity; still requires the normal content handshake.
@@ -90,6 +92,7 @@ impl Stored {
             phase: self.phase,
             action: self.operation.action(),
             request_id: self.operation.request_id().into(),
+            display_name: self.operation.display_name(),
             identity: self.operation.identity().cloned(),
             terminal: self.operation.terminal().cloned(),
             copies_git_identity: self.operation.copies_git_identity(),

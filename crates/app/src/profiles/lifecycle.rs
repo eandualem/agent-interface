@@ -56,6 +56,11 @@ impl Operation {
         self.prepared.action()
     }
 
+    /// The name the owner entered in this create request.
+    pub fn display_name(&self) -> Option<String> {
+        self.prepared.display_name()
+    }
+
     /// Original durable ID, unchanged across submissions and unknown outcomes.
     pub fn request_id(&self) -> &str {
         self.prepared.request_id()

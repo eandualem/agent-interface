@@ -27,6 +27,7 @@ fn unknown_storage_and_submission_never_enable_replacement_submission() {
     let mut snapshot = Snapshot {
         key: "key".into(),
         revision: 1,
+        display_name: Some("Example".into()),
         phase: Phase::Prepared,
         action: Action::Create,
         request_id: "request-a".into(),

@@ -102,7 +102,7 @@ enum Page {
 
 pub(super) struct Management {
     client: Client,
-    /// The one profile this page is for; its lists show only that profile's requests.
+    /// The one profile this page is for; unfinished creates can lack a profile ID.
     profile_id: Option<String>,
     directory: Option<PathBuf>,
     setup: Option<(gpui::Entity<setup::Pane>, gpui::Subscription)>,
@@ -559,7 +559,10 @@ fn history(
             .filter(|key| {
                 // A record that can't be read may be this profile's, so it stays.
                 profile.is_none_or(|id| match controller.read(key) {
-                    Ok(s) => s.identity.as_ref().is_some_and(|i| i.profile_id == id),
+                    Ok(s) => match s.identity {
+                        Some(identity) => identity.profile_id == id,
+                        None => s.terminal.is_none(),
+                    },
                     Err(_) => true,
                 })
             })
@@ -746,7 +749,9 @@ impl Render for Management {
                     "Leaving stops waiting for it. Try the same request again to finish it.",
                 ));
                 if let Some(snapshot) = snapshot {
-                    body = body.child(meta(status(snapshot).into()));
+                    body = body
+                        .child(meta(status(snapshot).into()))
+                        .child(meta(format!("Request ID {}", snapshot.request_id).into()));
                 }
                 if !self.busy {
                     let mut row = div().flex().flex_wrap().gap(px(t.space.s8));
@@ -784,7 +789,7 @@ impl Render for Management {
             Page::History { ids, offset, rows } => {
                 body = body.child(ui::group_title(
                     "Saved requests",
-                    "Requests to create a profile.",
+                    "Requests to create a profile. Unfinished requests can have no assigned profile yet.",
                 ));
                 if rows.is_empty() {
                     body = body.child(ui::group_note("No saved requests."));
@@ -793,7 +798,10 @@ impl Render for Management {
                 for (index, (key, result)) in rows.iter().enumerate() {
                     let (label, detail) = match result {
                         Ok(snapshot) => (
-                            action_label(snapshot.action).to_owned(),
+                            snapshot
+                                .display_name
+                                .clone()
+                                .unwrap_or_else(|| action_label(snapshot.action).into()),
                             status(snapshot).to_owned(),
                         ),
                         Err(error) => (message(*error).to_owned(), String::new()),

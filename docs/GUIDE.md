@@ -102,6 +102,11 @@ the terminal text size, whether panes show headers (always, on hover or never) a
 changes apply to every window at once and are saved in
 `$XDG_CONFIG_HOME/agent-interface/settings.toml`, or
 `~/.config/agent-interface/settings.toml` when that variable is unset.
+Open **Settings → Profiles → Saved requests** to check a profile creation after
+closing the app. An unanswered create shows **Outcome not yet confirmed**.
+Reading it sends nothing. **Try the same request again** resends it using the
+original request ID.
+
 **Interface size** (75% to 200%) scales the whole window, terminals included,
 on top of the display's own scale. Use it when a screen draws the app too
 small or too large, such as a 4K display under WSL.

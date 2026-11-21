@@ -64,12 +64,12 @@ impl Profiles {
         cx.notify();
     }
 
-    fn open(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+    fn open(&mut self, id: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(client) = self.client.clone() else {
             return;
         };
         let directory = library_directory(cx);
-        let pane = cx.new(|cx| Management::new(client, directory.clone(), Some(id), cx));
+        let pane = cx.new(|cx| Management::new(client, directory.clone(), id, cx));
         window.focus(&pane.read(cx).focus.clone(), cx);
         let back = cx.subscribe(&pane, |page, _, _: &Back, cx| {
             page.detail = None;
@@ -91,12 +91,9 @@ impl Profiles {
     }
 }
 
-/// The open library's folder, from the first main window.
+/// Recover requests in the same browser library that Settings uses for New profile.
 fn library_directory(cx: &App) -> Option<std::path::PathBuf> {
-    cx.windows()
-        .into_iter()
-        .filter_map(|window| window.downcast::<Browser>())
-        .find_map(|window| window.read(cx).ok().and_then(|b| b.directory.clone()))
+    super::browser_window(cx)?.read(cx).ok()?.directory.clone()
 }
 
 /// Open in the window whose library recorded the setup, else the usual one.
@@ -176,22 +173,21 @@ impl Render for Profiles {
                         State::Ready => "".into(),
                         State::Failed => "Didn't finish".into(),
                     };
-                    card =
-                        card.child(
-                            ui::group_row(
-                                SharedString::from(format!("settings-profile-{id}")),
-                                index == 0,
-                                Some(
-                                    ui::profile_mark(&item.display_name, t.size.profile_mark)
-                                        .into_any_element(),
-                                ),
-                                item.display_name.clone(),
-                                div().text_color(c.muted).child(state),
-                            )
-                            .on_click(cx.listener(
-                                move |page, _, window, cx| page.open(id.clone(), window, cx),
-                            )),
-                        );
+                    card = card.child(
+                        ui::group_row(
+                            SharedString::from(format!("settings-profile-{id}")),
+                            index == 0,
+                            Some(
+                                ui::profile_mark(&item.display_name, t.size.profile_mark)
+                                    .into_any_element(),
+                            ),
+                            item.display_name.clone(),
+                            div().text_color(c.muted).child(state),
+                        )
+                        .on_click(cx.listener(
+                            move |page, _, window, cx| page.open(Some(id.clone()), window, cx),
+                        )),
+                    );
                 }
                 if !items.is_empty() {
                     page = page.child(card);
@@ -206,6 +202,18 @@ impl Render for Profiles {
                     ),
                 );
             }
+        }
+        if self.client.is_some() {
+            page = page.child(
+                div().flex().child(
+                    ui::button(
+                        "settings-profile-requests",
+                        "Saved requests",
+                        ui::Button::Secondary,
+                    )
+                    .on_click(cx.listener(|page, _, window, cx| page.open(None, window, cx))),
+                ),
+            );
         }
         page.into_any_element()
     }

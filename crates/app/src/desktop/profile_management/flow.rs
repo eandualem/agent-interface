@@ -1303,7 +1303,7 @@ mod tests {
         let source = root.join("provider.sh");
         std::fs::write(
             &source,
-            "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s\\n' \"$2\" >> \"$d/calls\"\n[ -f \"$d/reply\" ] || exit 4\n/bin/cat \"$d/reply\"\n",
+            "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s\\n' \"$2\" >> \"$d/calls\"\nprintf '%s\\n' \"$*\" >> \"$d/arguments\"\n[ -f \"$d/reply\" ] || exit 4\n/bin/cat \"$d/reply\"\n",
         )
         .unwrap();
         let provider = root.join("provider");
@@ -1331,18 +1331,45 @@ mod tests {
     }
 
     #[test]
-    fn a_request_marked_sent_but_never_received_is_resent_unchanged() {
+    fn settings_reopens_an_unconfirmed_create_and_only_resends_on_request() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
         let client = provider(&root);
         let controller = Controller::new(
-            journal::Journal::open(&root.join("journal")).unwrap(),
+            journal::Journal::open(&root.join("profile-operations")).unwrap(),
             &client,
         );
         let prepared = Prepared::create("request-a", "Example").unwrap();
         let key = controller.enqueue(prepared).unwrap().key;
         // No answer yet: the send is recorded, but nothing came back.
         assert!(controller.submit(&key, &|| true).is_err());
+        drop(controller);
+        let live = std::sync::atomic::AtomicBool::new(true);
+        let reopened =
+            super::super::open_management(client, Some(root.clone()), None, &live).unwrap();
+        let controller = reopened.controller.unwrap();
+        let super::super::Page::History { rows, .. } = reopened.page.unwrap() else {
+            panic!("Settings did not reopen the saved requests");
+        };
+        assert_eq!(rows.len(), 1);
+        let snapshot = rows[0].1.as_ref().unwrap();
+        assert_eq!(snapshot.key, key);
+        assert_eq!(snapshot.display_name.as_deref(), Some("Example"));
+        assert_eq!(super::super::status(snapshot), "Outcome not yet confirmed");
+        let visible_from_profile = |id| {
+            let super::super::Page::History { ids, .. } =
+                super::super::history(&controller, Some(id), None, 0, &live).unwrap()
+            else {
+                panic!("expected saved requests")
+            };
+            ids.contains(&key)
+        };
+        assert!(visible_from_profile("0a1b2c3d4e5f"));
+        assert_eq!(controller.read(&key).unwrap().request_id, "request-a");
+        assert_eq!(
+            std::fs::read_to_string(root.join("calls")).unwrap(),
+            "create\n"
+        );
         made(&root);
         let Ok(receipt) = recover(&controller, &key, &|| true) else {
             panic!("the request was not resent");
@@ -1350,6 +1377,13 @@ mod tests {
         assert_eq!(receipt.status, Status::Succeeded);
         let calls = std::fs::read_to_string(root.join("calls")).unwrap();
         assert_eq!(calls, "create\ncreate\n");
+        let arguments = std::fs::read_to_string(root.join("arguments")).unwrap();
+        let lines: Vec<_> = arguments.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("--request-id request-a "));
+        assert_eq!(lines[0], lines[1]);
+        assert!(visible_from_profile("0a1b2c3d4e5f"));
+        assert!(!visible_from_profile("000000000001"));
     }
 
     #[test]
