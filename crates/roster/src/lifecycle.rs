@@ -126,10 +126,17 @@ mod tests {
 
     #[test]
     fn start_and_resume_show_the_reason_from_a_refused_launch() {
-        let reply = include_bytes!("profiles/setup/fixtures/agent-started-refused.json");
+        let mut reply: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "profiles/setup/fixtures/agent-started-refused.json"
+        ))
+        .unwrap();
+        reply["evidence"]
+            .as_array_mut()
+            .unwrap()
+            .push("later observation".into());
         for resume in [false, true] {
             assert_eq!(
-                start_outcome("builder", resume, Ok(reply.to_vec())),
+                start_outcome("builder", resume, Ok(serde_json::to_vec(&reply).unwrap())),
                 Outcome::Refused("the brief could not be written: no space left on device".into())
             );
         }

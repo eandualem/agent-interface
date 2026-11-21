@@ -263,10 +263,12 @@ fn starting_a_stopped_agent_uses_the_bound_route_and_reports_the_outcome() {
         connection.start_agent("worker", true),
         Outcome::AlreadyRunning
     );
-    assert!(matches!(
+    assert_eq!(
         connection.start_agent("worker", false),
-        Outcome::Refused(_)
-    ));
+        Outcome::Refused(
+            "The agent could not start. Check its saved configuration in Backbone.".into()
+        )
+    );
     assert!(matches!(
         connection.start_agent("worker", true),
         Outcome::Refused(_)
@@ -785,7 +787,8 @@ fn a_served_first_agent_starts_under_its_request_id_and_keeps_a_refusal() {
     let mut exited = started.clone();
     exited["ok"] = json!(false);
     exited["ready"] = json!("exited");
-    exited["evidence"] = json!(["claude exited"]);
+    exited["reason"] = json!("The CLI exited before its prompt.");
+    exited["evidence"] = json!(["The CLI exited before its prompt.", "Exit status 1"]);
     let refusal =
         json!({"detail": {"code": "invalid_request", "message": "Directory does not exist: /x"}});
     let server = serve(
@@ -814,6 +817,10 @@ fn a_served_first_agent_starts_under_its_request_id_and_keeps_a_refusal() {
     assert!(first.ok && first.name == "guide" && first.ready == Readiness::NotWaited);
     let second = connection.start_first_agent(&start, id).unwrap();
     assert!(!second.ok && second.ready == Readiness::Exited);
+    assert_eq!(
+        second.reason.as_deref(),
+        Some("The CLI exited before its prompt.")
+    );
     assert_eq!(
         connection.start_first_agent(&start, id).err(),
         Some(AddError::Refused("Directory does not exist: /x".into()))
