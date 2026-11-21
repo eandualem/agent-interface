@@ -69,7 +69,7 @@ fn read_leaves(library: &Path) -> io::Result<Vec<String>> {
 /// folder supplied by its owner. Only an existing saved session can be recovered.
 pub fn reconnect_shells_from(directory: Option<&Path>, former: &Path) -> io::Result<()> {
     let library = super::library_directory(directory).map_err(io::Error::other)?;
-    let former = super::location::resolve_path(former)?;
+    let former = super::location::former_library(former)?;
     let uid = uzers::get_current_uid();
     let root = socket_directory(uid);
     if !private_socket_directory(&root, uid)? {
@@ -149,10 +149,17 @@ fn socket_name(resolved_directory: &str) -> String {
     format!("{}-terminals.sock", &hash[..16])
 }
 
+fn missing(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+    )
+}
+
 fn private_socket_directory(directory: &Path, uid: u32) -> io::Result<bool> {
     let metadata = match directory.symlink_metadata() {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if missing(&error) => return Ok(false),
         Err(error) => return Err(error),
     };
     if !metadata.is_dir() || metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
@@ -479,6 +486,8 @@ mod tests {
             binding::RECOVERY
         );
         assert!(!moved.join(".shell-server.json").exists());
+        // A newly initialized library at the former path has unrelated panes.
+        create_saved_shell(&original);
         // Recovery still works after an explicit separate binding whose shells exited.
         assert_ne!(
             creation_in(&root, uid, &moved, leaf, false).unwrap(),
@@ -487,6 +496,9 @@ mod tests {
         binding::bind(&root, &moved, binding::Use::Recover(&original)).unwrap();
         let recovered = creation_in(&root, uid, &moved, leaf, true).unwrap();
         assert_eq!(recovered, legacy);
+        fs::remove_dir_all(&original).unwrap();
+        fs::write(&original, b"now a regular file").unwrap();
+        assert!(lookup_in(&root, uid, &original).unwrap().is_none());
         assert_eq!(
             binding::bind(&root, &moved, binding::Use::Recover(&original)).unwrap(),
             binding::socket_key(&legacy).map(str::to_owned)

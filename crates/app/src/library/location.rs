@@ -44,6 +44,25 @@ pub(crate) fn library_location(explicit: Option<&Path>) -> Result<PathBuf, Error
     resolve(explicit, &|name| std::env::var_os(name), &user_home)
 }
 
+/// Resolve the previous library location, including a folder whose ancestors
+/// no longer exist. Resolution must preserve the spelling used to name its server.
+pub(super) fn former_library(path: &Path) -> io::Result<PathBuf> {
+    if path.as_os_str().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Expected the former library folder",
+        ));
+    }
+    let expanded =
+        expand_home(path, &|name| std::env::var_os(name), &user_home).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Cannot resolve the former library's home directory",
+            )
+        })?;
+    resolve_path(&expanded)
+}
+
 pub(crate) fn user_home(name: Option<&OsStr>) -> Option<PathBuf> {
     let user = match name {
         Some(name) => uzers::get_user_by_name(name),

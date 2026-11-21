@@ -40,6 +40,14 @@ struct Identity {
 }
 
 impl Identity {
+    fn existing(library: &Path) -> io::Result<Option<Self>> {
+        match Self::read(library) {
+            Ok(identity) => Ok(Some(identity)),
+            Err(e) if super::missing(&e) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     fn read(library: &Path) -> io::Result<Self> {
         let dir = fs::metadata(library)?;
         let db = fs::metadata(library.join("layouts.db"))?;
@@ -150,11 +158,7 @@ pub(super) fn legacy_key(library: &Path) -> io::Result<String> {
 
 impl Owner {
     fn at_recorded_path(&self) -> io::Result<bool> {
-        match Identity::read(&self.library) {
-            Ok(identity) => Ok(identity == self.identity),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(e),
-        }
+        Ok(Identity::existing(&self.library)? == Some(self.identity))
     }
 
     fn witness_dir(&self, root: &Path) -> io::Result<PathBuf> {
@@ -238,6 +242,9 @@ fn owned_key(records: &Registry, identity: Identity) -> Option<String> {
 /// Reads can use a committed binding or the legacy socket at its original
 /// path. Only a writer may transfer ownership across devices.
 pub(super) fn lookup(root: &Path, library: &Path) -> io::Result<Option<String>> {
+    let Some(identity) = Identity::existing(library)? else {
+        return Ok(None);
+    };
     let legacy = legacy_socket_key(root, library)?;
     // Writers commit the registry before publishing the marker. Seeing the
     // new marker must also let this read see the corresponding ownership.
@@ -246,7 +253,7 @@ pub(super) fn lookup(root: &Path, library: &Path) -> io::Result<Option<String>> 
     if records.is_empty() && mark.is_none() {
         return Ok(Some(legacy));
     }
-    if let Some(key) = owned_key(&records, Identity::read(library)?) {
+    if let Some(key) = owned_key(&records, identity) {
         return Ok(Some(key));
     }
     Ok((mark.is_none() && !records.contains_key(&legacy)).then_some(legacy))
@@ -305,9 +312,9 @@ fn unclaimed_match(root: &Path, records: &Registry, leaves: &[String]) -> io::Re
     // A marker write may have failed before the source was copied and removed.
     // A known server whose physical owner is gone also needs explicit recovery.
     for (key, owner) in records {
-        if !owner.at_recorded_path()?
-            && owner.original_removed(root)? != Some(false)
+        if !owner.at_recorded_path().unwrap_or(false)
             && live_match(root, key, leaves)?
+            && owner.original_removed(root)? != Some(false)
         {
             return Ok(true);
         }
@@ -357,8 +364,18 @@ fn recovery_key(
                 .filter(|(_, owner)| owner.library == former)
                 .map(|(key, owner)| (key.as_str(), Some(owner))),
         );
-        if !records.contains_key(&legacy) && !former.join("layouts.db").try_exists()? {
-            candidates.push((&legacy, None));
+        if !records.contains_key(&legacy) && live_match(root, &legacy, leaves)? {
+            // A fresh library at the former location may coexist with the
+            // legacy server. Its own saved shells must take precedence.
+            let former_owns_legacy = match Identity::existing(former)? {
+                Some(id) if id != identity => {
+                    live_match(root, &legacy, &super::read_leaves(former)?)?
+                }
+                _ => false,
+            };
+            if !former_owns_legacy {
+                candidates.push((&legacy, None));
+            }
         }
     }
     let mut found = None;
