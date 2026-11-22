@@ -459,16 +459,27 @@ impl LiveTerminal {
             let result = work.await;
             let _ = this.update(cx, |terminal, cx| {
                 terminal.launching = false;
-                if terminal.agent == Some(agent) {
+                let remote = terminal.target.remote().is_some();
+                let same = terminal.agent.as_ref() == Some(&agent);
+                // The roster may list a remote agent as running before its
+                // start returns; its pane still has to open.
+                if same || (remote && terminal.agent.is_none()) {
                     use agent_interface_roster::lifecycle::Outcome;
-                    terminal.launched = terminal.target.remote().is_some()
+                    // A remote stream that opened meanwhile stays as it is.
+                    let closed = !remote || terminal.error.is_some();
+                    terminal.launched = remote
+                        && closed
                         && matches!(result, Outcome::Accepted(_) | Outcome::AlreadyRunning);
                     if terminal.launched {
                         // Open it as soon as it is up, not after an earlier backoff.
                         terminal.retry = Retry::default();
                     }
-                    terminal.launch_result = Some(result);
-                    terminal.start(cx);
+                    if same {
+                        terminal.launch_result = Some(result);
+                    }
+                    if closed {
+                        terminal.start(cx);
+                    }
                 }
                 cx.notify();
             });
