@@ -103,6 +103,7 @@ fn equal_terminal_ids_keep_streams_and_input_isolated_when_one_profile_stops() {
                     empty: false,
                     view: None,
                     attachment: Some(Attachment {
+                        remote_profile: None,
                         session: "fixture".into(),
                         source_socket: None,
                     }),

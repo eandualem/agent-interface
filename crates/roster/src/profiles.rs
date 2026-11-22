@@ -21,6 +21,7 @@ pub mod secrets;
 mod served;
 pub mod setup;
 mod stream;
+pub mod terminal;
 
 use crate::{RESPONSE_LIMIT, Snapshot, transport::local};
 
@@ -106,6 +107,24 @@ pub struct Item {
     pub reason: Option<String>,
     /// The same, as the service's stable code, for logs.
     pub failure: Option<Failure>,
+    /// Whose accounts the profile's agents use.
+    pub accounts: Accounts,
+}
+
+/// Whose CLI and GitHub accounts a profile's agents use, as the service
+/// reports it. A value this app does not know, `null` or an absent field
+/// is `Unknown`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Accounts {
+    /// The machine user's, in their home directory.
+    MachineUser,
+    /// The profile's own, kept in its directory.
+    Own,
+    /// Not known.
+    #[default]
+    #[serde(other)]
+    Unknown,
 }
 
 /// Why the service does not serve a profile, by its stable code. A code this
@@ -191,17 +210,19 @@ impl Profile {
     /// Runs on an I/O worker; does not discover or start a service.
     pub fn connect(&self) -> Result<Connection, Error> {
         let binding = self.binding.as_ref().ok_or(Error::NotReady)?;
-        let connection = Connection {
+        let mut connection = Connection {
             identity: Identity {
                 profile_id: self.item.profile_id.clone(),
                 installation_id: binding.installation_id.clone(),
                 lifecycle_id: binding.lifecycle_id.clone(),
             },
+            instance: binding.instance.clone(),
             socket: binding.socket.clone(),
             tmux: binding.tmux.clone(),
             connection_key: ConnectionKey(Arc::new(())),
+            local_machine: served::LocalMachine::default(),
         };
-        connection.handshake(Some(&binding.instance))?;
+        connection.local_machine = connection.handshake(Some(&binding.instance))?;
         Ok(connection)
     }
 }
@@ -227,10 +248,12 @@ impl Hash for ConnectionKey {
 /// Immutable identity and endpoint snapshot for one connection's work.
 #[derive(Clone)]
 pub struct Connection {
+    instance: String,
     identity: Identity,
     socket: PathBuf,
     tmux: Tmux,
     connection_key: ConnectionKey,
+    local_machine: served::LocalMachine,
 }
 
 impl Connection {
@@ -243,13 +266,27 @@ impl Connection {
     /// Whether `other` verified the same identity and endpoints, so either can
     /// stand in for the other.
     pub fn same_snapshot(&self, other: &Self) -> bool {
-        self.identity == other.identity && self.socket == other.socket && self.tmux == other.tmux
+        self.identity == other.identity
+            && self.instance == other.instance
+            && self.socket == other.socket
+            && self.tmux == other.tmux
     }
 
     /// The authenticated identity retained by every operation on this connection.
     pub fn identity(&self) -> &Identity {
         &self.identity
     }
+
+    /// Whether the connected machine reported itself as the profile's home.
+    pub fn is_home(&self) -> Option<bool> {
+        self.local_machine.home
+    }
+
+    /// Display name of the connected machine from `GET /api/profile`, when reported.
+    pub fn machine_name(&self) -> Option<&str> {
+        self.local_machine.name.as_deref()
+    }
+
     /// The tmux socket the service's entry names for this profile.
     pub fn tmux_socket(&self) -> &Path {
         &self.tmux.socket_path
@@ -274,6 +311,14 @@ impl Connection {
             Ok(response) => successful(&response).is_ok().then_some(response),
         };
         snapshot.update_swarms(swarms.as_ref().map(|response| response.body.as_slice()));
+        // Machine status comes from the profile's services endpoint; an older
+        // service without it leaves machines unread without failing the roster.
+        let services = match self.response("/api/status/services", None, RESPONSE_LIMIT) {
+            Err(error @ (Error::BindingRequired | Error::BindingMismatch)) => return Err(error),
+            Err(_) => None,
+            Ok(response) => successful(&response).is_ok().then_some(response),
+        };
+        snapshot.update_machines(services.as_ref().map(|response| response.body.as_slice()));
         Ok(snapshot)
     }
 
@@ -335,7 +380,7 @@ impl Connection {
     /// one. The provider's start route takes the name only, so a replacement under
     /// the same name would start instead. Runs on an I/O worker.
     pub fn start_agent(&self, name: &str, resume: bool) -> crate::lifecycle::Outcome {
-        use crate::lifecycle::{Outcome, start_outcome};
+        use crate::lifecycle::{Outcome, start_response};
         if !crate::valid_agent(name) {
             return Outcome::Refused("This session is not a registered agent.".into());
         }
@@ -348,11 +393,82 @@ impl Connection {
             Some(body),
             RESPONSE_LIMIT,
         ) {
-            Ok(response) if (200..300).contains(&response.status) => Ok(response.body),
-            Ok(response) => Err(Some(response.status)),
-            Err(_) => Err(None),
+            Ok(response) => Ok((response.status, response.body)),
+            Err(Error::BindingRequired | Error::BindingMismatch) => {
+                return Outcome::Refused(
+                    "The original profile binding was refused. Reconnect to that profile.".into(),
+                );
+            }
+            Err(_) => Err(()),
         };
-        start_outcome(name, resume, reply)
+        start_response(name, resume, reply)
+    }
+
+    /// Stop this registered agent through the profile service, whether local or
+    /// on another machine. When `expected_registration_id` is given, the service
+    /// stops only that durable registration. Runs on an I/O worker.
+    pub fn stop_agent(
+        &self,
+        name: &str,
+        expected_registration_id: Option<&str>,
+    ) -> crate::lifecycle::ActionOutcome {
+        use crate::lifecycle::{ActionOutcome, stop_response};
+        if !crate::valid_agent(name) {
+            return ActionOutcome::Refused("This session is not a registered agent.".into());
+        }
+        let query = match expected_registration_id {
+            Some(registration) if runtime_context::valid_registration(registration) => {
+                format!("?expected_registration_id={registration}")
+            }
+            Some(_) => {
+                return ActionOutcome::Refused(
+                    "This agent's registration could not be verified.".into(),
+                );
+            }
+            None => String::new(),
+        };
+        let reply = match self.response_within(
+            &format!("/api/agents/{name}/stop{query}"),
+            Some(Vec::new()),
+            RESPONSE_LIMIT,
+            Duration::from_secs(45),
+        ) {
+            Ok(response) => Ok((response.status, response.body)),
+            Err(Error::BindingRequired | Error::BindingMismatch) => {
+                return ActionOutcome::Refused(
+                    "The original profile binding was refused. Reconnect to that profile.".into(),
+                );
+            }
+            Err(_) => Err(()),
+        };
+        stop_response(name, reply)
+    }
+
+    /// Ask the profile service to stop this registered agent and start its
+    /// replacement, whether local or on another machine. Runs on an I/O worker.
+    pub fn restart_agent(&self, name: &str, resume: bool) -> crate::lifecycle::ActionOutcome {
+        use crate::lifecycle::{ActionOutcome, restart_response};
+        if !crate::valid_agent(name) {
+            return ActionOutcome::Refused("This session is not a registered agent.".into());
+        }
+        let body = serde_json::json!({ "resume": resume, "start": true });
+        let Ok(body) = serde_json::to_vec(&body) else {
+            return ActionOutcome::Unknown;
+        };
+        let reply = match self.response(
+            &format!("/api/agents/{name}/restart"),
+            Some(body),
+            RESPONSE_LIMIT,
+        ) {
+            Ok(response) => Ok((response.status, response.body)),
+            Err(Error::BindingRequired | Error::BindingMismatch) => {
+                return ActionOutcome::Refused(
+                    "The original profile binding was refused. Reconnect to that profile.".into(),
+                );
+            }
+            Err(_) => Err(()),
+        };
+        restart_response(name, reply)
     }
 
     /// Stop this agent's session and remove it from this profile, only while
@@ -429,10 +545,10 @@ impl Connection {
 
     /// Verify again on the same binding, never by reading the profile list again.
     pub fn verify(&self) -> Result<(), Error> {
-        self.handshake(None)
+        self.handshake(None).map(|_| ())
     }
 
-    fn handshake(&self, instance: Option<&str>) -> Result<(), Error> {
+    fn handshake(&self, instance: Option<&str>) -> Result<served::LocalMachine, Error> {
         let response = self.response("/api/profile", None, RESPONSE_LIMIT)?;
         successful(&response)?;
         served::verify(&response.body, &self.identity, instance)

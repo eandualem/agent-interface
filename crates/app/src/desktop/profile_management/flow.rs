@@ -1303,7 +1303,7 @@ mod tests {
         let source = root.join("provider.sh");
         std::fs::write(
             &source,
-            "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s\\n' \"$2\" >> \"$d/calls\"\n[ -f \"$d/reply\" ] || exit 4\n/bin/cat \"$d/reply\"\n",
+            "#!/bin/sh\nd=$(dirname \"$0\")\nprintf '%s\\n' \"$2\" >> \"$d/calls\"\nprintf '%s\\n' \"$*\" >> \"$d/arguments\"\n[ -f \"$d/reply\" ] || exit 4\n/bin/cat \"$d/reply\"\n",
         )
         .unwrap();
         let provider = root.join("provider");
@@ -1331,25 +1331,138 @@ mod tests {
     }
 
     #[test]
-    fn a_request_marked_sent_but_never_received_is_resent_unchanged() {
+    fn settings_reopens_an_unconfirmed_create_and_only_resends_on_request() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
         let client = provider(&root);
         let controller = Controller::new(
-            journal::Journal::open(&root.join("journal")).unwrap(),
+            journal::Journal::open(&root.join("profile-operations")).unwrap(),
             &client,
         );
         let prepared = Prepared::create("request-a", "Example").unwrap();
         let key = controller.enqueue(prepared).unwrap().key;
         // No answer yet: the send is recorded, but nothing came back.
         assert!(controller.submit(&key, &|| true).is_err());
-        made(&root);
-        let Ok(receipt) = recover(&controller, &key, &|| true) else {
-            panic!("the request was not resent");
+        drop(controller);
+        let live = std::sync::atomic::AtomicBool::new(true);
+        let other = tempfile::tempdir().unwrap();
+        let other = other.path().canonicalize().unwrap();
+        let other_library = super::super::open_management(None, Some(other), None, &live).unwrap();
+        assert!(other_library.controller.unwrap().ids().unwrap().is_empty());
+        let reopened =
+            super::super::open_management(None, Some(root.clone()), None, &live).unwrap();
+        let controller = reopened.controller.unwrap();
+        let super::super::Page::History { rows, .. } = reopened.page.unwrap() else {
+            panic!("Settings did not reopen the saved requests");
         };
-        assert_eq!(receipt.status, Status::Succeeded);
+        assert_eq!(rows.len(), 1);
+        let snapshot = rows[0].1.as_ref().unwrap();
+        assert_eq!(snapshot.key, key);
+        assert_eq!(snapshot.display_name.as_deref(), Some("Example"));
+        assert_eq!(super::super::status(snapshot), "Outcome not yet confirmed");
+        let visible_from_profile = |id| {
+            let super::super::Page::History { ids, .. } =
+                super::super::history(&controller, Some(id), None, 0, &live).unwrap()
+            else {
+                panic!("expected saved requests")
+            };
+            ids.contains(&key)
+        };
+        assert!(visible_from_profile("0a1b2c3d4e5f"));
+        let (record, error) =
+            super::super::Command::Read.run(&controller, &key, None, &|| true, || {
+                panic!("reading history resolved a provider")
+            });
+        assert!(error.is_none());
+        assert_eq!(record.unwrap().request_id, "request-a");
+        assert_eq!(
+            std::fs::read_to_string(root.join("calls")).unwrap(),
+            "create\n"
+        );
+        made(&root);
+        let (saved, error) =
+            super::super::Command::Retry.run(&controller, &key, None, &|| true, || Some(client));
+        assert!(error.is_none());
+        assert_eq!(saved.unwrap().terminal.unwrap().status, Status::Succeeded);
         let calls = std::fs::read_to_string(root.join("calls")).unwrap();
         assert_eq!(calls, "create\ncreate\n");
+        let arguments = std::fs::read_to_string(root.join("arguments")).unwrap();
+        let lines: Vec<_> = arguments.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("--request-id request-a "));
+        assert_eq!(lines[0], lines[1]);
+        assert!(visible_from_profile("0a1b2c3d4e5f"));
+        assert!(!visible_from_profile("000000000001"));
+        let super::super::Page::History { ids, rows, .. } = super::super::history(
+            &controller,
+            Some("000000000001"),
+            Some(vec![key.clone()]),
+            0,
+            &live,
+        )
+        .unwrap() else {
+            panic!("expected saved requests");
+        };
+        assert!(ids.is_empty() && rows.is_empty());
+        let mut previous = vec![key.clone()];
+        for n in 1..18 {
+            let draft = Prepared::create(&format!("page-request-{n}"), "Example").unwrap();
+            previous.push(controller.enqueue(draft).unwrap().key);
+        }
+        let unseen = previous[16..].to_vec();
+        let super::super::Page::History { rows, .. } =
+            super::super::history(&controller, Some("000000000001"), Some(previous), 16, &live)
+                .unwrap()
+        else {
+            panic!("expected second page");
+        };
+        assert_eq!(
+            rows.into_iter().map(|(id, _)| id).collect::<Vec<_>>(),
+            unseen
+        );
+        let (record, _) = super::super::Command::Read.run(
+            &controller,
+            &key,
+            Some("000000000001"),
+            &|| true,
+            || None,
+        );
+        assert!(matches!(
+            record,
+            Err(crate::profiles::controller::Error::Missing)
+        ));
+    }
+
+    #[test]
+    fn leaving_settings_during_provider_resolution_keeps_the_request_prepared() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let client = provider(&root);
+        let journal = root.join("profile-operations");
+        let writer = Controller::new(journal::Journal::open(&journal).unwrap(), &client);
+        let key = writer
+            .enqueue(Prepared::create("before-resolve", "Example").unwrap())
+            .unwrap()
+            .key;
+        let reader = Controller::for_history(journal::Journal::open(&journal).unwrap(), None);
+        let mut ticket = super::super::Ticket::default();
+        let live = ticket.begin();
+        let (record, error) = super::super::Command::Submit.run(
+            &reader,
+            &key,
+            None,
+            &|| live.load(std::sync::atomic::Ordering::Acquire),
+            || {
+                ticket.cancel();
+                Some(client)
+            },
+        );
+        assert!(error.is_some());
+        assert_eq!(
+            record.unwrap().phase,
+            crate::profiles::controller::Phase::Prepared
+        );
+        assert!(!root.join("calls").exists());
     }
 
     #[test]

@@ -52,7 +52,11 @@ impl Binding {
                 // unbound and the profile's server afterwards, so it is pinned
                 // to the unbound server, where it still is, unless that is the
                 // profile's own server.
-                if let Some(attachment) = &mut leaf.attachment {
+                if let Some(attachment) = leaf
+                    .attachment
+                    .as_mut()
+                    .filter(|a| a.remote_profile.is_none())
+                {
                     let server = match &attachment.source_socket {
                         Some(socket) => resolve_path(Path::new(socket)).ok(),
                         None => self.resolved_source.clone(),
@@ -113,11 +117,13 @@ mod tests {
     fn a_workspace_without_a_profile_is_bound_with_its_panes() {
         let mut layout = agent_interface_core::Layout::initial("/gone/folder".into());
         layout.attach(Some(Attachment {
+            remote_profile: None,
             session: "worker".into(),
             source_socket: None,
         }));
         assert!(layout.split(agent_interface_core::Direction::Right, "/tmp".into(), true));
         layout.attach(Some(Attachment {
+            remote_profile: None,
             session: "notes".into(),
             source_socket: Some("/tmp/other".into()),
         }));
@@ -152,11 +158,13 @@ mod tests {
         std::os::unix::fs::symlink(&server, &alias).unwrap();
         let mut layout = agent_interface_core::Layout::initial("/tmp".into());
         layout.attach(Some(Attachment {
+            remote_profile: None,
             session: "worker".into(),
             source_socket: Some(alias.to_str().unwrap().into()),
         }));
         assert!(layout.split(agent_interface_core::Direction::Right, "/tmp".into(), true));
         layout.attach(Some(Attachment {
+            remote_profile: None,
             session: "notes".into(),
             source_socket: None,
         }));

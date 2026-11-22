@@ -551,14 +551,32 @@ pub(super) fn tab(
 /// `state` is the agent's state as the pane's header shows it: the card's
 /// details apply only while it is the state they were read with. `runs` are
 /// the agent's from its profile's roster.
-pub(super) fn overview(agent: &Agent, state: AgentState, runs: &Runs) -> AnyElement {
+pub(super) fn overview(
+    agent: &Agent,
+    state: AgentState,
+    runs: &Runs,
+    machine_label: Option<String>,
+) -> AnyElement {
     let (t, c) = (tokens(), colors());
     let matching = state == AgentState::from_runtime(&agent.state);
     let age = matching.then_some(agent.state_age_seconds).flatten();
+    let stale_evidence = (matching
+        && agent.state_source.as_deref() == Some("stale")
+        && state != AgentState::Offline)
+        .then(|| {
+            crate::desktop::agent_status::stale_note(&agent.evidence)
+                .unwrap_or_else(|| "State report is stale.".into())
+        });
     let mut body = list("agent-overview")
         .px(px(t.space.s18))
         .py(px(t.space.s16))
         .gap(px(t.space.s16));
+    if let Some(stale) = &stale_evidence {
+        body = body.child(
+            ui::text(div().text_color(c.attention_text), &t.text.body)
+                .child(format!("Stale state · {}", line(stale))),
+        );
+    }
     if state.needs_you() && matching {
         body = body.child(
             div()
@@ -596,11 +614,6 @@ pub(super) fn overview(agent: &Agent, state: AgentState, runs: &Runs) -> AnyElem
         body = body
             .child(ui::text(div().text_color(c.attention_text), &t.text.body).child(line(detail)));
     }
-    let model = agent
-        .model
-        .clone()
-        .map(|model| format!(" · {model}"))
-        .unwrap_or_else(|| " · its default model".into());
     let working = match (agent.current_issue, &agent.current_repo) {
         (Some(issue), Some(repo)) => format!("{repo}#{issue}"),
         (Some(issue), None) => format!("#{issue}"),
@@ -625,8 +638,12 @@ pub(super) fn overview(agent: &Agent, state: AgentState, runs: &Runs) -> AnyElem
                 div()
                     .flex()
                     .child(mono(agent.runtime.clone()).text_color(c.text))
-                    .child(div().text_color(c.muted).child(model)),
+                    .child(div().text_color(c.muted).child(format!(
+                        " · {}",
+                        model_label(agent.model.as_deref(), agent.model_source.as_deref())
+                    ))),
             ))
+            .children(machine_label.map(|machine| ui::fact("Machine", div().child(machine))))
             .child(ui::fact("Directory", mono(agent.dir.clone())))
             .child(ui::fact(
                 "Watches",
@@ -974,6 +991,17 @@ pub(super) fn connections(agent: &Agent) -> AnyElement {
         .into_any_element()
 }
 
+fn model_label(model: Option<&str>, source: Option<&str>) -> String {
+    match (model, source) {
+        (Some(model), Some("observed")) => format!("{model} (reported by the runtime)"),
+        (Some(model), Some("configured")) => format!("{model} (configured)"),
+        (Some(model), Some("runtime_default")) => format!("{model} (runtime default)"),
+        (Some(model), _) => model.into(),
+        (None, Some("runtime_default")) => "its default model".into(),
+        (None, _) => "model unknown".into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -998,6 +1026,20 @@ mod tests {
 
     fn at(time: &str) -> f64 {
         epoch_seconds(time).unwrap()
+    }
+
+    #[test]
+    fn model_labels_distinguish_reported_and_configured_values() {
+        assert_eq!(
+            model_label(Some("m"), Some("observed")),
+            "m (reported by the runtime)"
+        );
+        assert_eq!(model_label(Some("m"), Some("configured")), "m (configured)");
+        assert_eq!(
+            model_label(None, Some("runtime_default")),
+            "its default model"
+        );
+        assert_eq!(model_label(Some("m"), Some("future")), "m");
     }
 
     #[test]

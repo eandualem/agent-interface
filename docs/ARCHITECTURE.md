@@ -9,10 +9,10 @@ webview; the app runs no daemon.
 
 A **library** is a directory containing `layouts.db`. It stores workspaces,
 tabs and split layouts. Each leaf in a layout either opens an ordinary shell
-on the library's persistent tmux server or attaches to an existing tmux session.
+on the library's persistent tmux server, attaches to a local session, or opens a profile agent terminal stream.
 An empty leaf starts no shell.
 
-Leaves connect on first display and retain their control-mode clients (`tmux -C`)
+Local terminals connect on first display and retain their control-mode clients (`tmux -C`)
 when tabs or workspaces change. The owning native window keeps each connection
 until its target is removed or replaced, the library changes, or the window
 closes. Hidden terminals continue consuming output, preserving their state at
@@ -23,12 +23,30 @@ Pane and Close Tab never send a session-termination command. Closing the final p
 its tab. An attached session retains its own lifetime policy, including tmux's
 `destroy-unattached` option.
 
-Each displayed native viewport participates in tmux's window sizing. Hidden
+A displayed profile agent declares at least 80 columns so a narrow tile cannot collapse its prompt. When hidden or detached, its control client withdraws using the session’s configured default dimensions, with the same width floor. tmux applies its window sizing policy if other clients are present. Ordinary shells declare the native viewport dimensions. Hidden
 clients keep their connections with `ignore-size`; their next paint restores
 sizing participation at the current viewport dimensions. Resizing a viewport can
 change the geometry seen by other clients of the same window. Choosing a tmux
 window within an attachment is local to that native leaf; it does not switch
 another client's selected window.
+
+For a remote agent, the roster and new-pane chooser use the agent's machine ID
+and the verified profile's local machine ID to select the transport. The layout
+retains the agent name and profile ID. On restore, the client verifies the selected
+service instance. The profile home resolves the agent's current machine.
+The roster crate authenticates the Unix peer and upgrades a profile-scoped
+HTTP request to `backbone-terminal-v1`. The service grants watch or type access.
+A reader decodes bounded newline-delimited JSON frames and preserves output bytes
+across frame boundaries. A separate worker owns one Ghostty engine and publishes
+screen updates to the same native grid used for local terminals.
+
+Older layout readers retain the agent name with a directory as its socket field,
+so replacing or detaching it clears the stream target. A restarted profile
+instance is resolved again for each workspace that shared its binding.
+Hiding a remote pane pauses its view. A buffer overrun triggers a full repaint.
+A watch grant keeps the host's grid dimensions. Only a typing grant permits
+encoded input and resize requests. Closing the pane detaches the socket. A
+refusal or ended stream leaves the reason and an explicit reopen action in the pane.
 
 ## Crate boundaries
 
@@ -517,9 +535,9 @@ changes invalidate them. Visible working and starting indicators animate using G
 static. State labels retain the distinction between starting and busy, and
 between blocked and waiting for a person. Each connection-owned roster worker reads
 immediately and then two seconds after each completed request. After a good
-roster it also reads the running swarms, which only group agents in the
-navigation panel: a failed swarm read clears the grouping without marking agent
-states stale. Each window remembers the swarms it has seen running; when a
+roster it also reads the running swarms and the profile's machines (`GET /api/status/services`), which only group agents in the
+navigation panel and Team view: a failed swarm read clears swarm folding and a failed machine-status read clears machine reachability (`status unknown`) without marking agent
+states stale; remote agents still carrying `machine` from `/api/agents` remain grouped under their machine IDs. Machine IDs are compared in full against the connected profile's local machine ID; names are display-only. One-machine profiles keep the flat layout; multi-machine profiles group remote agents under their machine's name and live reachability (online, offline with last-seen age, or not in profile), surface stale `state_source` observations with their evidence, and offer Start, Stop and Restart directly through the profile service, reporting the service's refusal reason when a machine cannot be reached. Each window remembers the swarms it has seen running; when a
 readable list stops naming one, it closes the tabs still named after that swarm
 whose every pane attaches to a session seen in that swarm, on its tmux server. A failed or partly unreadable list never counts as
 a finish, and a swarm that ends while the app is closed leaves its tab. Its live model
@@ -1069,8 +1087,18 @@ window identifiers use `io.github.eandualem.agent-interface`; macOS uses the sam
 bundle identifier. The executable, workspace crates, package archives and new
 install, configuration and data directories use `agent-interface`. The installer
 replaces only an installation and launchers that carry its own marker, and rolls
-back the app and launchers on failure. Library directories stay in place: their
-absolute path determines the ordinary-shell socket hash.
+back the app and launchers on failure. The ordinary-shell registry in the user's private socket directory maps
+a library directory and database identity to its tmux socket. A rename preserves
+both identities. Registration is serialized and committed atomically before
+publishing the portable `.shell-server.json` marker. A hard link kept outside
+the library indicates whether the source still holds its marker. It lives
+beside the registry when possible, otherwise in a private sibling directory
+on the source volume. A different filesystem identity requires the owner's
+choice when the original disappears and matching sessions remain. This
+distinguishes an intended destination from a backup carrying the same marker.
+A legacy path-named socket at the original location is registered when it
+contains a saved pane's exact session. The guide covers recovery across
+volumes and after moving a library before registration.
 The Linux launcher uses the packaged Agent Interface icon.
 Under WSL, the installer installs missing Ubuntu runtime packages through apt
 and registers its desktop entry in `/usr/share/applications`, which
@@ -1650,8 +1678,9 @@ Settings › Profiles opens one profile at a time. Opening it captures the
 selected library location once and opens a private lifecycle journal; it runs
 no lifecycle action, and the app has no start or stop of a profile's service.
 Saved requests enumerates bounded record IDs. The full history validates one
-page of durable snapshots at a time; a profile's page reads every record to find
-that profile's. Lifecycle
+page of durable snapshots at a time. A profile’s list includes its own records
+and unfinished creates that have no confirmed profile ID. Settings also offers
+the library’s full request history even when the profile list fails to load. Lifecycle
 records are kept, and the journal refuses new requests once it holds 4,096.
 Try the same request again is the one action on a sent request: it resends the
 same request under its original ID. Worker

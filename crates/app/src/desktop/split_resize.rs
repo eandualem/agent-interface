@@ -196,6 +196,7 @@ mod tests {
             window
                 .model_mut()
                 .attach(Some(agent_interface_core::Attachment {
+                    remote_profile: None,
                     session: "external".into(),
                     source_socket: None,
                 }));

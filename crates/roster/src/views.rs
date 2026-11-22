@@ -60,6 +60,8 @@ const POLICY_LIMIT: &str = "Backbone's policies exceed this view's limits.";
 pub enum Request {
     /// Every agent and the active swarms.
     Team,
+    /// Agent chooser rows from the roster independently of swarm discovery.
+    Members,
     /// Token usage over a recent period.
     Usage(Range),
     /// Recent deliveries and inbound events.
@@ -211,6 +213,10 @@ fn usage_path(range: Range) -> String {
 
 fn read_using(api: &Api<'_>, request: &bound::Request) -> Result<Data, &'static str> {
     match request {
+        bound::Request::Members => Ok(Data::Team(Team {
+            members: Team::members(&api.get("/api/agents")?)?,
+            swarms: Vec::new(),
+        })),
         bound::Request::Team => Ok(Data::Team(Team::decode(
             &api.get("/api/agents")?,
             &api.get("/api/swarms")?,
@@ -275,6 +281,9 @@ pub struct Team {
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Member {
+    /// Machine reported by this profile, absent on older services.
+    #[serde(default, deserialize_with = "crate::lenient_object")]
+    pub machine: Option<crate::Machine>,
     /// Agent name.
     pub name: String,
     /// Durable registration from a bound list, absent for unregistered rows.
@@ -291,6 +300,12 @@ pub struct Member {
     pub state: String,
     /// Why it is waiting or blocked, when reported.
     pub reason: Option<String>,
+    /// Where the state came from (`push`, `pull`, `stale`, etc.).
+    #[serde(default, deserialize_with = "crate::lenient")]
+    pub state_source: Option<String>,
+    /// Observations explaining the state, including stale report age.
+    #[serde(default, deserialize_with = "crate::lenient_strings")]
+    pub evidence: Vec<String>,
     /// The issue it works on, when reported.
     pub current_issue: Option<u64>,
     /// When the state began, in seconds since the Unix epoch.
@@ -313,6 +328,17 @@ pub struct Swarm {
 }
 
 impl Team {
+    fn members(agents: &[u8]) -> Result<Vec<Member>, &'static str> {
+        Ok(items::<Member>(&document(agents)?)?
+            .into_iter()
+            .filter(|member| valid_agent(&member.name) && member.configured != Some(false))
+            .map(|mut member| {
+                member.machine = member.machine.filter(crate::Machine::valid);
+                member
+            })
+            .collect())
+    }
+
     fn decode(agents: &[u8], swarms: &[u8]) -> Result<Self, &'static str> {
         #[derive(Deserialize, Default)]
         #[serde(default)]
@@ -323,10 +349,7 @@ impl Team {
             status: String,
             members: Vec<Box<RawValue>>,
         }
-        let members = items::<Member>(&document(agents)?)?
-            .into_iter()
-            .filter(|member| valid_agent(&member.name) && member.configured != Some(false))
-            .collect();
+        let members = Self::members(agents)?;
         let swarms = items::<RawSwarm>(&document(swarms)?)?
             .into_iter()
             .filter(|swarm| !matches!(swarm.status.as_str(), "done" | "disbanded" | "failed"))
@@ -886,8 +909,11 @@ pub struct Agent {
     pub online: bool,
     /// The CLI.
     pub runtime: String,
-    /// The configured model, when set.
+    /// The reported or configured model, when available.
     pub model: Option<String>,
+    /// The service's source for that model.
+    #[serde(default, deserialize_with = "crate::lenient")]
+    pub model_source: Option<String>,
     /// Its working directory.
     pub dir: String,
     /// The repository it owns.
@@ -898,6 +924,15 @@ pub struct Agent {
     pub tags: Vec<String>,
     /// Its state.
     pub state: String,
+    /// Where the state came from (`push`, `pull`, `stale`, etc.).
+    #[serde(default, deserialize_with = "crate::lenient")]
+    pub state_source: Option<String>,
+    /// Observations explaining the state (e.g. how old a stale report is).
+    #[serde(default, deserialize_with = "crate::lenient_strings")]
+    pub evidence: Vec<String>,
+    /// Machine serving this agent, when reported.
+    #[serde(skip)]
+    pub machine: Option<crate::Machine>,
     /// Why it is waiting or blocked.
     pub reason: Option<String>,
     /// What the CLI said about a blocked state.
@@ -1085,6 +1120,9 @@ impl Agent {
             .collect();
         // Null or mistyped reads as absent, never as an unreadable card.
         let field = |name: &str| document.get(name).map(|raw| raw.get());
+        agent.machine = field("machine")
+            .and_then(crate::object::<crate::Machine>)
+            .filter(crate::Machine::valid);
         agent.waiting = field("waiting").and_then(crate::object);
         agent.background = field("background").and_then(crate::Background::read);
         agent.processes = field("processes")
@@ -1442,9 +1480,43 @@ mod tests {
     }
 
     #[test]
+    fn inspection_keeps_the_model_when_the_source_is_unfamiliar_or_mistyped() {
+        for (body, expected) in [
+            (
+                br#"{"name":"worker","model":"example","model_source":"future"}"#.as_slice(),
+                Some("future"),
+            ),
+            (
+                br#"{"name":"worker","model":"example","model_source":42}"#.as_slice(),
+                None,
+            ),
+            (br#"{"name":"worker","model":"example"}"#.as_slice(), None),
+        ] {
+            let agent = Agent::decode(body).unwrap();
+            assert_eq!(agent.model.as_deref(), Some("example"));
+            assert_eq!(agent.model_source.as_deref(), expected);
+        }
+    }
+
+    #[test]
     fn an_inspected_agent_carries_its_wait_and_background_from_the_services_fixture() {
         let agent =
             Agent::decode(include_bytes!("profiles/runs/fixtures/agent-inspect.json")).unwrap();
+        assert_eq!(
+            agent.machine,
+            Some(crate::Machine {
+                id: "5f2c9e0d1b7a4e38".into(),
+                name: "laptop".into(),
+            })
+        );
+        assert_eq!(agent.state_source.as_deref(), Some("push"));
+        assert_eq!(
+            agent.evidence,
+            [
+                "runtime: claude",
+                "hook state 'busy' written 4s ago (fresh)"
+            ]
+        );
         assert_eq!(agent.waiting, None);
         assert_eq!(
             agent.background,

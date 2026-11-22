@@ -23,14 +23,38 @@ const CAPTURE_LIMIT: usize = 1024 * 1024;
 /// previous availability; cached names are not evidence that sessions are online.
 pub fn read_sessions(socket: &Path) -> io::Result<Vec<String>> {
     let _span = tracing::trace_span!("tmux_query", operation = "list_sessions").entered();
+    Ok(names(&list(
+        socket,
+        &[
+            "list-sessions",
+            "-f",
+            "#{!=:#{@agent_interface_attachment},1}",
+            "-F",
+            "#{session_name}",
+        ],
+    )?))
+}
+
+/// Whether a private shell server still has a running pane process. Exited
+/// panes retained by tmux for their output do not count. Starts no server.
+pub fn has_live_panes(socket: &Path) -> io::Result<bool> {
+    Ok(!list(
+        socket,
+        &[
+            "list-panes",
+            "-a",
+            "-f",
+            "#{==:#{pane_dead},0}",
+            "-F",
+            "#{pane_id}",
+        ],
+    )?
+    .is_empty())
+}
+
+fn list(socket: &Path, args: &[&str]) -> io::Result<String> {
     let mut command = command(socket).ok_or_else(unavailable)?;
-    command.args([
-        "list-sessions",
-        "-f",
-        "#{!=:#{@agent_interface_attachment},1}",
-        "-F",
-        "#{session_name}",
-    ]);
+    command.args(args);
     let output = capture(command, TIMEOUT).map_err(|_| unavailable())?;
     let stdout = std::str::from_utf8(&output.stdout).map_err(|_| unavailable())?;
     let stderr = std::str::from_utf8(&output.stderr).map_err(|_| unavailable())?;
@@ -38,12 +62,12 @@ pub fn read_sessions(socket: &Path) -> io::Result<Vec<String>> {
         return if !socket.try_exists().map_err(|_| unavailable())?
             || stderr.contains("no server running")
         {
-            Ok(Vec::new())
+            Ok(String::new())
         } else {
             Err(unavailable())
         };
     }
-    Ok(names(stdout))
+    Ok(stdout.to_owned())
 }
 
 /// Read the current directory of an exact session's active pane.

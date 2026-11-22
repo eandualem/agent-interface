@@ -12,6 +12,7 @@ fn browser(a: &Connection, b: &Connection) -> Browser {
     let mut model = Layout::initial("/".into());
     model.workspaces[0].profile_id = Some(a.identity().profile_id.clone());
     model.attach(Some(Attachment {
+        remote_profile: None,
         session: "worker".into(),
         source_socket: None,
     }));
@@ -19,6 +20,7 @@ fn browser(a: &Connection, b: &Connection) -> Browser {
     model.add_tab(None, "/".into(), true);
     model.workspaces[1].profile_id = Some(b.identity().profile_id.clone());
     model.attach(Some(Attachment {
+        remote_profile: None,
         session: "worker".into(),
         source_socket: None,
     }));
@@ -107,6 +109,7 @@ fn delayed_sidebar_view_and_jump_targets_return_to_the_displayed_profile() {
     let sidebar_a = browser.agent_target("worker").unwrap();
     let pane_a = &spaces[0].tabs[0].tree.leaves()[0].id;
     let view_a = AgentTarget {
+        remote_profile: None,
         origin: browser
             .navigation_origin(
                 &browser
@@ -257,6 +260,7 @@ fn moved_view_refreshes_events_and_survives_source_workspace_deletion() {
     .unwrap();
     let mut model = Layout::initial("/".into());
     model.attach(Some(Attachment {
+        remote_profile: None,
         session: "worker".into(),
         source_socket: None,
     }));
@@ -301,6 +305,7 @@ fn moved_view_refreshes_events_and_survives_source_workspace_deletion() {
     assert!(model.delete_workspace());
     assert!(events.accepts(&fresh, browser.pane_navigation_origin(&pane).as_ref()));
     assert!(browser.select_agent_target(&AgentTarget {
+        remote_profile: None,
         origin: fresh.as_ref().clone(),
         name: "worker".into()
     }));
@@ -322,6 +327,7 @@ fn moved_view_refreshes_events_and_survives_source_workspace_deletion() {
         .unwrap();
     // A workspace without a profile has no agent to go to.
     assert!(!browser.select_agent_target(&AgentTarget {
+        remote_profile: None,
         origin: browser.navigation_origin(&plain).unwrap(),
         name: "worker".into()
     }));
@@ -722,6 +728,7 @@ fn an_agent_goes_to_the_current_tab_showing_it_else_the_first() {
     model.workspaces[0].profile_id = Some(a.identity().profile_id.clone());
     let session = |socket: Option<&str>| {
         Some(Attachment {
+            remote_profile: None,
             session: "reviewer".into(),
             source_socket: socket.map(Into::into),
         })
@@ -744,6 +751,7 @@ fn an_agent_goes_to_the_current_tab_showing_it_else_the_first() {
         .bind(&model.workspaces[0], a.clone());
     let origin = browser.navigation_origin(&model.workspaces[0].id).unwrap();
     let target = |name: &str| AgentTarget {
+        remote_profile: None,
         origin: origin.clone(),
         name: name.into(),
     };

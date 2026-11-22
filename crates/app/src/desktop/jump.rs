@@ -197,17 +197,39 @@ impl Browser {
             }
         }
         if let Some(states) = &states {
+            let active = self.active_agents();
+            let local_machine = active.and_then(|agents| agents.local_machine_id());
             let mut agents: Vec<_> = states.iter().collect();
             agents.sort_by_key(|(name, state)| (!state.needs_you(), name.to_lowercase()));
             for (name, state) in agents {
-                if matches(name)
-                    && let Some(target) = self.agent_target(name)
-                {
+                let remote_machine = active.and_then(|agents| {
+                    let machine = agents.machine(name)?;
+                    local_machine
+                        .as_deref()
+                        .is_some_and(|local| local != machine.id.as_str())
+                        .then(|| agents.machine_display_name(&machine))
+                });
+                let stale = active.is_some_and(|agents| agents.get(name).stale);
+                let matched = matches(name) || remote_machine.as_deref().is_some_and(matches);
+                if matched && let Some(target) = self.agent_target(name) {
+                    let word = if stale {
+                        if *state == AgentState::Unknown {
+                            "stale".to_owned()
+                        } else {
+                            format!("{} · stale", state.word())
+                        }
+                    } else {
+                        state.word().to_owned()
+                    };
+                    let meta = match remote_machine {
+                        Some(machine) => format!("{word} · {machine}"),
+                        None => word,
+                    };
                     hits.push(Hit {
                         group: "AGENTS",
                         label: name.clone(),
-                        meta: state.word().into(),
-                        agent: Some(*state),
+                        meta,
+                        agent: Some(if stale { AgentState::Unknown } else { *state }),
                         target: Target::Agent(target),
                     });
                 }

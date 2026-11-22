@@ -241,6 +241,7 @@ mod tests {
         incoming.workspaces[0].tabs[0].tree = Node::Leaf(Leaf {
             id: "000000000004".into(),
             attachment: Some(Attachment {
+                remote_profile: None,
                 session: "worker".into(),
                 source_socket: None,
             }),
@@ -284,6 +285,7 @@ mod tests {
         );
         let previous = incoming.clone();
         incoming.attach(Some(Attachment {
+            remote_profile: None,
             session: "editor".into(),
             source_socket: None,
         }));

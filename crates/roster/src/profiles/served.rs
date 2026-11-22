@@ -2,7 +2,7 @@
 //! its state, with the owner-only socket as the credential.
 
 use super::{
-    AddError, Binding, Error, Failure, Identity, Item, Profile, State, Tmux, valid_id,
+    Accounts, AddError, Binding, Error, Failure, Identity, Item, Profile, State, Tmux, valid_id,
     validate_item,
 };
 use base64::Engine as _;
@@ -20,6 +20,13 @@ use std::{
 #[derive(Deserialize)]
 struct Machine {
     id: String,
+}
+
+#[derive(Deserialize)]
+struct VerifiedMachine {
+    id: String,
+    #[serde(default, deserialize_with = "crate::lenient")]
+    name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -41,6 +48,8 @@ enum Entry {
         tmux_socket: PathBuf,
         #[serde(rename = "credential_reference")]
         _credential: Reference,
+        #[serde(default, deserialize_with = "accounts")]
+        accounts: Option<Accounts>,
     },
     Failed {
         profile_id: String,
@@ -49,28 +58,45 @@ enum Entry {
         reason: Option<String>,
         #[serde(default)]
         code: Option<Failure>,
+        #[serde(default, deserialize_with = "accounts")]
+        accounts: Option<Accounts>,
     },
     /// A state this app does not know; such a profile is not offered.
     #[serde(other)]
     Unknown,
 }
 
+/// Whose accounts, where a value of the wrong type reads as not given.
+/// `Entry` is internally tagged, so its fields arrive buffered and
+/// `crate::lenient`, which needs the raw JSON, can't read them.
+fn accounts<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Accounts>, D::Error> {
+    // Only a string names a value: `{"own": null}` would otherwise decode
+    // as the enum variant it names.
+    Ok(match serde_json::Value::deserialize(deserializer)? {
+        value @ serde_json::Value::String(_) => serde_json::from_value(value).ok(),
+        _ => None,
+    })
+}
+
 impl Entry {
     fn profile(self) -> Result<Option<Profile>, Error> {
-        let (profile_id, display_name, binding, reason, failure) = match self {
+        let (profile_id, display_name, binding, reason, failure, accounts) = match self {
             Self::Unknown => return Ok(None),
             Self::Failed {
                 profile_id,
                 display_name,
                 reason,
                 code,
+                accounts,
             } => {
                 let name = display_name.unwrap_or_else(|| profile_id.clone());
                 // A sentence that can't be shown as given is no reason.
                 let reason = reason.filter(|reason| {
                     !reason.trim().is_empty() && !reason.chars().any(char::is_control)
                 });
-                (profile_id, name, None, reason, code)
+                (profile_id, name, None, reason, code, accounts)
             }
             Self::Serving {
                 protocol_version,
@@ -80,6 +106,7 @@ impl Entry {
                 machine,
                 socket,
                 tmux_socket,
+                accounts,
                 ..
             } => {
                 if protocol_version != 1 {
@@ -101,7 +128,14 @@ impl Entry {
                     },
                     instance: instance_id,
                 };
-                (profile_id, display_name, Some(binding), None, None)
+                (
+                    profile_id,
+                    display_name,
+                    Some(binding),
+                    None,
+                    None,
+                    accounts,
+                )
             }
         };
         let item = Item {
@@ -114,6 +148,7 @@ impl Entry {
             },
             reason,
             failure,
+            accounts: accounts.unwrap_or_default(),
         };
         validate_item(&item)?;
         Ok(Some(Profile { item, binding }))
@@ -144,6 +179,13 @@ pub(super) fn show(bytes: &[u8]) -> Result<Profile, Error> {
     entry.profile()?.ok_or(Error::Unsupported)
 }
 
+/// Local machine metadata observed during `/api/profile` verification.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct LocalMachine {
+    pub name: Option<String>,
+    pub home: Option<bool>,
+}
+
 /// The reply must come from the expected profile and machine and, when
 /// connecting, from the service run that the entry just read named. The
 /// service is new at each start, so later checks leave its run out.
@@ -151,13 +193,15 @@ pub(super) fn verify(
     bytes: &[u8],
     expected: &Identity,
     instance: Option<&str>,
-) -> Result<(), Error> {
+) -> Result<LocalMachine, Error> {
     #[derive(Deserialize)]
     struct Reply {
         protocol_version: u32,
         profile_id: String,
         instance_id: String,
-        machine: Machine,
+        machine: VerifiedMachine,
+        #[serde(default, deserialize_with = "crate::lenient")]
+        home: Option<bool>,
     }
     let reply: Reply = object(bytes)?;
     if reply.protocol_version != 1 {
@@ -169,7 +213,15 @@ pub(super) fn verify(
     {
         return Err(Error::BindingMismatch);
     }
-    Ok(())
+    let name = reply
+        .machine
+        .name
+        .map(|name| crate::profiles::setup::one_line(&name))
+        .filter(|name| !name.is_empty());
+    Ok(LocalMachine {
+        name,
+        home: reply.home,
+    })
 }
 
 /// Decode the JSON object `bytes`. Derived structs also accept a

@@ -12,7 +12,7 @@ use crate::profiles::{
     Client, Error,
     selection::{Selected, Selection},
 };
-use agent_interface_roster::profiles::{Item, State};
+use agent_interface_roster::profiles::{Accounts, Item, State};
 use gpui::{
     Context, Entity, EventEmitter, FocusHandle, ScrollHandle, SharedString, Subscription, Window,
     div, prelude::*, px,
@@ -321,9 +321,22 @@ impl ProfilePicker {
             return ("Didn't start".into(), true);
         }
         match item.state {
-            State::Ready => ("".into(), false),
+            State::Ready => (
+                whose_accounts(item.accounts).unwrap_or_default().into(),
+                false,
+            ),
             State::Failed => ("Didn't finish".into(), true),
         }
+    }
+}
+
+/// Whose accounts a profile's agents use, in plain words, or nothing when
+/// the service doesn't say.
+pub(super) fn whose_accounts(accounts: Accounts) -> Option<&'static str> {
+    match accounts {
+        Accounts::MachineUser => Some("Uses your accounts"),
+        Accounts::Own => Some("Uses its own accounts"),
+        Accounts::Unknown => None,
     }
 }
 
@@ -549,7 +562,17 @@ mod tests {
             state,
             reason: None,
             failure: None,
+            accounts: Default::default(),
         }
+    }
+    #[test]
+    fn whose_accounts_is_said_in_plain_words_and_never_as_the_raw_value() {
+        assert_eq!(
+            whose_accounts(Accounts::MachineUser),
+            Some("Uses your accounts")
+        );
+        assert_eq!(whose_accounts(Accounts::Own), Some("Uses its own accounts"));
+        assert_eq!(whose_accounts(Accounts::Unknown), None);
     }
     #[test]
     fn moving_down_past_the_last_ready_profile_reaches_new_profile() {

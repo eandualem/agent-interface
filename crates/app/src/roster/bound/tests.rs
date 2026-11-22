@@ -73,11 +73,14 @@ fn provider(
                 .unwrap();
                 continue;
             }
-            // The swarm read after each roster is answered without counting,
-            // and names the same profile as every request.
+            // The swarm and services reads after each roster are answered without counting,
+            // and name the same profile as every request.
             let swarms = request.starts_with("get /api/swarms ");
+            let services = request.starts_with("get /api/status/services ");
             let target = if swarms {
                 "/api/swarms"
+            } else if services {
+                "/api/status/services"
             } else if attempt == 0 {
                 "/api/profile"
             } else {
@@ -87,6 +90,10 @@ fn provider(
             assert!(request.contains(&format!("x-backbone-profile-id: profile-{label}\r\n")));
             if swarms {
                 write!(stream, "HTTP/1.1 200 Fixture\r\nContent-Length: 12\r\nConnection: close\r\n\r\n{{\"items\":[]}}").unwrap();
+                continue;
+            }
+            if services {
+                write!(stream, "HTTP/1.1 200 Fixture\r\nContent-Length: 15\r\nConnection: close\r\n\r\n{{\"machines\":[]}}").unwrap();
                 continue;
             }
             if attempt == 1
@@ -369,17 +376,20 @@ fn a_read_after_a_refusal_clears_it_and_shows_the_new_roster() {
         )
     };
     let swarms = || Reply::ok("/api/swarms", json!({"items": []}));
+    let services = || Reply::ok("/api/status/services", json!({"machines": []}));
     let (_directory, connection, server) = provider(
         "a",
         vec![
             roster("busy", "first"),
             swarms(),
+            services(),
             Reply {
                 status: 401,
                 ..Reply::ok("/api/agents", json!({}))
             },
             roster("waiting_for_human", "second"),
             swarms(),
+            services(),
         ],
     );
     let (wake, woken) = mpsc::channel();
@@ -412,5 +422,98 @@ fn a_read_after_a_refusal_clears_it_and_shows_the_new_roster() {
     drop(source);
     while woken.try_recv() == Ok(()) {}
     assert_eq!(woken.try_recv(), Err(mpsc::TryRecvError::Disconnected));
+    server.join().unwrap();
+}
+
+#[test]
+fn machine_offline_and_recovery_updates_roster_live_without_restart() {
+    use crate::roster::content::tests::{Reply, provider};
+    use agent_interface_roster::MachineState;
+
+    let remote_id = "f".repeat(64);
+    let swarms = || Reply::ok("/api/swarms", json!({"items": []}));
+    let (_directory, connection, server) = provider(
+        "a",
+        vec![
+            Reply::ok(
+                "/api/agents",
+                json!({"items": [{
+                    "name": "linux-worker", "state": "busy", "state_source": "push",
+                    "machine": {"id": remote_id, "name": "build-linux"}
+                }]}),
+            ),
+            swarms(),
+            Reply::ok(
+                "/api/status/services",
+                json!({"machines": [
+                    {"id": "machine-a", "name": "laptop", "home": true, "state": "online"},
+                    {"id": remote_id, "name": "build-linux", "home": false, "state": "online"}
+                ]}),
+            ),
+            Reply::ok(
+                "/api/agents",
+                json!({"items": [{
+                    "name": "linux-worker", "state": "busy", "state_source": "stale",
+                    "evidence": ["machine last reported 3m ago"],
+                    "machine": {"id": remote_id, "name": "build-linux"}
+                }]}),
+            ),
+            swarms(),
+            Reply::ok(
+                "/api/status/services",
+                json!({"machines": [
+                    {"id": "machine-a", "name": "laptop", "home": true, "state": "online"},
+                    {"id": remote_id, "name": "build-linux", "home": false, "state": "offline",
+                     "last_seen": "2026-11-22T12:00:00Z"}
+                ]}),
+            ),
+            Reply::ok(
+                "/api/agents",
+                json!({"items": [{
+                    "name": "linux-worker", "state": "idle", "state_source": "push",
+                    "machine": {"id": remote_id, "name": "build-linux"}
+                }]}),
+            ),
+            swarms(),
+            Reply::ok(
+                "/api/status/services",
+                json!({"machines": [
+                    {"id": "machine-a", "name": "laptop", "home": true, "state": "online"},
+                    {"id": remote_id, "name": "build-linux", "home": false, "state": "online"}
+                ]}),
+            ),
+        ],
+    );
+    let (wake, woken) = mpsc::channel();
+    let source = BoundRosterSource::start(connection, move || {
+        let _ = wake.send(());
+    })
+    .unwrap();
+    let next = || loop {
+        woken.recv_timeout(Duration::from_secs(10)).unwrap();
+        if let Some(update) = source.take_update() {
+            break update;
+        }
+    };
+    let online = next();
+    assert_eq!(online.snapshot.machines[1].state, MachineState::Online);
+    assert_eq!(
+        online.snapshot.details["linux-worker"]
+            .state_source
+            .as_deref(),
+        Some("push")
+    );
+    let offline = next();
+    assert_eq!(offline.snapshot.machines[1].state, MachineState::Offline);
+    assert_eq!(
+        offline.snapshot.details["linux-worker"]
+            .state_source
+            .as_deref(),
+        Some("stale")
+    );
+    let back = next();
+    assert_eq!(back.snapshot.machines[1].state, MachineState::Online);
+    assert_eq!(back.snapshot.states["linux-worker"], "idle");
+    drop(source);
     server.join().unwrap();
 }

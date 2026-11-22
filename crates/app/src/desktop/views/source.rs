@@ -15,6 +15,7 @@ pub(in crate::desktop) struct Source {
 
 fn request(request: &views::Request) -> content::Request {
     match request {
+        views::Request::Members => content::Request::Members,
         views::Request::Team => content::Request::Team,
         views::Request::Tags => content::Request::Tags,
         views::Request::Policies => content::Request::Policies,
@@ -58,6 +59,7 @@ impl Source {
             return None;
         }
         let wanted = match update.read.request {
+            content::Request::Members => views::Request::Members,
             content::Request::Team => views::Request::Team,
             content::Request::Tags => views::Request::Tags,
             content::Request::Policies => views::Request::Policies,

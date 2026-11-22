@@ -437,13 +437,14 @@ fn agent_list_reads_again_while_registrations_settle_but_not_forever() {
         settling.clone(),
         (200, json!({"items": [], "total": 0})),
         (200, json!({"items": []})),
+        (200, json!({"machines": []})),
     ];
     replies.extend(std::iter::repeat_n(settling, 41));
     let server = serve(listener, replies);
     let connection = profile.connect().unwrap();
     assert!(connection.roster().is_ok());
     assert_eq!(connection.roster().err(), Some(Error::Refused(409)));
-    assert_eq!(server.join().unwrap().len(), 45);
+    assert_eq!(server.join().unwrap().len(), 46);
 }
 
 #[test]
@@ -453,6 +454,7 @@ fn bound_roster_preserves_typed_failures_and_decodes_success() {
     let required =
         json!({"detail": {"code": "binding_required", "message": "Profile binding is required."}});
     let required_again = required.clone();
+    let required_services = required.clone();
     let server = serve(
         listener,
         vec![
@@ -465,12 +467,21 @@ fn bound_roster_preserves_typed_failures_and_decodes_success() {
                 200,
                 json!({"items": [{"name": "fix", "status": "active", "initiator": "worker", "members": ["fix-coder"]}]}),
             ),
+            (
+                200,
+                json!({"machines": [{"id": "5f2c9e0d1b7a4e38", "name": "laptop", "home": true, "state": "online"}]}),
+            ),
             (200, json!({"items": []})),
-            // An unreadable swarm list leaves the roster itself usable.
+            // An unreadable swarm list and missing services leave the roster usable.
             (500, json!({})),
+            (404, json!({})),
             // A binding refused on the swarm read is still a refused binding.
             (200, json!({"items": []})),
             (409, required_again),
+            // A binding refused on the services read is also a refused binding.
+            (200, json!({"items": []})),
+            (200, json!({"items": []})),
+            (409, required_services),
         ],
     );
     let connection = profile.connect().unwrap();
@@ -481,20 +492,120 @@ fn bound_roster_preserves_typed_failures_and_decodes_success() {
     assert_eq!(roster.states["worker"], "busy");
     assert!(roster.error.is_none() && roster.observed_at.is_some());
     assert_eq!(roster.swarms[0].members, ["fix-coder"]);
+    assert!(roster.machines_read);
+    assert_eq!(roster.machines.len(), 1);
+    assert_eq!(roster.machines[0].name, "laptop");
     let empty = connection.roster().unwrap();
-    assert!(empty.states.is_empty() && empty.swarms.is_empty());
+    assert!(empty.states.is_empty() && empty.swarms.is_empty() && !empty.machines_read);
+    assert_eq!(connection.roster().err(), Some(Error::BindingRequired));
     assert_eq!(connection.roster().err(), Some(Error::BindingRequired));
     let requests = server.join().unwrap();
-    assert_eq!(requests.len(), 10);
+    assert_eq!(requests.len(), 15);
     for (index, request) in requests.iter().enumerate().skip(1) {
-        let path = if [5, 7, 9].contains(&index) {
+        let path = if [5, 8, 11, 13].contains(&index) {
             "/api/swarms"
+        } else if [6, 9, 14].contains(&index) {
+            "/api/status/services"
         } else {
             "/api/agents"
         };
-        assert!(request.starts_with(&format!("get {path} ")));
+        assert!(
+            request.starts_with(&format!("get {path} ")),
+            "{index}: {request}"
+        );
         assert!(request.contains("x-backbone-profile-id: 0a1b2c3d4e5f\r\n"));
     }
+}
+
+#[test]
+fn start_stop_and_restart_route_through_the_service_and_report_unreachable_reasons() {
+    use crate::lifecycle::{ActionOutcome, Outcome};
+    const REG: &str = "1234567890abcdef1234567890abcdef";
+    let (directory, listener, socket) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), &socket);
+    let unreachable = json!({
+        "detail": {"code": "machine_unreachable", "message": "build-linux cannot be reached."}
+    });
+    let binding_mismatch = json!({
+        "detail": {"code": "binding_mismatch", "message": "Wrong profile."}
+    });
+    let server = serve(
+        listener,
+        vec![
+            (200, identity),
+            (503, unreachable.clone()),
+            (200, json!({"ok": true, "session": "remote-worker"})),
+            (503, unreachable.clone()),
+            (
+                200,
+                json!({"id": 9, "session": "remote-worker", "status": "pending"}),
+            ),
+            (503, unreachable),
+            (409, binding_mismatch.clone()),
+            (409, binding_mismatch.clone()),
+            (409, binding_mismatch),
+        ],
+    );
+    let connection = profile.connect().unwrap();
+    assert_eq!(
+        connection.start_agent("remote-worker", false),
+        Outcome::Refused("build-linux cannot be reached.".into())
+    );
+    assert_eq!(
+        connection.stop_agent("remote-worker", Some(REG)),
+        ActionOutcome::Done("Stopped remote-worker.".into())
+    );
+    assert_eq!(
+        connection.stop_agent("remote-worker", None),
+        ActionOutcome::Refused("build-linux cannot be reached.".into())
+    );
+    assert_eq!(
+        connection.restart_agent("remote-worker", true),
+        ActionOutcome::Done("Restarting remote-worker…".into())
+    );
+    assert_eq!(
+        connection.restart_agent("remote-worker", false),
+        ActionOutcome::Refused("build-linux cannot be reached.".into())
+    );
+    assert_eq!(
+        connection.start_agent("remote-worker", false),
+        Outcome::Refused(
+            "The original profile binding was refused. Reconnect to that profile.".into()
+        )
+    );
+    assert_eq!(
+        connection.stop_agent("remote-worker", None),
+        ActionOutcome::Refused(
+            "The original profile binding was refused. Reconnect to that profile.".into()
+        )
+    );
+    assert_eq!(
+        connection.restart_agent("remote-worker", false),
+        ActionOutcome::Refused(
+            "The original profile binding was refused. Reconnect to that profile.".into()
+        )
+    );
+    assert!(matches!(
+        connection.stop_agent("../bad", None),
+        ActionOutcome::Refused(_)
+    ));
+    assert!(matches!(
+        connection.stop_agent("remote-worker", Some("bad-reg")),
+        ActionOutcome::Refused(_)
+    ));
+    assert!(matches!(
+        connection.restart_agent("../bad", false),
+        ActionOutcome::Refused(_)
+    ));
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 9);
+    assert!(requests[1].starts_with("post /api/agents/remote-worker/start "));
+    assert!(requests[2].starts_with(&format!(
+        "post /api/agents/remote-worker/stop?expected_registration_id={REG} "
+    )));
+    assert!(requests[3].starts_with("post /api/agents/remote-worker/stop "));
+    assert!(requests[4].starts_with("post /api/agents/remote-worker/restart "));
+    assert!(requests[5].starts_with("post /api/agents/remote-worker/restart "));
 }
 
 #[test]
@@ -615,6 +726,32 @@ fn rust_service_entries_list_and_connect_without_a_key() {
         Profile::parse(&serde_json::to_vec(&later).unwrap()).err(),
         Some(Error::Unsupported)
     );
+    // Whose accounts: an absent field, `null`, a value this app doesn't know
+    // or one of the wrong type is Unknown, and never fails the list.
+    assert_eq!(items[0].accounts, Accounts::Unknown);
+    assert_eq!(items[1].accounts, Accounts::Unknown);
+    for (value, accounts) in [
+        (json!("machine_user"), Accounts::MachineUser),
+        (json!("own"), Accounts::Own),
+        (json!("unknown"), Accounts::Unknown),
+        (json!("a_value_to_come"), Accounts::Unknown),
+        (json!(null), Accounts::Unknown),
+        (json!(7), Accounts::Unknown),
+        (json!({"kind": "own"}), Accounts::Unknown),
+        (json!(["own"]), Accounts::Unknown),
+        (json!({"own": null}), Accounts::Unknown),
+        (json!({"machine_user": null}), Accounts::Unknown),
+    ] {
+        for base in [served_entry(&socket), failed.clone()] {
+            let mut entry = base;
+            entry["accounts"] = value.clone();
+            let shown = Profile::parse(&serde_json::to_vec(&entry).unwrap()).unwrap();
+            assert_eq!(shown.item().accounts, accounts, "{value}");
+            let listed = json!({"profiles": [entry]});
+            let items = list(&serde_json::to_vec(&listed).unwrap()).unwrap();
+            assert_eq!(items[0].accounts, accounts, "{value}");
+        }
+    }
     // The failure's stable code is kept for logs; one this app doesn't know is Other.
     assert_eq!(items[1].failure, Some(Failure::DatabaseUnreachable));
     let mut later_code = failed.clone();
@@ -669,6 +806,7 @@ fn rust_service_entries_list_and_connect_without_a_key() {
             (200, identity),
             (200, agents),
             (200, json!({"items": []})),
+            (200, json!({"machines": []})),
             (200, opened.clone()),
             (200, foreign),
             (200, restarted.clone()),

@@ -102,6 +102,11 @@ the terminal text size, whether panes show headers (always, on hover or never) a
 changes apply to every window at once and are saved in
 `$XDG_CONFIG_HOME/agent-interface/settings.toml`, or
 `~/.config/agent-interface/settings.toml` when that variable is unset.
+Open **Settings → Profiles → Saved requests** to check a profile creation after
+closing the app. An unanswered create shows **Outcome not yet confirmed**.
+Reading it sends nothing. **Try the same request again** resends it using the
+original request ID.
+
 **Interface size** (75% to 200%) scales the whole window, terminals included,
 on top of the display's own scale. Use it when a screen draws the app too
 small or too large, such as a 4K display under WSL.
@@ -247,6 +252,19 @@ are not restarted by this action.
 
 Ordinary shells use the library's persistent tmux shell server; attachments use
 their saved source socket, or the source resolved from the launch environment.
+Moving the whole library folder on the same filesystem keeps its running ordinary
+shells when the app has previously registered the library. A copy can use its
+own server. For a move between volumes or one made before registration,
+close the app and identify the intended destination and the former absolute
+folder path. On Linux, run
+`agent-interface --data-dir NEW_FOLDER --reconnect-shells-from FORMER_FOLDER`.
+With the standard macOS installation, run
+`"$HOME/Applications/Agent Interface.app/Contents/MacOS/agent-interface" --data-dir NEW_FOLDER --reconnect-shells-from FORMER_FOLDER`.
+Reopen the destination library to reach its existing sessions. Choose
+**Open terminal** to start a separate shell for a copy. If you already started
+separate shells in the destination, exit them before recovering the original
+server.
+
 Use **Attach a session** in an empty pane, **Attach session** in tab options, or
 Command-Shift-A, to
 choose an existing source session. Type to filter names, use Up/Down and Enter,
@@ -282,7 +300,7 @@ remove its tab, open another library, or close its native window. The source’s
 session-lifetime policy still applies to an explicit detach. Connections preserve
 the session environment. A displayed
 terminal sizes its session to the pane under tmux's `window-size` option; text
-scales down only while another client keeps the window larger.
+scales to fit when the shared grid is larger. Agent tiles request at least 80 columns to keep prompts usable. Hiding or closing an agent tile releases its size and lets tmux use other attached clients or the session’s default dimensions.
 
 ## Rename and save changes
 

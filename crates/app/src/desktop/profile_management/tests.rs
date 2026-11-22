@@ -27,6 +27,7 @@ fn unknown_storage_and_submission_never_enable_replacement_submission() {
     let mut snapshot = Snapshot {
         key: "key".into(),
         revision: 1,
+        display_name: Some("Example".into()),
         phase: Phase::Prepared,
         action: Action::Create,
         request_id: "request-a".into(),
@@ -120,7 +121,7 @@ fn unsafe_lifecycle_storage_does_not_hide_independent_setup_recovery() {
     fs::set_permissions(&lifecycle, fs::Permissions::from_mode(0o755)).unwrap();
     let client = Client::new(directory.join("absent-provider"), "/usr/bin:/bin".into()).unwrap();
     let opened = open_management(
-        client,
+        Some(client),
         Some(directory.clone()),
         None,
         &AtomicBool::new(true),
@@ -149,6 +150,7 @@ fn a_failed_profile_shows_its_reason_and_no_served_panes() {
         state: State::Failed,
         reason: Some("Its folder can't be read.".into()),
         failure: None,
+        accounts: Default::default(),
     };
     assert_eq!(state_line(&failed), "Its folder can't be read.");
     assert!(!has_served_panes(&failed));
@@ -173,4 +175,76 @@ fn every_unreadable_record_offers_forget() {
     assert!(!unreadable(controller::Error::Storage(
         journal::Error::Unavailable
     )));
+}
+
+#[test]
+fn uncached_scoped_history_keeps_page_offset_across_unrelated_profiles() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().canonicalize().unwrap();
+    let client = Client::new(directory.join("never-executed"), "/usr/bin:/bin".into()).unwrap();
+    let controller = Controller::new(
+        journal::Journal::open(&directory.join("journal")).unwrap(),
+        &client,
+    );
+    for i in 0..21 {
+        controller
+            .enqueue(Prepared::create(&format!("request-{i}"), "Example").unwrap())
+            .unwrap();
+    }
+    let all_ids = controller.ids().unwrap();
+    let storage = journal::Journal::open(&directory.join("journal")).unwrap();
+    for key in &all_ids[..3] {
+        let request_id = controller.read(key).unwrap().request_id;
+        let record = storage.read(key).unwrap().unwrap();
+        let checkpoint = serde_json::json!({
+            "checkpoint_version": 2,
+            "request": serde_json::json!({
+                "request_id": request_id,
+                "action": "create",
+                "display_name": "Example",
+            })
+            .to_string(),
+            "observation": {
+                "identity": {
+                    "profile_id": "000000000002",
+                    "machine_id": "000000000003",
+                },
+                "status": "succeeded",
+                "error_code": null,
+            },
+        });
+        let prepared = Prepared::restore(&serde_json::to_vec(&checkpoint).unwrap()).unwrap();
+        let capsule = String::from_utf8(
+            crate::profiles::lifecycle::Operation::new(&client, prepared)
+                .checkpoint()
+                .unwrap(),
+        )
+        .unwrap();
+        let bytes = format!(
+            r#"{{"format":1,"kind":"lifecycle","phase":"submitted","capsule":{}}}"#,
+            serde_json::to_string(&capsule).unwrap()
+        );
+        storage
+            .save(key, Some(record.revision()), bytes.as_bytes())
+            .unwrap();
+        assert_eq!(
+            controller
+                .read(key)
+                .unwrap()
+                .identity
+                .as_ref()
+                .unwrap()
+                .profile_id,
+            "000000000002"
+        );
+    }
+    let live = AtomicBool::new(true);
+    let Page::History { ids, offset, rows } =
+        history(&controller, Some("000000000001"), None, PAGE_SIZE, &live).unwrap()
+    else {
+        panic!("history");
+    };
+    assert_eq!(ids.len(), 18);
+    assert_eq!(offset, PAGE_SIZE);
+    assert_eq!(rows.len(), 2);
 }
