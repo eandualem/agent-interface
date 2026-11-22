@@ -121,7 +121,7 @@ fn unsafe_lifecycle_storage_does_not_hide_independent_setup_recovery() {
     fs::set_permissions(&lifecycle, fs::Permissions::from_mode(0o755)).unwrap();
     let client = Client::new(directory.join("absent-provider"), "/usr/bin:/bin".into()).unwrap();
     let opened = open_management(
-        client,
+        Some(client),
         Some(directory.clone()),
         None,
         &AtomicBool::new(true),

@@ -1345,8 +1345,12 @@ mod tests {
         assert!(controller.submit(&key, &|| true).is_err());
         drop(controller);
         let live = std::sync::atomic::AtomicBool::new(true);
+        let other = tempfile::tempdir().unwrap();
+        let other = other.path().canonicalize().unwrap();
+        let other_library = super::super::open_management(None, Some(other), None, &live).unwrap();
+        assert!(other_library.controller.unwrap().ids().unwrap().is_empty());
         let reopened =
-            super::super::open_management(client, Some(root.clone()), None, &live).unwrap();
+            super::super::open_management(None, Some(root.clone()), None, &live).unwrap();
         let controller = reopened.controller.unwrap();
         let super::super::Page::History { rows, .. } = reopened.page.unwrap() else {
             panic!("Settings did not reopen the saved requests");
@@ -1365,16 +1369,21 @@ mod tests {
             ids.contains(&key)
         };
         assert!(visible_from_profile("0a1b2c3d4e5f"));
-        assert_eq!(controller.read(&key).unwrap().request_id, "request-a");
+        let (record, error) =
+            super::super::Command::Read.run(&controller, &key, None, &|| true, || {
+                panic!("reading history resolved a provider")
+            });
+        assert!(error.is_none());
+        assert_eq!(record.unwrap().request_id, "request-a");
         assert_eq!(
             std::fs::read_to_string(root.join("calls")).unwrap(),
             "create\n"
         );
         made(&root);
-        let Ok(receipt) = recover(&controller, &key, &|| true) else {
-            panic!("the request was not resent");
-        };
-        assert_eq!(receipt.status, Status::Succeeded);
+        let (saved, error) =
+            super::super::Command::Retry.run(&controller, &key, None, &|| true, || Some(client));
+        assert!(error.is_none());
+        assert_eq!(saved.unwrap().terminal.unwrap().status, Status::Succeeded);
         let calls = std::fs::read_to_string(root.join("calls")).unwrap();
         assert_eq!(calls, "create\ncreate\n");
         let arguments = std::fs::read_to_string(root.join("arguments")).unwrap();
@@ -1384,6 +1393,17 @@ mod tests {
         assert_eq!(lines[0], lines[1]);
         assert!(visible_from_profile("0a1b2c3d4e5f"));
         assert!(!visible_from_profile("000000000001"));
+        let (record, _) = super::super::Command::Read.run(
+            &controller,
+            &key,
+            Some("000000000001"),
+            &|| true,
+            || None,
+        );
+        assert!(matches!(
+            record,
+            Err(crate::profiles::controller::Error::Missing)
+        ));
     }
 
     #[test]

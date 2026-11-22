@@ -101,7 +101,7 @@ enum Page {
 }
 
 pub(super) struct Management {
-    client: Client,
+    client: Option<Client>,
     /// The one profile this page is for; unfinished creates can lack a profile ID.
     profile_id: Option<String>,
     directory: Option<PathBuf>,
@@ -126,7 +126,7 @@ impl EventEmitter<Back> for Management {}
 impl EventEmitter<Open> for Management {}
 impl Management {
     pub fn new(
-        client: Client,
+        client: Option<Client>,
         directory: Option<PathBuf>,
         profile: Option<String>,
         cx: &mut Context<Self>,
@@ -227,7 +227,9 @@ impl Management {
             return;
         };
         self.ticket.begin();
-        let client = self.client.clone();
+        let Some(client) = self.client.clone() else {
+            return;
+        };
         let profile = self.profile_id.clone();
         let setup = cx.new(|cx| setup::Pane::new(client, directory, profile, cx));
         self.attach_setup(setup, window, cx);
@@ -279,7 +281,9 @@ impl Management {
             return;
         };
         let profile = profile.clone();
-        let client = self.client.clone();
+        let Some(client) = self.client.clone() else {
+            return;
+        };
         self.ticket.begin();
         let form =
             cx.new(|cx| choices::Form::new(client, directory, profile, "Cancel", window, cx));
@@ -389,14 +393,15 @@ impl Management {
         self.error = None;
         let ticket = self.ticket.begin();
         let worker = ticket.clone();
+        let profile = self.profile_id.clone();
         let work = cx.background_executor().spawn(async move {
-            let live = || worker.load(Ordering::Acquire);
-            let error = match command {
-                Command::Read => None,
-                Command::Submit => controller.submit(&key, &live).err(),
-                Command::Retry => controller.retry(&key, &live).err(),
-            };
-            (controller.read(&key), error)
+            command.run(
+                &controller,
+                &key,
+                profile.as_deref(),
+                &|| worker.load(Ordering::Acquire),
+                super::onboarding::probe::profile_client,
+            )
         });
         self.observe_operation(ticket, work, cx);
     }
@@ -495,6 +500,32 @@ enum Command {
     Retry,
 }
 impl Command {
+    fn run(
+        self,
+        controller: &Controller,
+        key: &str,
+        profile: Option<&str>,
+        live: &dyn Fn() -> bool,
+        resolve: impl FnOnce() -> Option<Client>,
+    ) -> (
+        Result<Snapshot, controller::Error>,
+        Option<controller::Error>,
+    ) {
+        let read = || scoped_record(controller, key, profile);
+        let snapshot = read();
+        if matches!(self, Self::Read) || snapshot.is_err() {
+            return (snapshot, None);
+        }
+        let result = controller
+            .ensure_provider(resolve)
+            .and_then(|()| match self {
+                Self::Submit => controller.submit(key, live),
+                Self::Retry => controller.retry(key, live),
+                Self::Read => unreachable!(),
+            });
+        (read(), result.err())
+    }
+
     fn allowed(self, snapshot: Option<&Snapshot>) -> bool {
         if matches!(self, Self::Read) {
             return true;
@@ -515,7 +546,7 @@ struct Opened {
     page: Result<Page, controller::Error>,
 }
 fn open_management(
-    client: Client,
+    client: Option<Client>,
     directory: Option<PathBuf>,
     profile: Option<String>,
     live: &AtomicBool,
@@ -525,11 +556,15 @@ fn open_management(
     // Keep the resolved library location even if this independent journal is
     // unsafe. Setup recovery must still enforce and use its own journal checks.
     let controller = journal::Journal::open(&directory.join("profile-operations"))
-        .map(|journal| Arc::new(Controller::new(journal, &client)))
+        .map(|journal| Arc::new(Controller::for_history(journal, client.as_ref())))
         .map_err(controller::Error::Storage);
     let page = match &controller {
         Ok(controller) => match profile {
             Some(id) => client
+                .as_ref()
+                .ok_or(controller::Error::Client(
+                    crate::profiles::Error::Unavailable,
+                ))?
                 .show(&id, &|| live.load(Ordering::Acquire))
                 .map(Page::Detail)
                 .map_err(controller::Error::Client),
@@ -551,32 +586,44 @@ fn history(
     offset: usize,
     live: &AtomicBool,
 ) -> Result<Page, controller::Error> {
-    let ids = match ids {
+    let mut ids = match ids {
         Some(ids) => ids,
-        None => controller
-            .ids()?
-            .into_iter()
-            .filter(|key| {
-                // A record that can't be read may be this profile's, so it stays.
-                profile.is_none_or(|id| match controller.read(key) {
-                    Ok(s) => match s.identity {
-                        Some(identity) => identity.profile_id == id,
-                        None => s.terminal.is_none(),
-                    },
-                    Err(_) => true,
-                })
-            })
-            .collect(),
+        None => controller.ids()?,
     };
+    if profile.is_some() {
+        ids.retain(|key| {
+            !matches!(
+                scoped_record(controller, key, profile),
+                Err(controller::Error::Missing)
+            )
+        });
+    }
     let offset = offset.min(ids.len().saturating_sub(1) / PAGE_SIZE * PAGE_SIZE);
     let mut rows = Vec::new();
     for key in ids.iter().skip(offset).take(PAGE_SIZE) {
         if !live.load(Ordering::Acquire) {
             return Err(controller::Error::Client(crate::profiles::Error::Cancelled));
         }
-        rows.push((key.clone(), controller.read(key)));
+        let record = scoped_record(controller, key, profile);
+        if !matches!(record, Err(controller::Error::Missing)) {
+            rows.push((key.clone(), record));
+        }
     }
     Ok(Page::History { ids, offset, rows })
+}
+fn scoped_record(
+    controller: &Controller,
+    key: &str,
+    profile: Option<&str>,
+) -> Result<Snapshot, controller::Error> {
+    let saved = controller.read(key)?;
+    if profile.is_some_and(|id| match &saved.identity {
+        Some(identity) => identity.profile_id != id,
+        None => saved.terminal.is_some(),
+    }) {
+        return Err(controller::Error::Missing);
+    }
+    Ok(saved)
 }
 fn action_label(action: Action) -> &'static str {
     match action {

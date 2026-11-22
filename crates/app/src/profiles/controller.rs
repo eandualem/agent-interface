@@ -8,6 +8,7 @@ use agent_interface_roster::profiles::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::sync::OnceLock;
 
 const LIMIT: usize = journal::LIMIT;
 
@@ -104,15 +105,33 @@ impl Stored {
 /// must run off the UI thread. Constructing/restoring never invokes a provider.
 pub struct Controller {
     journal: journal::Journal,
-    client: Client,
+    client: OnceLock<Client>,
 }
 impl Controller {
     /// Capture the original command context alongside an already opened journal.
     pub fn new(journal: journal::Journal, client: &Client) -> Self {
-        Self {
+        Self::for_history(journal, Some(client))
+    }
+
+    /// Local journal reads work while the provider is absent or still being discovered.
+    pub fn for_history(journal: journal::Journal, client: Option<&Client>) -> Self {
+        let controller = Self {
             journal,
-            client: client.clone(),
+            client: OnceLock::new(),
+        };
+        if let Some(client) = client {
+            let _ = controller.client.set(client.clone());
         }
+        controller
+    }
+
+    /// Resolve a missing provider only on an explicit send from local history.
+    pub fn ensure_provider(&self, resolve: impl FnOnce() -> Option<Client>) -> Result<(), Error> {
+        if self.client.get().is_none() {
+            let client = resolve().ok_or(Error::Client(super::Error::Unavailable))?;
+            let _ = self.client.set(client);
+        }
+        Ok(())
     }
 
     /// Stable key for this original request, including after an ambiguous write.
@@ -133,7 +152,12 @@ impl Controller {
         if prepared.terminal().is_some() {
             return Err(Error::Completed);
         }
-        let operation = Operation::new(&self.client, prepared);
+        let operation = Operation::new(
+            self.client
+                .get()
+                .ok_or(Error::Client(super::Error::Unavailable))?,
+            prepared,
+        );
         let key = Self::key(operation.request_id());
         let bytes = encode(Phase::Prepared, &operation)?;
         let record = self.journal.save(&key, None, &bytes)?;
@@ -198,8 +222,9 @@ impl Controller {
             return Err(Error::Invalid);
         }
         // A record this app can't restore is invalid: it can only be forgotten.
-        let operation = Operation::restore(&self.client, envelope.capsule.as_bytes())
-            .map_err(|_| Error::Invalid)?;
+        let operation =
+            Operation::restore_for_history(self.client.get(), envelope.capsule.as_bytes())
+                .map_err(|_| Error::Invalid)?;
         if Self::key(operation.request_id()) != key
             || (envelope.phase == Phase::Prepared && operation.terminal().is_some())
         {
@@ -231,6 +256,9 @@ impl Controller {
         }
         if !live() {
             return Err(Error::Client(super::Error::Cancelled));
+        }
+        if self.client.get().is_none() {
+            return Err(Error::Client(super::Error::Unavailable));
         }
         // Claim a new revision for every invocation. A concurrent result can
         // never overwrite another claim or terminal observation.

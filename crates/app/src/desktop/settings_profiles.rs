@@ -17,15 +17,42 @@ enum List {
     Ready(Vec<Item>),
 }
 
+#[derive(Clone, PartialEq)]
+pub(super) struct Origin {
+    window: Option<gpui::WindowHandle<Browser>>,
+    directory: Option<std::path::PathBuf>,
+}
+
+impl Origin {
+    pub fn capture(cx: &App) -> Self {
+        let window = super::browser_window(cx);
+        let directory = window.and_then(|w| w.read(cx).ok()?.directory.clone());
+        Self { window, directory }
+    }
+
+    fn browser(&self, cx: &App) -> Option<gpui::WindowHandle<Browser>> {
+        self.window
+            .into_iter()
+            .chain(
+                cx.windows()
+                    .into_iter()
+                    .filter_map(|w| w.downcast::<Browser>()),
+            )
+            .find(|w| w.read(cx).is_ok_and(|b| b.directory == self.directory))
+    }
+}
+
 pub(super) struct Profiles {
+    origin: Origin,
     client: Option<Client>,
     list: List,
     detail: Option<(Entity<Management>, Vec<Subscription>)>,
 }
 
 impl Profiles {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(origin: Origin, cx: &mut Context<Self>) -> Self {
         let mut page = Self {
+            origin,
             client: None,
             list: List::Loading,
             detail: None,
@@ -65,10 +92,8 @@ impl Profiles {
     }
 
     fn open(&mut self, id: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(client) = self.client.clone() else {
-            return;
-        };
-        let directory = library_directory(cx);
+        let client = self.client.clone();
+        let directory = self.origin.directory.clone();
         let pane = cx.new(|cx| Management::new(client, directory.clone(), id, cx));
         window.focus(&pane.read(cx).focus.clone(), cx);
         let back = cx.subscribe(&pane, |page, _, _: &Back, cx| {
@@ -89,11 +114,6 @@ impl Profiles {
             pane.update(cx, |pane, cx| pane.sign_in_ended(profile_id, runtime, cx));
         }
     }
-}
-
-/// Recover requests in the same browser library that Settings uses for New profile.
-fn library_directory(cx: &App) -> Option<std::path::PathBuf> {
-    super::browser_window(cx)?.read(cx).ok()?.directory.clone()
 }
 
 /// Open in the window whose library recorded the setup, else the usual one.
@@ -124,8 +144,8 @@ fn show_in_browser(
     }
 }
 
-fn new_profile(client: Option<Client>, cx: &mut App) {
-    if let Some(handle) = super::browser_window(cx) {
+fn new_profile(origin: &Origin, client: Option<Client>, cx: &mut App) {
+    if let Some(handle) = origin.browser(cx) {
         let _ = handle.update(cx, |browser, window, cx| {
             if let Some(client) = client {
                 browser.use_profile_client(client);
@@ -197,24 +217,23 @@ impl Render for Profiles {
                         ui::button("settings-new-profile", "New profile", ui::Button::Secondary)
                             .on_click(cx.listener(|page, _, _, cx| {
                                 let client = page.client.clone();
-                                cx.defer(move |cx| new_profile(client, cx));
+                                let origin = page.origin.clone();
+                                cx.defer(move |cx| new_profile(&origin, client, cx));
                             })),
                     ),
                 );
             }
         }
-        if self.client.is_some() {
-            page = page.child(
-                div().flex().child(
-                    ui::button(
-                        "settings-profile-requests",
-                        "Saved requests",
-                        ui::Button::Secondary,
-                    )
-                    .on_click(cx.listener(|page, _, window, cx| page.open(None, window, cx))),
-                ),
-            );
-        }
+        page = page.child(
+            div().flex().child(
+                ui::button(
+                    "settings-profile-requests",
+                    "Saved requests",
+                    ui::Button::Secondary,
+                )
+                .on_click(cx.listener(|page, _, window, cx| page.open(None, window, cx))),
+            ),
+        );
         page.into_any_element()
     }
 }

@@ -53,6 +53,7 @@ enum Page {
 }
 
 pub struct SettingsWindow {
+    origin: super::settings_profiles::Origin,
     page: Page,
     /// Built when Profiles is first chosen, so other pages never ask Agent Backbone.
     profiles: Option<gpui::Entity<super::settings_profiles::Profiles>>,
@@ -144,10 +145,23 @@ pub fn may_quit(cx: &mut App) -> bool {
 
 /// Bring the Settings window forward, opening it if it is not open.
 pub fn show(cx: &mut App) {
+    let origin = super::settings_profiles::Origin::capture(cx);
     let open = cx.try_global::<Open>().map(|Open(handle)| *handle);
     if let Some(handle) = open
         && handle
-            .update(cx, |_, window, _| window.activate_window())
+            .update(cx, |settings, window, cx| {
+                if cx
+                    .active_window()
+                    .and_then(|w| w.downcast::<Browser>())
+                    .is_some()
+                    && settings.origin != origin
+                {
+                    settings.origin = origin.clone();
+                    settings.profiles = None;
+                    cx.notify();
+                }
+                window.activate_window();
+            })
             .is_ok()
     {
         return;
@@ -201,6 +215,7 @@ pub fn show(cx: &mut App) {
                 }
             });
             SettingsWindow {
+                origin,
                 page: Page::Appearance,
                 profiles: None,
                 error: None,
@@ -1389,7 +1404,11 @@ impl Render for SettingsWindow {
             Page::Profiles => {
                 let profiles = self
                     .profiles
-                    .get_or_insert_with(|| cx.new(super::settings_profiles::Profiles::new))
+                    .get_or_insert_with(|| {
+                        cx.new(|cx| {
+                            super::settings_profiles::Profiles::new(self.origin.clone(), cx)
+                        })
+                    })
                     .clone();
                 div().flex().flex_col().pt(px(t.space.s12)).child(profiles)
             }
