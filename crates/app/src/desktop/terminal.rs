@@ -635,12 +635,16 @@ impl LiveTerminal {
         }
     }
 
-    fn start_remote(&mut self, cx: &mut Context<Self>) {
+    fn start_remote(&mut self, reconnect: bool, cx: &mut Context<Self>) {
         use crate::view::remote::{PANE, Remote, layout};
         self.closed = None;
-        self.view = None;
-        self.access = None;
-        self.error = None;
+        // A reconnect keeps the last screen and reason until the new stream
+        // opens, instead of flashing an empty Connecting panel each attempt.
+        if !reconnect {
+            self.view = None;
+            self.access = None;
+            self.error = None;
+        }
         self.connecting = true;
         let target = self.target.clone();
         self.refresh_on_reopen = false;
@@ -667,6 +671,7 @@ impl LiveTerminal {
                 terminal.connecting = false;
                 match result {
                     Ok((remote, size, access, updates)) => {
+                        terminal.error = None;
                         terminal.access = Some(access);
                         let view = cx.new(|cx| {
                             TerminalView::embedded(
@@ -734,7 +739,7 @@ impl LiveTerminal {
         cx: &mut Context<Self>,
     ) {
         if self.target.remote().is_some() {
-            self.start_remote(cx);
+            self.start_remote(reconnect, cx);
             return;
         }
         self.closed = None;

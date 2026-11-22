@@ -271,10 +271,12 @@ fn open(
 ) -> io::Result<(Stream, Writer, Close)> {
     // A missing socket is a restarting service; a rejected one is a refusal.
     let uid = local::owned(socket).map_err(|_| {
-        let kind = if socket.exists() {
-            io::ErrorKind::Other
-        } else {
+        let missing = std::fs::symlink_metadata(socket)
+            .is_err_and(|error| error.kind() == io::ErrorKind::NotFound);
+        let kind = if missing {
             io::ErrorKind::NotConnected
+        } else {
+            io::ErrorKind::Other
         };
         io::Error::new(kind, "Profile socket unavailable")
     })?;
@@ -321,21 +323,26 @@ fn open(
                     code: String,
                     message: String,
                 }
-                let body = http_body_util::Limited::new(response.into_body(), FRAME)
-                    .collect()
-                    .await
-                    .map_err(|_| invalid())?
-                    .to_bytes();
-                let reason = serde_json::from_slice::<Refusal>(&body)
-                    .ok()
-                    .map(|r| format!("{} ({})", r.detail.message, r.detail.code))
-                    .unwrap_or_else(|| format!("Terminal service returned {status}"));
                 // 503: the home or the agent's machine cannot be reached now.
-                let kind = if status == hyper::StatusCode::SERVICE_UNAVAILABLE {
+                let unreachable = status == hyper::StatusCode::SERVICE_UNAVAILABLE;
+                let kind = if unreachable {
                     io::ErrorKind::HostUnreachable
                 } else {
                     io::ErrorKind::Other
                 };
+                let body = match http_body_util::Limited::new(response.into_body(), FRAME)
+                    .collect()
+                    .await
+                {
+                    Ok(body) => body.to_bytes(),
+                    // A 503 cut short is still a 503.
+                    Err(_) if unreachable => Bytes::new(),
+                    Err(_) => return Err(invalid()),
+                };
+                let reason = serde_json::from_slice::<Refusal>(&body)
+                    .ok()
+                    .map(|r| format!("{} ({})", r.detail.message, r.detail.code))
+                    .unwrap_or_else(|| format!("Terminal service returned {status}"));
                 return Err(io::Error::new(kind, reason));
             }
             if response

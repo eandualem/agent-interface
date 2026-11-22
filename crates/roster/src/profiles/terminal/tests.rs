@@ -167,6 +167,31 @@ fn a_service_that_closes_before_answering_reads_as_a_lost_connection() {
 }
 
 #[test]
+fn a_503_cut_short_still_reads_as_unreachable() {
+    let (_directory, listener, path) = crate::transport::tests::local_listener();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket.set_read_timeout(Some(TIMEOUT)).unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            socket.read_exact(&mut byte).unwrap();
+            request.push(byte[0]);
+        }
+        socket
+            .write_all(
+                b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 100\r\n\r\n{\"detail\"",
+            )
+            .unwrap();
+    });
+    let error = open(Path::new(&path), "0a1b2c3d4e5f", "worker", 80, 24)
+        .err()
+        .expect("503");
+    assert_eq!(error.kind(), io::ErrorKind::HostUnreachable, "{error}");
+    server.join().unwrap();
+}
+
+#[test]
 fn only_an_unreachable_profile_service_reads_as_not_connected() {
     use super::super::Error;
     let kind = |error| verify_error(error).kind();
