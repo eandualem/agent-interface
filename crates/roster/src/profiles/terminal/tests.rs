@@ -145,18 +145,34 @@ fn service_wire_examples_over_private_sockets() {
     }
 }
 
+/// Read the open request and its body, so closing afterwards is a clean end
+/// on every platform: unread bytes make Linux reset the socket instead.
+fn read_whole_request(socket: &mut UnixStream) {
+    let mut headers = Vec::new();
+    while !headers.ends_with(b"\r\n\r\n") {
+        let mut byte = [0];
+        socket.read_exact(&mut byte).unwrap();
+        headers.push(byte[0]);
+    }
+    let length = String::from_utf8(headers)
+        .unwrap()
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().unwrap())
+        })
+        .unwrap();
+    socket.read_exact(&mut vec![0; length]).unwrap();
+}
+
 #[test]
 fn a_service_that_closes_before_answering_reads_as_a_lost_connection() {
     let (_directory, listener, path) = crate::transport::tests::local_listener();
     let server = thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
         socket.set_read_timeout(Some(TIMEOUT)).unwrap();
-        let mut request = Vec::new();
-        while !request.ends_with(b"\r\n\r\n") {
-            let mut byte = [0];
-            socket.read_exact(&mut byte).unwrap();
-            request.push(byte[0]);
-        }
+        read_whole_request(&mut socket);
         // Drop the socket without a response, as a restarting service does.
     });
     let error = open(Path::new(&path), "0a1b2c3d4e5f", "worker", 80, 24)
@@ -172,12 +188,7 @@ fn a_503_cut_short_still_reads_as_unreachable() {
     let server = thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
         socket.set_read_timeout(Some(TIMEOUT)).unwrap();
-        let mut request = Vec::new();
-        while !request.ends_with(b"\r\n\r\n") {
-            let mut byte = [0];
-            socket.read_exact(&mut byte).unwrap();
-            request.push(byte[0]);
-        }
+        read_whole_request(&mut socket);
         socket
             .write_all(
                 b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 100\r\n\r\n{\"detail\"",
