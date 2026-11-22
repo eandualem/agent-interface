@@ -444,4 +444,21 @@ mod tests {
         assert_eq!(cursor.as_deref(), Some("start:2"));
         assert_eq!(changes, 3);
     }
+
+    #[test]
+    fn the_service_change_frame_advances_the_cursor() {
+        let event: Value = serde_json::from_str(include_str!(
+            "peers/fixtures/stream-peer-connections-changed.json"
+        ))
+        .unwrap();
+        let id = event["id"].as_str().unwrap();
+        let kind = event["event"].as_str().unwrap();
+        let frame = format!("id: {id}\nevent: {kind}\ndata: {}\n\n", event["data"]);
+        let mut cursor = Some("earlier".to_owned());
+        let mut changes = 0;
+        let mut stream = PeerFrame::default();
+        assert!(stream.push(frame.as_bytes(), &mut cursor, &mut || changes += 1));
+        assert_eq!(cursor.as_deref(), Some(id));
+        assert_eq!(changes, 1);
+    }
 }

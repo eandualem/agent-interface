@@ -167,12 +167,21 @@ fn service_fixtures_parse_into_the_client_shapes() {
     assert_eq!(overview.pending_reviews, 2);
     assert_eq!(overview.invitations[1].state, "declined");
     assert_eq!(overview.connections[0].gates.outgoing, Policy::Review);
+    assert_eq!(
+        overview.invitations[0].display_name.as_deref(),
+        Some("Second peer")
+    );
+    assert_eq!(
+        overview.connections[0].display_name.as_deref(),
+        Some("Example peer")
+    );
     let answer: Answer = parse(fixture!("peer-invitation-accepted"));
     assert_eq!(
         answer.invitation.generation.as_deref(),
         Some(answer.connection.unwrap().connection.generation.as_str())
     );
     let history: Page<Message> = parse(fixture!("peer-history"));
+    assert_eq!(history.older.as_deref(), Some("p1-example-cursor"));
     assert!(matches!(history.items[1].receipt, Receipt::Uncertain));
     assert!(
         matches!(&history.items[3].receipt, Receipt::Confirmed { outcome, .. } if outcome == "declined")
@@ -184,10 +193,9 @@ fn service_fixtures_parse_into_the_client_shapes() {
         .iter()
         .find(|m| m.state == "upload_failed")
         .unwrap();
-    assert_eq!(
-        refused.upload_failure.as_ref().unwrap().code,
-        "mailbox_full"
-    );
+    let failure = refused.upload_failure.as_ref().unwrap();
+    assert_eq!(failure.code, "mailbox_full");
+    assert_eq!(failure.retry_at.as_deref(), Some("2026-11-21T12:05:00Z"));
     let pending: Peer = parse(fixture!("peer-disconnect"));
     assert_eq!(pending.state, "revocation_pending");
     let reviews: Page<Review> = parse(fixture!("peer-reviews"));
