@@ -82,6 +82,7 @@ fn service_wire_examples_over_private_sockets() {
             let error = opened.err().expect("refusal");
             let reason = error.to_string();
             assert!(reason.ends_with(&format!("({code})")), "{reason}");
+            assert_eq!(refusal_code(&error), Some(code));
             assert_eq!(error.kind() == io::ErrorKind::HostUnreachable, transient);
         } else {
             let (mut stream, mut writer, _close) =
