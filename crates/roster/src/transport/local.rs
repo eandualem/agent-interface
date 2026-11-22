@@ -84,7 +84,7 @@ fn method(body: &Option<Vec<u8>>) -> &'static str {
 
 /// The effective user, once `socket` is this user's private socket in this
 /// user's private folder.
-fn owned(socket: &Path) -> Result<u32, Option<u16>> {
+pub(crate) fn owned(socket: &Path) -> Result<u32, Option<u16>> {
     let uid = rustix::process::geteuid().as_raw();
     let metadata = fs::symlink_metadata(socket).map_err(|error| {
         tracing::debug!(event = "provider_socket_metadata_failed", error_kind = ?error.kind(), os_error = error.raw_os_error(), "Provider socket metadata unavailable");

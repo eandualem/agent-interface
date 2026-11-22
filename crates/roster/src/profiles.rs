@@ -20,6 +20,7 @@ pub mod secrets;
 mod served;
 pub mod setup;
 mod stream;
+pub mod terminal;
 
 use crate::{RESPONSE_LIMIT, Snapshot, transport::local};
 
@@ -196,6 +197,7 @@ impl Profile {
                 installation_id: binding.installation_id.clone(),
                 lifecycle_id: binding.lifecycle_id.clone(),
             },
+            instance: binding.instance.clone(),
             socket: binding.socket.clone(),
             tmux: binding.tmux.clone(),
             connection_key: ConnectionKey(Arc::new(())),
@@ -226,6 +228,7 @@ impl Hash for ConnectionKey {
 /// Immutable identity and endpoint snapshot for one connection's work.
 #[derive(Clone)]
 pub struct Connection {
+    instance: String,
     identity: Identity,
     socket: PathBuf,
     tmux: Tmux,
@@ -242,7 +245,10 @@ impl Connection {
     /// Whether `other` verified the same identity and endpoints, so either can
     /// stand in for the other.
     pub fn same_snapshot(&self, other: &Self) -> bool {
-        self.identity == other.identity && self.socket == other.socket && self.tmux == other.tmux
+        self.identity == other.identity
+            && self.instance == other.instance
+            && self.socket == other.socket
+            && self.tmux == other.tmux
     }
 
     /// The authenticated identity retained by every operation on this connection.

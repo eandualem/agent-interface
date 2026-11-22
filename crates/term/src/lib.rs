@@ -74,10 +74,23 @@ impl Terminal {
     /// keeps more, and output with very many styles on every line can keep
     /// fewer. [`Terminal::history`] says how many lines it holds.
     pub fn new(cols: u16, rows: u16, scrollback: usize) -> Result<Self, Error> {
+        Self::with_history(cols, rows, history_bytes(cols, scrollback))
+    }
+
+    /// A streamed terminal keeps at most 32 MiB of history regardless of host dimensions.
+    pub fn for_stream(cols: u16, rows: u16) -> Result<Self, Error> {
+        Self::with_history(
+            cols,
+            rows,
+            history_bytes(cols, 10_000).min(32 * 1024 * 1024),
+        )
+    }
+
+    fn with_history(cols: u16, rows: u16, max_scrollback: usize) -> Result<Self, Error> {
         let mut engine = Engine::new(Options {
             cols,
             rows,
-            max_scrollback: history_bytes(cols, scrollback),
+            max_scrollback,
         })
         .map_err(Error)?;
         // tmux treats a grapheme cluster, such as an emoji sequence, as one
@@ -105,6 +118,16 @@ impl Terminal {
             history_screen: EngineScreen::Primary,
             history_epoch: 0,
         })
+    }
+
+    /// Apply a stream host's confirmed terminal dimensions.
+    pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), Error> {
+        self.engine.resize(cols, rows, 1, 1).map_err(Error)
+    }
+
+    /// Feed an unmodified terminal byte stream directly to Ghostty.
+    pub fn write_stream(&mut self, bytes: &[u8]) {
+        self.engine.vt_write(bytes);
     }
 
     /// Feeds pane output to the terminal, in the order the pane produced it.

@@ -43,6 +43,8 @@ const UNAVAILABLE: &str = "Backbone unavailable; states stale";
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct AgentDetails {
+    /// Machine serving this agent, when the profile reports it.
+    pub machine: Option<Machine>,
     /// Whether the provider observes an online agent, including unknown states.
     pub online: Option<bool>,
     /// The model reported by the service and where that value came from.
@@ -61,6 +63,26 @@ pub struct AgentDetails {
     pub background: Option<Background>,
     /// The folder it works in, when reported.
     pub dir: Option<String>,
+}
+
+/// Machine identity reported by the profile. Names are for display only.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct Machine {
+    /// Stable machine identifier within the profile.
+    pub id: String,
+    /// Human-readable machine name.
+    pub name: String,
+}
+
+impl Machine {
+    /// The profile through which to open an agent hosted on another machine.
+    pub fn remote_profile(&self, local: &profiles::Identity) -> Option<String> {
+        (self.valid() && self.id != local.installation_id).then(|| local.profile_id.clone())
+    }
+
+    fn valid(&self) -> bool {
+        !self.id.is_empty() && self.id.len() <= 256 && !self.id.chars().any(char::is_control)
+    }
 }
 
 /// What an agent waits on outside itself, as the Rust service reports it.
@@ -242,6 +264,9 @@ fn decode(response: &[u8]) -> Option<Decoded> {
         details.insert(
             name.clone(),
             AgentDetails {
+                machine: field("machine")
+                    .and_then(object::<Machine>)
+                    .filter(Machine::valid),
                 online: field("online").and_then(|value| serde_json::from_str(value).ok()),
                 model: field("model").and_then(|value| serde_json::from_str(value).ok()),
                 model_source: field("model_source")

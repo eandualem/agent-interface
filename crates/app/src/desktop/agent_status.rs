@@ -257,6 +257,13 @@ impl LiveAgents {
             .unwrap_or_else(|| current.unknown.clone())
     }
 
+    /// The hosting machine from the current profile observation.
+    pub fn machine(&self, name: &str) -> Option<agent_interface_roster::Machine> {
+        let current = self.0.current.borrow();
+        let snapshot = current.snapshot.as_ref().filter(|s| s.error.is_none())?;
+        snapshot.details.get(name)?.machine.clone()
+    }
+
     /// The folders the newest observation's agents work in.
     pub fn folders(&self) -> Vec<std::path::PathBuf> {
         let current = self.0.current.borrow();
