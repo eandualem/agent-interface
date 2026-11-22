@@ -39,6 +39,85 @@ impl Browser {
         matches!(self.workspace_profiles.route(space), Route::Bound(_)).then_some(space)
     }
 
+    pub(super) fn open_profile_connections(
+        &mut self,
+        profile: &str,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(update) = self
+            .library
+            .as_ref()
+            .and_then(crate::library::Library::take_update)
+        {
+            self.apply(update);
+        }
+        if self.saving || self.save_failed {
+            return;
+        }
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        let existing = layout
+            .model()
+            .workspace()
+            .filter(|s| s.profile_id.as_deref() == Some(profile))
+            .or_else(|| {
+                layout
+                    .model()
+                    .workspaces
+                    .iter()
+                    .find(|s| s.profile_id.as_deref() == Some(profile))
+            });
+        if let Some(space) = existing
+            && let Some((tab, pane)) = existing_pane(space)
+        {
+            let (id, t, p) = (space.id.clone(), tab.to_owned(), pane.to_owned());
+            let model = self.layout.as_mut().unwrap().model_mut();
+            model.choose_workspace(&id);
+            model.choose_tab(&t);
+            model.choose_pane(&p);
+        } else {
+            let (base, mut proposed) = if let Some(space) = existing {
+                let (base, mut proposed) = layout.save_snapshot();
+                proposed.choose_workspace(&space.id);
+                (base, proposed)
+            } else {
+                let Some((base, mut proposed)) = super::workspace::create_profile(layout, name)
+                else {
+                    return;
+                };
+                let id = proposed.selected.clone();
+                let Some(space) = proposed.workspaces.iter_mut().find(|s| s.id == id) else {
+                    return;
+                };
+                space.profile_id = Some(profile.to_owned());
+                (base, proposed)
+            };
+            let added = match visible_empty(&proposed).map(str::to_owned) {
+                Some(leaf) => {
+                    let Some(tab) = proposed.tab() else {
+                        return;
+                    };
+                    let tab = tab.id.clone();
+                    proposed.choose_pane(&leaf);
+                    proposed.show_view(&tab, &leaf, View::of(ViewKind::Connections))
+                }
+                None => add_connections_tab(&mut proposed),
+            };
+            if !added {
+                return;
+            }
+            self.creation_from = Some(Selection::capture(layout.model()));
+            self.pending_save = Some((base, proposed));
+            self.save(cx);
+        }
+        window.activate_window();
+        self.reset_focus = true;
+        cx.notify();
+    }
+
     pub(super) fn open_connections(
         &mut self,
         target: Option<&creation_origin::Target>,

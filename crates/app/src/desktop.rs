@@ -36,6 +36,7 @@ mod onboarding;
 mod pane_cards;
 mod pane_drag;
 mod pane_motion;
+mod peer_inbox;
 mod profile_management;
 mod profile_picker;
 mod settings;
@@ -702,6 +703,19 @@ struct Browser {
     sidebar_drag: Option<(gpui::Pixels, gpui::Pixels, Option<u32>)>,
     agents_collapsed: bool,
     connections_collapsed: bool,
+    peer_inboxes: HashMap<
+        String,
+        (
+            agent_interface_roster::profiles::ConnectionKey,
+            gpui::Entity<peer_inbox::Inbox>,
+            gpui::Subscription,
+        ),
+    >,
+    peer_to_open: Option<(
+        String,
+        agent_interface_roster::profiles::ConnectionKey,
+        peer_inbox::Selection,
+    )>,
     reset_focus: bool,
     painted_pane_focus: Option<String>,
     navigation: Option<gpui::FocusHandle>,
@@ -2924,6 +2938,24 @@ impl Render for Browser {
                 }
                 self.views
                     .insert(id, (pane, navigation_origin::ViewEvents::default()));
+            }
+        }
+        if let Some((workspace, key, selection)) = self.peer_to_open.take()
+            && let Some(layout) = &self.layout
+            && let Some(space) = layout.model().workspace()
+            && space.id == workspace
+            && matches!(self.workspace_profiles.route(space),workspace_profiles::Route::Bound(c) if c.connection_key()==key)
+        {
+            if let Some(pane) = layout.model().pane()
+                && pane
+                    .view
+                    .as_ref()
+                    .is_some_and(|view| view.kind == agent_interface_core::ViewKind::Connections)
+                && let Some((view, _)) = self.views.get(&pane.id)
+            {
+                view.update(cx, |v, cx| v.pick_peer(selection, cx));
+            } else if self.saving {
+                self.peer_to_open = Some((workspace, key, selection));
             }
         }
         // A transfer may preserve the view entity and provider, but changes the

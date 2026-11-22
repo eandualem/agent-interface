@@ -626,7 +626,17 @@ impl Browser {
                 workspace == id && *key == connection.connection_key()
             })
         });
+        self.peer_inboxes.retain(|id, (key, _, _)| {
+            ready
+                .iter()
+                .any(|(workspace, c)| workspace == id && c.connection_key() == *key)
+        });
         for (id, connection) in ready {
+            self.peer_inboxes.entry(id.clone()).or_insert_with(|| {
+                let inbox = super::peer_inbox::Inbox::shared(&connection, cx);
+                let watch = cx.observe(&inbox, |_, _, cx| cx.notify());
+                (connection.connection_key(), inbox, watch)
+            });
             if !self.workspace_rosters.contains_key(&id)
                 && let Some(agents) = agent_status::start_bound(connection.clone(), cx)
             {

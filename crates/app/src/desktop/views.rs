@@ -298,6 +298,21 @@ impl ViewPane {
 
     /// A view in a workspace with a profile, reading through its verified
     /// connection.
+    pub(super) fn pick_peer(
+        &self,
+        selection: super::peer_inbox::Selection,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(pane) = &self.connections {
+            pane.update(cx, |p, cx| p.pick_peer(selection, cx));
+        }
+    }
+    pub(super) fn connection_attention(&self, cx: &gpui::App) -> bool {
+        self.connections
+            .as_ref()
+            .is_some_and(|p| p.read(cx).needs_review(cx))
+    }
+
     pub fn new_bound(
         view: View,
         connection: Connection,

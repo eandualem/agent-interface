@@ -127,7 +127,13 @@ impl Browser {
         let is_view = leaf.view.is_some();
         let state = cards.leaf_states.get(&leaf.id).copied();
         let group: SharedString = format!("pane-group-{id}").into();
-        let border = if state.is_some_and(AgentState::needs_you) {
+        let border = if state.is_some_and(AgentState::needs_you)
+            || (focused
+                && cards
+                    .views
+                    .get(&id)
+                    .is_some_and(|(v, _)| v.read(cx).connection_attention(cx)))
+        {
             c.attention
         } else if focused {
             c.focus

@@ -938,32 +938,92 @@ impl Browser {
     }
 
     fn connections_block(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        self.connections_workspace()?;
+        let space = self.connections_workspace()?;
         let (t, c) = (tokens(), colors());
         let target = self.creation_target();
+        let inbox = self.peer_inboxes.get(&space.id).map(|(_, e, _)| e.read(cx));
+        let summary = inbox.and_then(|i| i.summary.as_deref());
+        let unavailable = inbox.is_some_and(|i| i.error.is_some());
+        let label = if unavailable {
+            "unavailable".into()
+        } else {
+            summary.map_or_else(String::new, |s| s.label())
+        };
         let heading = section_toggle("CONNECTIONS", self.connections_collapsed)
-            .child(ui::text(div().text_color(c.muted), &t.text.meta).child("unavailable"))
-            .on_click(cx.listener(|browser, _, _, cx| {
-                browser.connections_collapsed = !browser.connections_collapsed;
+            .child(
+                ui::text(
+                    div().text_color(if unavailable || summary.is_some_and(|s| s.attention()) {
+                        c.attention_text
+                    } else {
+                        c.muted
+                    }),
+                    &t.text.meta,
+                )
+                .child(label),
+            )
+            .on_click(cx.listener(|b, _, _, cx| {
+                b.connections_collapsed = !b.connections_collapsed;
                 cx.notify();
             }));
-        Some(
-            div()
-                .flex_shrink_0()
-                .child(heading)
-                .when(!self.connections_collapsed, |section| {
-                    section.child(
-                        ui::row("show-profile-connections", false)
-                            .mx(px(t.space.s8))
-                            .child(ui::icon("link-2", t.size.icon, c.muted))
-                            .child("Open connections")
-                            .on_click(cx.listener(move |browser, _, window, cx| {
-                                browser.open_connections(target.as_ref(), None, window, cx);
-                            })),
+        let mut section = div().flex_shrink_0().child(heading);
+        if !self.connections_collapsed {
+            let rows = summary.map(|s| s.attention_rows()).unwrap_or_default();
+            let shown = rows.len().min(3);
+            for (selection, name, status) in rows.into_iter().take(shown) {
+                let key = self.peer_inboxes.get(&space.id)?.0.clone();
+                let workspace = space.id.clone();
+                let target = target.clone();
+                section = section.child(
+                    ui::row(
+                        format!(
+                            "attention-peer-{workspace}-{name}-{status}-{}",
+                            match &selection {
+                                super::peer_inbox::Selection::Peer(g) => &g.generation,
+                                super::peer_inbox::Selection::Request(r) => r,
+                            }
+                        ),
+                        false,
                     )
-                })
-                .into_any_element(),
-        )
+                    .mx(px(t.space.s8))
+                    .child(ui::mono("!"))
+                    .child(name)
+                    .child(ui::text(div().text_color(c.attention_text), &t.text.meta).child(status))
+                    .on_click(cx.listener(move |b, _, window, cx| {
+                        if !b.saving
+                            && !b.save_failed
+                            && target.as_ref().is_some_and(|t| b.creation_is_current(t))
+                        {
+                            b.peer_to_open =
+                                Some((workspace.clone(), key.clone(), selection.clone()));
+                            b.open_connections(target.as_ref(), None, window, cx);
+                        }
+                    })),
+                );
+            }
+            let total = summary.map_or(0, |s| {
+                s.overview.connections.len()
+                    + s.overview
+                        .invitations
+                        .iter()
+                        .filter(|r| r.state != "accepted")
+                        .count()
+            });
+            let label = if total > shown {
+                format!("{} other connections", total - shown)
+            } else {
+                "Open connections".into()
+            };
+            section = section.child(
+                ui::row("show-profile-connections", false)
+                    .mx(px(t.space.s8))
+                    .child(ui::icon("link-2", t.size.icon, c.muted))
+                    .child(label)
+                    .on_click(cx.listener(move |b, _, window, cx| {
+                        b.open_connections(target.as_ref(), None, window, cx)
+                    })),
+            );
+        }
+        Some(section.into_any_element())
     }
 
     /// One-click workspace switching, then Settings.
@@ -1016,7 +1076,12 @@ impl Browser {
                 let origin = self.navigation_origin(&space.id);
                 let id = space.id.clone();
                 let current = model.selected == id;
-                let needs_you = space.tabs.iter().any(|tab| self.tab_needs_you(tab));
+                let needs_you = space.tabs.iter().any(|tab| self.tab_needs_you(tab))
+                    || self
+                        .peer_inboxes
+                        .get(&id)
+                        .and_then(|(_, inbox, _)| inbox.read(cx).summary.as_deref())
+                        .is_some_and(|s| s.attention());
                 let glyph = icons::workspace(space.symbol.as_deref(), space.icon.as_deref());
                 let color = if current { c.accent } else { c.muted };
                 let mut element = slot(SharedString::from(format!("workspace-slot-{id}")))

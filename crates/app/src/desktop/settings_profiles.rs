@@ -30,6 +30,8 @@ impl Profiles {
             list: List::Loading,
             detail: None,
         };
+        cx.observe_global::<super::peer_inbox::Sources>(|_, cx| cx.notify())
+            .detach();
         page.refresh(cx);
         page
     }
@@ -75,11 +77,36 @@ impl Profiles {
             page.detail = None;
             page.refresh(cx);
         });
+        let location = directory.clone();
+        let connections = cx.subscribe(
+            &pane,
+            move |_, _, open: &super::profile_management::ShowConnections, cx| {
+                let profile = open.0.clone();
+                let name = open.1.clone();
+                let directory = location.clone();
+                cx.defer(move |cx| {
+                    let current = super::browser_window(cx);
+                    if let Some(w) = current
+                        .into_iter()
+                        .chain(
+                            cx.windows()
+                                .into_iter()
+                                .filter_map(|w| w.downcast::<Browser>()),
+                        )
+                        .find(|w| w.read(cx).is_ok_and(|b| b.directory == directory))
+                    {
+                        let _ = w.update(cx, |b, window, cx| {
+                            b.open_profile_connections(&profile, &name, window, cx)
+                        });
+                    }
+                });
+            },
+        );
         let open = cx.subscribe(&pane, move |page, _, open: &Open, cx| {
             let (open, client, directory) = (open.clone(), page.client.clone(), directory.clone());
             cx.defer(move |cx| show_in_browser(open, client, directory, cx));
         });
-        self.detail = Some((pane, vec![back, open]));
+        self.detail = Some((pane, vec![back, open, connections]));
         cx.notify();
     }
 
@@ -186,7 +213,16 @@ impl Render for Profiles {
                                         .into_any_element(),
                                 ),
                                 item.display_name.clone(),
-                                div().text_color(c.muted).child(state),
+                                match super::peer_inbox::Sources::attention(&id, cx) {
+                                    Some(label) => div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(t.space.s4))
+                                        .text_color(c.attention_text)
+                                        .child(ui::dot(c.attention))
+                                        .child(label),
+                                    None => div().text_color(c.muted).child(state),
+                                },
                             )
                             .on_click(cx.listener(
                                 move |page, _, window, cx| page.open(id.clone(), window, cx),

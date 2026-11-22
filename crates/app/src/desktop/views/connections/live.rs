@@ -1,22 +1,9 @@
 //! Owner-scoped data for the native Connections pane. Stream frames only invalidate reads.
 use super::*;
+use crate::desktop::peer_inbox::{Inbox, Selection, Summary};
 use agent_interface_roster::profiles::{Connection, Error, peers as api};
 use api::{Direction, Policy};
-use futures::{StreamExt, channel::mpsc};
-use std::{
-    collections::HashSet,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
-};
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Selection {
-    Request(String),
-    Peer(api::Generation),
-}
+use std::{collections::HashSet, sync::Arc};
 
 #[derive(Clone)]
 enum Change {
@@ -66,31 +53,18 @@ pub(super) enum Form {
 }
 
 struct Snapshot {
-    overview: api::Overview,
-    waiting: Vec<api::Review>,
+    summary: Arc<Summary>,
     selection: Option<Selection>,
     history: Option<api::Page<api::Message>>,
 }
 
 impl Snapshot {
-    fn read(c: &Connection, selected: Option<Selection>) -> Result<Self, Error> {
-        let overview = c.peer_overview()?;
-        let mut waiting = Vec::new();
-        let mut cursors = HashSet::new();
-        let mut before = None;
-        if overview.pending_reviews > 0 {
-            loop {
-                let page = c.peer_reviews(before.as_deref())?;
-                waiting.extend(page.items);
-                let Some(cursor) = page.older else {
-                    break;
-                };
-                if !cursors.insert(cursor.clone()) {
-                    return Err(Error::Invalid);
-                }
-                before = Some(cursor);
-            }
-        }
+    fn read(
+        c: &Connection,
+        summary: Arc<Summary>,
+        selected: Option<Selection>,
+    ) -> Result<Self, Error> {
+        let overview = &summary.overview;
         let selection = match selected {
             Some(Selection::Request(ref id)) => overview
                 .invitations
@@ -122,8 +96,7 @@ impl Snapshot {
             _ => None,
         };
         Ok(Self {
-            overview,
-            waiting,
+            summary,
             selection,
             history,
         })
@@ -143,65 +116,17 @@ pub(super) struct Live {
     read_at: Option<String>,
     older_loading: bool,
     pub(super) form: Option<Form>,
-    alive: Arc<AtomicBool>,
-    _events: gpui::Task<()>,
-}
-
-impl Drop for Live {
-    fn drop(&mut self) {
-        self.alive.store(false, Ordering::Release);
-    }
+    inbox: Entity<Inbox>,
+    _events: Subscription,
 }
 
 impl Live {
     pub(super) fn new(connection: Connection, cx: &mut Context<Pane>) -> Self {
-        let alive = Arc::new(AtomicBool::new(true));
-        let running = alive.clone();
-        let service = connection.clone();
-        let (mut tx, mut rx) = mpsc::channel(1);
-        let online = Arc::new(AtomicBool::new(false));
-        let opened = online.clone();
-        let worker = std::thread::Builder::new()
-            .name("peer-connections".into())
-            .spawn(move || {
-                let mut cursor = None;
-                let live = || running.load(Ordering::Acquire);
-                while live() {
-                    let _ = service.watch_peers(&mut cursor, &live, &mut || {
-                        opened.store(true, Ordering::Release);
-                        let _ = tx.try_send(());
-                    });
-                    if !live() {
-                        break;
-                    }
-                    opened.store(false, Ordering::Release);
-                    let _ = tx.try_send(());
-                    for _ in 0..12 {
-                        if !live() {
-                            return;
-                        }
-                        std::thread::sleep(Duration::from_millis(250));
-                    }
-                }
-            });
-        let events = cx.spawn(async move |this, cx| {
-            while rx.next().await.is_some() {
-                let ok = online.load(Ordering::Acquire);
-                if this
-                    .update(cx, |pane, cx| {
-                        pane.live.stream_ok = ok;
-                        if ok {
-                            pane.refresh_live(cx);
-                        } else {
-                            pane.live.status = Some("Agent Backbone stream unavailable".into());
-                            cx.notify();
-                        }
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
+        let inbox = Inbox::shared(&connection, cx);
+        let subscription = cx.observe(&inbox, |pane, _, cx| pane.inbox_updated(cx));
+        let pane = cx.weak_entity();
+        cx.defer(move |cx| {
+            let _ = pane.update(cx, |p, cx| p.inbox_updated(cx));
         });
         Self {
             connection,
@@ -212,17 +137,44 @@ impl Live {
             dirty: false,
             sending: false,
             retry: None,
-            status: worker.err().map(|e| e.to_string()),
+            status: None,
             read_at: None,
             older_loading: false,
             form: None,
-            alive,
-            _events: events,
+            inbox,
+            _events: subscription,
         }
     }
 }
 
 impl Pane {
+    fn inbox_updated(&mut self, cx: &mut Context<Self>) {
+        let inbox = self.live.inbox.read(cx);
+        self.live.stream_ok = inbox.error.is_none() && inbox.summary.is_some();
+        if self.live.stream_ok {
+            self.refresh_live(cx);
+        } else {
+            self.live.status = inbox.error.clone();
+            cx.notify();
+        }
+    }
+
+    pub(in crate::desktop) fn pick_peer(&mut self, target: Selection, cx: &mut Context<Self>) {
+        if self.preview {
+            self.preview(false, cx);
+        }
+        self.pick(Some(target), cx);
+    }
+
+    pub(in crate::desktop) fn needs_review(&self, cx: &gpui::App) -> bool {
+        self.live
+            .inbox
+            .read(cx)
+            .summary
+            .as_ref()
+            .is_some_and(|s| s.attention())
+    }
+
     fn refresh_live(&mut self, cx: &mut Context<Self>) {
         if !self.live.stream_ok {
             return;
@@ -231,13 +183,16 @@ impl Pane {
             self.live.dirty = true;
             return;
         }
+        let Some(summary) = self.live.inbox.read(cx).summary.clone() else {
+            return;
+        };
         let connection = self.live.connection.clone();
         let selected = self.live.selected.clone();
         self.live.reading = true;
         let expected = selected.clone();
         let read = cx
             .background_executor()
-            .spawn(async move { Snapshot::read(&connection, selected) });
+            .spawn(async move { Snapshot::read(&connection, summary, selected) });
         cx.spawn(async move |this, cx| {
             let result = read.await;
             let _ = this.update(cx, |pane, cx| {
@@ -322,7 +277,7 @@ impl Pane {
                     }
                 }
                 if result.is_ok() {
-                    pane.refresh_live(cx);
+                    pane.live.inbox.update(cx, |inbox, cx| inbox.refresh(cx));
                 }
                 cx.notify();
             });
@@ -533,6 +488,7 @@ impl Pane {
             None => return div().child(thread.child("Choose a peer to see its conversation.")),
             Some(Selection::Request(id)) => {
                 if let Some(r) = snapshot
+                    .summary
                     .overview
                     .invitations
                     .iter()
@@ -570,6 +526,7 @@ impl Pane {
             }
             Some(Selection::Peer(id)) => {
                 let Some(peer) = snapshot
+                    .summary
                     .overview
                     .connections
                     .iter()
@@ -752,7 +709,7 @@ impl Pane {
             "Retry",
             ui::Button::Secondary,
             cx,
-            |pane, _, cx| pane.refresh_live(cx),
+            |pane, _, cx| pane.live.inbox.update(cx, |inbox, cx| inbox.refresh(cx)),
         );
         let Some(s) = &self.live.snapshot else {
             return view
@@ -782,7 +739,7 @@ impl Pane {
             && !self.live.sending
             && self.live.status.is_none()
             && self.live.retry.is_none();
-        let local = s.overview.local_id.clone();
+        let local = s.summary.overview.local_id.clone();
         view = view.child(
             div()
                 .p(px(t.space.s6))
@@ -873,7 +830,7 @@ impl Pane {
                     rows = std::mem::replace(&mut rows, div().id("live-peers")).child(row);
                 }
             };
-            for r in &s.overview.invitations {
+            for r in &s.summary.overview.invitations {
                 if r.state == "accepted" {
                     continue;
                 }
@@ -898,12 +855,8 @@ impl Pane {
                     needs,
                 );
             }
-            for p in &s.overview.connections {
-                let count = s
-                    .waiting
-                    .iter()
-                    .filter(|r| r.message.connection == p.connection)
-                    .count();
+            for p in &s.summary.overview.connections {
+                let count = s.summary.count(&p.connection.generation);
                 add(
                     Selection::Peer(p.connection.clone()),
                     p.display_name.as_deref(),
@@ -921,7 +874,7 @@ impl Pane {
         if !self.compact || self.show_thread {
             content = content.child(self.live_thread(s, actions, cx));
         }
-        if s.overview.connections.is_empty() && s.overview.invitations.is_empty() {
+        if s.summary.overview.connections.is_empty() && s.summary.overview.invitations.is_empty() {
             view = view.child("No profile connections yet");
         }
         view = view.child(content);
@@ -948,7 +901,7 @@ impl Pane {
         view.child(ui::mono(format!(
             "Agent-to-agent via Agent Backbone · read {} · {} pending review",
             self.live.read_at.as_deref().unwrap_or("—"),
-            s.overview.pending_reviews
+            s.summary.overview.pending_reviews
         )))
     }
 }
