@@ -737,10 +737,14 @@ fn rust_service_entries_list_and_connect_without_a_key() {
         (json!("a_value_to_come"), Accounts::Unknown),
         (json!(null), Accounts::Unknown),
         (json!(7), Accounts::Unknown),
+        (json!({"kind": "own"}), Accounts::Unknown),
+        (json!(["own"]), Accounts::Unknown),
     ] {
         for base in [served_entry(&socket), failed.clone()] {
             let mut entry = base;
             entry["accounts"] = value.clone();
+            let shown = Profile::parse(&serde_json::to_vec(&entry).unwrap()).unwrap();
+            assert_eq!(shown.item().accounts, accounts, "{value}");
             let listed = json!({"profiles": [entry]});
             let items = list(&serde_json::to_vec(&listed).unwrap()).unwrap();
             assert_eq!(items[0].accounts, accounts, "{value}");
