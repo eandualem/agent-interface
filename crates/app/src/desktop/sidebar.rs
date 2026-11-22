@@ -55,6 +55,46 @@ fn reorder_tab_proposal(
     Some((base, proposed))
 }
 
+fn section_toggle(label: &'static str, collapsed: bool) -> gpui::Stateful<gpui::Div> {
+    let (t, c) = (tokens(), colors());
+    ui::text(
+        div()
+            .id(label)
+            .role(gpui::accesskit::Role::Button)
+            .aria_label(if collapsed {
+                format!("Expand {label}")
+            } else {
+                format!("Collapse {label}")
+            })
+            .focusable()
+            .tab_stop(true)
+            .focus_visible(|el| {
+                el.border(px(t.size.focus_ring))
+                    .border_color(colors().focus)
+            })
+            .h(px(t.space.s28))
+            .px(px(t.space.s10))
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s4))
+            .cursor_pointer()
+            .text_color(c.muted)
+            .hover(|el| el.bg(colors().hover)),
+        &t.text.label,
+    )
+    .child(ui::icon(
+        if collapsed {
+            "chevron-right"
+        } else {
+            "chevron-down"
+        },
+        t.size.icon,
+        c.muted,
+    ))
+    .child(div().flex_1().child(label))
+}
+
 impl Browser {
     fn drop_tab(&mut self, dragged: &TabDrag, destination: &str, cx: &mut Context<Self>) {
         if dragged.browser != cx.entity_id() || self.saving || self.save_failed {
@@ -218,6 +258,7 @@ impl Browser {
             )
             .child(self.tab_list(cx))
             .children(self.agents_block(window, cx))
+            .children(self.connections_block(cx))
             .child(self.switcher(width, cx))
             .child(
                 // The right edge resizes the panel.
@@ -654,6 +695,15 @@ impl Browser {
                 c.muted,
             ),
         };
+        let heading = section_toggle("AGENTS", self.agents_collapsed)
+            .child(ui::text(div().text_color(summary_color), &t.text.meta).child(summary))
+            .on_click(cx.listener(|browser, _, _, cx| {
+                browser.agents_collapsed = !browser.agents_collapsed;
+                cx.notify();
+            }));
+        if self.agents_collapsed {
+            return Some(heading.into_any_element());
+        }
         let quiet = |label: &'static str, icon: Option<&'static str>| {
             ui::text(
                 div()
@@ -1114,14 +1164,105 @@ impl Browser {
                 .border_color(c.line)
                 .pt(px(t.space.s4))
                 .pb(px(t.space.s8))
-                .child(
-                    ui::section("AGENTS").pr(px(t.space.s14)).child(
-                        ui::text(div().text_color(summary_color), &t.text.meta).child(summary),
-                    ),
-                )
+                .child(heading)
                 .child(rows)
                 .into_any_element(),
         )
+    }
+
+    fn connections_block(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let space = self.connections_workspace()?;
+        let (t, c) = (tokens(), colors());
+        let target = self.creation_target();
+        let inbox = self.peer_inboxes.get(&space.id).map(|(_, e, _)| e.read(cx));
+        let summary = inbox.and_then(|i| i.summary.as_deref());
+        let unavailable = inbox.is_some_and(|i| i.error.is_some());
+        let label = if unavailable {
+            "unavailable".into()
+        } else {
+            summary.map_or_else(String::new, |s| s.label())
+        };
+        let heading = section_toggle("CONNECTIONS", self.connections_collapsed)
+            .child(
+                ui::text(
+                    div().text_color(if unavailable || summary.is_some_and(|s| s.attention()) {
+                        c.attention_text
+                    } else {
+                        c.muted
+                    }),
+                    &t.text.meta,
+                )
+                .child(label),
+            )
+            .on_click(cx.listener(|b, _, _, cx| {
+                b.connections_collapsed = !b.connections_collapsed;
+                cx.notify();
+            }));
+        let mut section = div().flex_shrink_0().child(heading);
+        if !self.connections_collapsed {
+            let rows = summary.map(|s| s.attention_rows()).unwrap_or_default();
+            let shown = rows.len().min(3);
+            for (selection, name, status) in rows.into_iter().take(shown) {
+                let key = self.peer_inboxes.get(&space.id)?.0.clone();
+                let workspace = space.id.clone();
+                let target = target.clone();
+                section = section.child(
+                    ui::row(
+                        format!(
+                            "attention-peer-{workspace}-{name}-{status}-{}",
+                            match &selection {
+                                super::peer_inbox::Selection::Peer(g) => &g.generation,
+                                super::peer_inbox::Selection::Request(r) => r,
+                            }
+                        ),
+                        false,
+                    )
+                    .mx(px(t.space.s8))
+                    .child(ui::mono("!"))
+                    .child(name)
+                    .child(ui::text(div().text_color(c.attention_text), &t.text.meta).child(status))
+                    .on_click(cx.listener(move |b, _, window, cx| {
+                        if !b.saving
+                            && !b.save_failed
+                            && target.as_ref().is_some_and(|t| b.creation_is_current(t))
+                        {
+                            b.peer_to_open =
+                                Some((workspace.clone(), key.clone(), selection.clone()));
+                            b.open_connections(target.as_ref(), None, window, cx);
+                        }
+                    })),
+                );
+            }
+            let total = summary.map_or(0, |s| {
+                s.overview.connections.len()
+                    + s.overview
+                        .invitations
+                        .iter()
+                        .filter(|r| r.state != "accepted")
+                        .count()
+            });
+            let remaining = total.saturating_sub(shown);
+            let label = if remaining > 0 {
+                match (shown > 0, remaining) {
+                    (true, 1) => "1 other connection".into(),
+                    (true, n) => format!("{n} other connections"),
+                    (false, 1) => "1 connection".into(),
+                    (false, n) => format!("{n} connections"),
+                }
+            } else {
+                "Open connections".into()
+            };
+            section = section.child(
+                ui::row("show-profile-connections", false)
+                    .mx(px(t.space.s8))
+                    .child(ui::icon("link-2", t.size.icon, c.muted))
+                    .child(label)
+                    .on_click(cx.listener(move |b, _, window, cx| {
+                        b.open_connections(target.as_ref(), None, window, cx)
+                    })),
+            );
+        }
+        Some(section.into_any_element())
     }
 
     /// One-click workspace switching, then Settings.
@@ -1174,7 +1315,12 @@ impl Browser {
                 let origin = self.navigation_origin(&space.id);
                 let id = space.id.clone();
                 let current = model.selected == id;
-                let needs_you = space.tabs.iter().any(|tab| self.tab_needs_you(tab));
+                let needs_you = space.tabs.iter().any(|tab| self.tab_needs_you(tab))
+                    || self
+                        .peer_inboxes
+                        .get(&id)
+                        .and_then(|(_, inbox, _)| inbox.read(cx).summary.as_deref())
+                        .is_some_and(|s| s.attention());
                 let glyph = icons::workspace(space.symbol.as_deref(), space.icon.as_deref());
                 let color = if current { c.accent } else { c.muted };
                 let mut element = slot(SharedString::from(format!("workspace-slot-{id}")))

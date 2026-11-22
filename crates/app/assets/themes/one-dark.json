@@ -2,6 +2,8 @@
   "name": "One Dark",
   "extends": "dark",
   "color": {
+    "outgoing_surface": "#2c313a",
+    "outgoing_border": "#3e4452",
     "ground": "#21252b",
     "panel": "#21252b",
     "surface": "#282c34",

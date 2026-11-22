@@ -2,6 +2,8 @@
   "name": "Dracula",
   "extends": "dark",
   "color": {
+    "outgoing_surface": "#313341",
+    "outgoing_border": "#44475a",
     "ground": "#191a21",
     "panel": "#21222c",
     "surface": "#282a36",

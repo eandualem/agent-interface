@@ -2,6 +2,8 @@
   "name": "Solarized Dark",
   "extends": "dark",
   "color": {
+    "outgoing_surface": "#003846",
+    "outgoing_border": "#2b4c55",
     "ground": "#001e26",
     "panel": "#00212b",
     "surface": "#002b36",

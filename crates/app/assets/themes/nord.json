@@ -2,6 +2,8 @@
   "name": "Nord",
   "extends": "dark",
   "color": {
+    "outgoing_surface": "#3b4252",
+    "outgoing_border": "#4c566a",
     "ground": "#272c36",
     "panel": "#2b303b",
     "surface": "#2e3440",

@@ -29,6 +29,7 @@ impl Connection {
             self.socket.to_str().ok_or(Error::Invalid)?,
             "/api/stream?kinds=agent.state,agent.changed,run.changed,resync",
             &self.identity.profile_id,
+            None,
             QUIET,
             live,
             &mut |bytes| frames.push(bytes, changed),

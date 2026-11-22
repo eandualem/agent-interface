@@ -42,6 +42,7 @@ mod artifacts;
 mod bound_policies;
 mod bound_skills;
 mod clock;
+mod connections;
 mod conversation;
 mod documents;
 mod interactions;
@@ -75,6 +76,7 @@ pub(super) fn about(kind: ViewKind) -> About {
         ViewKind::Usage => ("chart-line", "Usage"),
         ViewKind::Activity => ("activity", "Activity"),
         ViewKind::Team => ("bot", "Team"),
+        ViewKind::Connections => ("link-2", "Connections"),
         ViewKind::Tags => ("hash", "Tags"),
         ViewKind::Reports => ("message-square", "Reports & updates"),
         ViewKind::Artifacts => ("layout-grid", "Artifacts"),
@@ -200,6 +202,7 @@ pub(super) struct ViewPane {
     folders: Folders,
     pub view: View,
     source: Option<Source>,
+    connections: Option<Entity<connections::Pane>>,
     /// Immutable origin for retained content and every operation it opens.
     connection: Option<Connection>,
     data: Option<Data>,
@@ -249,7 +252,10 @@ impl EventEmitter<ViewEvent> for ViewPane {}
 impl ViewPane {
     /// Keep drafts, threads and in-flight delivery while this saved pane is hidden.
     pub fn has_conversations(&self) -> bool {
-        !self.conversations.is_empty() || self.sheets.is_some() || self.interactions.is_some()
+        !self.conversations.is_empty()
+            || self.sheets.is_some()
+            || self.interactions.is_some()
+            || self.connections.is_some()
     }
 
     /// Native child views must repaint when an overlay stops occluding them.
@@ -306,6 +312,21 @@ impl ViewPane {
 
     /// A view in a workspace with a profile, reading through its verified
     /// connection.
+    pub(super) fn pick_peer(
+        &self,
+        selection: super::peer_inbox::Selection,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(pane) = &self.connections {
+            pane.update(cx, |p, cx| p.pick_peer(selection, cx));
+        }
+    }
+    pub(super) fn connection_attention(&self, cx: &gpui::App) -> bool {
+        self.connections
+            .as_ref()
+            .is_some_and(|p| p.read(cx).needs_review(cx))
+    }
+
     pub fn new_bound(
         view: View,
         connection: Connection,
@@ -339,6 +360,7 @@ impl ViewPane {
             agents,
             folders,
             source: None,
+            connections: None,
             connection,
             data: None,
             error: None,
@@ -421,6 +443,10 @@ impl ViewPane {
             pane.error = Some("Choose a profile for this workspace to show this view.");
             return pane;
         };
+        if pane.view.kind == ViewKind::Connections {
+            pane.connections = Some(cx.new(|cx| connections::Pane::new(connection, window, cx)));
+            return pane;
+        }
         if matches!(pane.view.kind, ViewKind::Skills | ViewKind::Reports) {
             let field = cx.new(|cx| NameField::filter(window, cx));
             pane._search
@@ -492,6 +518,7 @@ impl ViewPane {
             ViewKind::Policies => Request::Policies,
             ViewKind::Tags => Request::Tags,
             ViewKind::Reports => reports_request(&self.reports),
+            ViewKind::Connections => unreachable!("connections do not use the team content source"),
             ViewKind::Artifacts => unreachable!("artifacts have no Backbone source"),
             // A profile's agent card reads through its own connection.
             ViewKind::Agent => unreachable!("agent cards have no view source"),
@@ -916,6 +943,13 @@ impl ViewPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if let Some(pane) = &self.connections
+            && key.key == "tab"
+            && !key.modifiers.modified()
+        {
+            pane.update(cx, |pane, cx| pane.focus_entry(window, cx));
+            return true;
+        }
         if let Some(view) = self
             .interactions
             .clone()
@@ -1052,6 +1086,9 @@ impl Render for ViewPane {
             selection.begin();
             selection.finish();
             return div().size_full().child(card);
+        }
+        if let Some(connections) = &self.connections {
+            return div().size_full().child(connections.clone());
         }
         if let Some(artifacts) = &self.artifacts {
             return div().size_full().child(artifacts.clone());
@@ -1243,7 +1280,11 @@ impl Render for ViewPane {
                         let state = match self.error {
                             Some(error) => ui::empty_state(
                                 ui::empty_tile("unplug", c.selected, c.muted),
-                                "No data",
+                                if self.view.kind == ViewKind::Connections {
+                                    "Connections unavailable"
+                                } else {
+                                    "No data"
+                                },
                                 error,
                             ),
                             None => ui::empty_state(

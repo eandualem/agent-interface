@@ -25,6 +25,7 @@ mod new_pane;
 use chooser::{Choice, SessionChooser};
 use layout_edit::{Create, Selection};
 mod components;
+mod connections;
 mod design;
 mod frame;
 mod icons;
@@ -35,6 +36,7 @@ mod onboarding;
 mod pane_cards;
 mod pane_drag;
 mod pane_motion;
+mod peer_inbox;
 mod profile_management;
 mod profile_picker;
 mod settings;
@@ -721,6 +723,21 @@ struct Browser {
     jump: Option<jump::Jump>,
     /// A navigation panel drag: where it started and the width then.
     sidebar_drag: Option<(gpui::Pixels, gpui::Pixels, Option<u32>)>,
+    agents_collapsed: bool,
+    connections_collapsed: bool,
+    peer_inboxes: HashMap<
+        String,
+        (
+            agent_interface_roster::profiles::ConnectionKey,
+            gpui::Entity<peer_inbox::Inbox>,
+            gpui::Subscription,
+        ),
+    >,
+    peer_to_open: Option<(
+        String,
+        agent_interface_roster::profiles::ConnectionKey,
+        peer_inbox::Selection,
+    )>,
     reset_focus: bool,
     painted_pane_focus: Option<String>,
     navigation: Option<gpui::FocusHandle>,
@@ -1977,6 +1994,9 @@ impl Browser {
                     );
                 } else if layout.model_mut().transfer_tab(&destination) {
                     self.save(cx);
+                } else {
+                    self.save_notice =
+                        Some("The destination changed or already has a Connections pane.".into());
                 }
             }
         }
@@ -3105,6 +3125,13 @@ impl Render for Browser {
                         .is_some_and(|layout| saved_view(layout.model(), id, &pane.view)))
         });
         for (id, view) in shown.clone() {
+            if view.kind == agent_interface_core::ViewKind::Connections
+                && self.views.get(&id).is_some_and(|(_, events)| {
+                    !events.belongs_to(self.pane_navigation_origin(&id).as_ref())
+                })
+            {
+                self.views.remove(&id);
+            }
             if !self.views.contains_key(&id) {
                 let Ok(connection) = self.pane_connection(&id) else {
                     continue;
@@ -3138,6 +3165,24 @@ impl Render for Browser {
                 }
                 self.views
                     .insert(id, (pane, navigation_origin::ViewEvents::default()));
+            }
+        }
+        if let Some((workspace, key, selection)) = self.peer_to_open.take()
+            && let Some(layout) = &self.layout
+            && let Some(space) = layout.model().workspace()
+            && space.id == workspace
+            && matches!(self.workspace_profiles.route(space),workspace_profiles::Route::Bound(c) if c.connection_key()==key)
+        {
+            if let Some(pane) = layout.model().pane()
+                && pane
+                    .view
+                    .as_ref()
+                    .is_some_and(|view| view.kind == agent_interface_core::ViewKind::Connections)
+                && let Some((view, _)) = self.views.get(&pane.id)
+            {
+                view.update(cx, |v, cx| v.pick_peer(selection, cx));
+            } else if self.saving {
+                self.peer_to_open = Some((workspace, key, selection));
             }
         }
         // A transfer may preserve the view entity and provider, but changes the
@@ -3225,7 +3270,15 @@ impl Render for Browser {
             .filter(|leaf| leaf.empty && leaf.attachment.is_none())
             .map(|leaf| leaf.id.clone())
             .collect();
-        self.new_panes.retain(|id, _| empty.contains(id));
+        let placement = self.selected_navigation_origin().zip(
+            self.layout
+                .as_ref()
+                .and_then(|layout| layout.model().tab())
+                .map(|tab| tab.id.clone()),
+        );
+        self.new_panes.retain(|id, (chooser, _)| {
+            empty.contains(id) && chooser.read(cx).placement == placement
+        });
         for id in empty {
             if !self.new_panes.contains_key(&id) {
                 let Ok(connection) = self.pane_connection(&id) else {
@@ -3246,12 +3299,16 @@ impl Render for Browser {
                 }
                 let socket = self.source.clone().and_then(Result::ok);
                 let pane = id.clone();
-                let chooser = cx.new(|cx| match connection {
-                    Some(connection) => {
-                        new_pane::NewPane::new_bound(pane, connection, agents, window, cx)
-                            .expect("matching workspace roster")
-                    }
-                    None => new_pane::NewPane::new(pane, socket, window, cx),
+                let chooser = cx.new(|cx| {
+                    let mut chooser = match connection {
+                        Some(connection) => {
+                            new_pane::NewPane::new_bound(pane, connection, agents, window, cx)
+                                .expect("matching workspace roster")
+                        }
+                        None => new_pane::NewPane::new(pane, socket, window, cx),
+                    };
+                    chooser.placement = placement.clone();
+                    chooser
                 });
                 let events =
                     cx.subscribe_in(&chooser, window, |browser, chooser, event, window, cx| {
@@ -3281,6 +3338,24 @@ impl Render for Browser {
                             }
                             new_pane::NewPaneEvent::Attach(name) => {
                                 browser.attach_into(&pane, name, None, window, cx)
+                            }
+                            new_pane::NewPaneEvent::OpenView(view)
+                                if view.kind == agent_interface_core::ViewKind::Connections =>
+                            {
+                                let Some((origin, tab)) = &chooser.placement else {
+                                    return;
+                                };
+                                if !browser.selected_origin_is_current(Some(origin))
+                                    || !browser
+                                        .layout
+                                        .as_ref()
+                                        .and_then(|layout| layout.model().tab())
+                                        .is_some_and(|selected| &selected.id == tab)
+                                {
+                                    return;
+                                }
+                                let target = browser.creation_target();
+                                browser.open_connections(target.as_ref(), Some(&pane), window, cx);
                             }
                             new_pane::NewPaneEvent::OpenView(view) => {
                                 browser.open_view(&pane, view.clone(), window, cx);

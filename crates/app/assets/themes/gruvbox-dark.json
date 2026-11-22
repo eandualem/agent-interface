@@ -2,6 +2,8 @@
   "name": "Gruvbox Dark",
   "extends": "dark",
   "color": {
+    "outgoing_surface": "#2d2c2c",
+    "outgoing_border": "#504945",
     "ground": "#1d2021",
     "panel": "#1d2021",
     "surface": "#282828",

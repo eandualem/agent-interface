@@ -100,7 +100,10 @@ enum Page {
     },
 }
 
+pub(super) struct ShowConnections(pub String, pub String);
 pub(super) struct Management {
+    peer_identity: Option<(gpui::Entity<super::peer_inbox::Inbox>, gpui::Subscription)>,
+    copied_peer_id: bool,
     client: Option<Client>,
     /// The one profile this page is for; unfinished creates can lack a profile ID.
     profile_id: Option<String>,
@@ -123,6 +126,7 @@ pub(super) struct Management {
     pub focus: FocusHandle,
 }
 impl EventEmitter<Back> for Management {}
+impl EventEmitter<ShowConnections> for Management {}
 impl EventEmitter<Open> for Management {}
 impl Management {
     pub fn new(
@@ -132,6 +136,8 @@ impl Management {
         cx: &mut Context<Self>,
     ) -> Self {
         let mut pane = Self {
+            peer_identity: None,
+            copied_peer_id: false,
             client: client.clone(),
             profile_id: profile.clone(),
             directory: None,
@@ -189,12 +195,34 @@ impl Management {
 
     /// A profile's Sign-in and Secrets panes, which only a serving profile has.
     fn served_panes(&mut self, cx: &mut Context<Self>) {
+        self.peer_identity = None;
+        self.copied_peer_id = false;
         let Page::Detail(profile) = &self.page else {
             return;
         };
         if !has_served_panes(profile.item()) {
             return;
         }
+        let peer_profile = profile.clone();
+        let identity = peer_profile.item().profile_id.clone();
+        let work = cx
+            .background_executor()
+            .spawn(async move { peer_profile.connect() });
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |pane, cx| {
+                if !matches!(&pane.page,Page::Detail(p) if p.item().profile_id==identity) {
+                    return;
+                }
+                if let Ok(connection) = result {
+                    let inbox = super::peer_inbox::Inbox::shared(&connection, cx);
+                    let sub = cx.observe(&inbox, |_, _, cx| cx.notify());
+                    pane.peer_identity = Some((inbox, sub));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
         let logins = cx.new(|cx| accounts::Section::new(profile.clone(), cx));
         let subscription = cx.subscribe(&logins, |_, _, open: &Open, cx| cx.emit(open.clone()));
         self.logins = Some((logins, subscription));
@@ -210,6 +238,8 @@ impl Management {
         match result {
             Ok(page) => {
                 self.page = page;
+                self.peer_identity = None;
+                self.copied_peer_id = false;
                 self.error = None;
             }
             Err(error) => self.error = Some(error),
@@ -781,6 +811,43 @@ impl Render for Management {
                         );
                     }
                     body = body.child(div().flex().justify_end().child(menu));
+                }
+                if ready {
+                    let id = item.profile_id.clone();
+                    let name = item.display_name.clone();
+                    let mut section = div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(t.space.s6))
+                        .child("Connection identity");
+                    if let Some(summary) = self
+                        .peer_identity
+                        .as_ref()
+                        .map(|(i, _)| i.read(cx))
+                        .filter(|i| i.profile_id() == item.profile_id)
+                        .and_then(|i| i.summary.as_ref())
+                    {
+                        let shareable = summary.overview.local_id.clone();
+                        section=section.child(ui::mono(shareable.clone())).child(ui::button("copy-profile-peer-id",if self.copied_peer_id{"Copied"}else{"Copy ID"},ui::Button::Secondary).on_click(cx.listener(move|p,_,_,cx|{
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(shareable.clone()));p.copied_peer_id=true;cx.notify();
+                        }))).child("Share outside the app so another profile can send a connection request. Agent Backbone owns keys, encryption and relay delivery.");
+                    } else {
+                        section = section.child("Connection ID unavailable");
+                    }
+                    body = body.child(
+                        section.child(
+                            ui::button(
+                                "open-profile-connections",
+                                "Open connections",
+                                ui::Button::Secondary,
+                            )
+                            .on_click(cx.listener(
+                                move |_, _, _, cx| {
+                                    cx.emit(ShowConnections(id.clone(), name.clone()))
+                                },
+                            )),
+                        ),
+                    );
                 }
                 if self.logins.is_some() {
                     body = body.child(ui::group_title("Sign-in", ""));
