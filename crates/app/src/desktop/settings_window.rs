@@ -316,6 +316,16 @@ impl SettingsWindow {
         true
     }
 
+    fn select_page(&mut self, page: Page, cx: &mut Context<Self>) {
+        if self.page == Page::Profiles
+            && self.page != page
+            && let Some(profiles) = self.profiles.take()
+        {
+            profiles.update(cx, |p, cx| p.leave(cx));
+        }
+        self.page = page;
+    }
+
     /// Whether the window may close now. Unsaved theme edits are only
     /// dropped on a second request: the first shows the editor and asks.
     fn may_close(&mut self, cx: &mut Context<Self>) -> bool {
@@ -326,7 +336,7 @@ impl SettingsWindow {
             return true;
         }
         editing.discarding = true;
-        self.page = Page::Appearance;
+        self.select_page(Page::Appearance, cx);
         cx.notify();
         false
     }
@@ -1386,7 +1396,7 @@ impl Render for SettingsWindow {
                     ))
                     .child(name)
                     .on_click(cx.listener(move |view, _, _, cx| {
-                        view.page = page;
+                        view.select_page(page, cx);
                         view.recording = None;
                         view.refusal = None;
                         cx.notify();

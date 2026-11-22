@@ -120,6 +120,12 @@ impl Profiles {
         cx.notify();
     }
 
+    pub fn leave(&mut self, cx: &mut Context<Self>) {
+        if let Some((pane, _)) = self.detail.take() {
+            pane.update(cx, |p, _| p.leave());
+        }
+    }
+
     /// A sign-in pane closed in a main window.
     pub fn sign_in_ended(&mut self, profile_id: &str, runtime: &str, cx: &mut Context<Self>) {
         if let Some((pane, _)) = &self.detail {

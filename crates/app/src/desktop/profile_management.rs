@@ -215,6 +215,9 @@ impl Management {
             Err(error) => self.error = Some(error),
         }
     }
+    pub(super) fn leave(&mut self) {
+        self.ticket.cancel();
+    }
     fn back(&mut self, cx: &mut Context<Self>) {
         self.ticket.cancel();
         cx.emit(Back);
@@ -594,15 +597,29 @@ fn history(
         Some(ids) => ids,
         None => controller.ids()?,
     };
+    // The requested offset belongs to the previously drawn list. Keep its
+    // first surviving unseen row when a request before it changes scope.
+    let mut removed_before = 0;
     if profile.is_some() {
+        let mut position = 0;
         ids.retain(|key| {
-            !matches!(
+            let keep = !matches!(
                 scoped_record(controller, key, profile),
                 Err(controller::Error::Missing)
-            )
+            );
+            if !keep && position < offset {
+                removed_before += 1;
+            }
+            position += 1;
+            keep
         });
     }
-    let offset = offset.min(ids.len().saturating_sub(1) / PAGE_SIZE * PAGE_SIZE);
+    let offset = offset.saturating_sub(removed_before);
+    let offset = if offset >= ids.len() {
+        ids.len().saturating_sub(1) / PAGE_SIZE * PAGE_SIZE
+    } else {
+        offset
+    };
     let mut rows = Vec::new();
     for key in ids.iter().skip(offset).take(PAGE_SIZE) {
         if !live.load(Ordering::Acquire) {
@@ -878,7 +895,10 @@ impl Render for Management {
                 if !self.busy {
                     let mut pages = div().flex().gap(px(t.space.s8));
                     for (offset, label) in [
-                        (offset.checked_sub(PAGE_SIZE), "Previous"),
+                        (
+                            (*offset > 0).then(|| offset.saturating_sub(PAGE_SIZE)),
+                            "Previous",
+                        ),
                         (
                             (offset + PAGE_SIZE < ids.len()).then_some(offset + PAGE_SIZE),
                             "Next",

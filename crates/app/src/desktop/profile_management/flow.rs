@@ -1404,6 +1404,22 @@ mod tests {
             panic!("expected saved requests");
         };
         assert!(ids.is_empty() && rows.is_empty());
+        let mut previous = vec![key.clone()];
+        for n in 1..18 {
+            let draft = Prepared::create(&format!("page-request-{n}"), "Example").unwrap();
+            previous.push(controller.enqueue(draft).unwrap().key);
+        }
+        let unseen = previous[16..].to_vec();
+        let super::super::Page::History { rows, .. } =
+            super::super::history(&controller, Some("000000000001"), Some(previous), 16, &live)
+                .unwrap()
+        else {
+            panic!("expected second page");
+        };
+        assert_eq!(
+            rows.into_iter().map(|(id, _)| id).collect::<Vec<_>>(),
+            unseen
+        );
         let (record, _) = super::super::Command::Read.run(
             &controller,
             &key,
@@ -1415,6 +1431,38 @@ mod tests {
             record,
             Err(crate::profiles::controller::Error::Missing)
         ));
+    }
+
+    #[test]
+    fn leaving_settings_during_provider_resolution_keeps_the_request_prepared() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let client = provider(&root);
+        let journal = root.join("profile-operations");
+        let writer = Controller::new(journal::Journal::open(&journal).unwrap(), &client);
+        let key = writer
+            .enqueue(Prepared::create("before-resolve", "Example").unwrap())
+            .unwrap()
+            .key;
+        let reader = Controller::for_history(journal::Journal::open(&journal).unwrap(), None);
+        let mut ticket = super::super::Ticket::default();
+        let live = ticket.begin();
+        let (record, error) = super::super::Command::Submit.run(
+            &reader,
+            &key,
+            None,
+            &|| live.load(std::sync::atomic::Ordering::Acquire),
+            || {
+                ticket.cancel();
+                Some(client)
+            },
+        );
+        assert!(error.is_some());
+        assert_eq!(
+            record.unwrap().phase,
+            crate::profiles::controller::Phase::Prepared
+        );
+        assert!(!root.join("calls").exists());
     }
 
     #[test]
