@@ -300,6 +300,12 @@ pub struct Member {
     pub state: String,
     /// Why it is waiting or blocked, when reported.
     pub reason: Option<String>,
+    /// Where the state came from (`push`, `pull`, `stale`, etc.).
+    #[serde(default, deserialize_with = "crate::lenient")]
+    pub state_source: Option<String>,
+    /// Observations explaining the state, including stale report age.
+    #[serde(default, deserialize_with = "crate::lenient_strings")]
+    pub evidence: Vec<String>,
     /// The issue it works on, when reported.
     pub current_issue: Option<u64>,
     /// When the state began, in seconds since the Unix epoch.
@@ -326,6 +332,10 @@ impl Team {
         Ok(items::<Member>(&document(agents)?)?
             .into_iter()
             .filter(|member| valid_agent(&member.name) && member.configured != Some(false))
+            .map(|mut member| {
+                member.machine = member.machine.filter(crate::Machine::valid);
+                member
+            })
             .collect())
     }
 
@@ -914,6 +924,15 @@ pub struct Agent {
     pub tags: Vec<String>,
     /// Its state.
     pub state: String,
+    /// Where the state came from (`push`, `pull`, `stale`, etc.).
+    #[serde(default, deserialize_with = "crate::lenient")]
+    pub state_source: Option<String>,
+    /// Observations explaining the state (e.g. how old a stale report is).
+    #[serde(default, deserialize_with = "crate::lenient_strings")]
+    pub evidence: Vec<String>,
+    /// Machine serving this agent, when reported.
+    #[serde(skip)]
+    pub machine: Option<crate::Machine>,
     /// Why it is waiting or blocked.
     pub reason: Option<String>,
     /// What the CLI said about a blocked state.
@@ -1101,6 +1120,9 @@ impl Agent {
             .collect();
         // Null or mistyped reads as absent, never as an unreadable card.
         let field = |name: &str| document.get(name).map(|raw| raw.get());
+        agent.machine = field("machine")
+            .and_then(crate::object::<crate::Machine>)
+            .filter(crate::Machine::valid);
         agent.waiting = field("waiting").and_then(crate::object);
         agent.background = field("background").and_then(crate::Background::read);
         agent.processes = field("processes")
@@ -1480,6 +1502,21 @@ mod tests {
     fn an_inspected_agent_carries_its_wait_and_background_from_the_services_fixture() {
         let agent =
             Agent::decode(include_bytes!("profiles/runs/fixtures/agent-inspect.json")).unwrap();
+        assert_eq!(
+            agent.machine,
+            Some(crate::Machine {
+                id: "5f2c9e0d1b7a4e38".into(),
+                name: "laptop".into(),
+            })
+        );
+        assert_eq!(agent.state_source.as_deref(), Some("push"));
+        assert_eq!(
+            agent.evidence,
+            [
+                "runtime: claude",
+                "hook state 'busy' written 4s ago (fresh)"
+            ]
+        );
         assert_eq!(agent.waiting, None);
         assert_eq!(
             agent.background,

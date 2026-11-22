@@ -23,6 +23,13 @@ struct Machine {
 }
 
 #[derive(Deserialize)]
+struct VerifiedMachine {
+    id: String,
+    #[serde(default, deserialize_with = "crate::lenient")]
+    name: Option<String>,
+}
+
+#[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Reference {
     Socket,
@@ -144,6 +151,13 @@ pub(super) fn show(bytes: &[u8]) -> Result<Profile, Error> {
     entry.profile()?.ok_or(Error::Unsupported)
 }
 
+/// Local machine metadata observed during `/api/profile` verification.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct LocalMachine {
+    pub name: Option<String>,
+    pub home: Option<bool>,
+}
+
 /// The reply must come from the expected profile and machine and, when
 /// connecting, from the service run that the entry just read named. The
 /// service is new at each start, so later checks leave its run out.
@@ -151,13 +165,15 @@ pub(super) fn verify(
     bytes: &[u8],
     expected: &Identity,
     instance: Option<&str>,
-) -> Result<(), Error> {
+) -> Result<LocalMachine, Error> {
     #[derive(Deserialize)]
     struct Reply {
         protocol_version: u32,
         profile_id: String,
         instance_id: String,
-        machine: Machine,
+        machine: VerifiedMachine,
+        #[serde(default, deserialize_with = "crate::lenient")]
+        home: Option<bool>,
     }
     let reply: Reply = object(bytes)?;
     if reply.protocol_version != 1 {
@@ -169,7 +185,15 @@ pub(super) fn verify(
     {
         return Err(Error::BindingMismatch);
     }
-    Ok(())
+    let name = reply
+        .machine
+        .name
+        .map(|name| crate::profiles::setup::one_line(&name))
+        .filter(|name| !name.is_empty());
+    Ok(LocalMachine {
+        name,
+        home: reply.home,
+    })
 }
 
 /// Decode the JSON object `bytes`. Derived structs also accept a

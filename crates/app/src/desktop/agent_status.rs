@@ -78,6 +78,10 @@ impl AgentState {
 pub(super) struct Status {
     pub state: AgentState,
     pub online: bool,
+    /// True when Backbone marked a non-offline state as `state_source: "stale"`.
+    pub stale: bool,
+    /// Sanitized evidence explaining why the state is stale (e.g. report age).
+    pub stale_reason: Option<String>,
     pub label: String,
     pub since: Option<f64>,
     pub reason: Option<String>,
@@ -90,11 +94,27 @@ impl Status {
         Self {
             state,
             online: state.online(),
+            stale: false,
+            stale_reason: None,
             label: state.word().into(),
             since: None,
             reason: None,
             line: None,
         }
+    }
+
+    pub fn from_stale(state: AgentState, state_source: Option<&str>, evidence: &[String]) -> Self {
+        let mut status = Self::new(state);
+        if state_source == Some("stale") && state != AgentState::Offline {
+            status.stale = true;
+            status.stale_reason = stale_note(evidence);
+            status.label = if state == AgentState::Unknown {
+                "stale".into()
+            } else {
+                format!("{} · stale", status.label)
+            };
+        }
+        status
     }
 
     pub fn rank(&self) -> u8 {
@@ -105,6 +125,26 @@ impl Status {
             _ => 2,
         }
     }
+}
+
+/// Choose the most informative single-line stale evidence entry, if any.
+pub(super) fn stale_note(evidence: &[String]) -> Option<String> {
+    let cleaned: Vec<String> = evidence
+        .iter()
+        .map(|entry| agent_interface_roster::profiles::setup::one_line(entry))
+        .filter(|entry| !entry.is_empty())
+        .collect();
+    cleaned
+        .iter()
+        .find(|entry| {
+            let lower = entry.to_ascii_lowercase();
+            lower.contains("ago")
+                || lower.contains("stale")
+                || lower.contains("report")
+                || lower.contains("machine")
+        })
+        .or_else(|| cleaned.first())
+        .cloned()
 }
 
 /// An agent's active runs, as its sidebar row shows them.
@@ -128,6 +168,8 @@ struct Current {
     activity: HashMap<String, Rc<Activity>>,
     /// The profile's running and queued runs together, when it has any.
     background: Option<gpui::SharedString>,
+    /// Minute bucket for ticking relative `last_seen` labels while a machine is offline.
+    offline_tick: Option<u64>,
 }
 
 impl Current {
@@ -151,6 +193,7 @@ impl Default for Current {
             runs: Runs::default(),
             activity: HashMap::new(),
             background: None,
+            offline_tick: None,
         }
     }
 }
@@ -262,6 +305,106 @@ impl LiveAgents {
         let current = self.0.current.borrow();
         let snapshot = current.snapshot.as_ref().filter(|s| s.error.is_none())?;
         snapshot.details.get(name)?.machine.clone()
+    }
+
+    /// The durable registration ID from the current profile observation.
+    pub fn registration_id(&self, name: &str) -> Option<String> {
+        let current = self.0.current.borrow();
+        let snapshot = current.snapshot.as_ref().filter(|s| s.error.is_none())?;
+        snapshot.details.get(name)?.registration_id.clone()
+    }
+
+    /// The connected local machine's full ID for this profile source.
+    pub fn local_machine_id(&self) -> Option<String> {
+        self.0
+            .origin
+            .as_ref()
+            .map(|origin| origin.installation_id.clone())
+    }
+
+    /// Profile machines from `GET /api/status/services` and whether that list was read.
+    pub fn machines(&self) -> (Vec<agent_interface_roster::ProfileMachine>, bool) {
+        let current = self.0.current.borrow();
+        match current.snapshot.as_ref().filter(|s| s.error.is_none()) {
+            Some(snapshot) => (snapshot.machines.clone(), snapshot.machines_read),
+            None => (Vec::new(), false),
+        }
+    }
+
+    /// Best display name for `machine`, preferring the latest name from
+    /// `GET /api/status/services` over the agent's own cached name.
+    pub fn machine_display_name(&self, machine: &agent_interface_roster::Machine) -> String {
+        let current = self.0.current.borrow();
+        let from_services = current
+            .snapshot
+            .as_ref()
+            .filter(|s| s.error.is_none())
+            .and_then(|snapshot| {
+                snapshot
+                    .machines
+                    .iter()
+                    .find(|entry| entry.id == machine.id)
+                    .map(|entry| entry.name.as_str())
+                    .filter(|name| !name.trim().is_empty())
+            });
+        super::agent_groups::machine_display_name(
+            from_services.unwrap_or(&machine.name),
+            &machine.id,
+        )
+    }
+
+    /// Offline agents in the current observation with their last reported machine.
+    pub fn offline_with_machines(&self) -> Vec<(String, Option<agent_interface_roster::Machine>)> {
+        let current = self.0.current.borrow();
+        let Some(snapshot) = current.snapshot.as_ref().filter(|s| s.error.is_none()) else {
+            return Vec::new();
+        };
+        current
+            .statuses
+            .iter()
+            .filter(|(_, status)| status.state == AgentState::Offline)
+            .map(|(name, _)| {
+                let machine = snapshot
+                    .details
+                    .get(name)
+                    .and_then(|details| details.machine.clone());
+                (name.clone(), machine)
+            })
+            .collect()
+    }
+
+    /// Whether this profile spans more than one machine, considering both
+    /// `GET /api/status/services` and the provided/current agents.
+    pub fn is_multi_machine(&self, members: &[agent_interface_roster::views::Member]) -> bool {
+        let Some(local) = self.local_machine_id() else {
+            return false;
+        };
+        let is_remote = |id: &str| local != id;
+        let (machines, _) = self.machines();
+        if machines.iter().any(|machine| is_remote(&machine.id)) {
+            return true;
+        }
+        if members.iter().any(|member| {
+            member
+                .machine
+                .as_ref()
+                .is_some_and(|machine| is_remote(&machine.id))
+        }) {
+            return true;
+        }
+        let current = self.0.current.borrow();
+        current
+            .snapshot
+            .as_ref()
+            .filter(|s| s.error.is_none())
+            .is_some_and(|snapshot| {
+                snapshot.details.values().any(|details| {
+                    details
+                        .machine
+                        .as_ref()
+                        .is_some_and(|machine| is_remote(&machine.id))
+                })
+            })
     }
 
     /// The folders the newest observation's agents work in.
@@ -380,13 +523,23 @@ impl LiveAgents {
                 details.state_since = None;
             }
         }
+        let offline_tick = (snapshot.error.is_none()
+            && snapshot.machines.iter().any(|machine| {
+                machine.state == agent_interface_roster::MachineState::Offline
+                    && machine.last_seen.is_some()
+            }))
+        .then(|| agent_interface_roster::views::now() / 60);
         let mut current = self.0.current.borrow_mut();
+        let tick_changed = current.offline_tick != offline_tick;
         let changed = current.snapshot.as_ref().is_none_or(|old| {
             old.states != snapshot.states
                 || old.details != snapshot.details
                 || old.swarms != snapshot.swarms
+                || old.machines != snapshot.machines
+                || old.machines_read != snapshot.machines_read
                 || old.error != snapshot.error
         });
+        current.offline_tick = offline_tick;
         if changed {
             current.statuses = snapshot
                 .states
@@ -409,7 +562,24 @@ impl LiveAgents {
                         if let Some(suffix) = suffix.filter(|s| !s.is_empty()) {
                             status.label = format!("{} · {suffix}", status.state.word());
                         }
-                        status.line = waits_and_runs(details);
+                        if details.state_source.as_deref() == Some("stale")
+                            && status.state != AgentState::Offline
+                        {
+                            status.stale = true;
+                            status.stale_reason = stale_note(&details.evidence);
+                            status.label = if status.state == AgentState::Unknown {
+                                "stale".into()
+                            } else {
+                                format!("{} · stale", status.label)
+                            };
+                        }
+                        status.line = match (waits_and_runs(details), status.stale_reason.as_ref())
+                        {
+                            (Some(line), Some(stale)) => Some(format!("{line} · {stale}")),
+                            (Some(line), None) => Some(line),
+                            (None, Some(stale)) => Some(stale.clone()),
+                            (None, None) => None,
+                        };
                     }
                     (name.clone(), Rc::new(status))
                 })
@@ -439,7 +609,7 @@ impl LiveAgents {
             });
         }
         current.snapshot = Some(snapshot);
-        changed
+        changed || tick_changed
     }
 }
 
@@ -976,5 +1146,48 @@ mod tests {
                 .get(&origin, &new_connection.connection_key())
                 .is_some()
         );
+    }
+
+    #[test]
+    fn stale_non_offline_agents_surface_evidence_while_offline_stays_offline() {
+        let agents = LiveAgents::default();
+        let mut snapshot = Snapshot::default();
+        snapshot.update(
+            br#"{"items":[
+                {"name":"remote-busy","state":"busy","state_source":"stale",
+                 "evidence":["runtime: codex","machine last reported 5m ago"]},
+                {"name":"remote-unknown","state":"unknown","state_source":"stale","evidence":[]},
+                {"name":"stopped","state":"offline","state_source":"stale",
+                 "evidence":["no tmux session with that name"]}
+            ]}"#,
+        );
+        assert!(agents.update(snapshot.clone()));
+        let busy = agents.get("remote-busy");
+        assert!(busy.stale);
+        assert_eq!(busy.label, "working · stale");
+        assert_eq!(
+            busy.stale_reason.as_deref(),
+            Some("machine last reported 5m ago")
+        );
+        assert_eq!(busy.line.as_deref(), Some("machine last reported 5m ago"));
+
+        let unknown = agents.get("remote-unknown");
+        assert!(unknown.stale);
+        assert_eq!(unknown.label, "stale");
+
+        let stopped = agents.get("stopped");
+        assert!(!stopped.stale);
+        assert_eq!(stopped.label, "offline");
+
+        // Machine state changes alone mark the snapshot changed so the UI redraws.
+        snapshot.update_machines(Some(
+            br#"{"machines":[{"id":"a","name":"laptop","home":true,"state":"online"}]}"#,
+        ));
+        assert!(agents.update(snapshot.clone()));
+        assert!(!agents.update(snapshot.clone()));
+        snapshot.update_machines(Some(
+            br#"{"machines":[{"id":"a","name":"laptop","home":true,"state":"offline","last_seen":"2026-11-22T12:00:00Z"}]}"#,
+        ));
+        assert!(agents.update(snapshot));
     }
 }

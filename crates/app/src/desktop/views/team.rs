@@ -7,8 +7,9 @@ use agent_interface_core::View;
 use agent_interface_roster::views::{Member, Team};
 use gpui::{AnyElement, Context, SharedString, div, prelude::*, px};
 
-use super::{Grouping, ViewEvent, ViewPane, home, line, mono, since};
+use super::{Grouping, TeamAgentAction, ViewEvent, ViewPane, home, line, mono, since};
 use crate::desktop::{
+    agent_groups::{self, MachinePresence},
     components::{self as ui, AgentState, Tone},
     design::{colors, tokens},
 };
@@ -24,22 +25,41 @@ fn rank(member: &Member, pane: &ViewPane) -> (u8, String) {
 
 pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> AnyElement {
     let (t, c) = (tokens(), colors());
+    let multi_machine = pane.agents.is_multi_machine(&team.members);
+    let active_grouping = if pane.grouping == Grouping::Machine && !multi_machine {
+        Grouping::Folder
+    } else {
+        pane.grouping
+    };
     let online = team
         .members
         .iter()
-        .filter(|m| pane.agents.get(&m.name).online)
+        .filter(|m| {
+            let status = pane.agents.get(&m.name);
+            status.online && !status.stale
+        })
         .count();
     let mut grouping = ui::segments();
-    for (choice, label) in [
-        (Grouping::Folder, "Folder"),
-        (Grouping::Tag, "Tag"),
-        (Grouping::Swarm, "Swarm"),
-    ] {
+    let choices: &[(&'static str, Grouping)] = if multi_machine {
+        &[
+            ("Folder", Grouping::Folder),
+            ("Tag", Grouping::Tag),
+            ("Swarm", Grouping::Swarm),
+            ("Machine", Grouping::Machine),
+        ]
+    } else {
+        &[
+            ("Folder", Grouping::Folder),
+            ("Tag", Grouping::Tag),
+            ("Swarm", Grouping::Swarm),
+        ]
+    };
+    for &(label, choice) in choices {
         grouping = grouping.child(
             ui::segment(
                 SharedString::from(format!("team-by-{label}")),
                 label,
-                choice == pane.grouping,
+                choice == active_grouping,
             )
             .on_click(cx.listener(move |pane, _, _, cx| {
                 pane.grouping = choice;
@@ -53,21 +73,23 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
         .child(div().flex_1())
         .child(grouping);
 
+    let is_stale = |m: &Member| pane.agents.get(&m.name).stale;
     let tally = |wanted: AgentState| {
         team.members
             .iter()
-            .filter(|m| state(m, pane) == wanted)
+            .filter(|m| !is_stale(m) && state(m, pane) == wanted)
             .count()
     };
+    let stale_count = team.members.iter().filter(|m| is_stale(m)).count();
     let needing = team
         .members
         .iter()
-        .filter(|m| state(m, pane).needs_you())
+        .filter(|m| !is_stale(m) && state(m, pane).needs_you())
         .count();
     let working = team
         .members
         .iter()
-        .filter(|m| state(m, pane).working())
+        .filter(|m| !is_stale(m) && state(m, pane).working())
         .count();
     let summary = ui::text(
         div()
@@ -113,6 +135,13 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
             .child(format!("{} idle", tally(AgentState::Idle))),
     )
     .child(format!("{} offline", tally(AgentState::Offline)))
+    .when(stale_count > 0, |el| {
+        el.child(
+            div()
+                .text_color(c.attention_text)
+                .child(format!("{stale_count} stale")),
+        )
+    })
     .when(tally(AgentState::Unknown) > 0, |el| {
         el.child(format!("{} status unknown", tally(AgentState::Unknown)))
     })
@@ -123,17 +152,42 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
         ))
     });
 
-    let column = match pane.grouping {
+    let column = match active_grouping {
         Grouping::Folder => folders(pane, team, cx),
         Grouping::Tag => by_tag(pane, team, cx),
         Grouping::Swarm => swarms(pane, team, cx),
+        Grouping::Machine => by_machine(pane, team, cx),
     };
+    let notice = pane.team_notice.as_ref().map(|message| {
+        ui::text(
+            div()
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap(px(t.space.s8))
+                .px(px(t.space.s14))
+                .py(px(t.space.s6))
+                .bg(c.panel)
+                .border_b(px(t.size.hairline))
+                .border_color(c.line)
+                .text_color(c.text_2),
+            &t.text.status,
+        )
+        .child(div().flex_1().min_w_0().child(line(message)))
+        .child(
+            ui::icon_button("team-notice-dismiss", "x").on_click(cx.listener(|pane, _, _, cx| {
+                pane.team_notice = None;
+                cx.notify();
+            })),
+        )
+    });
     div()
         .size_full()
         .flex()
         .flex_col()
         .child(header)
         .child(summary)
+        .children(notice)
         .child(ui::grouped_page("team-rows", column))
         .child(ui::view_footer(
             &[("⌥ click", "agent card beside")],
@@ -333,6 +387,114 @@ fn swarms(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div
     column
 }
 
+/// Group all configured agents by their full machine ID, showing each machine's
+/// live reachability (`online`, `offline · last seen …`, `not in profile`, or
+/// `status unknown`), with local agents first and `machine: null` separately.
+fn by_machine(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> gpui::Div {
+    let local_id = pane.agents.local_machine_id();
+    let (machines, machines_read) = pane.agents.machines();
+    let mut local: Vec<&Member> = Vec::new();
+    let mut unplaced: Vec<&Member> = Vec::new();
+    let mut remote: BTreeMap<String, Vec<&Member>> = BTreeMap::new();
+    let mut remote_names: BTreeMap<String, String> = BTreeMap::new();
+
+    for member in &team.members {
+        match &member.machine {
+            None => unplaced.push(member),
+            Some(machine)
+                if local_id
+                    .as_deref()
+                    .is_none_or(|local| local == machine.id.as_str()) =>
+            {
+                local.push(member);
+            }
+            Some(machine) => {
+                remote_names
+                    .entry(machine.id.clone())
+                    .or_insert_with(|| machine.name.clone());
+                remote.entry(machine.id.clone()).or_default().push(member);
+            }
+        }
+    }
+
+    let mut column = div();
+    let local_profile = local_id
+        .as_deref()
+        .and_then(|id| machines.iter().find(|machine| machine.id == id));
+    let local_name = local_profile
+        .map(|machine| agent_interface_roster::profiles::setup::one_line(&machine.name))
+        .filter(|name| !name.is_empty())
+        .or_else(|| {
+            pane.connection
+                .as_ref()
+                .and_then(|conn| conn.machine_name().map(str::to_owned))
+        })
+        .unwrap_or_else(|| "This machine".into());
+    let local_note = format!("this machine · online · {}", plural(local.len()));
+    local.sort_by_key(|member| rank(member, pane));
+    column = column.child(ui::group_title(local_name, local_note));
+    if !local.is_empty() {
+        column = column.child(card(pane, &local, "machine-local", None, cx));
+    }
+
+    // Known remote machines in the service's order first, then unknown IDs.
+    let mut ordered: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for machine in &machines {
+        if local_id
+            .as_deref()
+            .is_some_and(|local| local != machine.id.as_str())
+            && seen.insert(machine.id.clone())
+        {
+            ordered.push(machine.id.clone());
+        }
+    }
+    let mut unknown: Vec<(String, String)> = remote
+        .keys()
+        .filter(|id| !seen.contains(*id))
+        .map(|id| {
+            let name = agent_groups::machine_display_name(
+                remote_names.get(id).map(String::as_str).unwrap_or(""),
+                id,
+            );
+            (name.to_ascii_lowercase(), id.clone())
+        })
+        .collect();
+    unknown.sort();
+    ordered.extend(unknown.into_iter().map(|(_, id)| id));
+
+    for id in ordered {
+        let profile_machine = machines.iter().find(|machine| machine.id == id);
+        let raw_name = profile_machine
+            .map(|machine| machine.name.as_str())
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| remote_names.get(&id).map(String::as_str))
+            .unwrap_or("");
+        let name = agent_groups::machine_display_name(raw_name, &id);
+        let presence: MachinePresence =
+            agent_groups::machine_presence(&id, &machines, machines_read);
+        let mut members = remote.remove(&id).unwrap_or_default();
+        members.sort_by_key(|member| rank(member, pane));
+        let note = format!("{} · {}", presence.label(), plural(members.len()));
+        column = column.child(ui::group_title(name, note));
+        if !members.is_empty() {
+            column = column.child(card(pane, &members, &format!("machine-{id}"), None, cx));
+        }
+    }
+
+    if !unplaced.is_empty() {
+        unplaced.sort_by_key(|member| rank(member, pane));
+        column = column
+            .child(ui::group_title(
+                "Never started",
+                format!("no machine yet · {}", plural(unplaced.len())),
+            ))
+            .child(card(pane, &unplaced, "machine-null", None, cx));
+    }
+
+    column
+}
+
 /// One agent on a card: its state, name, CLI and tags, what it is doing and
 /// for how long. `guide` draws its place under a coordinator.
 pub(super) fn agent_row(
@@ -348,8 +510,34 @@ pub(super) fn agent_row(
     let state = state(member, pane);
     let name = member.name.clone();
     let registration = member.registration_id.clone();
+    let local_id = pane.agents.local_machine_id();
+    let remote_badge = (pane.grouping != Grouping::Machine)
+        .then(|| {
+            member
+                .machine
+                .as_ref()
+                .filter(|machine| {
+                    local_id
+                        .as_deref()
+                        .is_some_and(|local| local != machine.id.as_str())
+                })
+                .map(|machine| pane.agents.machine_display_name(machine))
+        })
+        .flatten();
+    let busy_action = pane.team_actions_in_flight.contains(&name);
+    let can_act = pane.connection.is_some();
     // An agent can appear in several groups; each row needs its own identity.
     let id = SharedString::from(format!("team-{group}-{name}-{}", guide.len()));
+    let action_btn = |label: &'static str, suffix: &'static str, action: TeamAgentAction| {
+        let agent_name = name.clone();
+        let reg = registration.clone();
+        ui::segment(SharedString::from(format!("{id}-{suffix}")), label, false)
+            .when(busy_action, |el| el.opacity(0.4))
+            .on_click(cx.listener(move |pane, _, _, cx| {
+                cx.stop_propagation();
+                pane.run_team_action(agent_name.clone(), reg.clone(), action, cx);
+            }))
+    };
     div()
         .id(id.clone())
         .flex()
@@ -364,14 +552,20 @@ pub(super) fn agent_row(
         .when(registration.is_some(), |el| {
             el.cursor_pointer().hover(|el| el.bg(colors().hover))
         })
-        .when(state == AgentState::Offline, |el| el.opacity(0.7))
+        .when(state == AgentState::Offline || status.stale, |el| {
+            el.opacity(0.75)
+        })
         .when(!guide.is_empty(), |el| {
             el.child(mono(guide).text_color(c.faint))
         })
-        .child(ui::agent_symbol(status.state))
+        .child(ui::agent_symbol(if status.stale {
+            AgentState::Unknown
+        } else {
+            status.state
+        }))
         .child(
             ui::text(div().flex_shrink_0(), &t.text.row)
-                .text_color(if state.working() || state.needs_you() {
+                .text_color(if !status.stale && (state.working() || state.needs_you()) {
                     c.text
                 } else {
                     c.muted
@@ -379,6 +573,9 @@ pub(super) fn agent_row(
                 .child(name.clone()),
         )
         .child(ui::badge(member.runtime.clone()))
+        .when_some(remote_badge, |el, machine| {
+            el.child(ui::tag(machine, Tone::Quiet))
+        })
         .when(coordinates(member), |el| {
             el.child(ui::tag("coordinator", Tone::Plain))
         })
@@ -403,7 +600,11 @@ pub(super) fn agent_row(
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
-                    .text_color(c.muted),
+                    .text_color(if status.stale {
+                        c.attention_text
+                    } else {
+                        c.muted
+                    }),
                 &t.text.meta,
             )
             .child(line(text))
@@ -412,6 +613,35 @@ pub(super) fn agent_row(
             ui::agent_status_text(&status).flex_shrink_0(),
             &t.text.meta,
         ))
+        .when(can_act, |el| {
+            let mut controls = div()
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap(px(t.space.s4));
+            if state == AgentState::Offline {
+                controls = controls
+                    .child(action_btn(
+                        "Resume",
+                        "resume",
+                        TeamAgentAction::Start { resume: true },
+                    ))
+                    .child(action_btn(
+                        "Start",
+                        "start",
+                        TeamAgentAction::Start { resume: false },
+                    ));
+            } else {
+                controls = controls
+                    .child(action_btn(
+                        "Restart",
+                        "restart",
+                        TeamAgentAction::Restart { resume: false },
+                    ))
+                    .child(action_btn("Stop", "stop", TeamAgentAction::Stop));
+            }
+            el.child(controls)
+        })
         .child(
             ui::text(
                 div()

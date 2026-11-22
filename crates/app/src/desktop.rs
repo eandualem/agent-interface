@@ -628,6 +628,28 @@ fn saved_view(layout: &Layout, id: &str, view: &View) -> bool {
     })
 }
 
+struct AgentMenu {
+    ticket: Rc<()>,
+    origin: navigation_origin::Origin,
+    connection: agent_interface_roster::profiles::Connection,
+    target: navigation_origin::AgentTarget,
+    name: String,
+    registration_id: Option<String>,
+    state: agent_status::AgentState,
+    stale: bool,
+    stale_reason: Option<String>,
+    machine: Option<String>,
+    in_flight: bool,
+}
+
+#[derive(Clone, Copy)]
+enum AgentAction {
+    OpenTerminal,
+    Start { resume: bool },
+    Stop,
+    Restart { resume: bool },
+}
+
 #[derive(Default)]
 struct Browser {
     library: Option<Library>,
@@ -709,6 +731,7 @@ struct Browser {
     save_notice: Option<String>,
     name_click: Option<(String, bool)>,
     tab_menu: Option<TabMenu>,
+    agent_menu: Option<AgentMenu>,
     chooser: Option<Attaching>,
     // A failed proposed edit remains detached until its transaction succeeds.
     pending_save: Option<(Document, Layout)>,
@@ -716,6 +739,11 @@ struct Browser {
     creation_from: Option<Selection>,
     /// Agents whose swarms are listed under them in the navigation panel.
     expanded_agents: std::collections::HashSet<String>,
+    /// Remote machine IDs whose offline agents are expanded in the navigation panel.
+    expanded_machines: std::collections::HashSet<String>,
+    /// In-flight Start/Stop/Restart actions keyed by connection and agent name.
+    agent_actions_in_flight:
+        std::collections::HashSet<(agent_interface_roster::profiles::ConnectionKey, String)>,
     /// Swarms seen running, by workspace and swarm name, with their server
     /// and every session seen in them; kept until no tab is left to close
     /// for a finished one.
@@ -972,6 +1000,9 @@ impl Browser {
         self.pane_motion = None;
         self.name_click = None;
         self.tab_menu = None;
+        self.agent_menu = None;
+        self.expanded_machines.clear();
+        self.agent_actions_in_flight.clear();
         self.save_notice = None;
         self.stop_reader(cx);
         self.terminals.clear();
@@ -1691,10 +1722,145 @@ impl Browser {
         }
         self.editing = None;
         self.chooser = None;
+        self.agent_menu = None;
         self.workspace_menu = false;
         if let Some(focus) = &self.navigation {
             window.focus(focus, cx);
         }
+        cx.notify();
+    }
+
+    fn open_agent_menu(
+        &mut self,
+        name: &str,
+        at: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(space) = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().workspace())
+        else {
+            return;
+        };
+        let workspace_profiles::Route::Bound(connection) = self.workspace_profiles.route(space)
+        else {
+            return;
+        };
+        let Some(target) = self.agent_target(name) else {
+            return;
+        };
+        let Some(origin) = self.selected_navigation_origin() else {
+            return;
+        };
+        let Some(agents) = self.active_agents() else {
+            return;
+        };
+        let status = agents.get(name);
+        let machine = agents
+            .machine(name)
+            .filter(|machine| machine.is_remote(connection.identity()))
+            .map(|machine| agents.machine_display_name(&machine));
+        let in_flight = self
+            .agent_actions_in_flight
+            .contains(&(connection.connection_key(), name.to_owned()));
+        let registration_id = agents.registration_id(name);
+        let connection = connection.clone();
+        self.close_menus();
+        self.menu_at = Some(at);
+        self.agent_menu = Some(AgentMenu {
+            ticket: Rc::new(()),
+            origin,
+            connection,
+            target,
+            name: name.to_owned(),
+            registration_id,
+            state: status.state,
+            stale: status.stale,
+            stale_reason: status.stale_reason.clone(),
+            machine,
+            in_flight,
+        });
+        if let Some(focus) = &self.navigation {
+            window.focus(focus, cx);
+        }
+        cx.notify();
+    }
+
+    fn take_agent_menu(&mut self, ticket: &Rc<()>) -> Option<AgentMenu> {
+        if !self
+            .agent_menu
+            .as_ref()
+            .is_some_and(|menu| Rc::ptr_eq(&menu.ticket, ticket))
+        {
+            return None;
+        }
+        self.agent_menu.take()
+    }
+
+    fn agent_action(
+        &mut self,
+        ticket: &Rc<()>,
+        action: AgentAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(menu) = self.take_agent_menu(ticket) else {
+            return;
+        };
+        if !self.selected_origin_is_current(Some(&menu.origin)) {
+            self.save_notice = Some("The workspace changed. Open the agent menu again.".into());
+            cx.notify();
+            return;
+        }
+        match action {
+            AgentAction::OpenTerminal => {
+                self.go_to_agent_target(&menu.target, window, cx);
+                return;
+            }
+            AgentAction::Start { .. } | AgentAction::Stop | AgentAction::Restart { .. } => {}
+        }
+        let key = (menu.connection.connection_key(), menu.name.clone());
+        if !self.agent_actions_in_flight.insert(key.clone()) {
+            return;
+        }
+        let origin = menu.origin;
+        let connection = menu.connection;
+        let name = menu.name;
+        let registration = menu.registration_id;
+        self.save_notice = Some(match action {
+            AgentAction::Start { resume: true } => format!("Resuming {name}…"),
+            AgentAction::Start { resume: false } => format!("Starting {name}…"),
+            AgentAction::Stop => format!("Stopping {name}…"),
+            AgentAction::Restart { .. } => format!("Restarting {name}…"),
+            AgentAction::OpenTerminal => unreachable!(),
+        });
+        let work = cx.background_executor().spawn(async move {
+            match action {
+                AgentAction::Start { resume } => {
+                    connection.start_agent(&name, resume).roster_message()
+                }
+                AgentAction::Stop => connection
+                    .stop_agent(&name, registration.as_deref())
+                    .message(),
+                AgentAction::Restart { resume } => {
+                    connection.restart_agent(&name, resume).message()
+                }
+                AgentAction::OpenTerminal => unreachable!(),
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            let message = work.await;
+            let _ = this.update(cx, |browser, cx| {
+                browser.agent_actions_in_flight.remove(&key);
+                if browser.selected_origin_is_current(Some(&origin)) {
+                    browser.save_notice = Some(message);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
     }
 
@@ -1843,6 +2009,7 @@ impl Browser {
         self.profile_picker_requested = false;
         self.profile_change = None;
         self.tab_menu = None;
+        self.agent_menu = None;
         self.workspace_menu = false;
         self.icon_picker = false;
     }
@@ -1858,6 +2025,7 @@ impl Browser {
         self.workspace_menu
             || self.icon_picker
             || self.tab_menu.is_some()
+            || self.agent_menu.is_some()
             || self.editing.is_some()
             || self.chooser.is_some()
             || self.jump.is_some()
@@ -3314,7 +3482,10 @@ impl Render for Browser {
                             return;
                         }
                     }
-                    if (browser.tab_menu.is_some() || browser.workspace_menu || browser.icon_picker)
+                    if (browser.tab_menu.is_some()
+                        || browser.agent_menu.is_some()
+                        || browser.workspace_menu
+                        || browser.icon_picker)
                         && key.key == "escape"
                     {
                         browser.close_menus();
@@ -3415,6 +3586,7 @@ impl Render for Browser {
                     if command.is_none()
                         && browser.chooser.is_none()
                         && browser.tab_menu.is_none()
+                        && browser.agent_menu.is_none()
                         && !browser.workspace_menu
                         && !browser.icon_picker
                         && browser
