@@ -148,9 +148,9 @@ fn connect_selected(
     let default_size = fields
         .next()
         .and_then(|s| s.split_once('x'))
-        .and_then(|(w, h)| Some((w.parse::<u16>().ok()?, h.parse::<u16>().ok()?)))
-        .filter(|(w, h)| *w > 0 && *h > 0)
-        .ok_or_else(|| io::Error::other("invalid tmux default-size"))?;
+        .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)))
+        .map(|(w, h)| (w.clamp(1, 10000) as u16, h.clamp(1, 10000) as u16))
+        .unwrap_or((80, 24));
     let mut input = fields
         .next()
         .and_then(|id| id.strip_prefix('%'))

@@ -355,8 +355,15 @@ impl LiveTerminal {
     }
 
     /// Only the browser knows whether an attachment is a registered agent.
-    pub fn set_agent(&mut self, agent: Option<String>, protect_size: bool, cx: &mut Context<Self>) {
-        if self.protect_size != protect_size {
+    pub fn set_agent(
+        &mut self,
+        agent: Option<String>,
+        protect_size: Option<bool>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(protect_size) = protect_size
+            && self.protect_size != protect_size
+        {
             self.protect_size = protect_size;
             if let Some(view) = &self.view {
                 let size = self.default_size.filter(|_| protect_size);
@@ -1381,39 +1388,43 @@ mod tests {
     #[test]
     fn an_agent_tile_limits_its_size_and_releases_it_on_hide_or_direct_close() {
         let server = TmuxServer::start().unwrap();
-        server
-            .run(&[
-                "new-session",
-                "-d",
-                "-s",
-                "agent",
-                "-x",
-                "120",
-                "-y",
-                "40",
-                "cat",
-            ])
-            .unwrap();
+        for session in ["agent", "other"] {
+            server
+                .run(&[
+                    "new-session",
+                    "-d",
+                    "-s",
+                    session,
+                    "-x",
+                    "120",
+                    "-y",
+                    "40",
+                    "cat",
+                ])
+                .unwrap();
+        }
         let socket = server
             .run(&["display-message", "-p", "#{socket_path}"])
             .unwrap();
-        let ready = connect(Target {
-            connection: None,
-            leaf: Leaf {
-                id: "abcdef123456".into(),
-                cwd: None,
-                empty: false,
-                view: None,
-                attachment: Some(Attachment {
-                    session: "agent".into(),
-                    source_socket: Some(socket.trim().into()),
-                }),
-            },
-            directory: None,
-            source: Err("use fixture socket".into()),
-        })
-        .unwrap();
-        let wait = |expected: &str| {
+        let open = |session: &str| {
+            connect(Target {
+                connection: None,
+                leaf: Leaf {
+                    id: "abcdef123456".into(),
+                    cwd: None,
+                    empty: false,
+                    view: None,
+                    attachment: Some(Attachment {
+                        session: session.into(),
+                        source_socket: Some(socket.trim().into()),
+                    }),
+                },
+                directory: None,
+                source: Err("use fixture socket".into()),
+            })
+            .unwrap()
+        };
+        let wait = |session: &str, expected: &str| {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
                 let size = server
@@ -1421,7 +1432,7 @@ mod tests {
                         "display-message",
                         "-p",
                         "-t",
-                        "=agent:",
+                        &format!("={session}:"),
                         "#{window_width}x#{window_height}",
                     ])
                     .unwrap();
@@ -1432,16 +1443,48 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(5));
             }
         };
+        let other = open("other");
+        other.panes.as_ref().unwrap().set_size(95, 30).unwrap();
+        wait("other", "95x30");
+        let ready = open("agent");
         let panes = ready.panes.as_ref().unwrap();
         panes.set_agent_default(Some(ready.default_size));
         panes.set_size(20, 10).unwrap();
-        wait("80x10");
+        wait("agent", "80x10");
         panes.ignore_size().unwrap();
-        wait("120x40");
+        wait("agent", "120x40");
         panes.set_size(94, 33).unwrap();
-        wait("94x33");
+        wait("agent", "94x33");
         drop(ready);
-        wait("120x40");
+        wait("agent", "120x40");
+        wait("other", "95x30");
+        let again = open("agent");
+        let panes = again.panes.as_ref().unwrap();
+        panes.set_agent_default(Some(again.default_size));
+        panes.set_size(20, 10).unwrap();
+        wait("agent", "80x10");
+        panes.ignore_size().unwrap();
+        drop(again);
+        wait("agent", "120x40");
+        wait("other", "95x30");
+        // tmux can reassign a surviving client when a session is destroyed.
+        // A late release for the old agent must not resize its new session.
+        let reassigned = open("agent");
+        let panes = reassigned.panes.as_ref().unwrap();
+        panes.set_agent_default(Some(reassigned.default_size));
+        panes.set_size(80, 24).unwrap();
+        wait("agent", "80x24");
+        let client = server
+            .run(&["list-clients", "-t", "=agent:", "-F", "#{client_name}"])
+            .unwrap();
+        server
+            .run(&["switch-client", "-c", client.trim(), "-t", "=other:"])
+            .unwrap();
+        drop(other);
+        wait("other", "80x24");
+        panes.ignore_size().unwrap();
+        drop(reassigned);
+        wait("other", "80x24");
     }
 
     #[test]

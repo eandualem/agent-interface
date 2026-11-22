@@ -2859,13 +2859,10 @@ impl Render for Browser {
                 let stopped = roster.is_some_and(|r| {
                     r.get(&attachment.session).state == components::AgentState::Offline
                 });
-                Some((
-                    stopped.then(|| attachment.session.clone()),
-                    registered.unwrap_or(true),
-                ))
+                Some((stopped.then(|| attachment.session.clone()), registered))
             });
             if let Some(terminal) = self.terminals.get(&leaf.id) {
-                let (stopped, protect_size) = sizing.unwrap_or_default();
+                let (stopped, protect_size) = sizing.unwrap_or((None, Some(false)));
                 terminal.update(cx, |terminal, cx| {
                     terminal.set_agent(stopped, protect_size, cx)
                 });
