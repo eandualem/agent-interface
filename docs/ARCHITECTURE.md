@@ -12,6 +12,26 @@ tabs and split layouts. Each leaf in a layout either opens an ordinary shell
 on the library's persistent tmux server, attaches to a local session, or opens a profile agent terminal stream.
 An empty leaf starts no shell.
 
+An ordinary shell that is zsh, bash or fish also defines `claude`, `codex` and
+`agy` as shell functions, loaded after the person's own start-up files from
+`shell-guard/` beside the library's tmux socket. Typed at a terminal, each one
+asks whether to start a Backbone agent (`backbone agent start`) instead of an
+unmanaged session; inside an agent's session (`BACKBONE_AGENT`), from a script
+or pipe, or without the `backbone` program, it runs the program as typed. A
+function of the same name from the person's own files is left in place. zsh
+reads the files through `ZDOTDIR`, which they unset again so the person's own
+files come from their home or the `ZDOTDIR` their `~/.zshenv` sets, and
+defines the functions at its first prompt. A `ZDOTDIR` set in the system's
+`zshenv` replaces the app's before zsh reads it, so such a shell starts without
+the guard and runs the programs as typed. fish reads them with
+`--init-command`. bash starts with `--rcfile`, which reads the login start-up
+files as `bash -l` would, because macOS's bash 3.2 ignores `ENV` in POSIX mode.
+The shell then reports itself as not a login shell and does not read
+`~/.bash_logout`, and where bash was built to read `/etc/bash.bashrc`, as on
+Debian and Ubuntu, that file runs a second time from `/etc/profile`. Other
+shells start unchanged. Profile workspaces' shells belong to the Backbone
+service.
+
 Local terminals connect on first display and retain their control-mode clients (`tmux -C`)
 when tabs or workspaces change. The owning native window keeps each connection
 until its target is removed or replaced, the library changes, or the window
