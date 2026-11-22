@@ -913,7 +913,8 @@ impl ViewPane {
         cx: &mut Context<Self>,
     ) -> bool {
         if let Some(pane) = &self.connections
-            && connections::Pane::is_tab(key)
+            && key.key == "tab"
+            && !key.modifiers.modified()
         {
             pane.update(cx, |pane, cx| pane.focus_entry(window, cx));
             return true;
