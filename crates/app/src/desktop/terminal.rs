@@ -295,11 +295,12 @@ const STABLE: std::time::Duration = std::time::Duration::from_secs(30);
 /// Whether a failed remote open may be tried again automatically: the home
 /// or the agent's machine was unreachable (503), the profile service did not
 /// answer or was restarting, or the connection closed or timed out during the
-/// open. Refusals and protocol errors wait for a person.
-fn retries_after_open(kind: std::io::ErrorKind) -> bool {
+/// open. Refusals and protocol errors wait for a person, except the service's
+/// refusal while an agent this pane `launched` is still starting.
+fn retries_after_open(kind: std::io::ErrorKind, launched: bool) -> bool {
     use std::io::ErrorKind::{
         BrokenPipe, ConnectionAborted, ConnectionRefused, ConnectionReset, HostUnreachable,
-        NotConnected, NotFound, TimedOut, UnexpectedEof,
+        NotConnected, NotFound, Other, TimedOut, UnexpectedEof,
     };
     matches!(
         kind,
@@ -312,7 +313,7 @@ fn retries_after_open(kind: std::io::ErrorKind) -> bool {
             | ConnectionRefused
             | NotFound
             | TimedOut
-    )
+    ) || (launched && kind == Other)
 }
 
 /// How often a lost attachment is tried again, in two-second refresh ticks:
@@ -353,6 +354,8 @@ pub(super) struct LiveTerminal {
     /// Whether a remote pane's error is transient, so the automatic retry
     /// may open it again.
     remote_retry: bool,
+    /// This pane started its remote agent: keep opening it until it runs.
+    launched: bool,
     access: Option<agent_interface_roster::profiles::terminal::Access>,
     view: Option<Entity<TerminalView>>,
     error: Option<String>,
@@ -452,6 +455,9 @@ impl LiveTerminal {
             let _ = this.update(cx, |terminal, cx| {
                 terminal.launching = false;
                 if terminal.agent == Some(agent) {
+                    use agent_interface_roster::lifecycle::Outcome;
+                    terminal.launched |=
+                        matches!(result, Outcome::Accepted(_) | Outcome::AlreadyRunning);
                     terminal.launch_result = Some(result);
                     terminal.start(cx);
                 }
@@ -536,6 +542,7 @@ impl LiveTerminal {
             target,
             refresh_on_reopen: false,
             remote_retry: false,
+            launched: false,
             view: None,
             access: None,
             error: None,
@@ -672,6 +679,8 @@ impl LiveTerminal {
                 match result {
                     Ok((remote, size, access, updates)) => {
                         terminal.error = None;
+                        terminal.launched = false;
+                        terminal.launch_result = None;
                         terminal.access = Some(access);
                         let view = cx.new(|cx| {
                             TerminalView::embedded(
@@ -719,7 +728,7 @@ impl LiveTerminal {
                             error.kind(),
                             std::io::ErrorKind::NotConnected | std::io::ErrorKind::PermissionDenied
                         );
-                        terminal.remote_retry = retries_after_open(error.kind());
+                        terminal.remote_retry = retries_after_open(error.kind(), terminal.launched);
                         if error.kind() == std::io::ErrorKind::AddrNotAvailable {
                             cx.emit(RefreshProfile);
                         }
@@ -970,7 +979,7 @@ impl Render for LiveTerminal {
                 |el, error| el.child(line(error, c.attention_text)),
             )
             .when(
-                self.error.is_some() && self.target.remote().is_some(),
+                self.error.is_some() && self.target.remote().is_some() && self.agent.is_none(),
                 |el| {
                     el.child(
                         div()
@@ -998,8 +1007,9 @@ impl Render for LiveTerminal {
                     )
                 },
             )
+            // A stopped agent offers its launch whichever machine it runs on.
             .when(
-                self.error.is_some() && self.target.remote().is_none(),
+                self.error.is_some() && (self.target.remote().is_none() || self.agent.is_some()),
                 |el| {
                     let attached = self.target.leaf.attachment.is_some();
                     let launching = self.launching;
@@ -1110,7 +1120,7 @@ mod tests {
             ErrorKind::ConnectionRefused,
             ErrorKind::TimedOut,
         ] {
-            assert!(retries_after_open(kind), "{kind:?}");
+            assert!(retries_after_open(kind, false), "{kind:?}");
         }
         for kind in [
             ErrorKind::Other,
@@ -1118,8 +1128,13 @@ mod tests {
             ErrorKind::AddrNotAvailable,
             ErrorKind::InvalidData,
         ] {
-            assert!(!retries_after_open(kind), "{kind:?}");
+            assert!(!retries_after_open(kind, false), "{kind:?}");
         }
+        // A refusal while an agent this pane started comes up is retried;
+        // a refused binding or instance is not.
+        assert!(retries_after_open(ErrorKind::Other, true));
+        assert!(!retries_after_open(ErrorKind::PermissionDenied, true));
+        assert!(!retries_after_open(ErrorKind::AddrNotAvailable, true));
     }
 
     #[test]
