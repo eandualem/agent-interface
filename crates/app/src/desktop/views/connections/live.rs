@@ -9,7 +9,7 @@ use std::{collections::HashSet, sync::Arc};
 enum Change {
     Invite(String),
     Answer(String, bool),
-    Gate(String, Direction, Policy),
+    Gates(String, Vec<(Direction, Policy, String)>),
     Review(Box<api::Message>, DecisionKind),
     Disconnect(String),
 }
@@ -22,13 +22,39 @@ enum DecisionKind {
 }
 
 impl Change {
+    fn belongs_to(&self, selected: Option<&Selection>) -> bool {
+        match (self, selected) {
+            (Self::Invite(_), _) => true,
+            (Self::Answer(request, _), Some(Selection::Request(current))) => request == current,
+            (Self::Disconnect(g) | Self::Gates(g, _), Some(Selection::Peer(current))) => {
+                g == &current.generation
+            }
+            (Self::Review(m, _), Some(Selection::Peer(current))) => &m.connection == current,
+            _ => false,
+        }
+    }
+    fn description(&self) -> String {
+        match self {
+            Self::Invite(id) => format!("Invitation to {id}"),
+            Self::Answer(id, _) => format!("Answer to request {id}"),
+            Self::Disconnect(g) => format!("Disconnect generation {g}"),
+            Self::Gates(g, _) => format!("Gate change for generation {g}"),
+            Self::Review(m, _) => {
+                format!("Review of {} for {}", m.message_id, m.connection.peer_id)
+            }
+        }
+    }
+
     fn send(&self, connection: &Connection, key: &str) -> Result<(), Error> {
         match self {
             Self::Invite(id) => connection.invite_peer(id, key).map(drop),
             Self::Answer(id, accept) => connection.answer_peer(id, *accept, key).map(drop),
-            Self::Gate(generation, dir, policy) => connection
-                .set_peer_gate(generation, *dir, *policy, key)
-                .map(drop),
+            Self::Gates(generation, changes) => {
+                for (direction, policy, key) in changes {
+                    connection.set_peer_gate(generation, *direction, *policy, key)?;
+                }
+                Ok(())
+            }
             Self::Disconnect(generation) => connection.disconnect_peer(generation, key).map(drop),
             Self::Review(message, decision) => {
                 let action = match decision {
@@ -49,7 +75,7 @@ pub(super) enum Form {
     Decline(api::Message),
     Revise(api::Message),
     Disconnect(String),
-    Gate(String, Direction, Policy),
+    Gate(String, api::Gates, api::Gates),
 }
 
 struct Snapshot {
@@ -63,6 +89,7 @@ impl Snapshot {
         c: &Connection,
         summary: Arc<Summary>,
         selected: Option<Selection>,
+        oldest: Option<String>,
     ) -> Result<Self, Error> {
         let overview = &summary.overview;
         let selection = match selected {
@@ -92,7 +119,24 @@ impl Snapshot {
             _ => None,
         };
         let history = match &selection {
-            Some(Selection::Peer(id)) => Some(c.peer_history(id, None)?),
+            Some(Selection::Peer(id)) => {
+                let mut page = c.peer_history(id, None)?;
+                if let Some(anchor) = oldest {
+                    let mut seen = HashSet::new();
+                    while !page.items.iter().any(|m| m.message_id == anchor) {
+                        let Some(cursor) = page.older.take() else {
+                            break;
+                        };
+                        if !seen.insert(cursor.clone()) {
+                            return Err(Error::Invalid);
+                        }
+                        let mut prior = c.peer_history(id, Some(&cursor))?;
+                        prior.items.append(&mut page.items);
+                        page = prior;
+                    }
+                }
+                Some(page)
+            }
             _ => None,
         };
         Ok(Self {
@@ -115,6 +159,7 @@ pub(super) struct Live {
     status: Option<String>,
     read_at: Option<String>,
     older_loading: bool,
+    oldest: Option<String>,
     pub(super) form: Option<Form>,
     inbox: Entity<Inbox>,
     _events: Subscription,
@@ -140,6 +185,7 @@ impl Live {
             status: None,
             read_at: None,
             older_loading: false,
+            oldest: None,
             form: None,
             inbox,
             _events: subscription,
@@ -190,9 +236,10 @@ impl Pane {
         let selected = self.live.selected.clone();
         self.live.reading = true;
         let expected = selected.clone();
+        let oldest = self.live.oldest.clone();
         let read = cx
             .background_executor()
-            .spawn(async move { Snapshot::read(&connection, summary, selected) });
+            .spawn(async move { Snapshot::read(&connection, summary, selected, oldest) });
         cx.spawn(async move |this, cx| {
             let result = read.await;
             let _ = this.update(cx, |pane, cx| {
@@ -201,6 +248,9 @@ impl Pane {
                 if live.selected == expected && live.stream_ok {
                     match result {
                         Ok(snapshot) => {
+                            if matches!(&live.form,Some(Form::Gate(id,original,_)) if !snapshot.summary.overview.connections.iter().any(|p| &p.connection.generation==id && &p.gates==original)) {
+                                live.form=None;
+                            }
                             if live.selected != snapshot.selection {
                                 live.form = None;
                             }
@@ -225,6 +275,7 @@ impl Pane {
     }
 
     fn pick(&mut self, target: Option<Selection>, cx: &mut Context<Self>) {
+        self.live.oldest = None;
         self.live.selected = target;
         self.live.form = None;
         self.show_thread = self.live.selected.is_some();
@@ -234,7 +285,9 @@ impl Pane {
     }
 
     fn change(&mut self, action: Change, cx: &mut Context<Self>) {
-        if self.live.sending
+        if self.preview
+            || !action.belongs_to(self.live.selected.as_ref())
+            || self.live.sending
             || self.live.retry.is_some()
             || self.live.reading
             || self.live.status.is_some()
@@ -253,6 +306,10 @@ impl Pane {
         let Some((change, key)) = self.live.retry.clone() else {
             return;
         };
+        if self.preview || !change.belongs_to(self.live.selected.as_ref()) {
+            return;
+        }
+        let description = change.description();
         self.live.sending = true;
         self.live.form = None;
         let service = self.live.connection.clone();
@@ -270,10 +327,13 @@ impl Pane {
                     }
                     Err(error) => {
                         // A lost reply may already have committed. Retry the same bytes and key.
-                        if !matches!(error, Error::Unavailable | Error::Refused(500..=599)) {
+                        if !matches!(
+                            error,
+                            Error::Invalid | Error::Unavailable | Error::Refused(500..=599)
+                        ) {
                             pane.live.retry = None;
                         }
-                        pane.live.status = Some(format!("Action failed · {error:?}"));
+                        pane.live.status = Some(format!("{description} · {error:?}"));
                     }
                 }
                 if result.is_ok() {
@@ -373,31 +433,59 @@ impl Pane {
                 Change::Review(Box::new(message.clone()), DecisionKind::Decline),
             ),
             Form::Disconnect(id) => ("Confirm disconnect", Change::Disconnect(id.clone())),
-            Form::Gate(id, direction, policy) => {
+            Form::Gate(id, original, draft) => {
                 let mut menu = ui::menu().child(ui::menu_heading("Delivery gate"));
                 for d in [Direction::Incoming, Direction::Outgoing] {
                     let mut row = div().flex().flex_wrap().child(format!("{d:?}"));
-                    for p in [Policy::Review, Policy::Auto] {
+                    for choice in [Policy::Review, Policy::Auto] {
                         let id = id.clone();
+                        let original = *original;
+                        let mut next = *draft;
+                        let current = match d {
+                            Direction::Incoming => &mut next.incoming,
+                            Direction::Outgoing => &mut next.outgoing,
+                        };
+                        let selected = *current == choice;
+                        *current = choice;
                         row = row.child(self.live_button(
-                            format!("gate-{d:?}-{p:?}"),
-                            format!("{p:?}"),
-                            if d == *direction && p == *policy {
+                            format!("gate-{d:?}-{choice:?}"),
+                            format!("{choice:?}"),
+                            if selected {
                                 ui::Button::Primary
                             } else {
                                 ui::Button::Secondary
                             },
                             cx,
-                            move |pane, _, cx| {
-                                pane.live.form = Some(Form::Gate(id.clone(), d, p));
+                            move |p, _, cx| {
+                                p.live.form = Some(Form::Gate(id.clone(), original, next));
                                 cx.notify();
                             },
                         ));
                     }
                     menu = menu.child(row);
                 }
-                let action = Change::Gate(id.clone(), *direction, *policy);
-                return menu.when(*policy==Policy::Auto,|el|el.child("Future messages on an Auto direction skip review. Already-waiting messages stay in review.")).child(self.live_button("apply-live-gate","Apply gate",ui::Button::Primary,cx,move|pane,_,cx|pane.change(action.clone(),cx))).child(cancel);
+                if original == draft {
+                    return menu.child(cancel);
+                }
+                let changes = [
+                    (Direction::Incoming, original.incoming, draft.incoming),
+                    (Direction::Outgoing, original.outgoing, draft.outgoing),
+                ]
+                .into_iter()
+                .filter(|(_, a, b)| a != b)
+                .map(|(d, _, p)| (d, p, uuid::Uuid::new_v4().simple().to_string()))
+                .collect();
+                let action = Change::Gates(id.clone(), changes);
+                let automatic = draft.incoming == Policy::Auto || draft.outgoing == Policy::Auto;
+                let apply = self.live_button(
+                    "apply-live-gate",
+                    "Apply gate",
+                    ui::Button::Primary,
+                    cx,
+                    move |pane, _, cx| pane.change(action.clone(), cx),
+                );
+                return menu.when(automatic,|el|el.child("Future messages on an Auto direction skip review. Already-waiting messages stay in review."))
+                    .child(apply).child(cancel);
             }
         };
         base.child(self.live_button(
@@ -449,6 +537,10 @@ impl Pane {
                             page.items
                                 .retain(|m| !existing.contains(m.message_id.as_str()));
                             page.items.append(&mut history.items);
+                            pane.live.oldest = page.items.first().map(|m| m.message_id.clone());
+                            if pane.live.reading {
+                                pane.live.dirty = true;
+                            }
                             *history = page;
                         }
                         _ => pane.live.status = Some("Could not read older history".into()),
@@ -541,7 +633,11 @@ impl Pane {
                     .child(name.to_owned())
                     .child(ui::mono(id.peer_id.clone()))
                     .child(format!("Left: {name} (external) · Right: main"));
-                if actions && peer.state == "connected" {
+                if actions
+                    && peer.state == "connected"
+                    && peer.gates.incoming != Policy::Unknown
+                    && peer.gates.outgoing != Policy::Unknown
+                {
                     let generation = id.generation.clone();
                     let disconnect = generation.clone();
                     thread = thread.child(
@@ -554,15 +650,7 @@ impl Pane {
                                 ui::Button::Secondary,
                                 cx,
                                 move |p, w, cx| {
-                                    p.show_form(
-                                        Form::Gate(
-                                            generation.clone(),
-                                            Direction::Incoming,
-                                            gates.incoming,
-                                        ),
-                                        w,
-                                        cx,
-                                    )
+                                    p.show_form(Form::Gate(generation.clone(), gates, gates), w, cx)
                                 },
                             ))
                             .child(self.live_button(
@@ -620,7 +708,14 @@ impl Pane {
                         ))
                         .child(m.text.clone());
                     let receipt = match &m.receipt {
-                        api::Receipt::Missing => m.state.replace('_', " "),
+                        api::Receipt::Missing => match m.state.as_str() {
+                            "received" => "Stored by peer · terminal receipt pending".into(),
+                            "uploaded" => "Uploaded to relay · terminal receipt pending".into(),
+                            "queued" => "Queued · terminal receipt pending".into(),
+                            "upload_unconfirmed" => "Upload unconfirmed".into(),
+                            "outcome_unknown" => "Delivery outcome unknown".into(),
+                            s => s.replace('_', " "),
+                        },
                         api::Receipt::Uncertain => "Delivery uncertain".into(),
                         api::Receipt::Confirmed {
                             outcome,
@@ -885,18 +980,36 @@ impl Pane {
                     .flex()
                     .flex_wrap()
                     .child(error.clone())
-                    .child(if self.live.retry.is_some() {
-                        self.live_button(
-                            "retry-action",
-                            "Retry action",
-                            ui::Button::Secondary,
-                            cx,
-                            |p, _, cx| p.send_live(cx),
-                        )
-                    } else {
-                        refresh
-                    }),
+                    .child(
+                        if self.live.retry.as_ref().is_some_and(|(action, _)| {
+                            action.belongs_to(self.live.selected.as_ref())
+                        }) {
+                            self.live_button(
+                                "retry-action",
+                                "Retry action",
+                                ui::Button::Secondary,
+                                cx,
+                                |p, _, cx| p.send_live(cx),
+                            )
+                        } else {
+                            refresh
+                        },
+                    ),
             );
+        }
+        if let Some((next, name, _)) = s
+            .summary
+            .attention_rows()
+            .into_iter()
+            .find(|(id, _, _)| Some(id) != self.live.selected.as_ref())
+        {
+            view = view.child(self.live_button(
+                "next-waiting",
+                format!("Next waiting: {name} →"),
+                ui::Button::Secondary,
+                cx,
+                move |p, _, cx| p.pick(Some(next.clone()), cx),
+            ));
         }
         view.child(ui::mono(format!(
             "Agent-to-agent via Agent Backbone · read {} · {} pending review",

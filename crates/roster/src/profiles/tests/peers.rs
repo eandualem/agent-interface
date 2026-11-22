@@ -108,3 +108,44 @@ fn owner_routes_use_the_profile_socket_generation_and_original_request_key() {
         );
     }
 }
+
+#[test]
+fn reconnect_supplies_last_event_id_before_refreshing_the_owner_snapshot() {
+    let (directory, listener, socket) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), &socket);
+    let handshake = serve(listener.try_clone().unwrap(), vec![(200, identity)]);
+    let c = profile.connect().unwrap();
+    handshake.join().unwrap();
+    listener.set_nonblocking(false).unwrap();
+    let server = thread::spawn(move || {
+        for (i,frame) in ["event: hello\ndata: {\"cursor\":\"run:3\"}\n\nid: run:4\nevent: peer.connections.changed\ndata: {}\n\n","event: hello\ndata: {\"cursor\":\"run:6\"}\n\nid: run:6\nevent: resync\ndata: {}\n\n"].into_iter().enumerate(){
+            let (mut stream,_)=listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(4))).unwrap();
+            let mut bytes=Vec::new();
+            while !bytes.ends_with(b"\r\n\r\n"){
+                let mut byte=[0];stream.read_exact(&mut byte).unwrap();
+                bytes.push(byte[0]);assert!(bytes.len()<8192);
+            }
+            let headers=String::from_utf8(bytes).unwrap().to_ascii_lowercase();
+            assert!(headers.starts_with("get /api/stream?kinds=peer.connections.changed,resync "));
+            assert_eq!(headers.contains("last-event-id: run:4\r\n"),i==1);
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{frame}",frame.len()).unwrap();
+        }
+    });
+    let mut cursor = None;
+    let mut changes = 0;
+    for expected in ["run:4", "run:6"] {
+        let _ = c.watch_peers(&mut cursor, &|| true, &mut || changes += 1);
+        assert_eq!(cursor.as_deref(), Some(expected));
+    }
+    assert_eq!(changes, 4);
+    server.join().unwrap();
+}
+
+#[test]
+fn a_new_policy_only_affects_its_own_direction() {
+    let data: super::super::peers::Gates =
+        serde_json::from_value(json!({"outgoing":"future","incoming":"review"})).unwrap();
+    assert_eq!(data.incoming, Policy::Review);
+    assert_eq!(data.outgoing, Policy::Unknown);
+}

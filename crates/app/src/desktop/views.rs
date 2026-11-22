@@ -241,7 +241,10 @@ impl EventEmitter<ViewEvent> for ViewPane {}
 impl ViewPane {
     /// Keep drafts, threads and in-flight delivery while this saved pane is hidden.
     pub fn has_conversations(&self) -> bool {
-        !self.conversations.is_empty() || self.sheets.is_some() || self.interactions.is_some()
+        !self.conversations.is_empty()
+            || self.sheets.is_some()
+            || self.interactions.is_some()
+            || self.connections.is_some()
     }
 
     /// Native child views must repaint when an overlay stops occluding them.

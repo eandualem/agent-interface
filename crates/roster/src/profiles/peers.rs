@@ -87,6 +87,9 @@ pub enum Policy {
     Auto,
     /// Hold future messages for owner review.
     Review,
+    /// An unfamiliar service policy, readable but never written by this client.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -276,6 +279,9 @@ impl Connection {
         policy: Policy,
         key: &str,
     ) -> Result<Peer, Error> {
+        if policy == Policy::Unknown {
+            return Err(Error::Invalid);
+        }
         let path = format!("{ROOT}/{}/gates", segment(generation)?);
         self.change_peer(
             "PATCH",
