@@ -593,6 +593,7 @@ fn history(
     offset: usize,
     live: &AtomicBool,
 ) -> Result<Page, controller::Error> {
+    let cached = ids.is_some();
     let mut ids = match ids {
         Some(ids) => ids,
         None => controller.ids()?,
@@ -607,7 +608,7 @@ fn history(
                 scoped_record(controller, key, profile),
                 Err(controller::Error::Missing)
             );
-            if !keep && position < offset {
+            if cached && !keep && position < offset {
                 removed_before += 1;
             }
             position += 1;

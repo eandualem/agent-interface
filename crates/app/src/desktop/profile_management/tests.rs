@@ -175,3 +175,75 @@ fn every_unreadable_record_offers_forget() {
         journal::Error::Unavailable
     )));
 }
+
+#[test]
+fn uncached_scoped_history_keeps_page_offset_across_unrelated_profiles() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().canonicalize().unwrap();
+    let client = Client::new(directory.join("never-executed"), "/usr/bin:/bin".into()).unwrap();
+    let controller = Controller::new(
+        journal::Journal::open(&directory.join("journal")).unwrap(),
+        &client,
+    );
+    for i in 0..21 {
+        controller
+            .enqueue(Prepared::create(&format!("request-{i}"), "Example").unwrap())
+            .unwrap();
+    }
+    let all_ids = controller.ids().unwrap();
+    let storage = journal::Journal::open(&directory.join("journal")).unwrap();
+    for key in &all_ids[..3] {
+        let request_id = controller.read(key).unwrap().request_id;
+        let record = storage.read(key).unwrap().unwrap();
+        let checkpoint = serde_json::json!({
+            "checkpoint_version": 2,
+            "request": serde_json::json!({
+                "request_id": request_id,
+                "action": "create",
+                "display_name": "Example",
+            })
+            .to_string(),
+            "observation": {
+                "identity": {
+                    "profile_id": "000000000002",
+                    "machine_id": "000000000003",
+                },
+                "status": "succeeded",
+                "error_code": null,
+            },
+        });
+        let prepared = Prepared::restore(&serde_json::to_vec(&checkpoint).unwrap()).unwrap();
+        let capsule = String::from_utf8(
+            crate::profiles::lifecycle::Operation::new(&client, prepared)
+                .checkpoint()
+                .unwrap(),
+        )
+        .unwrap();
+        let bytes = format!(
+            r#"{{"format":1,"kind":"lifecycle","phase":"submitted","capsule":{}}}"#,
+            serde_json::to_string(&capsule).unwrap()
+        );
+        storage
+            .save(key, Some(record.revision()), bytes.as_bytes())
+            .unwrap();
+        assert_eq!(
+            controller
+                .read(key)
+                .unwrap()
+                .identity
+                .as_ref()
+                .unwrap()
+                .profile_id,
+            "000000000002"
+        );
+    }
+    let live = AtomicBool::new(true);
+    let Page::History { ids, offset, rows } =
+        history(&controller, Some("000000000001"), None, PAGE_SIZE, &live).unwrap()
+    else {
+        panic!("history");
+    };
+    assert_eq!(ids.len(), 18);
+    assert_eq!(offset, PAGE_SIZE);
+    assert_eq!(rows.len(), 2);
+}

@@ -316,12 +316,15 @@ impl SettingsWindow {
         true
     }
 
-    fn select_page(&mut self, page: Page, cx: &mut Context<Self>) {
-        if self.page == Page::Profiles
-            && self.page != page
-            && let Some(profiles) = self.profiles.take()
-        {
+    fn leave_profiles(&mut self, cx: &mut Context<Self>) {
+        if let Some(profiles) = self.profiles.take() {
             profiles.update(cx, |p, cx| p.leave(cx));
+        }
+    }
+
+    fn select_page(&mut self, page: Page, cx: &mut Context<Self>) {
+        if self.page == Page::Profiles && self.page != page {
+            self.leave_profiles(cx);
         }
         self.page = page;
     }
@@ -330,9 +333,11 @@ impl SettingsWindow {
     /// dropped on a second request: the first shows the editor and asks.
     fn may_close(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(editing) = &mut self.editing else {
+            self.leave_profiles(cx);
             return true;
         };
         if editing.discarding || editing.editor.read(cx).value() == editing.saved {
+            self.leave_profiles(cx);
             return true;
         }
         editing.discarding = true;
