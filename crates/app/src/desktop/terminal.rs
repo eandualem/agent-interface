@@ -283,14 +283,14 @@ fn connect_selected(
 }
 
 /// Whether a remote stream that ended with this reason may be opened again
-/// automatically: not when its access ended or its agent exited.
+/// automatically: only when its connection was lost, not when its access
+/// ended, its agent exited or the stream broke the protocol.
 fn retries_after_end(reason: &str) -> bool {
-    ![
-        crate::view::remote::PROCESS_EXITED,
-        crate::view::remote::ACCESS_ENDED,
-    ]
-    .contains(&reason)
+    reason == crate::view::remote::CONNECTION_LOST
 }
+
+/// How long a remote stream stays up before its loss retries at once again.
+const STABLE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Whether a failed remote open may be tried again automatically: the home
 /// or the agent's machine was unreachable (503), the profile service did not
@@ -653,7 +653,6 @@ impl LiveTerminal {
                 match result {
                     Ok((remote, size, access, updates)) => {
                         terminal.access = Some(access);
-                        terminal.retry = Retry::default();
                         let view = cx.new(|cx| {
                             TerminalView::embedded(
                                 Arc::new(remote),
@@ -670,14 +669,20 @@ impl LiveTerminal {
                         if !terminal.shown {
                             view.update(cx, |view, cx| view.hide(cx));
                         }
+                        // Keep the backoff across a stream that opens and drops
+                        // at once; reset it after one that stayed up.
+                        let opened = std::time::Instant::now();
                         terminal.closed = Some(cx.subscribe(
                             &view,
-                            |terminal, _, event: &crate::view::Disconnected, cx| {
+                            move |terminal, _, event: &crate::view::Disconnected, cx| {
                                 let error = event
                                     .0
                                     .clone()
-                                    .unwrap_or_else(|| "Remote terminal connection lost".into());
+                                    .unwrap_or_else(|| crate::view::remote::CONNECTION_LOST.into());
                                 terminal.remote_retry = retries_after_end(&error);
+                                if opened.elapsed() >= STABLE {
+                                    terminal.retry = Retry::default();
+                                }
                                 terminal.error = Some(error);
                                 cx.notify();
                             },
@@ -1071,8 +1076,8 @@ mod tests {
     #[test]
     fn a_remote_pane_retries_only_a_transient_loss() {
         use std::io::ErrorKind;
-        assert!(retries_after_end("Remote terminal connection lost"));
-        assert!(retries_after_end("unexpected end of file"));
+        assert!(retries_after_end(crate::view::remote::CONNECTION_LOST));
+        assert!(!retries_after_end("Invalid remote terminal response"));
         assert!(!retries_after_end(crate::view::remote::ACCESS_ENDED));
         assert!(!retries_after_end(crate::view::remote::PROCESS_EXITED));
         for kind in [

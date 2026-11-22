@@ -256,3 +256,25 @@ fn final_frames_survive_a_viewport_write_to_a_closed_peer() {
         "Remote agent process exited"
     );
 }
+
+#[test]
+fn an_abrupt_close_reads_as_a_lost_connection() {
+    // The service closes the socket without an ended frame.
+    let (_dir, profile, server) = fixture("type", |mut stream| {
+        stream
+            .get_mut()
+            .write_all(b"{\"type\":\"repaint_end\"}\n")
+            .unwrap();
+    });
+    let (stream, writer, close) = profile.connect().unwrap().open_terminal("worker").unwrap();
+    server.join().unwrap();
+    let (wake, woken) = mpsc::channel();
+    let view = Remote::start(stream, writer, close, move || {
+        let _ = wake.send(());
+    })
+    .unwrap();
+    while !view.is_finished() {
+        woken.recv_timeout(WAIT).unwrap();
+    }
+    assert_eq!(view.failure().as_deref(), Some(CONNECTION_LOST));
+}
