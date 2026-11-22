@@ -72,8 +72,12 @@ enum Entry {
 fn accounts<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Accounts>, D::Error> {
-    let value = serde_json::Value::deserialize(deserializer)?;
-    Ok(serde_json::from_value(value).ok())
+    // Only a string names a value: `{"own": null}` would otherwise decode
+    // as the enum variant it names.
+    Ok(match serde_json::Value::deserialize(deserializer)? {
+        value @ serde_json::Value::String(_) => serde_json::from_value(value).ok(),
+        _ => None,
+    })
 }
 
 impl Entry {

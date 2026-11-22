@@ -739,6 +739,8 @@ fn rust_service_entries_list_and_connect_without_a_key() {
         (json!(7), Accounts::Unknown),
         (json!({"kind": "own"}), Accounts::Unknown),
         (json!(["own"]), Accounts::Unknown),
+        (json!({"own": null}), Accounts::Unknown),
+        (json!({"machine_user": null}), Accounts::Unknown),
     ] {
         for base in [served_entry(&socket), failed.clone()] {
             let mut entry = base;
