@@ -221,7 +221,10 @@ impl Connection {
         if !crate::valid_agent(agent) {
             return Err(invalid());
         }
-        let verify = || self.handshake(Some(&self.instance)).map_err(verify_error);
+        let verify = || {
+            self.handshake(Some(&self.instance))
+                .map_err(|error| verify_error(error, socket_rejected(&self.socket)))
+        };
         verify()?;
         let stream = open(&self.socket, &self.identity.profile_id, agent, 80, 24)?;
         verify()?;
@@ -243,16 +246,17 @@ fn transport(error: hyper::Error) -> io::Error {
     io::Error::new(kind, error)
 }
 
-/// Why the profile check before an open failed. Only an unreachable service
-/// reads as not connected, which the pane may retry; a refusal of the binding,
-/// the version or the profile's state is permission denied and waits.
-fn verify_error(error: super::Error) -> io::Error {
+/// Why the profile check before an open failed. Only an unreachable or busy
+/// (503) service reads as not connected, which the pane may retry; a rejected
+/// socket, or a refusal of the binding, the version or the profile's state, is
+/// permission denied and waits.
+fn verify_error(error: super::Error, rejected: bool) -> io::Error {
     match error {
         super::Error::BindingMismatch => io::Error::new(
             io::ErrorKind::AddrNotAvailable,
             "Workspace profile instance changed",
         ),
-        super::Error::Unavailable => {
+        super::Error::Unavailable | super::Error::Refused(503) if !rejected => {
             io::Error::new(io::ErrorKind::NotConnected, "Workspace profile unavailable")
         }
         _ => io::Error::new(
@@ -260,6 +264,16 @@ fn verify_error(error: super::Error) -> io::Error {
             "Workspace profile unavailable",
         ),
     }
+}
+
+/// Whether the profile socket is present but fails its ownership check. A
+/// missing socket is a restarting service, not a rejection.
+fn socket_rejected(socket: &std::path::Path) -> bool {
+    local::owned(socket).is_err() && !socket_missing(socket)
+}
+
+fn socket_missing(socket: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(socket).is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
 }
 
 fn open(
@@ -271,9 +285,7 @@ fn open(
 ) -> io::Result<(Stream, Writer, Close)> {
     // A missing socket is a restarting service; a rejected one is a refusal.
     let uid = local::owned(socket).map_err(|_| {
-        let missing = std::fs::symlink_metadata(socket)
-            .is_err_and(|error| error.kind() == io::ErrorKind::NotFound);
-        let kind = if missing {
+        let kind = if socket_missing(socket) {
             io::ErrorKind::NotConnected
         } else {
             io::ErrorKind::Other

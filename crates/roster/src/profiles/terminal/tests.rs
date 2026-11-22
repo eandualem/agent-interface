@@ -194,8 +194,14 @@ fn a_503_cut_short_still_reads_as_unreachable() {
 #[test]
 fn only_an_unreachable_profile_service_reads_as_not_connected() {
     use super::super::Error;
-    let kind = |error| verify_error(error).kind();
+    let kind = |error| verify_error(error, false).kind();
     assert_eq!(kind(Error::Unavailable), io::ErrorKind::NotConnected);
+    assert_eq!(kind(Error::Refused(503)), io::ErrorKind::NotConnected);
+    // A socket that fails its ownership check waits for a person.
+    assert_eq!(
+        verify_error(Error::Unavailable, true).kind(),
+        io::ErrorKind::PermissionDenied
+    );
     assert_eq!(
         kind(Error::BindingMismatch),
         io::ErrorKind::AddrNotAvailable
