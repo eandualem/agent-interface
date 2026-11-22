@@ -980,9 +980,11 @@ impl Browser {
                                     &t.text.meta,
                                 )
                                 .child(ui::icon("server", t.size.icon - 2.0, state_color))
+                                // The name keeps its natural width and the status takes only
+                                // what is left, so the status truncates first; a long name
+                                // still truncates before the offline toggle is pushed out.
                                 .child(
                                     div()
-                                        .flex_1()
                                         .min_w_0()
                                         .overflow_hidden()
                                         .text_ellipsis()
@@ -992,7 +994,11 @@ impl Browser {
                                 )
                                 .child(
                                     div()
-                                        .flex_shrink_0()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .text_right()
                                         .text_color(state_color)
                                         .child(state_text),
                                 )
