@@ -871,6 +871,82 @@ fn a_native_icon_name_round_trips_and_clearing_it_shows_the_number() {
 }
 
 #[test]
+fn connections_round_trip_as_a_legacy_empty_chooser() {
+    let base = parse(RECORD).unwrap();
+    let mut model = base.model().clone();
+    assert!(model.show_view(
+        "000000000002",
+        "000000000005",
+        View::of(ViewKind::Connections)
+    ));
+    let saved = base.with_model(&model, Path::new("layouts.db")).unwrap();
+    assert_eq!(parse(saved.raw_json()).unwrap().model(), &model);
+    let mut raw: serde_json::Value = serde_json::from_str(saved.raw_json()).unwrap();
+    let leaf = raw["workspaces"][0]["tabs"][0]["tree"]["second"]
+        .as_object_mut()
+        .unwrap();
+    assert!(leaf.get("view").is_none());
+    assert_eq!(leaf.remove("connections_pane"), Some(true.into()));
+    assert!(
+        parse(&raw.to_string())
+            .unwrap()
+            .model()
+            .pane()
+            .unwrap()
+            .empty
+    );
+    // A previous reader can fill the chooser. Its real content takes precedence.
+    let leaf = raw["workspaces"][0]["tabs"][0]["tree"]["second"]
+        .as_object_mut()
+        .unwrap();
+    leaf.insert("connections_pane".into(), true.into());
+    leaf.remove("empty");
+    leaf.insert("view".into(), "reports".into());
+    assert_eq!(
+        parse(&raw.to_string())
+            .unwrap()
+            .model()
+            .pane()
+            .unwrap()
+            .view,
+        Some(View::of(ViewKind::Reports))
+    );
+}
+
+#[test]
+fn simultaneous_connections_opens_and_tab_transfers_keep_one_per_workspace() {
+    let path = Path::new("layouts.db");
+    let base = parse(RECORD).unwrap();
+    let open = |model: &mut agent_interface_core::Layout| {
+        assert!(model.add_tab(Some("Connections".into()), "/".into(), true));
+        let tab = model.tab().unwrap().id.clone();
+        let leaf = model.pane().unwrap().id.clone();
+        assert!(model.show_view(&tab, &leaf, View::of(ViewKind::Connections)));
+    };
+    let mut local = base.model().clone();
+    let mut remote = local.clone();
+    open(&mut local);
+    open(&mut remote);
+    let latest = base.with_model(&remote, path).unwrap();
+    let result = base.reconcile(&local, &latest, path).unwrap();
+    assert!(result.conflict);
+    assert_eq!(
+        result
+            .document
+            .model()
+            .workspace()
+            .unwrap()
+            .connections_panes()
+            .count(),
+        1
+    );
+    let original = local.selected.clone();
+    assert!(local.choose_workspace("000000000006"));
+    open(&mut local);
+    assert!(!local.transfer_tab(&original));
+}
+
+#[test]
 fn view_panes_round_trip_and_reject_mixed_or_unknown_views() {
     let view = RECORD.replacen(
         "\"agent\": null, \"empty\": true",

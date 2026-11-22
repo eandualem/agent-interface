@@ -278,6 +278,13 @@ impl Layout {
                     .iter()
                     .any(|pane| pane.id == pane_id && pane.empty && pane.attachment.is_none())
         });
+        if view.kind == crate::ViewKind::Connections
+            && self
+                .workspace()
+                .is_some_and(|space| space.connections_panes().next().is_some())
+        {
+            return false;
+        }
         if !empty || !view.is_valid() || !self.choose_pane(pane_id) {
             return false;
         }
@@ -469,17 +476,20 @@ impl Layout {
         let Some(source) = self.workspace() else {
             return false;
         };
+        let Some(target) = self.workspaces.iter().find(|space| space.id == destination) else {
+            return false;
+        };
+        let Some(tab) = self.tab() else {
+            return false;
+        };
         if source.id == destination
-            || !self
-                .workspaces
-                .iter()
-                .any(|space| space.id == destination && space.profile_id == source.profile_id)
+            || source.profile_id != target.profile_id
+            || (tab.connections_panes().next().is_some()
+                && target.connections_panes().next().is_some())
         {
             return false;
         }
-        let Some(tab) = self.tab().cloned() else {
-            return false;
-        };
+        let tab = tab.clone();
         self.close_tab();
         self.selected = destination.to_owned();
         let space = self.workspace_mut().expect("destination exists");

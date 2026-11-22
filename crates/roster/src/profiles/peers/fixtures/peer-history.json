@@ -1,0 +1,69 @@
+{
+  "items": [
+    {
+      "connection": {
+        "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+        "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+      },
+      "message_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c60",
+      "direction": "outgoing",
+      "text": "Is the staging build ready?",
+      "submitted_at": "2026-11-21T12:00:00Z",
+      "expires_at": "2026-11-28T12:00:00Z",
+      "state": "pending_review",
+      "receipt": {
+        "kind": "missing"
+      }
+    },
+    {
+      "connection": {
+        "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+        "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+      },
+      "message_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c61",
+      "direction": "incoming",
+      "text": "Which version should I check?",
+      "submitted_at": "2026-11-21T12:01:00Z",
+      "expires_at": "2026-11-28T12:01:00Z",
+      "state": "delivery_uncertain",
+      "receipt": {
+        "kind": "uncertain"
+      }
+    },
+    {
+      "connection": {
+        "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+        "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+      },
+      "message_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c62",
+      "direction": "outgoing",
+      "text": "Version 2 is available.",
+      "submitted_at": "2026-11-21T12:02:00Z",
+      "expires_at": "2026-11-28T12:02:00Z",
+      "state": "delivered",
+      "receipt": {
+        "kind": "confirmed",
+        "outcome": "delivered",
+        "recorded_at": "2026-11-21T12:02:10Z"
+      }
+    },
+    {
+      "connection": {
+        "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+        "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+      },
+      "message_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c63",
+      "direction": "outgoing",
+      "text": "Should I check the other host?",
+      "submitted_at": "2026-11-21T12:03:00Z",
+      "expires_at": "2026-11-28T12:03:00Z",
+      "state": "declined",
+      "receipt": {
+        "kind": "confirmed",
+        "outcome": "declined",
+        "recorded_at": "2026-11-21T12:03:10Z"
+      }
+    }
+  ],
+  "older": "p1-example-cursor"
+}

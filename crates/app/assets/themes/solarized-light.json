@@ -2,6 +2,8 @@
   "name": "Solarized Light",
   "extends": "light",
   "color": {
+    "outgoing_surface": "#eae0c0",
+    "outgoing_border": "#d3cbb7",
     "ground": "#e4ddc8",
     "panel": "#eee8d5",
     "surface": "#fdf6e3",

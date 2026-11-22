@@ -1,0 +1,41 @@
+{
+  "items": [
+    {
+      "message": {
+        "connection": {
+          "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+          "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+        },
+        "message_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c60",
+        "direction": "outgoing",
+        "text": "Is the staging build ready?",
+        "submitted_at": "2026-11-21T12:00:00Z",
+        "expires_at": "2026-11-28T12:00:00Z",
+        "state": "pending_review",
+        "receipt": {
+          "kind": "missing"
+        }
+      },
+      "queued_at": "2026-11-21T12:00:00Z"
+    },
+    {
+      "message": {
+        "connection": {
+          "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+          "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+        },
+        "message_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c52",
+        "direction": "incoming",
+        "text": "Is the package ready to try?",
+        "submitted_at": "2026-11-20T16:00:00Z",
+        "expires_at": "2026-11-27T16:00:00Z",
+        "state": "pending_review",
+        "receipt": {
+          "kind": "missing"
+        }
+      },
+      "queued_at": "2026-11-21T12:01:00Z"
+    }
+  ],
+  "older": null
+}

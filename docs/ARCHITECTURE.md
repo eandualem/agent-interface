@@ -1341,6 +1341,36 @@ paths. Its child profile restricts capabilities. This optional system setup
 requires sudo; refusal or failure does not block installing native views. `LIBGL_ALWAYS_SOFTWARE=1` selects
 WebKitGTK's nonaccelerated drawing policy for headless/software environments.
 
+### Profile Connections
+
+A Connections pane belongs to the selected workspace's profile. The sidebar,
+Jump and the new-pane chooser share one navigation path. It finds the pane by
+its saved view kind across the workspace's tabs. Opening it uses an empty pane
+or creates a tab through the library's normal save path. The store rejects
+concurrent edits that would leave two Connections panes in one workspace. It
+saves the pane as an extension on an empty chooser so earlier schema-v2 readers
+can reopen the library. Folded sidebar sections retain their state in each window's Browser.
+
+The pane reads peer records through the workspace profile's verified owner
+socket. A separate reader follows the profile event stream, preserving the
+last cursor across reconnects. Its hello and change events trigger a fresh
+overview, pending reviews and the selected generation's history. Changes during
+a read schedule another read. The service owns the identities, message bytes,
+review decisions, keys and relay. A relay upload has no terminal receipt.
+The service's Connections fixtures are copied byte for byte into
+`crates/roster/src/profiles/peers/fixtures/`, and tests read them through the
+client types and compare the client's request bodies with them.
+
+The pane sends explicit owner actions on its bound connection. A retry after a
+lost response reuses the same request key and body. Incoming messages can be
+passed or declined. Outgoing drafts can also be returned to the local agent
+with a revision note. After a local disconnect the thread reads "Stopped
+here, remote confirmation pending" until the peer acknowledges the revocation.
+History pagination uses the service cursor. When reads
+fail the pane retains the last snapshot and pauses changes. The separate sample
+preview uses in-memory records and decisions which expire when the person exits.
+Neither path sends keystrokes to a terminal.
+
 ### Bound native Policies
 
 Bound native Policies retain shared catalog IDs with the displayed instruction layers. Shared bodies come from the exact immutable provider revision, and discussions retain that artifact, revision and connection. Base and swarm briefs remain provider-owned read-only previews without artifact discussion authority. Catalog binding refusals invalidate the whole library; missing IDs cannot fall back to preview text or local paths. Reader completion tickets cancel closed openings and reject results after reopening the same path.

@@ -11,6 +11,8 @@
 # ---------------------------------------------------------------- colours
 
 [color.dark]
+outgoing_surface = "#1d1f24"
+outgoing_border = "#2a2d34"
 ground = "#0f1012"          # window, behind and between the panes
 panel = "#141518"           # navigation panel, status row, Settings navigation
 surface = "#18191d"         # panes and Settings pages
@@ -49,6 +51,8 @@ mark_glow = "#e8a85f8c"     # the glow around the mark's cursor eye (55 %)
 pane_dim = 0.72             # opacity of unfocused panes' content
 
 [color.light]
+outgoing_surface = "#efede8"
+outgoing_border = "#dcd9d2"
 ground = "#deddd9"          # recessed gaps separate the lighter reading surfaces
 panel = "#f3f2ef"
 surface = "#f8f7f4"         # shared off-white for panes, readers and Settings pages
@@ -221,6 +225,8 @@ composer = 14.0             # the message box in a conversation
 # ---------------------------------------------------------------- sizes
 
 [size]
+connections_rail = 218.0
+connections_split = 640.0
 titlebar = 44.0             # top of the panel, beside the window controls
 window_controls_x = 16.0    # where macOS draws the window controls
 window_controls_y = 16.0

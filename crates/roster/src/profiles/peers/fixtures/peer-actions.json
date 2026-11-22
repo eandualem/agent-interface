@@ -1,0 +1,233 @@
+{
+  "invite": {
+    "request": {
+      "peer_id": "v1:1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a"
+    },
+    "response": {
+      "request_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5e",
+      "peer_id": "v1:1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "display_name": null,
+      "direction": "outgoing",
+      "expires_at": "2026-11-28T12:00:00Z",
+      "state": "pending",
+      "generation": null
+    }
+  },
+  "accept": {
+    "request": {
+      "action": "accept"
+    },
+    "response": {
+      "invitation": {
+        "request_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5e",
+        "peer_id": "v1:2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e",
+        "display_name": "Second peer",
+        "direction": "incoming",
+        "expires_at": "2026-11-28T12:00:00Z",
+        "state": "accepted",
+        "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c6a"
+      },
+      "connection": {
+        "connection": {
+          "peer_id": "v1:2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e",
+          "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c6a"
+        },
+        "display_name": "Second peer",
+        "state": "connected",
+        "gates": {
+          "incoming": "review",
+          "outgoing": "review"
+        }
+      }
+    }
+  },
+  "decline_invitation": {
+    "request": {
+      "action": "decline"
+    },
+    "response": {
+      "invitation": {
+        "request_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5e",
+        "peer_id": "v1:2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e",
+        "display_name": "Second peer",
+        "direction": "incoming",
+        "expires_at": "2026-11-28T12:00:00Z",
+        "state": "declined",
+        "generation": null
+      },
+      "connection": null
+    }
+  },
+  "requester_after_decline": {
+    "request_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5e",
+    "peer_id": "v1:1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+    "display_name": null,
+    "direction": "outgoing",
+    "expires_at": "2026-11-28T12:00:00Z",
+    "state": "declined",
+    "generation": null
+  },
+  "requester_after_expiry": {
+    "request_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5e",
+    "peer_id": "v1:1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+    "display_name": null,
+    "direction": "outgoing",
+    "expires_at": "2026-11-28T12:00:00Z",
+    "state": "expired",
+    "generation": null
+  },
+  "gate": {
+    "request": {
+      "direction": "incoming",
+      "policy": "auto"
+    },
+    "response": {
+      "connection": {
+        "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+        "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+      },
+      "display_name": "Example peer",
+      "state": "connected",
+      "gates": {
+        "incoming": "auto",
+        "outgoing": "review"
+      }
+    }
+  },
+  "pass_message": {
+    "request": {
+      "action": "pass"
+    },
+    "response": {
+      "connection": {
+        "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+        "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+      },
+      "message_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c52",
+      "direction": "incoming",
+      "text": "Is the package ready to try?",
+      "submitted_at": "2026-11-20T16:00:00Z",
+      "expires_at": "2026-11-27T16:00:00Z",
+      "state": "passed",
+      "receipt": {
+        "kind": "missing"
+      }
+    }
+  },
+  "decline_message": {
+    "request": {
+      "action": "decline"
+    },
+    "response": {
+      "connection": {
+        "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+        "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+      },
+      "message_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c52",
+      "direction": "incoming",
+      "text": "Is the package ready to try?",
+      "submitted_at": "2026-11-20T16:00:00Z",
+      "expires_at": "2026-11-27T16:00:00Z",
+      "state": "declined",
+      "receipt": {
+        "kind": "confirmed",
+        "outcome": "declined",
+        "recorded_at": "2026-11-21T12:10:00Z"
+      }
+    }
+  },
+  "revise": {
+    "request": {
+      "action": "ask_to_revise",
+      "note": "Please include the version."
+    },
+    "response": {
+      "connection": {
+        "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+        "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+      },
+      "message_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c60",
+      "direction": "outgoing",
+      "text": "Is the staging build ready?",
+      "submitted_at": "2026-11-21T12:00:00Z",
+      "expires_at": "2026-11-28T12:00:00Z",
+      "state": "revision_requested",
+      "receipt": {
+        "kind": "missing"
+      }
+    }
+  },
+  "disconnect_requested": {
+    "connection": {
+      "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+      "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+    },
+    "display_name": "Example peer",
+    "state": "revocation_pending",
+    "gates": {
+      "incoming": "auto",
+      "outgoing": "review"
+    }
+  },
+  "disconnect_confirmed": {
+    "connection": {
+      "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+      "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+    },
+    "display_name": "Example peer",
+    "state": "disconnected",
+    "gates": {
+      "incoming": "auto",
+      "outgoing": "review"
+    }
+  },
+  "requester_after_accept": {
+    "request_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5e",
+    "peer_id": "v1:1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+    "display_name": null,
+    "direction": "outgoing",
+    "expires_at": "2026-11-28T12:00:00Z",
+    "state": "accepted",
+    "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c6a"
+  },
+  "pass_outgoing": {
+    "request": {
+      "action": "pass"
+    },
+    "response": {
+      "connection": {
+        "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+        "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+      },
+      "message_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c60",
+      "direction": "outgoing",
+      "text": "Is the staging build ready?",
+      "submitted_at": "2026-11-21T12:00:00Z",
+      "expires_at": "2026-11-28T12:00:00Z",
+      "state": "passed",
+      "receipt": {
+        "kind": "missing"
+      }
+    }
+  },
+  "decline_outgoing": {
+    "request": {
+      "action": "decline"
+    },
+    "response": {
+      "connection": {
+        "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+        "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+      },
+      "message_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c60",
+      "direction": "outgoing",
+      "text": "Is the staging build ready?",
+      "submitted_at": "2026-11-21T12:00:00Z",
+      "expires_at": "2026-11-28T12:00:00Z",
+      "state": "declined",
+      "receipt": {
+        "kind": "missing"
+      }
+    }
+  }
+}
