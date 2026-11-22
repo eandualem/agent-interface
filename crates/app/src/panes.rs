@@ -151,6 +151,7 @@ enum ReplyOwner {
     GeometrySubscription,
     SourceSubscription,
     Size,
+    GuardedSize,
     Colors,
 }
 
@@ -217,6 +218,13 @@ fn write_commands(
             .push_back(owner);
         let result = stdin
             .write_all(line.as_bytes())
+            .and_then(|()| {
+                if matches!(owner, ReplyOwner::GuardedSize) {
+                    writeln!(stdin, "display-message -p {SIZE_COMPLETE}")
+                } else {
+                    Ok(())
+                }
+            })
             .and_then(|()| stdin.flush());
         let failed = result.is_err();
         if let Err(error) = &result {
@@ -229,7 +237,7 @@ fn write_commands(
         if let Some(sent) = sent {
             let _ = sent.send(result);
         }
-        if !failed && matches!(owner, ReplyOwner::Size) {
+        if !failed && matches!(owner, ReplyOwner::Size | ReplyOwner::GuardedSize) {
             sized = true;
         }
         if failed {
@@ -259,6 +267,9 @@ fn write_commands(
 
 /// Restore while still participating, then withdraw. A sizing client in an
 /// unrelated session can otherwise prevent tmux from recalculating this window.
+// if-shell and each command in its chosen branch produce separate control replies.
+const SIZE_COMPLETE: &str = "agent-interface-size-complete";
+
 fn release_agent_size(session: u32, (cols, rows): (u16, u16)) -> String {
     format!(
         "if-shell -F '#{{==:#{{session_id}},${session}}}' {{ refresh-client -C {cols}x{rows} ; refresh-client -f ignore-size -C {cols}x{rows} }}\n"
@@ -839,13 +850,14 @@ impl Panes {
         let minimum = if state.agent_default.is_some() { 80 } else { 1 };
         let size = (cols.max(minimum), rows.max(1));
         let command = format!("refresh-client -f '!ignore-size' -C {}x{}", size.0, size.1);
-        let line = match (state.agent_default, self.source) {
-            (Some(_), Some((session, _))) => {
-                format!("if-shell -F '#{{==:#{{session_id}},${session}}}' {{ {command} }}\n")
-            }
-            _ => format!("{command}\n"),
+        let (line, owner) = match (state.agent_default, self.source) {
+            (Some(_), Some((session, _))) => (
+                format!("if-shell -F '#{{==:#{{session_id}},${session}}}' {{ {command} }}\n"),
+                ReplyOwner::GuardedSize,
+            ),
+            _ => (format!("{command}\n"), ReplyOwner::Size),
         };
-        self.control.send(&line, ReplyOwner::Size)?;
+        self.control.send(&line, owner)?;
         state.declared_size = Some(size);
         Ok(())
     }
@@ -867,14 +879,19 @@ impl Panes {
         let Some(declared) = state.declared_size else {
             return Ok(());
         };
-        let line = match (state.agent_default, self.source) {
-            (Some(size), Some((session, _))) => release_agent_size(session, size),
-            _ => format!(
-                "refresh-client -f ignore-size -C {}x{}\n",
-                declared.0, declared.1
+        let (line, owner) = match (state.agent_default, self.source) {
+            (Some(size), Some((session, _))) => {
+                (release_agent_size(session, size), ReplyOwner::GuardedSize)
+            }
+            _ => (
+                format!(
+                    "refresh-client -f ignore-size -C {}x{}\n",
+                    declared.0, declared.1
+                ),
+                ReplyOwner::Size,
             ),
         };
-        self.control.send(&line, ReplyOwner::Size)
+        self.control.send(&line, owner)
     }
 
     /// Returns a terminal recovery or input transport failure.
@@ -1477,6 +1494,14 @@ fn apply(
                 // A rejected size leaves the window as it was; the view scales.
                 // tmux before 3.5 rejects colour reports; programs then see
                 // its default answer.
+                Some(ReplyOwner::GuardedSize) => {
+                    if reply.ok
+                        && reply.lines.len() == 1
+                        && reply.lines[0] == SIZE_COMPLETE.as_bytes()
+                    {
+                        pending.pop_front();
+                    }
+                }
                 Some(ReplyOwner::Size | ReplyOwner::Colors) => {
                     pending.pop_front();
                 }

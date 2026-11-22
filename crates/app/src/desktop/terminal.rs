@@ -1455,6 +1455,29 @@ mod tests {
         wait("agent", "120x40");
         panes.set_size(94, 33).unwrap();
         wait("agent", "94x33");
+        let pane_id = server
+            .run(&["display-message", "-p", "-t", "=agent:", "#{pane_id}"])
+            .unwrap();
+        let pane = agent_interface_tmux::control::PaneId(
+            pane_id.trim().trim_start_matches('%').parse().unwrap(),
+        );
+        panes.send_input(pane, b"after-sizing\n").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            assert_eq!(panes.failure(), None);
+            if server
+                .run(&["capture-pane", "-p", "-t", "=agent:"])
+                .unwrap()
+                .contains("after-sizing")
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "input after guarded sizing did not reach the pane"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
         drop(ready);
         wait("agent", "120x40");
         wait("other", "95x30");
