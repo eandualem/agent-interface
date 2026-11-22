@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use gpui::{AnyElement, Context, EntityId, SharedString, Window, div, prelude::*, px, relative};
+use gpui::{AnyElement, Context, EntityId, SharedString, Window, div, prelude::*, px};
 
 use super::{
     Browser, agent_groups, components as ui,
@@ -930,11 +930,12 @@ impl Browser {
                                     &t.text.meta,
                                 )
                                 .child(ui::icon("server", t.size.icon - 2.0, state_color))
-                                // The name keeps its width; the status truncates first.
+                                // The name keeps its natural width and the status takes only
+                                // what is left, so the status truncates first; a long name
+                                // still truncates before the offline toggle is pushed out.
                                 .child(
                                     div()
-                                        .flex_shrink_0()
-                                        .max_w(relative(0.6))
+                                        .min_w_0()
                                         .overflow_hidden()
                                         .text_ellipsis()
                                         .text_color(c.text_2)
