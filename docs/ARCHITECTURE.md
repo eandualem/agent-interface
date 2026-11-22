@@ -23,7 +23,7 @@ Pane and Close Tab never send a session-termination command. Closing the final p
 its tab. An attached session retains its own lifetime policy, including tmux's
 `destroy-unattached` option.
 
-Each displayed native viewport participates in tmux's window sizing. Hidden
+A displayed profile agent declares at least 80 columns so a narrow tile cannot collapse its prompt. When hidden or detached, its control client withdraws using the session’s configured default dimensions, with the same width floor. tmux applies its window sizing policy if other clients are present. Ordinary shells declare the native viewport dimensions. Hidden
 clients keep their connections with `ignore-size`; their next paint restores
 sizing participation at the current viewport dimensions. Resizing a viewport can
 change the geometry seen by other clients of the same window. Choosing a tmux

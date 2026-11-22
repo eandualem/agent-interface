@@ -27,6 +27,8 @@ pub struct Connection {
     pub client: Child,
     /// Selected window and visible pane rectangles.
     pub layout: layout::Change,
+    /// Session geometry tmux uses when a window has no sizing client.
+    pub default_size: (u16, u16),
     /// Initially active pane, before the user chooses another.
     pub input: PaneId,
     /// Existing windows available for local navigation.
@@ -111,7 +113,7 @@ fn connect_selected(
     let target = format!("${}:", resolved.session_id);
     let mut query = command(socket)?;
     query.args(["display-message", "-p", "-t", &target,
-        "#{pid}/#{session_created}/#{session_id} #{session_id} #{pane_id} #{window_id} #{window_layout} #{window_visible_layout} #{window_raw_flags}"]);
+        "#{pid}/#{session_created}/#{session_id} #{session_id} #{default-size} #{pane_id} #{window_id} #{window_layout} #{window_visible_layout} #{window_raw_flags}"]);
     let result = crate::discovery::capture(query, Duration::from_secs(3))?;
     if !result.status.success() {
         return Err(io::Error::other("Session unavailable"));
@@ -135,7 +137,7 @@ fn connect_selected(
             ));
         }
     }
-    let mut fields = text.splitn(3, ' ');
+    let mut fields = text.splitn(4, ' ');
     let identity = fields
         .next()
         .filter(|id| {
@@ -143,6 +145,12 @@ fn connect_selected(
                 .is_some_and(|n| n.parse::<u32>().is_ok())
         })
         .ok_or_else(|| io::Error::other("invalid session identity"))?;
+    let default_size = fields
+        .next()
+        .and_then(|s| s.split_once('x'))
+        .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)))
+        .map(|(w, h)| (w.clamp(1, 10000) as u16, h.clamp(1, 10000) as u16))
+        .unwrap_or((80, 24));
     let mut input = fields
         .next()
         .and_then(|id| id.strip_prefix('%'))
@@ -226,6 +234,7 @@ fn connect_selected(
         "Control client attached"
     );
     Ok(Connection {
+        default_size,
         client,
         layout,
         input,
