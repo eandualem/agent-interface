@@ -747,7 +747,11 @@ impl Render for Management {
                                     ui::text(div().text_color(c.text), &t.text.group_title)
                                         .child(item.display_name.clone()),
                                 )
-                                .child(meta(state_line(item))),
+                                .child(meta(state_line(item)))
+                                .children(
+                                    super::profile_picker::whose_accounts(item.accounts)
+                                        .map(|words| meta(words.into())),
+                                ),
                         )
                         .child(ui::icon_button("management-more", "ellipsis").on_click(
                             cx.listener(|pane, _, _, cx| {

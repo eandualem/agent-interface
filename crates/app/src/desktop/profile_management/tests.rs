@@ -150,6 +150,7 @@ fn a_failed_profile_shows_its_reason_and_no_served_panes() {
         state: State::Failed,
         reason: Some("Its folder can't be read.".into()),
         failure: None,
+        accounts: Default::default(),
     };
     assert_eq!(state_line(&failed), "Its folder can't be read.");
     assert!(!has_served_panes(&failed));

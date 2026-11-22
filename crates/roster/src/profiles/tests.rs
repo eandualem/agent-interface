@@ -726,6 +726,26 @@ fn rust_service_entries_list_and_connect_without_a_key() {
         Profile::parse(&serde_json::to_vec(&later).unwrap()).err(),
         Some(Error::Unsupported)
     );
+    // Whose accounts: an absent field, `null`, a value this app doesn't know
+    // or one of the wrong type is Unknown, and never fails the list.
+    assert_eq!(items[0].accounts, Accounts::Unknown);
+    assert_eq!(items[1].accounts, Accounts::Unknown);
+    for (value, accounts) in [
+        (json!("machine_user"), Accounts::MachineUser),
+        (json!("own"), Accounts::Own),
+        (json!("unknown"), Accounts::Unknown),
+        (json!("a_value_to_come"), Accounts::Unknown),
+        (json!(null), Accounts::Unknown),
+        (json!(7), Accounts::Unknown),
+    ] {
+        for base in [served_entry(&socket), failed.clone()] {
+            let mut entry = base;
+            entry["accounts"] = value.clone();
+            let listed = json!({"profiles": [entry]});
+            let items = list(&serde_json::to_vec(&listed).unwrap()).unwrap();
+            assert_eq!(items[0].accounts, accounts, "{value}");
+        }
+    }
     // The failure's stable code is kept for logs; one this app doesn't know is Other.
     assert_eq!(items[1].failure, Some(Failure::DatabaseUnreachable));
     let mut later_code = failed.clone();
