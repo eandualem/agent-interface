@@ -223,21 +223,57 @@ impl Connection {
         }
         let verify = || {
             self.handshake(Some(&self.instance))
-                .map_err(|error| match error {
-                    super::Error::BindingMismatch => io::Error::new(
-                        io::ErrorKind::AddrNotAvailable,
-                        "Workspace profile instance changed",
-                    ),
-                    _ => {
-                        io::Error::new(io::ErrorKind::NotConnected, "Workspace profile unavailable")
-                    }
-                })
+                .map_err(|error| verify_error(error, socket_rejected(&self.socket)))
         };
         verify()?;
         let stream = open(&self.socket, &self.identity.profile_id, agent, 80, 24)?;
         verify()?;
         Ok(stream)
     }
+}
+
+/// A connection that closed or was cancelled before the terminal opened is a
+/// lost connection the pane may retry; other HTTP failures are not.
+fn transport(error: hyper::Error) -> io::Error {
+    let kind = if error.is_closed() || error.is_incomplete_message() || error.is_canceled() {
+        io::ErrorKind::UnexpectedEof
+    } else {
+        // A socket error, such as a reset, keeps its own kind.
+        std::error::Error::source(&error)
+            .and_then(|source| source.downcast_ref::<io::Error>())
+            .map_or(io::ErrorKind::Other, io::Error::kind)
+    };
+    io::Error::new(kind, error)
+}
+
+/// Why the profile check before an open failed. Only an unreachable or busy
+/// (503) service reads as not connected, which the pane may retry; a rejected
+/// socket, or a refusal of the binding, the version or the profile's state, is
+/// permission denied and waits.
+fn verify_error(error: super::Error, rejected: bool) -> io::Error {
+    match error {
+        super::Error::BindingMismatch => io::Error::new(
+            io::ErrorKind::AddrNotAvailable,
+            "Workspace profile instance changed",
+        ),
+        super::Error::Unavailable | super::Error::Refused(503) if !rejected => {
+            io::Error::new(io::ErrorKind::NotConnected, "Workspace profile unavailable")
+        }
+        _ => io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Workspace profile unavailable",
+        ),
+    }
+}
+
+/// Whether the profile socket is present but fails its ownership check. A
+/// missing socket is a restarting service, not a rejection.
+fn socket_rejected(socket: &std::path::Path) -> bool {
+    local::owned(socket).is_err() && !socket_missing(socket)
+}
+
+fn socket_missing(socket: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(socket).is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
 }
 
 fn open(
@@ -247,7 +283,15 @@ fn open(
     cols: u16,
     rows: u16,
 ) -> io::Result<(Stream, Writer, Close)> {
-    let uid = local::owned(socket).map_err(|_| io::Error::other("Profile socket unavailable"))?;
+    // A missing socket is a restarting service; a rejected one is a refusal.
+    let uid = local::owned(socket).map_err(|_| {
+        let kind = if socket_missing(socket) {
+            io::ErrorKind::NotConnected
+        } else {
+            io::ErrorKind::Other
+        };
+        io::Error::new(kind, "Profile socket unavailable")
+    })?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -265,7 +309,7 @@ fn open(
             let (mut sender, connection) =
                 hyper::client::conn::http1::handshake(TokioIo::new(stream))
                     .await
-                    .map_err(io::Error::other)?;
+                    .map_err(transport)?;
             tokio::spawn(connection.with_upgrades());
             let request = Request::post("/api/terminals/open")
                 .header("Host", "localhost")
@@ -279,10 +323,7 @@ fn open(
                     rows,
                 })?)))
                 .map_err(io::Error::other)?;
-            let mut response = sender
-                .send_request(request)
-                .await
-                .map_err(io::Error::other)?;
+            let mut response = sender.send_request(request).await.map_err(transport)?;
             let status = response.status();
             if status != hyper::StatusCode::SWITCHING_PROTOCOLS {
                 #[derive(Deserialize)]
@@ -294,16 +335,27 @@ fn open(
                     code: String,
                     message: String,
                 }
-                let body = http_body_util::Limited::new(response.into_body(), FRAME)
+                // 503: the home or the agent's machine cannot be reached now.
+                let unreachable = status == hyper::StatusCode::SERVICE_UNAVAILABLE;
+                let kind = if unreachable {
+                    io::ErrorKind::HostUnreachable
+                } else {
+                    io::ErrorKind::Other
+                };
+                let body = match http_body_util::Limited::new(response.into_body(), FRAME)
                     .collect()
                     .await
-                    .map_err(|_| invalid())?
-                    .to_bytes();
+                {
+                    Ok(body) => body.to_bytes(),
+                    // A 503 cut short is still a 503.
+                    Err(_) if unreachable => Bytes::new(),
+                    Err(_) => return Err(invalid()),
+                };
                 let reason = serde_json::from_slice::<Refusal>(&body)
                     .ok()
                     .map(|r| format!("{} ({})", r.detail.message, r.detail.code))
                     .unwrap_or_else(|| format!("Terminal service returned {status}"));
-                return Err(io::Error::other(reason));
+                return Err(io::Error::new(kind, reason));
             }
             if response
                 .headers()
@@ -322,7 +374,7 @@ fn open(
             }
             let parts = hyper::upgrade::on(&mut response)
                 .await
-                .map_err(io::Error::other)?
+                .map_err(transport)?
                 .downcast::<TokioIo<tokio::net::UnixStream>>()
                 .map_err(|_| invalid())?;
             // Hyper may have read part or all of the first frames with the 101.
@@ -360,7 +412,7 @@ fn open(
             Ok((Bytes::from(bytes).slice(end..), socket, opened))
         })
         .await
-        .map_err(io::Error::other)?
+        .map_err(|elapsed| io::Error::new(io::ErrorKind::TimedOut, elapsed))?
     })?;
     socket.set_nonblocking(false)?;
     let reader = BufReader::new(Cursor::new(prefix).chain(socket.try_clone()?));

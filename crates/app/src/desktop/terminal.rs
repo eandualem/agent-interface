@@ -282,6 +282,39 @@ fn connect_selected(
     Ok(ready)
 }
 
+/// Whether a remote stream that ended with this reason may be opened again
+/// automatically: only when its connection was lost, not when its access
+/// ended, its agent exited or the stream broke the protocol.
+fn retries_after_end(reason: &str) -> bool {
+    reason == crate::view::remote::CONNECTION_LOST
+}
+
+/// How long a remote stream stays up before its loss retries at once again.
+const STABLE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Whether a failed remote open may be tried again automatically: the home
+/// or the agent's machine was unreachable (503), the profile service did not
+/// answer or was restarting, or the connection closed or timed out during the
+/// open. Refusals and protocol errors wait for a person.
+fn retries_after_open(kind: std::io::ErrorKind) -> bool {
+    use std::io::ErrorKind::{
+        BrokenPipe, ConnectionAborted, ConnectionRefused, ConnectionReset, HostUnreachable,
+        NotConnected, NotFound, TimedOut, UnexpectedEof,
+    };
+    matches!(
+        kind,
+        HostUnreachable
+            | NotConnected
+            | UnexpectedEof
+            | ConnectionReset
+            | ConnectionAborted
+            | BrokenPipe
+            | ConnectionRefused
+            | NotFound
+            | TimedOut
+    )
+}
+
 /// How often a lost attachment is tried again, in two-second refresh ticks:
 /// at once, then half as often after each failure, up to a limit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -317,6 +350,9 @@ impl Retry {
 pub(super) struct LiveTerminal {
     pub target: Target,
     refresh_on_reopen: bool,
+    /// Whether a remote pane's error is transient, so the automatic retry
+    /// may open it again.
+    remote_retry: bool,
     access: Option<agent_interface_roster::profiles::terminal::Access>,
     view: Option<Entity<TerminalView>>,
     error: Option<String>,
@@ -499,6 +535,7 @@ impl LiveTerminal {
         let mut terminal = Self {
             target,
             refresh_on_reopen: false,
+            remote_retry: false,
             view: None,
             access: None,
             error: None,
@@ -575,11 +612,12 @@ impl LiveTerminal {
                             }
                             if terminal.error.is_some()
                                 && terminal.target.leaf.attachment.is_some()
-                                && terminal.target.remote().is_none()
+                                && (terminal.target.remote().is_none() || terminal.remote_retry)
                                 && terminal.retry.due(terminal.shown)
                             {
                                 // Retry only the saved attachment. This never
                                 // starts an agent, server or replacement shell.
+                                // A remote pane retries only a transient loss.
                                 terminal.start(cx);
                             }
                         }
@@ -597,15 +635,20 @@ impl LiveTerminal {
         }
     }
 
-    fn start_remote(&mut self, cx: &mut Context<Self>) {
+    fn start_remote(&mut self, reconnect: bool, cx: &mut Context<Self>) {
         use crate::view::remote::{PANE, Remote, layout};
         self.closed = None;
-        self.view = None;
-        self.access = None;
-        self.error = None;
+        // A reconnect keeps the last screen and reason until the new stream
+        // opens, instead of flashing an empty Connecting panel each attempt.
+        if !reconnect {
+            self.view = None;
+            self.access = None;
+            self.error = None;
+        }
         self.connecting = true;
         let target = self.target.clone();
         self.refresh_on_reopen = false;
+        self.remote_retry = false;
         let work = cx.background_executor().spawn(async move {
             let profile = target.remote().unwrap();
             let connection = target
@@ -628,6 +671,7 @@ impl LiveTerminal {
                 terminal.connecting = false;
                 match result {
                     Ok((remote, size, access, updates)) => {
+                        terminal.error = None;
                         terminal.access = Some(access);
                         let view = cx.new(|cx| {
                             TerminalView::embedded(
@@ -645,13 +689,21 @@ impl LiveTerminal {
                         if !terminal.shown {
                             view.update(cx, |view, cx| view.hide(cx));
                         }
+                        // Keep the backoff across a stream that opens and drops
+                        // at once; reset it after one that stayed up.
+                        let opened = std::time::Instant::now();
                         terminal.closed = Some(cx.subscribe(
                             &view,
-                            |terminal, _, event: &crate::view::Disconnected, cx| {
-                                terminal.error =
-                                    Some(event.0.clone().unwrap_or_else(|| {
-                                        "Remote terminal connection lost".into()
-                                    }));
+                            move |terminal, _, event: &crate::view::Disconnected, cx| {
+                                let error = event
+                                    .0
+                                    .clone()
+                                    .unwrap_or_else(|| crate::view::remote::CONNECTION_LOST.into());
+                                terminal.remote_retry = retries_after_end(&error);
+                                if opened.elapsed() >= STABLE {
+                                    terminal.retry = Retry::default();
+                                }
+                                terminal.error = Some(error);
                                 cx.notify();
                             },
                         ));
@@ -663,8 +715,11 @@ impl LiveTerminal {
                         cx.emit(Connected);
                     }
                     Err(error) => {
-                        terminal.refresh_on_reopen =
-                            error.kind() == std::io::ErrorKind::NotConnected;
+                        terminal.refresh_on_reopen = matches!(
+                            error.kind(),
+                            std::io::ErrorKind::NotConnected | std::io::ErrorKind::PermissionDenied
+                        );
+                        terminal.remote_retry = retries_after_open(error.kind());
                         if error.kind() == std::io::ErrorKind::AddrNotAvailable {
                             cx.emit(RefreshProfile);
                         }
@@ -684,7 +739,7 @@ impl LiveTerminal {
         cx: &mut Context<Self>,
     ) {
         if self.target.remote().is_some() {
-            self.start_remote(cx);
+            self.start_remote(reconnect, cx);
             return;
         }
         self.closed = None;
@@ -1039,6 +1094,33 @@ pub(super) fn appearance() -> Appearance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_remote_pane_retries_only_a_transient_loss() {
+        use std::io::ErrorKind;
+        assert!(retries_after_end(crate::view::remote::CONNECTION_LOST));
+        assert!(!retries_after_end("Invalid remote terminal response"));
+        assert!(!retries_after_end(crate::view::remote::ACCESS_ENDED));
+        assert!(!retries_after_end(crate::view::remote::PROCESS_EXITED));
+        for kind in [
+            ErrorKind::HostUnreachable,
+            ErrorKind::NotConnected,
+            ErrorKind::UnexpectedEof,
+            ErrorKind::ConnectionReset,
+            ErrorKind::ConnectionRefused,
+            ErrorKind::TimedOut,
+        ] {
+            assert!(retries_after_open(kind), "{kind:?}");
+        }
+        for kind in [
+            ErrorKind::Other,
+            ErrorKind::PermissionDenied,
+            ErrorKind::AddrNotAvailable,
+            ErrorKind::InvalidData,
+        ] {
+            assert!(!retries_after_open(kind), "{kind:?}");
+        }
+    }
 
     #[test]
     fn a_lost_attachment_is_retried_less_often_until_it_is_shown_again() {

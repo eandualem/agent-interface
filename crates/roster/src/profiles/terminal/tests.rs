@@ -49,6 +49,10 @@ fn service_wire_examples_over_private_sockets() {
         for step in &steps {
             assert_eq!(step.octets, step.wire.len());
         }
+        // Only a 503 tells the pane it may try again by itself.
+        let transient = steps
+            .iter()
+            .any(|step| step.direction == "service" && step.wire.starts_with("HTTP/1.1 503"));
         let server = thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
             socket.set_read_timeout(Some(TIMEOUT)).unwrap();
@@ -75,8 +79,10 @@ fn service_wire_examples_over_private_sockets() {
         let (cols, rows) = if watch { (120, 40) } else { (80, 24) };
         let opened = open(Path::new(&path), "0a1b2c3d4e5f", "worker", cols, rows);
         if let Some(code) = name.strip_prefix("refused_") {
-            let reason = opened.err().expect("refusal").to_string();
+            let error = opened.err().expect("refusal");
+            let reason = error.to_string();
             assert!(reason.ends_with(&format!("({code})")), "{reason}");
+            assert_eq!(error.kind() == io::ErrorKind::HostUnreachable, transient);
         } else {
             let (mut stream, mut writer, _close) =
                 opened.unwrap_or_else(|error| panic!("{name}: {error}"));
@@ -136,6 +142,90 @@ fn service_wire_examples_over_private_sockets() {
             }
         }
         server.join().unwrap();
+    }
+}
+
+/// Read the open request and its body, so closing afterwards is a clean end
+/// on every platform: unread bytes make Linux reset the socket instead.
+fn read_whole_request(socket: &mut UnixStream) {
+    let mut headers = Vec::new();
+    while !headers.ends_with(b"\r\n\r\n") {
+        let mut byte = [0];
+        socket.read_exact(&mut byte).unwrap();
+        headers.push(byte[0]);
+    }
+    let length = String::from_utf8(headers)
+        .unwrap()
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().unwrap())
+        })
+        .unwrap();
+    socket.read_exact(&mut vec![0; length]).unwrap();
+}
+
+#[test]
+fn a_service_that_closes_before_answering_reads_as_a_lost_connection() {
+    let (_directory, listener, path) = crate::transport::tests::local_listener();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket.set_read_timeout(Some(TIMEOUT)).unwrap();
+        read_whole_request(&mut socket);
+        // Drop the socket without a response, as a restarting service does.
+    });
+    let error = open(Path::new(&path), "0a1b2c3d4e5f", "worker", 80, 24)
+        .err()
+        .expect("closed before a response");
+    assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof, "{error}");
+    server.join().unwrap();
+}
+
+#[test]
+fn a_503_cut_short_still_reads_as_unreachable() {
+    let (_directory, listener, path) = crate::transport::tests::local_listener();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket.set_read_timeout(Some(TIMEOUT)).unwrap();
+        read_whole_request(&mut socket);
+        socket
+            .write_all(
+                b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 100\r\n\r\n{\"detail\"",
+            )
+            .unwrap();
+    });
+    let error = open(Path::new(&path), "0a1b2c3d4e5f", "worker", 80, 24)
+        .err()
+        .expect("503");
+    assert_eq!(error.kind(), io::ErrorKind::HostUnreachable, "{error}");
+    server.join().unwrap();
+}
+
+#[test]
+fn only_an_unreachable_profile_service_reads_as_not_connected() {
+    use super::super::Error;
+    let kind = |error| verify_error(error, false).kind();
+    assert_eq!(kind(Error::Unavailable), io::ErrorKind::NotConnected);
+    assert_eq!(kind(Error::Refused(503)), io::ErrorKind::NotConnected);
+    // A socket that fails its ownership check waits for a person.
+    assert_eq!(
+        verify_error(Error::Unavailable, true).kind(),
+        io::ErrorKind::PermissionDenied
+    );
+    assert_eq!(
+        kind(Error::BindingMismatch),
+        io::ErrorKind::AddrNotAvailable
+    );
+    for refusal in [
+        Error::Invalid,
+        Error::Unsupported,
+        Error::NotReady,
+        Error::BindingRequired,
+        Error::RegistrationChanged,
+        Error::Refused(403),
+    ] {
+        assert_eq!(kind(refusal), io::ErrorKind::PermissionDenied);
     }
 }
 

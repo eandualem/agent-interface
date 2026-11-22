@@ -45,6 +45,11 @@ struct State {
     size: Option<(u16, u16)>,
 }
 
+/// Why a stream ended. Only a lost connection may be opened again by itself.
+pub(crate) const CONNECTION_LOST: &str = "Remote terminal connection lost";
+pub(crate) const PROCESS_EXITED: &str = "Remote agent process exited";
+pub(crate) const ACCESS_ENDED: &str = "Remote terminal access ended";
+
 pub(crate) struct Remote {
     state: Arc<Mutex<State>>,
     work: SyncSender<Work>,
@@ -69,7 +74,14 @@ impl Remote {
             .name("remote-terminal-grid".into())
             .spawn(move || {
                 let reason = run(pending, writer, size, access, &worker_state, &wake)
-                    .unwrap_or_else(|error| error.to_string());
+                    .unwrap_or_else(|error| match error.kind() {
+                        // The transport went away; the service may answer again.
+                        io::ErrorKind::UnexpectedEof
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::ConnectionAborted
+                        | io::ErrorKind::BrokenPipe => CONNECTION_LOST.to_owned(),
+                        _ => error.to_string(),
+                    });
                 worker_close.detach();
                 worker_state.lock().unwrap().ended = Some(reason);
                 wake();
@@ -250,9 +262,9 @@ fn run(
                 }
                 return match end? {
                     Event::Ended(reason) => Ok(match reason.as_str() {
-                        "process_exited" => "Remote agent process exited",
-                        "access_ended" => "Remote terminal access ended",
-                        _ => "Remote terminal connection lost",
+                        "process_exited" => PROCESS_EXITED,
+                        "access_ended" => ACCESS_ENDED,
+                        _ => CONNECTION_LOST,
                     }
                     .to_owned()),
                     _ => unreachable!(),
