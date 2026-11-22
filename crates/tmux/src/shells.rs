@@ -101,7 +101,10 @@ impl Environment {
         self
     }
 
-    fn shell_command(&self) -> OsString {
+    /// The command a new shell runs. With `guard`, the folder [`install_guard`]
+    /// filled, zsh, bash and fish also define the Backbone guard.
+    fn shell_command(&self, guard: Option<&Path>) -> OsString {
+        let kind = guard.and_then(|guard| Some((guard, guarded(&self.shell)?)));
         let mut words: Vec<OsString> =
             ["env", "-u", "TMUX", "-u", "TMUX_PANE", "-u", "TMUX_TMPDIR"]
                 .map(Into::into)
@@ -117,7 +120,36 @@ impl Environment {
                 words.push(assignment);
             }
         }
-        words.extend([self.shell.as_os_str().to_owned(), "-l".into(), "-i".into()]);
+        let mut start: Vec<OsString> = vec!["-l".into(), "-i".into()];
+        match kind {
+            Some((guard, Guarded::Zsh)) => {
+                let mut assignment = OsString::from("ZDOTDIR=");
+                assignment.push(guard.join("zsh"));
+                words.push(assignment);
+            }
+            Some((guard, Guarded::Bash)) => {
+                // A login shell reads no rcfile; this one reads the login files.
+                start = vec![
+                    "--rcfile".into(),
+                    guard.join("bash/start.bash").into(),
+                    "-i".into(),
+                ];
+            }
+            Some((guard, Guarded::Fish)) => {
+                let mut source = b"source '".to_vec();
+                for &byte in guard.join("fish/guard.fish").as_os_str().as_bytes() {
+                    if matches!(byte, b'\\' | b'\'') {
+                        source.push(b'\\');
+                    }
+                    source.push(byte);
+                }
+                source.push(b'\'');
+                start.extend(["-C".into(), OsString::from_vec(source)]);
+            }
+            None => {}
+        }
+        words.push(self.shell.as_os_str().to_owned());
+        words.extend(start);
         let mut command = b"exec".to_vec();
         for word in words {
             if !command.is_empty() {
@@ -273,6 +305,7 @@ pub fn ensure(socket: &Path, requests: &[Request], environment: &Environment) ->
             "#{session_name}".into(),
         ],
     )?;
+    let mut guard = None;
     let mut existing: HashSet<_> = String::from_utf8_lossy(&listed.stdout)
         .lines()
         .map(str::to_owned)
@@ -293,6 +326,12 @@ pub fn ensure(socket: &Path, requests: &[Request], environment: &Environment) ->
         } else {
             &environment.home
         };
+        if guard.is_none() && guarded(&environment.shell).is_some() {
+            // A shell without the guard is still a working terminal.
+            guard = Some(install_guard(parent).map_err(|error| {
+                tracing::warn!(event = "shell_guard_unavailable", %error, "Shell starts without the Backbone guard");
+            }));
+        }
         // tmux expands formats in -c even though this is a separate argv value.
         // Quote its marker while retaining non-UTF-8 Unix path bytes.
         let mut literal_cwd = Vec::new();
@@ -313,7 +352,7 @@ pub fn ensure(socket: &Path, requests: &[Request], environment: &Environment) ->
                 name.clone().into(),
                 "-c".into(),
                 OsString::from_vec(literal_cwd),
-                environment.shell_command(),
+                environment.shell_command(guard.as_ref().and_then(|g| g.as_deref().ok())),
             ],
         )?;
         require_success(created)?;
@@ -339,6 +378,69 @@ pub fn ensure(socket: &Path, requests: &[Request], environment: &Environment) ->
     }
     // File drop releases flock; the append-open lock file remains for other windows.
     Ok(())
+}
+
+/// A shell that defines the Backbone guard for `claude`, `codex` and `agy`.
+#[derive(Clone, Copy)]
+enum Guarded {
+    Zsh,
+    Bash,
+    Fish,
+}
+
+fn guarded(shell: &Path) -> Option<Guarded> {
+    match shell.file_name()?.as_bytes() {
+        b"zsh" => Some(Guarded::Zsh),
+        b"bash" => Some(Guarded::Bash),
+        b"fish" => Some(Guarded::Fish),
+        _ => None,
+    }
+}
+
+/// The guard's start-up files, by their path in the folder.
+const GUARD_FILES: &[(&str, &str)] = &[
+    ("guard.sh", include_str!("shells/integration/guard.sh")),
+    (
+        "zsh/.zshenv",
+        include_str!("shells/integration/zsh/.zshenv"),
+    ),
+    (
+        "bash/start.bash",
+        include_str!("shells/integration/bash/start.bash"),
+    ),
+    (
+        "fish/guard.fish",
+        include_str!("shells/integration/fish/guard.fish"),
+    ),
+];
+
+/// Write the guard's start-up files into `parent`, the private socket folder
+/// that every library of this user shares, and return their folder.
+fn install_guard(parent: &Path) -> io::Result<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    let root = parent.join("shell-guard");
+    for (relative, contents) in GUARD_FILES {
+        let path = root.join(relative);
+        let folder = path.parent().expect("guard files are in a folder");
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(folder)?;
+        if std::fs::read(&path).is_ok_and(|current| current == contents.as_bytes()) {
+            continue;
+        }
+        // A shell starting now reads the old file or the new one, never half.
+        // Each writer stages its own copy: another library's lock may be free.
+        static STAGED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let partial = folder.join(format!(
+            ".partial-{}-{}",
+            std::process::id(),
+            STAGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::write(&partial, contents)?;
+        std::fs::rename(&partial, &path)?;
+    }
+    Ok(root)
 }
 
 /// The shell a new ordinary terminal runs: SHELL when it names a file, else `/bin/sh`.

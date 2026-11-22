@@ -549,3 +549,241 @@ fn an_exited_ordinary_shell_is_kept_rather_than_restarted() {
         1
     );
 }
+
+/// Run `shell` as a new ordinary terminal on a private server, with a home
+/// whose own start-up files put fixture `claude`, `codex`, `agy` and
+/// `backbone` programs first on PATH. Typed by hand, the tools ask first;
+/// an agent's session and redirected input run them at once.
+fn guard_asks_before_an_agent_starts_outside_backbone(shell: &Path) {
+    let server = TmuxServer::start().unwrap();
+    let socket = server
+        .run(&["display-message", "-p", "#{socket_path}"])
+        .unwrap();
+    let socket = PathBuf::from(socket.trim());
+    let root = server.address().0.canonicalize().unwrap();
+    let home = root.join("home");
+    let bin = root.join("bin");
+    let logs = root.join("logs");
+    let work = root.join("project dir");
+    for folder in [&home, &bin, &logs, &work, &home.join(".config/fish")] {
+        std::fs::create_dir_all(folder).unwrap();
+    }
+    for tool in ["claude", "codex", "agy", "backbone"] {
+        let path = bin.join(tool);
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}/{tool}.part\nmv {0}/{tool}.part {0}/{tool}.log\n",
+                sh_quoted(&logs)
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let bin_word = sh_quoted(&bin);
+    // `set -u`: a strict person's shell must still run the guard.
+    let posix =
+        format!("export PATH={bin_word}:\"$PATH\" STARTUP_MARK=\"$STARTUP_MARK\"done\nset -u\n");
+    // The person's own claude function, which the guard leaves in place.
+    let own = "function claude { echo \"own claude $*\"; }\n";
+    // zsh files kept in the ZDOTDIR the person's own ~/.zshenv sets.
+    std::fs::write(
+        home.join(".zshenv"),
+        "export STARTUP_MARK=env- ZDOTDIR=\"$HOME/zsh config\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir(home.join("zsh config")).unwrap();
+    std::fs::write(home.join("zsh config/.zshrc"), format!("{posix}{own}")).unwrap();
+    std::fs::write(
+        home.join(".bash_profile"),
+        format!("STARTUP_MARK=profile-\n{posix}{own}"),
+    )
+    .unwrap();
+    std::fs::write(
+        home.join(".config/fish/config.fish"),
+        format!(
+            "set -gx PATH {bin_word} $PATH\nset -gx STARTUP_MARK config-done\n\
+            function claude; echo \"own claude $argv\"; end\n"
+        ),
+    )
+    .unwrap();
+    server
+        .run(&["set-environment", "-g", "HOME", home.to_str().unwrap()])
+        .unwrap();
+    for name in ["ENV", "BASH_ENV", "ZDOTDIR", "BACKBONE_AGENT"] {
+        server.run(&["set-environment", "-gu", name]).unwrap();
+    }
+    let mut variables: Vec<(OsString, OsString)> = std::env::vars_os()
+        .filter(|(name, _)| name != "SHELL" && name != "HOME")
+        .filter(|(name, _)| !CONTEXT.iter().any(|context| name == context))
+        .collect();
+    variables.push(("SHELL".into(), shell.into()));
+    variables.push(("HOME".into(), home.clone().into()));
+    let environment = Environment::from_variables(variables, root.clone()).unwrap();
+    let request = Request {
+        id: "000000000001".into(),
+        cwd: Some(work.clone()),
+    };
+    ensure(&socket, &[request], &environment).unwrap();
+
+    let screen = || {
+        server
+            .run(&[
+                "capture-pane",
+                "-p",
+                "-J",
+                "-S",
+                "-",
+                "-t",
+                "=terminal-000000000001:",
+            ])
+            .unwrap()
+    };
+    // Scrollback keeps earlier prompts, so wait for the `times`th showing.
+    let wait_shown = |text: &str, times: usize| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while screen().matches(text).count() < times {
+            assert!(
+                Instant::now() < deadline,
+                "{text:?} not shown {times} times:\n{}",
+                screen()
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let wait_screen = |text: &str| wait_shown(text, 1);
+    let wait_log = |tool: &str| {
+        let path = logs.join(format!("{tool}.log"));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                std::fs::remove_file(&path).unwrap();
+                return text.lines().map(str::to_owned).collect::<Vec<_>>();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{tool} did not run:\n{}",
+                screen()
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let send = |text: &str| {
+        let target = "=terminal-000000000001:";
+        if !text.is_empty() {
+            server
+                .run(&["send-keys", "-t", target, "-l", text])
+                .unwrap();
+        }
+        server.run(&["send-keys", "-t", target, "Enter"]).unwrap();
+    };
+    let question = "outside Backbone: no skills, policies or messaging. \
+        Start it as a Backbone agent here instead? [Y/n]";
+
+    // The person's start-up files ran, and the guard was defined after them.
+    send("echo \"ready $STARTUP_MARK\"");
+    let ready = match guarded(shell) {
+        Some(Guarded::Zsh) => "ready env-done",
+        Some(Guarded::Bash) => "ready profile-done",
+        Some(Guarded::Fish) => "ready config-done",
+        None => unreachable!(),
+    };
+    wait_screen(ready);
+
+    send("claude x");
+    wait_screen("own claude x");
+
+    send("codex --flag 'two words'");
+    wait_screen(&format!("You are starting Codex {question}"));
+    send("n");
+    assert_eq!(wait_log("codex"), ["--flag", "two words"]);
+
+    send("codex --ignored");
+    wait_shown(&format!("You are starting Codex {question}"), 2);
+    send("");
+    wait_screen("Agent name [project dir]:");
+    send("");
+    let started = wait_log("backbone");
+    assert_eq!(started[..3], ["agent", "start", "--dir"]);
+    assert_eq!(Path::new(&started[3]).canonicalize().unwrap(), work);
+    assert_eq!(started[4..], ["--runtime", "codex", "--", "project dir"]);
+
+    send("agy");
+    wait_screen(&format!("You are starting Antigravity {question}"));
+    send("yes");
+    wait_shown("Agent name [project dir]:", 2);
+    send("planner");
+    assert_eq!(
+        wait_log("backbone")[4..],
+        ["--runtime", "antigravity", "--", "planner"]
+    );
+
+    // An agent's own session and redirected input never ask.
+    send("BACKBONE_AGENT=worker agy go");
+    assert_eq!(wait_log("agy"), ["go"]);
+    send("codex piped < /dev/null");
+    assert_eq!(wait_log("codex"), ["piped"]);
+    assert_eq!(screen().matches(question).count(), 3, "{}", screen());
+
+    // Without the backbone program, the tool runs as typed.
+    std::fs::remove_file(bin.join("backbone")).unwrap();
+    // Leave out any backbone installed on this machine.
+    if matches!(guarded(shell), Some(Guarded::Fish)) {
+        send(&format!("set PATH {bin_word} /usr/bin /bin"));
+    } else {
+        send(&format!("PATH={bin_word}:/usr/bin:/bin"));
+    }
+    send("agy");
+    assert_eq!(wait_log("agy"), [""]);
+    let shown = screen();
+    assert_eq!(shown.matches(question).count(), 3, "{shown}");
+    // An error from the guard's files, such as a zsh hook left behind.
+    for marker in ["__agent_interface", "not found", "unbound", "No such file"] {
+        assert!(!shown.contains(marker), "{marker:?} shown:\n{shown}");
+    }
+}
+
+/// The first program called `name` on PATH, and `/bin/bash` too for bash.
+fn shells_named(name: &str) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = std::env::var_os("PATH")
+        .iter()
+        .flat_map(std::env::split_paths)
+        .map(|folder| folder.join(name))
+        .filter(|path| path.is_file())
+        .take(1)
+        .collect();
+    let system = Path::new("/bin").join(name);
+    if name == "bash"
+        && system.is_file()
+        && !found
+            .iter()
+            .any(|path| path.canonicalize().ok() == system.canonicalize().ok())
+    {
+        found.push(system);
+    }
+    if found.is_empty() {
+        eprintln!("{name} is not installed; its guard is not tested here");
+    }
+    found
+}
+
+#[test]
+fn zsh_asks_before_an_agent_starts_outside_backbone() {
+    for shell in shells_named("zsh") {
+        guard_asks_before_an_agent_starts_outside_backbone(&shell);
+    }
+}
+
+#[test]
+fn bash_asks_before_an_agent_starts_outside_backbone() {
+    for shell in shells_named("bash") {
+        guard_asks_before_an_agent_starts_outside_backbone(&shell);
+    }
+}
+
+#[test]
+fn fish_asks_before_an_agent_starts_outside_backbone() {
+    for shell in shells_named("fish") {
+        guard_asks_before_an_agent_starts_outside_backbone(&shell);
+    }
+}
