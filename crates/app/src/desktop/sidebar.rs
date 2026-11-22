@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use gpui::{AnyElement, Context, EntityId, SharedString, Window, div, prelude::*, px};
+use gpui::{AnyElement, Context, EntityId, SharedString, Window, div, prelude::*, px, relative};
 
 use super::{
     Browser, agent_groups, components as ui,
@@ -930,10 +930,11 @@ impl Browser {
                                     &t.text.meta,
                                 )
                                 .child(ui::icon("server", t.size.icon - 2.0, state_color))
+                                // The name keeps its width; the status truncates first.
                                 .child(
                                     div()
-                                        .flex_1()
-                                        .min_w_0()
+                                        .flex_shrink_0()
+                                        .max_w(relative(0.6))
                                         .overflow_hidden()
                                         .text_ellipsis()
                                         .text_color(c.text_2)
@@ -942,7 +943,11 @@ impl Browser {
                                 )
                                 .child(
                                     div()
-                                        .flex_shrink_0()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .text_right()
                                         .text_color(state_color)
                                         .child(state_text),
                                 )
