@@ -710,8 +710,10 @@ impl LiveTerminal {
                         cx.emit(Connected);
                     }
                     Err(error) => {
-                        terminal.refresh_on_reopen =
-                            error.kind() == std::io::ErrorKind::NotConnected;
+                        terminal.refresh_on_reopen = matches!(
+                            error.kind(),
+                            std::io::ErrorKind::NotConnected | std::io::ErrorKind::PermissionDenied
+                        );
                         terminal.remote_retry = retries_after_open(error.kind());
                         if error.kind() == std::io::ErrorKind::AddrNotAvailable {
                             cx.emit(RefreshProfile);
@@ -1107,6 +1109,7 @@ mod tests {
         }
         for kind in [
             ErrorKind::Other,
+            ErrorKind::PermissionDenied,
             ErrorKind::AddrNotAvailable,
             ErrorKind::InvalidData,
         ] {

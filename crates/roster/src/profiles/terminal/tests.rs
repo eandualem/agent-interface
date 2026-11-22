@@ -167,6 +167,27 @@ fn a_service_that_closes_before_answering_reads_as_a_lost_connection() {
 }
 
 #[test]
+fn only_an_unreachable_profile_service_reads_as_not_connected() {
+    use super::super::Error;
+    let kind = |error| verify_error(error).kind();
+    assert_eq!(kind(Error::Unavailable), io::ErrorKind::NotConnected);
+    assert_eq!(
+        kind(Error::BindingMismatch),
+        io::ErrorKind::AddrNotAvailable
+    );
+    for refusal in [
+        Error::Invalid,
+        Error::Unsupported,
+        Error::NotReady,
+        Error::BindingRequired,
+        Error::RegistrationChanged,
+        Error::Refused(403),
+    ] {
+        assert_eq!(kind(refusal), io::ErrorKind::PermissionDenied);
+    }
+}
+
+#[test]
 fn large_input_is_split_without_changing_any_bytes() {
     let (socket, peer) = UnixStream::pair().unwrap();
     let mut writer = Writer {

@@ -221,18 +221,7 @@ impl Connection {
         if !crate::valid_agent(agent) {
             return Err(invalid());
         }
-        let verify = || {
-            self.handshake(Some(&self.instance))
-                .map_err(|error| match error {
-                    super::Error::BindingMismatch => io::Error::new(
-                        io::ErrorKind::AddrNotAvailable,
-                        "Workspace profile instance changed",
-                    ),
-                    _ => {
-                        io::Error::new(io::ErrorKind::NotConnected, "Workspace profile unavailable")
-                    }
-                })
-        };
+        let verify = || self.handshake(Some(&self.instance)).map_err(verify_error);
         verify()?;
         let stream = open(&self.socket, &self.identity.profile_id, agent, 80, 24)?;
         verify()?;
@@ -254,6 +243,25 @@ fn transport(error: hyper::Error) -> io::Error {
     io::Error::new(kind, error)
 }
 
+/// Why the profile check before an open failed. Only an unreachable service
+/// reads as not connected, which the pane may retry; a refusal of the binding,
+/// the version or the profile's state is permission denied and waits.
+fn verify_error(error: super::Error) -> io::Error {
+    match error {
+        super::Error::BindingMismatch => io::Error::new(
+            io::ErrorKind::AddrNotAvailable,
+            "Workspace profile instance changed",
+        ),
+        super::Error::Unavailable => {
+            io::Error::new(io::ErrorKind::NotConnected, "Workspace profile unavailable")
+        }
+        _ => io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Workspace profile unavailable",
+        ),
+    }
+}
+
 fn open(
     socket: &std::path::Path,
     profile: &str,
@@ -261,8 +269,15 @@ fn open(
     cols: u16,
     rows: u16,
 ) -> io::Result<(Stream, Writer, Close)> {
-    let uid = local::owned(socket)
-        .map_err(|_| io::Error::new(io::ErrorKind::NotConnected, "Profile socket unavailable"))?;
+    // A missing socket is a restarting service; a rejected one is a refusal.
+    let uid = local::owned(socket).map_err(|_| {
+        let kind = if socket.exists() {
+            io::ErrorKind::Other
+        } else {
+            io::ErrorKind::NotConnected
+        };
+        io::Error::new(kind, "Profile socket unavailable")
+    })?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
