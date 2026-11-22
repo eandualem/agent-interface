@@ -4,7 +4,9 @@ use agent_interface_core::Direction;
 use gpui::{Context, Div, SharedString, div, prelude::*, px};
 
 use super::{
-    Browser, TabAction, components as ui,
+    AgentAction, Browser, TabAction,
+    agent_status::AgentState,
+    components as ui,
     design::{colors, tokens},
     icons,
     shortcuts::{self, Command},
@@ -135,6 +137,122 @@ impl Browser {
                     })),
                 );
             }
+        }
+        menu
+    }
+
+    /// Actions for one roster agent: open terminal, start/resume, restart or stop.
+    pub(super) fn agent_options(&self, cx: &mut Context<Self>) -> Div {
+        let (t, c) = (tokens(), colors());
+        let mut menu = ui::menu();
+        let Some(agent) = &self.agent_menu else {
+            return menu;
+        };
+        let ticket = agent.ticket.clone();
+        let heading = match &agent.machine {
+            Some(machine) => format!("{} · on {machine}", agent.name),
+            None => agent.name.clone(),
+        };
+        menu = menu.child(ui::menu_heading(heading));
+        if agent.stale {
+            let note = agent
+                .stale_reason
+                .clone()
+                .unwrap_or_else(|| "State report is stale.".into());
+            menu = menu.child(
+                ui::text(
+                    div()
+                        .px(px(t.space.s10))
+                        .pb(px(t.space.s4))
+                        .text_color(c.attention_text),
+                    &t.text.meta,
+                )
+                .child(note),
+            );
+        }
+        let mark = |name: &str, color| Some(ui::icon(name, t.size.icon, color));
+        let add = |menu: Div,
+                   id: &'static str,
+                   icon_name: &str,
+                   label: &'static str,
+                   danger: bool,
+                   action: AgentAction| {
+            let color = if agent.in_flight {
+                c.faint
+            } else if danger {
+                c.attention_text
+            } else {
+                c.muted
+            };
+            let item = ui::menu_item(id, mark(icon_name, color), label, None);
+            if agent.in_flight {
+                menu.child(item.text_color(c.faint).cursor_default())
+            } else {
+                let ticket = ticket.clone();
+                menu.child(
+                    item.when(danger, |el| el.text_color(c.attention_text))
+                        .on_click(cx.listener(move |browser, _, window, cx| {
+                            browser.agent_action(&ticket, action, window, cx)
+                        })),
+                )
+            }
+        };
+        if agent.state == AgentState::Offline {
+            menu = add(
+                menu,
+                "agent-action-resume",
+                "agent-play",
+                "Resume",
+                false,
+                AgentAction::Start { resume: true },
+            );
+            menu = add(
+                menu,
+                "agent-action-start",
+                "plus",
+                "Start new",
+                false,
+                AgentAction::Start { resume: false },
+            );
+        } else {
+            let open_label = if agent.target.remote_profile.is_some() {
+                "Open remote terminal"
+            } else {
+                "Open terminal"
+            };
+            menu = add(
+                menu,
+                "agent-action-open",
+                "terminal",
+                open_label,
+                false,
+                AgentAction::OpenTerminal,
+            );
+            menu = menu.child(ui::menu_rule());
+            menu = add(
+                menu,
+                "agent-action-restart",
+                "refresh-cw",
+                "Restart",
+                false,
+                AgentAction::Restart { resume: false },
+            );
+            menu = add(
+                menu,
+                "agent-action-restart-resume",
+                "refresh-cw",
+                "Restart (resume)",
+                false,
+                AgentAction::Restart { resume: true },
+            );
+            menu = add(
+                menu,
+                "agent-action-stop",
+                "square",
+                "Stop",
+                true,
+                AgentAction::Stop,
+            );
         }
         menu
     }

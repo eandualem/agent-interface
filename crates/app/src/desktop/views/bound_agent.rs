@@ -144,6 +144,8 @@ pub(super) struct Card {
     registration: String,
     removal: Removal,
     removal_error: Option<&'static str>,
+    action_in_flight: bool,
+    action_notice: Option<String>,
     reader: Option<Reader>,
     snapshot: Option<Snapshot>,
     section: AgentSection,
@@ -194,6 +196,8 @@ impl Card {
             registration: registration.clone(),
             removal: Removal::None,
             removal_error: None,
+            action_in_flight: false,
+            action_notice: None,
             reader: Some(Reader {
                 connection,
                 name: name.clone(),
@@ -248,6 +252,46 @@ impl Card {
                         card.removal_error = Some(message);
                     }
                 }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn run_lifecycle(&mut self, action: super::TeamAgentAction, cx: &mut Context<Self>) {
+        if self.action_in_flight || self.removal == Removal::Done {
+            return;
+        }
+        self.action_in_flight = true;
+        let connection = self.connection.clone();
+        let name = self.name.clone();
+        let registration = self.registration.clone();
+        self.action_notice = Some(match action {
+            super::TeamAgentAction::Start { resume: true } => format!("Resuming {name}…"),
+            super::TeamAgentAction::Start { resume: false } => format!("Starting {name}…"),
+            super::TeamAgentAction::Stop => format!("Stopping {name}…"),
+            super::TeamAgentAction::Restart { .. } => format!("Restarting {name}…"),
+        });
+        let work = cx.background_executor().spawn(async move {
+            match action {
+                super::TeamAgentAction::Start { resume } => {
+                    connection.start_agent(&name, resume).message()
+                }
+                super::TeamAgentAction::Stop => {
+                    connection.stop_agent(&name, Some(&registration)).message()
+                }
+                super::TeamAgentAction::Restart { resume } => {
+                    connection.restart_agent(&name, resume).message()
+                }
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            let message = work.await;
+            let _ = this.update(cx, |card, cx| {
+                card.action_in_flight = false;
+                card.action_notice = Some(message);
+                card.refresh(cx);
                 cx.notify();
             });
         })
@@ -320,6 +364,12 @@ impl Render for Card {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (t, c) = (tokens(), colors());
         let mut body = list("bound-agent-card").gap(px(t.space.s8));
+        if let Some(message) = &self.action_notice {
+            body = body.child(
+                ui::text(div().px(px(t.space.s14)).text_color(c.text_2), &t.text.row)
+                    .child(message.clone()),
+            );
+        }
         if let Some(message) = self.removal_error {
             body = body.child(ui::text(div().text_color(c.text), &t.text.row).child(message));
         }
@@ -369,10 +419,41 @@ impl Render for Card {
             // The card reads the agent itself, so its details are its state's.
             // Its runs come from the profile's roster, which the stream wakes.
             let runs = self.agents.runs_of(&self.registration);
+            let local_id = self.connection.identity().installation_id.as_str();
+            let (machines, machines_read) = self.agents.machines();
+            let multi_machine = self.agents.is_multi_machine(&[])
+                || snapshot
+                    .agent
+                    .machine
+                    .as_ref()
+                    .is_some_and(|machine| machine.id != local_id);
+            let machine_label = multi_machine.then(|| match &snapshot.agent.machine {
+                Some(machine) if machine.id == local_id => {
+                    let name = crate::desktop::agent_groups::machine_display_name(
+                        &machine.name,
+                        &machine.id,
+                    );
+                    format!("{name} · this machine")
+                }
+                Some(machine) => {
+                    let name = crate::desktop::agent_groups::machine_display_name(
+                        &machine.name,
+                        &machine.id,
+                    );
+                    let presence = crate::desktop::agent_groups::machine_presence(
+                        &machine.id,
+                        &machines,
+                        machines_read,
+                    );
+                    format!("{name} · {}", presence.label())
+                }
+                None => "Never started".into(),
+            });
             body = body.child(agent::overview(
                 &snapshot.agent,
                 state(&snapshot.agent),
                 &runs,
+                machine_label,
             ));
         } else if self.snapshot.is_some() {
             // The service reports no permissions of an agent's runtime.
@@ -418,10 +499,67 @@ impl Render for Card {
                             .as_ref()
                             .map(|snapshot| ui::badge(snapshot.agent.runtime.clone())),
                     )
-                    .children(
+                    .children(self.snapshot.as_ref().map(|snapshot| {
+                        ui::agent_status(&Status::from_stale(
+                            state(&snapshot.agent),
+                            snapshot.agent.state_source.as_deref(),
+                            &snapshot.agent.evidence,
+                        ))
+                    }))
+                    .when_some(
                         self.snapshot
                             .as_ref()
-                            .map(|snapshot| ui::agent_status(&Status::new(state(&snapshot.agent)))),
+                            .filter(|_| self.removal == Removal::None),
+                        |header, snapshot| {
+                            let agent_state = state(&snapshot.agent);
+                            if agent_state == AgentState::Offline {
+                                header
+                                    .child(
+                                        ui::segment("bound-agent-resume", "Resume", false)
+                                            .when(self.action_in_flight, |el| el.opacity(0.4))
+                                            .on_click(cx.listener(|card, _, _, cx| {
+                                                card.run_lifecycle(
+                                                    super::TeamAgentAction::Start { resume: true },
+                                                    cx,
+                                                );
+                                            })),
+                                    )
+                                    .child(
+                                        ui::segment("bound-agent-start", "Start", false)
+                                            .when(self.action_in_flight, |el| el.opacity(0.4))
+                                            .on_click(cx.listener(|card, _, _, cx| {
+                                                card.run_lifecycle(
+                                                    super::TeamAgentAction::Start { resume: false },
+                                                    cx,
+                                                );
+                                            })),
+                                    )
+                            } else {
+                                header
+                                    .child(
+                                        ui::segment("bound-agent-restart", "Restart", false)
+                                            .when(self.action_in_flight, |el| el.opacity(0.4))
+                                            .on_click(cx.listener(|card, _, _, cx| {
+                                                card.run_lifecycle(
+                                                    super::TeamAgentAction::Restart {
+                                                        resume: false,
+                                                    },
+                                                    cx,
+                                                );
+                                            })),
+                                    )
+                                    .child(
+                                        ui::segment("bound-agent-stop", "Stop", false)
+                                            .when(self.action_in_flight, |el| el.opacity(0.4))
+                                            .on_click(cx.listener(|card, _, _, cx| {
+                                                card.run_lifecycle(
+                                                    super::TeamAgentAction::Stop,
+                                                    cx,
+                                                );
+                                            })),
+                                    )
+                            }
+                        },
                     )
                     .child(
                         ui::segment("bound-agent-refresh", "Refresh", false)

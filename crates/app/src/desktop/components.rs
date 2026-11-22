@@ -323,14 +323,22 @@ pub fn agent_status(status: &super::agent_status::Status) -> Div {
         .flex()
         .items_center()
         .gap(px(t.space.s6))
-        .child(agent_symbol(status.state))
+        .child(agent_symbol(if status.stale {
+            AgentState::Unknown
+        } else {
+            status.state
+        }))
         .child(agent_status_text(status))
 }
 
 /// A status label for rows that place the symbol beside the agent's name.
 pub fn agent_status_text(status: &super::agent_status::Status) -> Div {
     div()
-        .text_color(agent_color(status.state))
+        .text_color(if status.stale {
+            colors().attention_text
+        } else {
+            agent_color(status.state)
+        })
         .child(status.label.clone())
 }
 

@@ -97,6 +97,15 @@ pub(super) enum Grouping {
     Folder,
     Tag,
     Swarm,
+    Machine,
+}
+
+/// Lifecycle action triggered from a Team roster row.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum TeamAgentAction {
+    Start { resume: bool },
+    Stop,
+    Restart { resume: bool },
 }
 
 /// How the usage view groups its rows.
@@ -197,6 +206,8 @@ pub(super) struct ViewPane {
     error: Option<&'static str>,
     range: Range,
     grouping: Grouping,
+    team_notice: Option<String>,
+    team_actions_in_flight: HashSet<String>,
     usage_by: UsageBy,
     cost: bool,
     expanded: HashSet<String>,
@@ -333,6 +344,8 @@ impl ViewPane {
             error: None,
             range: Range::Day,
             grouping: Grouping::Folder,
+            team_notice: None,
+            team_actions_in_flight: HashSet::new(),
             usage_by: UsageBy::Agent,
             cost: false,
             expanded: HashSet::new(),
@@ -969,6 +982,51 @@ impl ViewPane {
             Some(agent) => agent.clone().into(),
             None => about(view.kind).label.into(),
         }
+    }
+
+    pub(super) fn run_team_action(
+        &mut self,
+        name: String,
+        registration: Option<String>,
+        action: TeamAgentAction,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(connection) = self.connection.clone() else {
+            return;
+        };
+        if !self.team_actions_in_flight.insert(name.clone()) {
+            return;
+        }
+        self.team_notice = Some(match action {
+            TeamAgentAction::Start { resume: true } => format!("Resuming {name}…"),
+            TeamAgentAction::Start { resume: false } => format!("Starting {name}…"),
+            TeamAgentAction::Stop => format!("Stopping {name}…"),
+            TeamAgentAction::Restart { .. } => format!("Restarting {name}…"),
+        });
+        let agent = name.clone();
+        let work = cx.background_executor().spawn(async move {
+            match action {
+                TeamAgentAction::Start { resume } => {
+                    connection.start_agent(&agent, resume).message()
+                }
+                TeamAgentAction::Stop => connection
+                    .stop_agent(&agent, registration.as_deref())
+                    .message(),
+                TeamAgentAction::Restart { resume } => {
+                    connection.restart_agent(&agent, resume).message()
+                }
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            let message = work.await;
+            let _ = this.update(cx, |pane, cx| {
+                pane.team_actions_in_flight.remove(&name);
+                pane.team_notice = Some(message);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 }
 

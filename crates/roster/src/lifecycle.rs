@@ -28,11 +28,124 @@ impl Outcome {
     }
 }
 
-/// A service-provided refusal reason suitable for display in either start flow.
+/// One control action's result (stop or restart). An ambiguous reply must
+/// never cause automatic resubmission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ActionOutcome {
+    /// Accepted or completed by Backbone.
+    Done(String),
+    /// Refused locally or by the provider, carrying the provider's reason when available.
+    Refused(String),
+    /// Could not confirm whether the action took effect.
+    Unknown,
+}
+
+impl ActionOutcome {
+    /// Whether Backbone confirmed or accepted the action.
+    pub fn is_ok(&self) -> bool {
+        matches!(self, Self::Done(_))
+    }
+
+    /// A short user-facing result, without private response diagnostics.
+    pub fn message(&self) -> String {
+        match self {
+            Self::Done(message) | Self::Refused(message) => message.clone(),
+            Self::Unknown => {
+                "Could not confirm the request. Check the agent's status before trying again."
+                    .into()
+            }
+        }
+    }
+}
+
+/// A service-provided refusal reason suitable for display in lifecycle flows.
 pub fn start_reason(reason: Option<&str>) -> Option<String> {
     reason
         .map(crate::profiles::setup::one_line)
         .filter(|line| !line.is_empty())
+}
+
+/// Extract a sanitized one-line reason from a Backbone error response body.
+pub(crate) fn service_reason(body: &[u8]) -> Option<String> {
+    if body.is_empty() || body.len() > crate::RESPONSE_LIMIT || !crate::within_depth(body) {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let raw = value
+        .get("detail")
+        .and_then(|detail| {
+            detail
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| detail.as_str())
+        })
+        .or_else(|| value.get("reason").and_then(serde_json::Value::as_str));
+    start_reason(raw)
+}
+
+/// What a start reply means when the provider answered with a status and body,
+/// or failed to answer. Preserves the service's refusal reason on errors such
+/// as `503 machine_unreachable`.
+pub(crate) fn start_response(
+    name: &str,
+    resume: bool,
+    reply: Result<(u16, Vec<u8>), ()>,
+) -> Outcome {
+    match reply {
+        Ok((status, body)) if (200..300).contains(&status) => start_outcome(name, resume, Ok(body)),
+        Ok((status, body)) => {
+            if let Some(reason) = service_reason(&body) {
+                return Outcome::Refused(reason);
+            }
+            start_outcome(name, resume, Err(Some(status)))
+        }
+        Err(()) => start_outcome(name, resume, Err(None)),
+    }
+}
+
+/// What a stop reply means. Preserves the service's refusal reason when present.
+pub(crate) fn stop_response(name: &str, reply: Result<(u16, Vec<u8>), ()>) -> ActionOutcome {
+    match reply {
+        Ok((status, _)) if (200..300).contains(&status) => {
+            ActionOutcome::Done(format!("Stopped {name}."))
+        }
+        Ok((status, body)) => {
+            if let Some(reason) = service_reason(&body) {
+                return ActionOutcome::Refused(reason);
+            }
+            ActionOutcome::Refused(match status {
+                401 | 403 => "Backbone refused access to stop this agent.".into(),
+                404 => format!("{name} is not registered or not running."),
+                409 => "This agent's registration changed. Refresh and try again.".into(),
+                503 => "The agent's machine could not be reached.".into(),
+                _ => format!("Backbone could not stop {name} ({status})."),
+            })
+        }
+        Err(()) => ActionOutcome::Unknown,
+    }
+}
+
+/// What a restart reply means. Preserves the service's refusal reason when present.
+pub(crate) fn restart_response(name: &str, reply: Result<(u16, Vec<u8>), ()>) -> ActionOutcome {
+    match reply {
+        Ok((status, _)) if (200..300).contains(&status) => {
+            ActionOutcome::Done(format!("Restarting {name}…"))
+        }
+        Ok((status, body)) => {
+            if let Some(reason) = service_reason(&body) {
+                return ActionOutcome::Refused(reason);
+            }
+            ActionOutcome::Refused(match status {
+                401 | 403 => "Backbone refused access to restart this agent.".into(),
+                404 => format!("{name} is not a registered agent."),
+                409 => format!("{name} already has a restart in progress."),
+                422 => "Backbone refused the restart request.".into(),
+                503 => "The agent's machine could not be reached.".into(),
+                _ => format!("Backbone could not restart {name} ({status})."),
+            })
+        }
+        Err(()) => ActionOutcome::Unknown,
+    }
 }
 
 /// What a start reply means. `reply` is the body, or the refusing status if known.
@@ -148,5 +261,37 @@ mod tests {
             start_outcome("worker", false, Ok(b"not json".to_vec())),
             Outcome::Unknown
         );
+    }
+
+    #[test]
+    fn unreachable_remote_machine_reports_the_services_reason_for_start_stop_and_restart() {
+        let unreachable =
+            br#"{"detail":{"code":"machine_unreachable","message":"Machine build-linux is offline."}}"#
+                .to_vec();
+        assert_eq!(
+            start_response("worker", false, Ok((503, unreachable.clone()))),
+            Outcome::Refused("Machine build-linux is offline.".into())
+        );
+        assert_eq!(
+            stop_response("worker", Ok((503, unreachable.clone()))),
+            ActionOutcome::Refused("Machine build-linux is offline.".into())
+        );
+        assert_eq!(
+            restart_response("worker", Ok((503, unreachable))),
+            ActionOutcome::Refused("Machine build-linux is offline.".into())
+        );
+        assert_eq!(
+            stop_response("worker", Ok((200, br#"{"ok":true}"#.to_vec()))),
+            ActionOutcome::Done("Stopped worker.".into())
+        );
+        assert_eq!(
+            restart_response(
+                "worker",
+                Ok((200, br#"{"id":7,"status":"pending"}"#.to_vec()))
+            ),
+            ActionOutcome::Done("Restarting worker…".into())
+        );
+        assert_eq!(stop_response("worker", Err(())), ActionOutcome::Unknown);
+        assert_eq!(restart_response("worker", Err(())), ActionOutcome::Unknown);
     }
 }
