@@ -587,9 +587,14 @@ impl Browser {
                 .map(|(name, state)| (name.clone(), *state))
                 .collect();
             if let Some(agents) = self.active_agents() {
-                let leads = agent_groups::offline_leads(&entries, &agents.swarms(), |name| {
-                    agents.get(name).state
-                });
+                let local_machine = agents.local_machine_id();
+                let leads = agent_groups::offline_leads_for_machines(
+                    &entries,
+                    &agents.swarms(),
+                    local_machine.as_deref(),
+                    |name| agents.get(name).state,
+                    |name| agents.machine(name),
+                );
                 entries.extend(leads.into_iter().map(|name| (name, AgentState::Offline)));
                 // An offline agent whose runs go on keeps a row to carry them.
                 for name in agents.offline_with_runs() {

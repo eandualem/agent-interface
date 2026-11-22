@@ -331,6 +331,28 @@ impl LiveAgents {
         }
     }
 
+    /// Best display name for `machine`, preferring the latest name from
+    /// `GET /api/status/services` over the agent's own cached name.
+    pub fn machine_display_name(&self, machine: &agent_interface_roster::Machine) -> String {
+        let current = self.0.current.borrow();
+        let from_services = current
+            .snapshot
+            .as_ref()
+            .filter(|s| s.error.is_none())
+            .and_then(|snapshot| {
+                snapshot
+                    .machines
+                    .iter()
+                    .find(|entry| entry.id == machine.id)
+                    .map(|entry| entry.name.as_str())
+                    .filter(|name| !name.trim().is_empty())
+            });
+        super::agent_groups::machine_display_name(
+            from_services.unwrap_or(&machine.name),
+            &machine.id,
+        )
+    }
+
     /// Offline agents in the current observation with their last reported machine.
     pub fn offline_with_machines(&self) -> Vec<(String, Option<agent_interface_roster::Machine>)> {
         let current = self.0.current.borrow();

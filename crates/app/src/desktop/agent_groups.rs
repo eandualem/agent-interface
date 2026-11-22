@@ -124,29 +124,53 @@ pub(super) fn rows(
     groups.into_iter().flat_map(|(_, rows)| rows).collect()
 }
 
-/// Offline agents whose running swarms still have a listed member. Listing
-/// them keeps a swarm together while the agent that started it restarts.
-pub(super) fn offline_leads(
+/// Offline agents whose running swarms still have a listed member on the same
+/// machine bucket. Listing them keeps a swarm together while the agent that
+/// started it restarts, without creating orphaned offline rows when all listed
+/// members run on another machine.
+pub(super) fn offline_leads_for_machines(
     entries: &[(String, AgentState)],
     swarms: &[Swarm],
+    local_machine_id: Option<&str>,
     state: impl Fn(&str) -> AgentState,
+    machine_of: impl Fn(&str) -> Option<Machine>,
 ) -> Vec<String> {
-    let listed: HashSet<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
+    let bucket = |name: &str| -> Option<String> {
+        machine_of(name).and_then(|machine| {
+            local_machine_id
+                .is_some_and(|local| local != machine.id)
+                .then_some(machine.id)
+        })
+    };
+    let listed: HashMap<&str, Option<String>> = entries
+        .iter()
+        .map(|(name, _)| (name.as_str(), bucket(name)))
+        .collect();
     let mut leads: Vec<String> = Vec::new();
     for swarm in swarms {
         let lead = swarm.initiator.as_str();
-        if !listed.contains(lead)
+        let lead_bucket = bucket(lead);
+        if !listed.contains_key(lead)
             && !leads.iter().any(|name| name == lead)
             && swarm
                 .members
                 .iter()
-                .any(|member| listed.contains(member.as_str()))
+                .any(|member| listed.get(member.as_str()) == Some(&lead_bucket))
             && state(lead) == AgentState::Offline
         {
             leads.push(lead.to_owned());
         }
     }
     leads
+}
+
+#[cfg(test)]
+pub(super) fn offline_leads(
+    entries: &[(String, AgentState)],
+    swarms: &[Swarm],
+    state: impl Fn(&str) -> AgentState,
+) -> Vec<String> {
+    offline_leads_for_machines(entries, swarms, None, state, |_| None)
 }
 
 /// Reachability of a machine group as shown in the roster.
@@ -326,9 +350,11 @@ pub(super) fn grouped_by_machine(
         );
     }
 
-    // Only fold swarm members that live in the same section, so a remote member
-    // never hides under a local initiator's row and cross-machine swarms never
-    // leave a phantom empty swarm disclosure under the initiator.
+    // Keep the full `Swarm.members` list on `Row::Swarm` so opening a swarm tab
+    // includes members on every machine, while only attaching a swarm to its
+    // initiator's section when it has at least one member not listed in another
+    // section (or had no members originally). `rows()` itself folds only members
+    // present in `section_entries`.
     let section_rows = |section_entries: &[(String, AgentState)]| {
         let names: HashSet<&str> = section_entries
             .iter()
@@ -337,24 +363,13 @@ pub(super) fn grouped_by_machine(
         let scoped: Vec<Swarm> = swarms
             .iter()
             .filter(|swarm| names.contains(swarm.initiator.as_str()))
-            .filter_map(|swarm| {
-                let members: Vec<String> = swarm
-                    .members
-                    .iter()
-                    .filter(|member| {
-                        // Drop members listed in another section; keep members in
-                        // this section and offline members that aren't listed elsewhere.
+            .filter(|swarm| {
+                swarm.members.is_empty()
+                    || swarm.members.iter().any(|member| {
                         names.contains(member.as_str()) || !listed_names.contains(member.as_str())
                     })
-                    .cloned()
-                    .collect();
-                let keep = !members.is_empty() || swarm.members.is_empty();
-                keep.then(|| Swarm {
-                    name: swarm.name.clone(),
-                    initiator: swarm.initiator.clone(),
-                    members,
-                })
             })
+            .cloned()
             .collect();
         rows(section_entries, &scoped, expanded)
     };
@@ -867,5 +882,66 @@ mod tests {
                 },
             ]
         );
+
+        // A mixed-machine swarm preserves all members on Row::Swarm for open_swarm_tab
+        // while folding only same-machine members, and offline_leads_for_machines skips
+        // an offline initiator whose only active member runs on another machine.
+        let mut mixed_map = map.clone();
+        mixed_map.insert(
+            "local-coder",
+            Machine {
+                id: local_id.clone(),
+                name: "laptop".into(),
+            },
+        );
+        let mixed_entries = vec![
+            ("local-lead".into(), AgentState::Working),
+            ("local-coder".into(), AgentState::Idle),
+            ("cross-member".into(), AgentState::Idle),
+        ];
+        let mixed_swarms = vec![
+            Swarm {
+                name: "mixed".into(),
+                initiator: "local-lead".into(),
+                members: vec!["local-coder".into(), "cross-member".into()],
+            },
+            Swarm {
+                name: "cross-offline".into(),
+                initiator: "remote-lead".into(),
+                members: vec!["local-coder".into()],
+            },
+        ];
+        let leads = offline_leads_for_machines(
+            &mixed_entries,
+            &mixed_swarms,
+            Some(&local_id),
+            |_| AgentState::Offline,
+            |name| mixed_map.get(name).cloned(),
+        );
+        assert!(leads.is_empty());
+
+        let (_, expanded_sections) = grouped_by_machine(
+            Some(&local_id),
+            &machines,
+            true,
+            &mixed_entries,
+            &[],
+            |name| mixed_map.get(name).cloned(),
+            &mixed_swarms,
+            &HashSet::from(["local-lead".to_owned()]),
+        );
+        assert_eq!(
+            expanded_sections[0].rows[1],
+            Row::Swarm {
+                initiator: "local-lead".into(),
+                name: "mixed".into(),
+                members: vec!["local-coder".into(), "cross-member".into()],
+            }
+        );
+        assert_eq!(expanded_sections[0].rows.len(), 3);
+        assert!(matches!(
+            &expanded_sections[1].rows[0],
+            Row::Agent { name, .. } if name == "cross-member"
+        ));
     }
 }

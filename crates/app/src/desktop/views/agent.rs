@@ -560,7 +560,8 @@ pub(super) fn overview(
     let (t, c) = (tokens(), colors());
     let matching = state == AgentState::from_runtime(&agent.state);
     let age = matching.then_some(agent.state_age_seconds).flatten();
-    let stale_evidence = (agent.state_source.as_deref() == Some("stale")
+    let stale_evidence = (matching
+        && agent.state_source.as_deref() == Some("stale")
         && state != AgentState::Offline)
         .then(|| {
             crate::desktop::agent_status::stale_note(&agent.evidence)

@@ -197,16 +197,13 @@ impl Browser {
             let mut agents: Vec<_> = states.iter().collect();
             agents.sort_by_key(|(name, state)| (!state.needs_you(), name.to_lowercase()));
             for (name, state) in agents {
-                let remote_machine = active
-                    .and_then(|agents| agents.machine(name))
-                    .filter(|machine| {
-                        local_machine
-                            .as_deref()
-                            .is_some_and(|local| local != machine.id.as_str())
-                    })
-                    .map(|machine| {
-                        super::agent_groups::machine_display_name(&machine.name, &machine.id)
-                    });
+                let remote_machine = active.and_then(|agents| {
+                    let machine = agents.machine(name)?;
+                    local_machine
+                        .as_deref()
+                        .is_some_and(|local| local != machine.id.as_str())
+                        .then(|| agents.machine_display_name(&machine))
+                });
                 let stale = active.is_some_and(|agents| agents.get(name).stale);
                 let matched = matches(name) || remote_machine.as_deref().is_some_and(matches);
                 if matched && let Some(target) = self.agent_target(name) {

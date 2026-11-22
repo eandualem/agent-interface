@@ -1761,7 +1761,7 @@ impl Browser {
         let machine = agents
             .machine(name)
             .filter(|machine| machine.is_remote(connection.identity()))
-            .map(|machine| agent_groups::machine_display_name(&machine.name, &machine.id));
+            .map(|machine| agents.machine_display_name(&machine));
         let in_flight = self
             .agent_actions_in_flight
             .contains(&(connection.connection_key(), name.to_owned()));

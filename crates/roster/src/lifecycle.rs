@@ -95,9 +95,16 @@ pub(crate) fn service_reason(body: &[u8]) -> Option<String> {
     start_reason(raw)
 }
 
+/// Whether an HTTP status represents a definite refusal rather than an
+/// ambiguous server/gateway error whose effect cannot be confirmed.
+fn is_refusal_status(status: u16) -> bool {
+    status < 500 || status == 503
+}
+
 /// What a start reply means when the provider answered with a status and body,
-/// or failed to answer. Preserves the service's refusal reason on errors such
-/// as `503 machine_unreachable`.
+/// or failed to answer. Preserves the service's refusal reason on explicit
+/// refusals including `503 machine_unreachable`, while keeping ambiguous 5xx
+/// responses (`500`/`502`/`504`) as `Outcome::Unknown`.
 pub(crate) fn start_response(
     name: &str,
     resume: bool,
@@ -105,23 +112,24 @@ pub(crate) fn start_response(
 ) -> Outcome {
     match reply {
         Ok((status, body)) if (200..300).contains(&status) => start_outcome(name, resume, Ok(body)),
-        Ok((status, body)) => {
+        Ok((status, body)) if is_refusal_status(status) => {
             if let Some(reason) = service_reason(&body) {
                 return Outcome::Refused(reason);
             }
             start_outcome(name, resume, Err(Some(status)))
         }
-        Err(()) => start_outcome(name, resume, Err(None)),
+        Ok(_) | Err(()) => Outcome::Unknown,
     }
 }
 
-/// What a stop reply means. Preserves the service's refusal reason when present.
+/// What a stop reply means. Preserves the service's refusal reason on explicit
+/// refusals while keeping ambiguous 5xx (`500`/`502`/`504`) as `Unknown`.
 pub(crate) fn stop_response(name: &str, reply: Result<(u16, Vec<u8>), ()>) -> ActionOutcome {
     match reply {
         Ok((status, _)) if (200..300).contains(&status) => {
             ActionOutcome::Done(format!("Stopped {name}."))
         }
-        Ok((status, body)) => {
+        Ok((status, body)) if is_refusal_status(status) => {
             if let Some(reason) = service_reason(&body) {
                 return ActionOutcome::Refused(reason);
             }
@@ -133,17 +141,18 @@ pub(crate) fn stop_response(name: &str, reply: Result<(u16, Vec<u8>), ()>) -> Ac
                 _ => format!("Backbone could not stop {name} ({status})."),
             })
         }
-        Err(()) => ActionOutcome::Unknown,
+        Ok(_) | Err(()) => ActionOutcome::Unknown,
     }
 }
 
-/// What a restart reply means. Preserves the service's refusal reason when present.
+/// What a restart reply means. Preserves the service's refusal reason on explicit
+/// refusals while keeping ambiguous 5xx (`500`/`502`/`504`) as `Unknown`.
 pub(crate) fn restart_response(name: &str, reply: Result<(u16, Vec<u8>), ()>) -> ActionOutcome {
     match reply {
         Ok((status, _)) if (200..300).contains(&status) => {
             ActionOutcome::Done(format!("Restarting {name}…"))
         }
-        Ok((status, body)) => {
+        Ok((status, body)) if is_refusal_status(status) => {
             if let Some(reason) = service_reason(&body) {
                 return ActionOutcome::Refused(reason);
             }
@@ -156,7 +165,7 @@ pub(crate) fn restart_response(name: &str, reply: Result<(u16, Vec<u8>), ()>) ->
                 _ => format!("Backbone could not restart {name} ({status})."),
             })
         }
-        Err(()) => ActionOutcome::Unknown,
+        Ok(_) | Err(()) => ActionOutcome::Unknown,
     }
 }
 
@@ -320,6 +329,23 @@ mod tests {
             restart_response("worker", Ok((503, code_only))),
             ActionOutcome::Refused("The agent's machine could not be reached.".into())
         );
+        // Ambiguous 500/502/504 errors stay Unknown even with a JSON detail body.
+        let server_err =
+            br#"{"detail":{"code":"internal","message":"timeout after write"}}"#.to_vec();
+        for status in [500, 502, 504] {
+            assert_eq!(
+                start_response("worker", false, Ok((status, server_err.clone()))),
+                Outcome::Unknown
+            );
+            assert_eq!(
+                stop_response("worker", Ok((status, server_err.clone()))),
+                ActionOutcome::Unknown
+            );
+            assert_eq!(
+                restart_response("worker", Ok((status, server_err.clone()))),
+                ActionOutcome::Unknown
+            );
+        }
         // Roster messages never claim a terminal is connecting.
         assert_eq!(
             Outcome::Accepted("Starting. Connecting once its terminal is ready.".into())

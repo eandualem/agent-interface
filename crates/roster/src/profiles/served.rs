@@ -20,7 +20,12 @@ use std::{
 #[derive(Deserialize)]
 struct Machine {
     id: String,
-    #[serde(default)]
+}
+
+#[derive(Deserialize)]
+struct VerifiedMachine {
+    id: String,
+    #[serde(default, deserialize_with = "crate::lenient")]
     name: Option<String>,
 }
 
@@ -166,7 +171,7 @@ pub(super) fn verify(
         protocol_version: u32,
         profile_id: String,
         instance_id: String,
-        machine: Machine,
+        machine: VerifiedMachine,
         #[serde(default, deserialize_with = "crate::lenient")]
         home: Option<bool>,
     }

@@ -422,7 +422,8 @@ fn by_machine(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> gpui:
         .as_deref()
         .and_then(|id| machines.iter().find(|machine| machine.id == id));
     let local_name = local_profile
-        .map(|machine| agent_groups::machine_display_name(&machine.name, &machine.id))
+        .map(|machine| agent_interface_roster::profiles::setup::one_line(&machine.name))
+        .filter(|name| !name.is_empty())
         .or_else(|| {
             pane.connection
                 .as_ref()
@@ -520,7 +521,7 @@ pub(super) fn agent_row(
                         .as_deref()
                         .is_some_and(|local| local != machine.id.as_str())
                 })
-                .map(|machine| agent_groups::machine_display_name(&machine.name, &machine.id))
+                .map(|machine| pane.agents.machine_display_name(machine))
         })
         .flatten();
     let busy_action = pane.team_actions_in_flight.contains(&name);

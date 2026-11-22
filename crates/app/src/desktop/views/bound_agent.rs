@@ -366,8 +366,22 @@ impl Render for Card {
         let mut body = list("bound-agent-card").gap(px(t.space.s8));
         if let Some(message) = &self.action_notice {
             body = body.child(
-                ui::text(div().px(px(t.space.s14)).text_color(c.text_2), &t.text.row)
-                    .child(message.clone()),
+                div()
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .gap(px(t.space.s8))
+                    .px(px(t.space.s14))
+                    .child(
+                        ui::text(div().flex_1().min_w_0().text_color(c.text_2), &t.text.row)
+                            .child(message.clone()),
+                    )
+                    .child(ui::icon_button("bound-agent-notice-dismiss", "x").on_click(
+                        cx.listener(|card, _, _, cx| {
+                            card.action_notice = None;
+                            cx.notify();
+                        }),
+                    )),
             );
         }
         if let Some(message) = self.removal_error {
@@ -429,17 +443,11 @@ impl Render for Card {
                     .is_some_and(|machine| machine.id != local_id);
             let machine_label = multi_machine.then(|| match &snapshot.agent.machine {
                 Some(machine) if machine.id == local_id => {
-                    let name = crate::desktop::agent_groups::machine_display_name(
-                        &machine.name,
-                        &machine.id,
-                    );
+                    let name = self.agents.machine_display_name(machine);
                     format!("{name} · this machine")
                 }
                 Some(machine) => {
-                    let name = crate::desktop::agent_groups::machine_display_name(
-                        &machine.name,
-                        &machine.id,
-                    );
+                    let name = self.agents.machine_display_name(machine);
                     let presence = crate::desktop::agent_groups::machine_presence(
                         &machine.id,
                         &machines,
@@ -562,8 +570,13 @@ impl Render for Card {
                         },
                     )
                     .child(
-                        ui::segment("bound-agent-refresh", "Refresh", false)
-                            .on_click(cx.listener(|card, _, _, cx| card.refresh(cx))),
+                        ui::segment("bound-agent-refresh", "Refresh", false).on_click(cx.listener(
+                            |card, _, _, cx| {
+                                card.action_notice = None;
+                                card.refresh(cx);
+                                cx.notify();
+                            },
+                        )),
                     )
                     .when(self.removal == Removal::None, |header| {
                         header.child(ui::segment("bound-agent-remove", "Remove", false).on_click(
