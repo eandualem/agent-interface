@@ -1583,6 +1583,7 @@ mod tests {
                     attachment: Some(Attachment {
                         session: session.into(),
                         source_socket: Some(socket.trim().into()),
+                        remote_profile: None,
                     }),
                 },
                 directory: None,
