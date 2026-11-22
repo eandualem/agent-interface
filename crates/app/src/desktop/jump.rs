@@ -199,7 +199,11 @@ impl Browser {
             for (name, state) in agents {
                 let remote_machine = active
                     .and_then(|agents| agents.machine(name))
-                    .filter(|machine| local_machine.as_deref() != Some(machine.id.as_str()))
+                    .filter(|machine| {
+                        local_machine
+                            .as_deref()
+                            .is_some_and(|local| local != machine.id.as_str())
+                    })
                     .map(|machine| {
                         super::agent_groups::machine_display_name(&machine.name, &machine.id)
                     });

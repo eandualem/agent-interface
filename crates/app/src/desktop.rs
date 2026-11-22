@@ -1825,6 +1825,7 @@ impl Browser {
         if !self.agent_actions_in_flight.insert(key.clone()) {
             return;
         }
+        let origin = menu.origin;
         let connection = menu.connection;
         let name = menu.name;
         let registration = menu.registration_id;
@@ -1837,7 +1838,9 @@ impl Browser {
         });
         let work = cx.background_executor().spawn(async move {
             match action {
-                AgentAction::Start { resume } => connection.start_agent(&name, resume).message(),
+                AgentAction::Start { resume } => {
+                    connection.start_agent(&name, resume).roster_message()
+                }
                 AgentAction::Stop => connection
                     .stop_agent(&name, registration.as_deref())
                     .message(),
@@ -1851,7 +1854,9 @@ impl Browser {
             let message = work.await;
             let _ = this.update(cx, |browser, cx| {
                 browser.agent_actions_in_flight.remove(&key);
-                browser.save_notice = Some(message);
+                if browser.selected_origin_is_current(Some(&origin)) {
+                    browser.save_notice = Some(message);
+                }
                 cx.notify();
             });
         })

@@ -1007,7 +1007,7 @@ impl ViewPane {
         let work = cx.background_executor().spawn(async move {
             match action {
                 TeamAgentAction::Start { resume } => {
-                    connection.start_agent(&agent, resume).message()
+                    connection.start_agent(&agent, resume).roster_message()
                 }
                 TeamAgentAction::Stop => connection
                     .stop_agent(&agent, registration.as_deref())

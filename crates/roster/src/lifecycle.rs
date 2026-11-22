@@ -16,11 +16,23 @@ pub enum Outcome {
 }
 
 impl Outcome {
-    /// A short user-facing result, without private response diagnostics.
+    /// A short user-facing result for a terminal pane that connects automatically.
     pub fn message(&self) -> String {
         match self {
             Self::Accepted(message) | Self::Refused(message) => message.clone(),
             Self::AlreadyRunning => "Already running. Connecting to its terminal.".into(),
+            Self::Unknown => {
+                "Could not confirm the launch. Check the agent's status before trying again.".into()
+            }
+        }
+    }
+
+    /// A short user-facing result for a roster control that does not open a terminal.
+    pub fn roster_message(&self) -> String {
+        match self {
+            Self::Accepted(_) => "Starting…".into(),
+            Self::AlreadyRunning => "Already running.".into(),
+            Self::Refused(message) => message.clone(),
             Self::Unknown => {
                 "Could not confirm the launch. Check the agent's status before trying again.".into()
             }
@@ -168,6 +180,7 @@ pub(crate) fn start_outcome(
                 "Backbone refused the launch. Check the agent's saved folder, runtime and model."
             });
         }
+        Err(Some(503)) => return refused("The agent's machine could not be reached."),
         Err(_) => return Outcome::Unknown,
     };
     #[derive(Deserialize)]
@@ -293,5 +306,26 @@ mod tests {
         );
         assert_eq!(stop_response("worker", Err(())), ActionOutcome::Unknown);
         assert_eq!(restart_response("worker", Err(())), ActionOutcome::Unknown);
+        // Bodyless / code-only 503 still reports an unreachable machine on all three routes.
+        let code_only = br#"{"detail":{"code":"machine_unreachable"}}"#.to_vec();
+        assert_eq!(
+            start_response("worker", false, Ok((503, code_only.clone()))),
+            Outcome::Refused("The agent's machine could not be reached.".into())
+        );
+        assert_eq!(
+            stop_response("worker", Ok((503, code_only.clone()))),
+            ActionOutcome::Refused("The agent's machine could not be reached.".into())
+        );
+        assert_eq!(
+            restart_response("worker", Ok((503, code_only))),
+            ActionOutcome::Refused("The agent's machine could not be reached.".into())
+        );
+        // Roster messages never claim a terminal is connecting.
+        assert_eq!(
+            Outcome::Accepted("Starting. Connecting once its terminal is ready.".into())
+                .roster_message(),
+            "Starting…"
+        );
+        assert_eq!(Outcome::AlreadyRunning.roster_message(), "Already running.");
     }
 }

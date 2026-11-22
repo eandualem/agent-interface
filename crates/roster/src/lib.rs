@@ -76,7 +76,8 @@ pub struct AgentDetails {
 pub struct Machine {
     /// Stable machine identifier within the profile (64 hex on the Rust service).
     pub id: String,
-    /// Human-readable machine name.
+    /// Human-readable machine name (missing or mistyped values default to empty).
+    #[serde(default, deserialize_with = "lenient_string")]
     pub name: String,
 }
 
@@ -219,6 +220,15 @@ where
 {
     let raw = <Box<RawValue> as serde::Deserialize>::deserialize(deserializer)?;
     Ok(object(raw.get()))
+}
+
+/// As [`lenient`], for a string field: missing, `null` or non-string reads as empty.
+pub(crate) fn lenient_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = <Box<RawValue> as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(serde_json::from_str::<String>(raw.get()).unwrap_or_default())
 }
 
 /// As [`lenient`], for an array of strings: non-array or non-string entries are skipped.
@@ -876,5 +886,22 @@ mod tests {
         assert!(!snapshot.machines_read);
         assert!(snapshot.machines.is_empty());
         assert!(snapshot.error.is_none());
+
+        // Missing, null, or mistyped machine.name must keep the valid machine ID intact.
+        snapshot.update(
+            format!(
+                r#"{{"items":[
+                    {{"name":"no-name","state":"busy","machine":{{"id":"{worker_id}"}}}},
+                    {{"name":"null-name","state":"idle","machine":{{"id":"{worker_id}","name":null}}}},
+                    {{"name":"num-name","state":"idle","machine":{{"id":"{worker_id}","name":7}}}}
+                ]}}"#
+            )
+            .as_bytes(),
+        );
+        for name in ["no-name", "null-name", "num-name"] {
+            let machine = snapshot.details[name].machine.as_ref().unwrap();
+            assert_eq!(machine.id, worker_id);
+            assert_eq!(machine.name, "");
+        }
     }
 }

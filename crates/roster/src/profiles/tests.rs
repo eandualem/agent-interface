@@ -526,6 +526,9 @@ fn start_stop_and_restart_route_through_the_service_and_report_unreachable_reaso
     let unreachable = json!({
         "detail": {"code": "machine_unreachable", "message": "build-linux cannot be reached."}
     });
+    let binding_mismatch = json!({
+        "detail": {"code": "binding_mismatch", "message": "Wrong profile."}
+    });
     let server = serve(
         listener,
         vec![
@@ -538,6 +541,9 @@ fn start_stop_and_restart_route_through_the_service_and_report_unreachable_reaso
                 json!({"id": 9, "session": "remote-worker", "status": "pending"}),
             ),
             (503, unreachable),
+            (409, binding_mismatch.clone()),
+            (409, binding_mismatch.clone()),
+            (409, binding_mismatch),
         ],
     );
     let connection = profile.connect().unwrap();
@@ -561,6 +567,24 @@ fn start_stop_and_restart_route_through_the_service_and_report_unreachable_reaso
         connection.restart_agent("remote-worker", false),
         ActionOutcome::Refused("build-linux cannot be reached.".into())
     );
+    assert_eq!(
+        connection.start_agent("remote-worker", false),
+        Outcome::Refused(
+            "The original profile binding was refused. Reconnect to that profile.".into()
+        )
+    );
+    assert_eq!(
+        connection.stop_agent("remote-worker", None),
+        ActionOutcome::Refused(
+            "The original profile binding was refused. Reconnect to that profile.".into()
+        )
+    );
+    assert_eq!(
+        connection.restart_agent("remote-worker", false),
+        ActionOutcome::Refused(
+            "The original profile binding was refused. Reconnect to that profile.".into()
+        )
+    );
     assert!(matches!(
         connection.stop_agent("../bad", None),
         ActionOutcome::Refused(_)
@@ -574,7 +598,7 @@ fn start_stop_and_restart_route_through_the_service_and_report_unreachable_reaso
         ActionOutcome::Refused(_)
     ));
     let requests = server.join().unwrap();
-    assert_eq!(requests.len(), 6);
+    assert_eq!(requests.len(), 9);
     assert!(requests[1].starts_with("post /api/agents/remote-worker/start "));
     assert!(requests[2].starts_with(&format!(
         "post /api/agents/remote-worker/stop?expected_registration_id={REG} "

@@ -276,7 +276,7 @@ impl Card {
         let work = cx.background_executor().spawn(async move {
             match action {
                 super::TeamAgentAction::Start { resume } => {
-                    connection.start_agent(&name, resume).message()
+                    connection.start_agent(&name, resume).roster_message()
                 }
                 super::TeamAgentAction::Stop => {
                     connection.stop_agent(&name, Some(&registration)).message()

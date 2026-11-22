@@ -263,11 +263,12 @@ pub(super) fn grouped_by_machine(
     swarms: &[Swarm],
     expanded: &HashSet<String>,
 ) -> (bool, Vec<MachineSection>) {
-    let is_remote = |id: &str| local_machine_id != Some(id);
+    let is_remote = |id: &str| local_machine_id.is_some_and(|local| local != id);
     let has_remote_profile_machine = machines.iter().any(|machine| is_remote(&machine.id));
     let mut local_entries: Vec<(String, AgentState)> = Vec::new();
     let mut remote_active: BTreeMap<String, Vec<(String, AgentState)>> = BTreeMap::new();
     let mut remote_names: HashMap<String, String> = HashMap::new();
+    let listed_names: HashSet<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
 
     for (name, state) in entries {
         match machine_of(name) {
@@ -287,6 +288,11 @@ pub(super) fn grouped_by_machine(
 
     let mut remote_offline: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (name, machine) in offline_agents {
+        // An offline agent already listed in `entries` (e.g. a swarm initiator or
+        // an offline agent with background runs) must not appear twice.
+        if listed_names.contains(name.as_str()) {
+            continue;
+        }
         if let Some(machine) = machine
             && is_remote(&machine.id)
         {
@@ -321,7 +327,8 @@ pub(super) fn grouped_by_machine(
     }
 
     // Only fold swarm members that live in the same section, so a remote member
-    // never hides under a local initiator's row.
+    // never hides under a local initiator's row and cross-machine swarms never
+    // leave a phantom empty swarm disclosure under the initiator.
     let section_rows = |section_entries: &[(String, AgentState)]| {
         let names: HashSet<&str> = section_entries
             .iter()
@@ -330,15 +337,23 @@ pub(super) fn grouped_by_machine(
         let scoped: Vec<Swarm> = swarms
             .iter()
             .filter(|swarm| names.contains(swarm.initiator.as_str()))
-            .map(|swarm| Swarm {
-                name: swarm.name.clone(),
-                initiator: swarm.initiator.clone(),
-                members: swarm
+            .filter_map(|swarm| {
+                let members: Vec<String> = swarm
                     .members
                     .iter()
-                    .filter(|member| names.contains(member.as_str()))
+                    .filter(|member| {
+                        // Drop members listed in another section; keep members in
+                        // this section and offline members that aren't listed elsewhere.
+                        names.contains(member.as_str()) || !listed_names.contains(member.as_str())
+                    })
                     .cloned()
-                    .collect(),
+                    .collect();
+                let keep = !members.is_empty() || swarm.members.is_empty();
+                keep.then(|| Swarm {
+                    name: swarm.name.clone(),
+                    initiator: swarm.initiator.clone(),
+                    members,
+                })
             })
             .collect();
         rows(section_entries, &scoped, expanded)
@@ -708,5 +723,149 @@ mod tests {
         assert!(!multi_after_leave);
         assert_eq!(after_leave.len(), 1);
         assert!(after_leave[0].machine.is_none());
+    }
+
+    #[test]
+    fn unknown_local_id_never_treats_machines_as_remote_and_swarms_scope_cleanly() {
+        let local_id = "a".repeat(64);
+        let remote_id = "b".repeat(64);
+        let machines = vec![
+            ProfileMachine {
+                id: local_id.clone(),
+                name: "laptop".into(),
+                home: true,
+                state: MachineState::Online,
+                joined_at: None,
+                last_seen: None,
+            },
+            ProfileMachine {
+                id: remote_id.clone(),
+                name: "build-box".into(),
+                home: false,
+                state: MachineState::Online,
+                joined_at: None,
+                last_seen: None,
+            },
+        ];
+        let map: HashMap<&str, Machine> = HashMap::from([
+            (
+                "local-lead",
+                Machine {
+                    id: local_id.clone(),
+                    name: "laptop".into(),
+                },
+            ),
+            (
+                "remote-lead",
+                Machine {
+                    id: remote_id.clone(),
+                    name: "build-box".into(),
+                },
+            ),
+            (
+                "remote-coder",
+                Machine {
+                    id: remote_id.clone(),
+                    name: "build-box".into(),
+                },
+            ),
+            (
+                "cross-member",
+                Machine {
+                    id: remote_id.clone(),
+                    name: "build-box".into(),
+                },
+            ),
+        ]);
+
+        // Without a known local machine ID, nothing is classified as remote.
+        let (multi_none, sections_none) = grouped_by_machine(
+            None,
+            &machines[..1],
+            true,
+            &[("local-lead".into(), AgentState::Working)],
+            &[],
+            |name| map.get(name).cloned(),
+            &[],
+            &HashSet::new(),
+        );
+        assert!(!multi_none);
+        assert_eq!(sections_none.len(), 1);
+        assert!(sections_none[0].machine.is_none());
+
+        // Cross-machine swarm does not leave a phantom disclosure on local-lead,
+        // and an offline remote initiator already in `entries` is not duplicated in offline_agents.
+        let entries = vec![
+            ("local-lead".into(), AgentState::Working),
+            ("remote-lead".into(), AgentState::Offline),
+            ("remote-coder".into(), AgentState::Working),
+            ("cross-member".into(), AgentState::Idle),
+        ];
+        let swarms = vec![
+            Swarm {
+                name: "cross".into(),
+                initiator: "local-lead".into(),
+                members: vec!["cross-member".into()],
+            },
+            Swarm {
+                name: "remote-fix".into(),
+                initiator: "remote-lead".into(),
+                members: vec!["remote-coder".into()],
+            },
+        ];
+        let (multi, sections) = grouped_by_machine(
+            Some(&local_id),
+            &machines,
+            true,
+            &entries,
+            &[(
+                "remote-lead".into(),
+                Some(Machine {
+                    id: remote_id.clone(),
+                    name: "build-box".into(),
+                }),
+            )],
+            |name| map.get(name).cloned(),
+            &swarms,
+            &HashSet::new(),
+        );
+        assert!(multi);
+        assert_eq!(sections.len(), 2);
+        // Local section: local-lead has swarms == 0 (no phantom empty swarm).
+        assert_eq!(
+            sections[0].rows,
+            [Row::Agent {
+                name: "local-lead".into(),
+                state: AgentState::Working,
+                swarms: 0,
+                members: 0,
+                needs_you: false,
+                expanded: false,
+            }]
+        );
+        // Remote section: remote-lead folds remote-coder, cross-member stays visible,
+        // and remote-lead is NOT duplicated in offline_agents.
+        assert!(sections[1].offline_agents.is_empty());
+        assert_eq!(
+            sections[1].rows,
+            [
+                Row::Agent {
+                    name: "remote-lead".into(),
+                    state: AgentState::Offline,
+                    swarms: 1,
+                    members: 1,
+                    needs_you: false,
+                    expanded: false,
+                },
+                Row::Agent {
+                    name: "cross-member".into(),
+                    state: AgentState::Idle,
+                    swarms: 0,
+                    members: 0,
+                    needs_you: false,
+                    expanded: false,
+                },
+            ]
+        );
     }
 }

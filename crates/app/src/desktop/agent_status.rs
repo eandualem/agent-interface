@@ -168,6 +168,8 @@ struct Current {
     activity: HashMap<String, Rc<Activity>>,
     /// The profile's running and queued runs together, when it has any.
     background: Option<gpui::SharedString>,
+    /// Minute bucket for ticking relative `last_seen` labels while a machine is offline.
+    offline_tick: Option<u64>,
 }
 
 impl Current {
@@ -191,6 +193,7 @@ impl Default for Current {
             runs: Runs::default(),
             activity: HashMap::new(),
             background: None,
+            offline_tick: None,
         }
     }
 }
@@ -351,19 +354,19 @@ impl LiveAgents {
     /// Whether this profile spans more than one machine, considering both
     /// `GET /api/status/services` and the provided/current agents.
     pub fn is_multi_machine(&self, members: &[agent_interface_roster::views::Member]) -> bool {
-        let local = self.local_machine_id();
+        let Some(local) = self.local_machine_id() else {
+            return false;
+        };
+        let is_remote = |id: &str| local != id;
         let (machines, _) = self.machines();
-        if machines
-            .iter()
-            .any(|machine| local.as_deref() != Some(machine.id.as_str()))
-        {
+        if machines.iter().any(|machine| is_remote(&machine.id)) {
             return true;
         }
         if members.iter().any(|member| {
             member
                 .machine
                 .as_ref()
-                .is_some_and(|machine| local.as_deref() != Some(machine.id.as_str()))
+                .is_some_and(|machine| is_remote(&machine.id))
         }) {
             return true;
         }
@@ -377,7 +380,7 @@ impl LiveAgents {
                     details
                         .machine
                         .as_ref()
-                        .is_some_and(|machine| local.as_deref() != Some(machine.id.as_str()))
+                        .is_some_and(|machine| is_remote(&machine.id))
                 })
             })
     }
@@ -498,7 +501,14 @@ impl LiveAgents {
                 details.state_since = None;
             }
         }
+        let offline_tick = (snapshot.error.is_none()
+            && snapshot.machines.iter().any(|machine| {
+                machine.state == agent_interface_roster::MachineState::Offline
+                    && machine.last_seen.is_some()
+            }))
+        .then(|| agent_interface_roster::views::now() / 60);
         let mut current = self.0.current.borrow_mut();
+        let tick_changed = current.offline_tick != offline_tick;
         let changed = current.snapshot.as_ref().is_none_or(|old| {
             old.states != snapshot.states
                 || old.details != snapshot.details
@@ -507,6 +517,7 @@ impl LiveAgents {
                 || old.machines_read != snapshot.machines_read
                 || old.error != snapshot.error
         });
+        current.offline_tick = offline_tick;
         if changed {
             current.statuses = snapshot
                 .states
@@ -576,7 +587,7 @@ impl LiveAgents {
             });
         }
         current.snapshot = Some(snapshot);
-        changed
+        changed || tick_changed
     }
 }
 

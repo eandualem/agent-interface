@@ -34,7 +34,10 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
     let online = team
         .members
         .iter()
-        .filter(|m| pane.agents.get(&m.name).online)
+        .filter(|m| {
+            let status = pane.agents.get(&m.name);
+            status.online && !status.stale
+        })
         .count();
     let mut grouping = ui::segments();
     let choices: &[(&'static str, Grouping)] = if multi_machine {
@@ -70,21 +73,23 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
         .child(div().flex_1())
         .child(grouping);
 
+    let is_stale = |m: &Member| pane.agents.get(&m.name).stale;
     let tally = |wanted: AgentState| {
         team.members
             .iter()
-            .filter(|m| state(m, pane) == wanted)
+            .filter(|m| !is_stale(m) && state(m, pane) == wanted)
             .count()
     };
+    let stale_count = team.members.iter().filter(|m| is_stale(m)).count();
     let needing = team
         .members
         .iter()
-        .filter(|m| state(m, pane).needs_you())
+        .filter(|m| !is_stale(m) && state(m, pane).needs_you())
         .count();
     let working = team
         .members
         .iter()
-        .filter(|m| state(m, pane).working())
+        .filter(|m| !is_stale(m) && state(m, pane).working())
         .count();
     let summary = ui::text(
         div()
@@ -130,6 +135,13 @@ pub(super) fn body(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> 
             .child(format!("{} idle", tally(AgentState::Idle))),
     )
     .child(format!("{} offline", tally(AgentState::Offline)))
+    .when(stale_count > 0, |el| {
+        el.child(
+            div()
+                .text_color(c.attention_text)
+                .child(format!("{stale_count} stale")),
+        )
+    })
     .when(tally(AgentState::Unknown) > 0, |el| {
         el.child(format!("{} status unknown", tally(AgentState::Unknown)))
     })
@@ -389,7 +401,11 @@ fn by_machine(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> gpui:
     for member in &team.members {
         match &member.machine {
             None => unplaced.push(member),
-            Some(machine) if local_id.as_deref() == Some(machine.id.as_str()) => {
+            Some(machine)
+                if local_id
+                    .as_deref()
+                    .is_none_or(|local| local == machine.id.as_str()) =>
+            {
                 local.push(member);
             }
             Some(machine) => {
@@ -424,7 +440,11 @@ fn by_machine(pane: &ViewPane, team: &Team, cx: &mut Context<ViewPane>) -> gpui:
     let mut ordered: Vec<String> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for machine in &machines {
-        if local_id.as_deref() != Some(machine.id.as_str()) && seen.insert(machine.id.clone()) {
+        if local_id
+            .as_deref()
+            .is_some_and(|local| local != machine.id.as_str())
+            && seen.insert(machine.id.clone())
+        {
             ordered.push(machine.id.clone());
         }
     }
@@ -495,7 +515,11 @@ pub(super) fn agent_row(
             member
                 .machine
                 .as_ref()
-                .filter(|machine| local_id.as_deref() != Some(machine.id.as_str()))
+                .filter(|machine| {
+                    local_id
+                        .as_deref()
+                        .is_some_and(|local| local != machine.id.as_str())
+                })
                 .map(|machine| agent_groups::machine_display_name(&machine.name, &machine.id))
         })
         .flatten();

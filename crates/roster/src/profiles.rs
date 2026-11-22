@@ -375,6 +375,11 @@ impl Connection {
             RESPONSE_LIMIT,
         ) {
             Ok(response) => Ok((response.status, response.body)),
+            Err(Error::BindingRequired | Error::BindingMismatch) => {
+                return Outcome::Refused(
+                    "The original profile binding was refused. Reconnect to that profile.".into(),
+                );
+            }
             Err(_) => Err(()),
         };
         start_response(name, resume, reply)
