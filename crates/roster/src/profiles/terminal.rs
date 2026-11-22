@@ -240,6 +240,20 @@ impl Connection {
     }
 }
 
+/// A connection that closed or was cancelled before the terminal opened is a
+/// lost connection the pane may retry; other HTTP failures are not.
+fn transport(error: hyper::Error) -> io::Error {
+    let kind = if error.is_closed() || error.is_incomplete_message() || error.is_canceled() {
+        io::ErrorKind::UnexpectedEof
+    } else {
+        // A socket error, such as a reset, keeps its own kind.
+        std::error::Error::source(&error)
+            .and_then(|source| source.downcast_ref::<io::Error>())
+            .map_or(io::ErrorKind::Other, io::Error::kind)
+    };
+    io::Error::new(kind, error)
+}
+
 fn open(
     socket: &std::path::Path,
     profile: &str,
@@ -247,7 +261,8 @@ fn open(
     cols: u16,
     rows: u16,
 ) -> io::Result<(Stream, Writer, Close)> {
-    let uid = local::owned(socket).map_err(|_| io::Error::other("Profile socket unavailable"))?;
+    let uid = local::owned(socket)
+        .map_err(|_| io::Error::new(io::ErrorKind::NotConnected, "Profile socket unavailable"))?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -265,7 +280,7 @@ fn open(
             let (mut sender, connection) =
                 hyper::client::conn::http1::handshake(TokioIo::new(stream))
                     .await
-                    .map_err(io::Error::other)?;
+                    .map_err(transport)?;
             tokio::spawn(connection.with_upgrades());
             let request = Request::post("/api/terminals/open")
                 .header("Host", "localhost")
@@ -279,10 +294,7 @@ fn open(
                     rows,
                 })?)))
                 .map_err(io::Error::other)?;
-            let mut response = sender
-                .send_request(request)
-                .await
-                .map_err(io::Error::other)?;
+            let mut response = sender.send_request(request).await.map_err(transport)?;
             let status = response.status();
             if status != hyper::StatusCode::SWITCHING_PROTOCOLS {
                 #[derive(Deserialize)]
@@ -328,7 +340,7 @@ fn open(
             }
             let parts = hyper::upgrade::on(&mut response)
                 .await
-                .map_err(io::Error::other)?
+                .map_err(transport)?
                 .downcast::<TokioIo<tokio::net::UnixStream>>()
                 .map_err(|_| invalid())?;
             // Hyper may have read part or all of the first frames with the 101.
@@ -366,7 +378,7 @@ fn open(
             Ok((Bytes::from(bytes).slice(end..), socket, opened))
         })
         .await
-        .map_err(io::Error::other)?
+        .map_err(|elapsed| io::Error::new(io::ErrorKind::TimedOut, elapsed))?
     })?;
     socket.set_nonblocking(false)?;
     let reader = BufReader::new(Cursor::new(prefix).chain(socket.try_clone()?));

@@ -146,6 +146,27 @@ fn service_wire_examples_over_private_sockets() {
 }
 
 #[test]
+fn a_service_that_closes_before_answering_reads_as_a_lost_connection() {
+    let (_directory, listener, path) = crate::transport::tests::local_listener();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket.set_read_timeout(Some(TIMEOUT)).unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            socket.read_exact(&mut byte).unwrap();
+            request.push(byte[0]);
+        }
+        // Drop the socket without a response, as a restarting service does.
+    });
+    let error = open(Path::new(&path), "0a1b2c3d4e5f", "worker", 80, 24)
+        .err()
+        .expect("closed before a response");
+    assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof, "{error}");
+    server.join().unwrap();
+}
+
+#[test]
 fn large_input_is_split_without_changing_any_bytes() {
     let (socket, peer) = UnixStream::pair().unwrap();
     let mut writer = Writer {

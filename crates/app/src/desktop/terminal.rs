@@ -294,10 +294,25 @@ const STABLE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Whether a failed remote open may be tried again automatically: the home
 /// or the agent's machine was unreachable (503), the profile service did not
-/// answer, or the connection closed during the open. Refusals wait for a person.
+/// answer or was restarting, or the connection closed or timed out during the
+/// open. Refusals and protocol errors wait for a person.
 fn retries_after_open(kind: std::io::ErrorKind) -> bool {
-    use std::io::ErrorKind::{HostUnreachable, NotConnected, UnexpectedEof};
-    matches!(kind, HostUnreachable | NotConnected | UnexpectedEof)
+    use std::io::ErrorKind::{
+        BrokenPipe, ConnectionAborted, ConnectionRefused, ConnectionReset, HostUnreachable,
+        NotConnected, NotFound, TimedOut, UnexpectedEof,
+    };
+    matches!(
+        kind,
+        HostUnreachable
+            | NotConnected
+            | UnexpectedEof
+            | ConnectionReset
+            | ConnectionAborted
+            | BrokenPipe
+            | ConnectionRefused
+            | NotFound
+            | TimedOut
+    )
 }
 
 /// How often a lost attachment is tried again, in two-second refresh ticks:
@@ -1084,6 +1099,9 @@ mod tests {
             ErrorKind::HostUnreachable,
             ErrorKind::NotConnected,
             ErrorKind::UnexpectedEof,
+            ErrorKind::ConnectionReset,
+            ErrorKind::ConnectionRefused,
+            ErrorKind::TimedOut,
         ] {
             assert!(retries_after_open(kind), "{kind:?}");
         }
