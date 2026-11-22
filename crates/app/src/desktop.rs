@@ -3081,27 +3081,35 @@ impl Render for Browser {
                 self.terminals.insert(leaf.id.clone(), terminal);
             }
             // A stopped Backbone agent's pane offers Resume and Start new.
-            let sizing =
-                leaf.attachment
-                    .as_ref()
-                    .filter(|a| a.remote_profile.is_none())
-                    .and_then(|attachment| {
-                        let connection = self.pane_connection(&leaf.id).ok()??;
-                        // A session on another tmux server is not this profile's
-                        // agent, whatever its name.
-                        if attachment.source_socket.as_deref().is_some_and(|path| {
-                            std::path::Path::new(path) != connection.tmux_socket()
-                        }) {
-                            return None;
-                        }
-                        let space = self.layout.as_ref()?.model().workspace_for_pane(&leaf.id)?;
-                        let roster = self.workspace_agents(space);
-                        let registered = roster.and_then(|r| r.registered(&attachment.session));
-                        let stopped = roster.is_some_and(|r| {
-                            r.get(&attachment.session).state == components::AgentState::Offline
-                        });
-                        Some((stopped.then(|| attachment.session.clone()), registered))
-                    });
+            // A remote agent of the bound profile offers them too.
+            let sizing = leaf.attachment.as_ref().and_then(|attachment| {
+                let connection = self.pane_connection(&leaf.id).ok()??;
+                let remote = attachment.remote_profile.as_deref();
+                if let Some(profile) = remote {
+                    if profile != connection.identity().profile_id {
+                        return None;
+                    }
+                // A session on another tmux server is not this profile's
+                // agent, whatever its name.
+                } else if attachment
+                    .source_socket
+                    .as_deref()
+                    .is_some_and(|path| std::path::Path::new(path) != connection.tmux_socket())
+                {
+                    return None;
+                }
+                let space = self.layout.as_ref()?.model().workspace_for_pane(&leaf.id)?;
+                let roster = self.workspace_agents(space);
+                // A remote pane's size stays its own, as before.
+                let registered = match remote {
+                    Some(_) => Some(false),
+                    None => roster.and_then(|r| r.registered(&attachment.session)),
+                };
+                let stopped = roster.is_some_and(|r| {
+                    r.get(&attachment.session).state == components::AgentState::Offline
+                });
+                Some((stopped.then(|| attachment.session.clone()), registered))
+            });
             if let Some(terminal) = self.terminals.get(&leaf.id) {
                 let (stopped, protect_size) = sizing.unwrap_or((None, Some(false)));
                 terminal.update(cx, |terminal, cx| {

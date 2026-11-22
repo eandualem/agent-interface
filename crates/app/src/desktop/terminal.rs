@@ -295,14 +295,15 @@ const STABLE: std::time::Duration = std::time::Duration::from_secs(30);
 /// Whether a failed remote open may be tried again automatically: the home
 /// or the agent's machine was unreachable (503), the profile service did not
 /// answer or was restarting, or the connection closed or timed out during the
-/// open. Refusals and protocol errors wait for a person.
-fn retries_after_open(kind: std::io::ErrorKind) -> bool {
+/// open. Refusals and protocol errors wait for a person, except that an agent
+/// this pane `launched` has no session yet (`not_found`) while it starts.
+fn retries_after_open(error: &std::io::Error, launched: bool) -> bool {
     use std::io::ErrorKind::{
         BrokenPipe, ConnectionAborted, ConnectionRefused, ConnectionReset, HostUnreachable,
         NotConnected, NotFound, TimedOut, UnexpectedEof,
     };
     matches!(
-        kind,
+        error.kind(),
         HostUnreachable
             | NotConnected
             | UnexpectedEof
@@ -312,7 +313,8 @@ fn retries_after_open(kind: std::io::ErrorKind) -> bool {
             | ConnectionRefused
             | NotFound
             | TimedOut
-    )
+    ) || (launched
+        && agent_interface_roster::profiles::terminal::refusal_code(error) == Some("not_found"))
 }
 
 /// How often a lost attachment is tried again, in two-second refresh ticks:
@@ -353,6 +355,8 @@ pub(super) struct LiveTerminal {
     /// Whether a remote pane's error is transient, so the automatic retry
     /// may open it again.
     remote_retry: bool,
+    /// This pane started its remote agent: keep opening it until it runs.
+    launched: bool,
     access: Option<agent_interface_roster::profiles::terminal::Access>,
     view: Option<Entity<TerminalView>>,
     error: Option<String>,
@@ -425,6 +429,10 @@ impl LiveTerminal {
             }
         }
         if self.agent != agent {
+            // Another stopped state is not the one this pane started from.
+            if agent.is_some() {
+                self.launched = false;
+            }
             self.agent = agent;
             self.launch_result = None;
             self.retry = Retry::default();
@@ -451,9 +459,27 @@ impl LiveTerminal {
             let result = work.await;
             let _ = this.update(cx, |terminal, cx| {
                 terminal.launching = false;
-                if terminal.agent == Some(agent) {
-                    terminal.launch_result = Some(result);
-                    terminal.start(cx);
+                let remote = terminal.target.remote().is_some();
+                let same = terminal.agent.as_ref() == Some(&agent);
+                // The roster may list a remote agent as running before its
+                // start returns; its pane still has to open.
+                if same || (remote && terminal.agent.is_none()) {
+                    use agent_interface_roster::lifecycle::Outcome;
+                    // A remote stream that opened meanwhile stays as it is.
+                    let closed = !remote || terminal.error.is_some();
+                    terminal.launched = remote
+                        && closed
+                        && matches!(result, Outcome::Accepted(_) | Outcome::AlreadyRunning);
+                    if terminal.launched {
+                        // Open it as soon as it is up, not after an earlier backoff.
+                        terminal.retry = Retry::default();
+                    }
+                    if same {
+                        terminal.launch_result = Some(result);
+                    }
+                    if closed {
+                        terminal.start(cx);
+                    }
                 }
                 cx.notify();
             });
@@ -536,6 +562,7 @@ impl LiveTerminal {
             target,
             refresh_on_reopen: false,
             remote_retry: false,
+            launched: false,
             view: None,
             access: None,
             error: None,
@@ -635,6 +662,16 @@ impl LiveTerminal {
         }
     }
 
+    /// Open a remote pane again, or refresh its profile first when the open
+    /// found the profile unavailable.
+    fn reopen_remote(&mut self, cx: &mut Context<Self>) {
+        if self.refresh_on_reopen {
+            cx.emit(RefreshProfile)
+        } else {
+            self.start(cx)
+        }
+    }
+
     fn start_remote(&mut self, reconnect: bool, cx: &mut Context<Self>) {
         use crate::view::remote::{PANE, Remote, layout};
         self.closed = None;
@@ -672,6 +709,8 @@ impl LiveTerminal {
                 match result {
                     Ok((remote, size, access, updates)) => {
                         terminal.error = None;
+                        terminal.launched = false;
+                        terminal.launch_result = None;
                         terminal.access = Some(access);
                         let view = cx.new(|cx| {
                             TerminalView::embedded(
@@ -719,7 +758,8 @@ impl LiveTerminal {
                             error.kind(),
                             std::io::ErrorKind::NotConnected | std::io::ErrorKind::PermissionDenied
                         );
-                        terminal.remote_retry = retries_after_open(error.kind());
+                        terminal.remote_retry = retries_after_open(&error, terminal.launched);
+                        terminal.launched &= terminal.remote_retry;
                         if error.kind() == std::io::ErrorKind::AddrNotAvailable {
                             cx.emit(RefreshProfile);
                         }
@@ -970,7 +1010,7 @@ impl Render for LiveTerminal {
                 |el, error| el.child(line(error, c.attention_text)),
             )
             .when(
-                self.error.is_some() && self.target.remote().is_some(),
+                self.error.is_some() && self.target.remote().is_some() && self.agent.is_none(),
                 |el| {
                     el.child(
                         div()
@@ -983,11 +1023,7 @@ impl Render for LiveTerminal {
                                 row.child(
                                     ui::button("reopen-remote", "Open again", ui::Button::Primary)
                                         .on_click(cx.listener(|terminal, _, _, cx| {
-                                            if terminal.refresh_on_reopen {
-                                                cx.emit(RefreshProfile)
-                                            } else {
-                                                terminal.start(cx)
-                                            }
+                                            terminal.reopen_remote(cx)
                                         })),
                                 )
                             })
@@ -998,8 +1034,9 @@ impl Render for LiveTerminal {
                     )
                 },
             )
+            // A stopped agent offers its launch whichever machine it runs on.
             .when(
-                self.error.is_some() && self.target.remote().is_none(),
+                self.error.is_some() && (self.target.remote().is_none() || self.agent.is_some()),
                 |el| {
                     let attached = self.target.leaf.attachment.is_some();
                     let launching = self.launching;
@@ -1037,6 +1074,21 @@ impl Render for LiveTerminal {
                                         .on_click(cx.listener(|terminal, _, _, cx| {
                                             terminal.launch_agent(false, cx)
                                         })),
+                                )
+                            })
+                            // The roster may lag; the remote open says what is wrong.
+                            .when(self.agent.is_some() && self.target.remote_bound(), |el| {
+                                el.child(
+                                    ui::button(
+                                        "reopen-remote",
+                                        "Open again",
+                                        ui::Button::Secondary,
+                                    )
+                                    .on_click(
+                                        cx.listener(|terminal, _, _, cx| {
+                                            terminal.reopen_remote(cx)
+                                        }),
+                                    ),
                                 )
                             })
                             .when(!attached, |el| {
@@ -1102,6 +1154,15 @@ mod tests {
         assert!(!retries_after_end("Invalid remote terminal response"));
         assert!(!retries_after_end(crate::view::remote::ACCESS_ENDED));
         assert!(!retries_after_end(crate::view::remote::PROCESS_EXITED));
+        let refused = |kind, code: &str| {
+            std::io::Error::new(
+                kind,
+                agent_interface_roster::profiles::terminal::Refused {
+                    code: code.into(),
+                    reason: format!("Refused ({code})"),
+                },
+            )
+        };
         for kind in [
             ErrorKind::HostUnreachable,
             ErrorKind::NotConnected,
@@ -1110,7 +1171,7 @@ mod tests {
             ErrorKind::ConnectionRefused,
             ErrorKind::TimedOut,
         ] {
-            assert!(retries_after_open(kind), "{kind:?}");
+            assert!(retries_after_open(&kind.into(), false), "{kind:?}");
         }
         for kind in [
             ErrorKind::Other,
@@ -1118,7 +1179,29 @@ mod tests {
             ErrorKind::AddrNotAvailable,
             ErrorKind::InvalidData,
         ] {
-            assert!(!retries_after_open(kind), "{kind:?}");
+            assert!(!retries_after_open(&kind.into(), false), "{kind:?}");
+        }
+        // Only an agent this pane started, with no session yet, is waited for.
+        assert!(!retries_after_open(
+            &refused(ErrorKind::Other, "not_found"),
+            false
+        ));
+        assert!(retries_after_open(
+            &refused(ErrorKind::Other, "not_found"),
+            true
+        ));
+        for code in ["forbidden", "invalid_request"] {
+            assert!(
+                !retries_after_open(&refused(ErrorKind::Other, code), true),
+                "{code}"
+            );
+        }
+        for kind in [
+            ErrorKind::Other,
+            ErrorKind::PermissionDenied,
+            ErrorKind::AddrNotAvailable,
+        ] {
+            assert!(!retries_after_open(&kind.into(), true), "{kind:?}");
         }
     }
 

@@ -76,6 +76,32 @@ enum Command {
     Resume,
 }
 
+/// The terminal service's refusal of an open, keeping its code.
+#[derive(Debug)]
+pub struct Refused {
+    /// The service's refusal code, such as `not_found`.
+    pub code: String,
+    /// What the pane shows: the service's message and its code.
+    pub reason: String,
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.reason)
+    }
+}
+
+impl std::error::Error for Refused {}
+
+/// The code of the terminal service's refusal, such as `not_found` for an
+/// agent with no running session; none for any other failure.
+pub fn refusal_code(error: &io::Error) -> Option<&str> {
+    error
+        .get_ref()?
+        .downcast_ref::<Refused>()
+        .map(|refused| refused.code.as_str())
+}
+
 fn invalid() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
@@ -351,11 +377,16 @@ fn open(
                     Err(_) if unreachable => Bytes::new(),
                     Err(_) => return Err(invalid()),
                 };
-                let reason = serde_json::from_slice::<Refusal>(&body)
-                    .ok()
-                    .map(|r| format!("{} ({})", r.detail.message, r.detail.code))
-                    .unwrap_or_else(|| format!("Terminal service returned {status}"));
-                return Err(io::Error::new(kind, reason));
+                return Err(match serde_json::from_slice::<Refusal>(&body) {
+                    Ok(r) => io::Error::new(
+                        kind,
+                        Refused {
+                            reason: format!("{} ({})", r.detail.message, r.detail.code),
+                            code: r.detail.code,
+                        },
+                    ),
+                    Err(_) => io::Error::new(kind, format!("Terminal service returned {status}")),
+                });
             }
             if response
                 .headers()
