@@ -1465,10 +1465,11 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             assert_eq!(panes.failure(), None);
-            if server
-                .run(&["capture-pane", "-p", "-t", "=agent:"])
-                .unwrap()
-                .contains("after-sizing")
+            if panes.control_replies_drained()
+                && server
+                    .run(&["capture-pane", "-p", "-t", "=agent:"])
+                    .unwrap()
+                    .contains("after-sizing")
             {
                 break;
             }

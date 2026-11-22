@@ -220,7 +220,9 @@ fn write_commands(
             .write_all(line.as_bytes())
             .and_then(|()| {
                 if matches!(owner, ReplyOwner::GuardedSize) {
-                    writeln!(stdin, "display-message -p {SIZE_COMPLETE}")
+                    // list-commands has no after hook. A user hook must not hold
+                    // the control queue behind our internal reply boundary.
+                    writeln!(stdin, "list-commands -F {SIZE_COMPLETE} list-commands")
                 } else {
                     Ok(())
                 }
@@ -892,6 +894,15 @@ impl Panes {
             ),
         };
         self.control.send(&line, owner)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn control_replies_drained(&self) -> bool {
+        self.control
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
     }
 
     /// Returns a terminal recovery or input transport failure.
