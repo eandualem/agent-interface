@@ -413,7 +413,7 @@ impl ViewPane {
             return pane;
         };
         if pane.view.kind == ViewKind::Connections {
-            pane.connections = Some(cx.new(|cx| connections::Pane::new(window, cx)));
+            pane.connections = Some(cx.new(|cx| connections::Pane::new(connection, window, cx)));
             return pane;
         }
         if matches!(pane.view.kind, ViewKind::Skills | ViewKind::Reports) {

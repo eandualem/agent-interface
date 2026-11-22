@@ -4,6 +4,7 @@ use super::{NameEvent, NameField, colors, tokens, ui};
 use gpui::{
     ClipboardItem, Context, Div, Entity, Render, Subscription, Window, canvas, div, prelude::*, px,
 };
+mod live;
 mod model;
 mod thread;
 use model::{Decision, Gates, Link, Peer, Receipt};
@@ -19,6 +20,7 @@ enum Editor {
 }
 
 pub(super) struct Pane {
+    live: live::Live,
     preview: bool,
     entry: gpui::FocusHandle,
     peers: Vec<Peer>,
@@ -35,7 +37,11 @@ pub(super) struct Pane {
 }
 
 impl Pane {
-    pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub(super) fn new(
+        connection: super::Connection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let filter = cx.new(|cx| {
             let mut field = NameField::filter(window, cx);
             field.focus = field.focus.clone().tab_stop(true);
@@ -48,7 +54,9 @@ impl Pane {
         });
         let search = cx.subscribe(&filter, |this, _, event: &NameEvent, cx| {
             if matches!(event, NameEvent::Changed(_)) {
-                this.reconcile(cx);
+                if this.preview {
+                    this.reconcile(cx);
+                }
                 cx.notify();
             }
         });
@@ -56,6 +64,11 @@ impl Pane {
             &input,
             window,
             |this, _, event: &NameEvent, window, cx| match event {
+                NameEvent::Cancel if !this.preview => {
+                    this.live.form = None;
+                    cx.notify();
+                }
+                NameEvent::Save if !this.preview => this.submit_live_form(cx),
                 NameEvent::Cancel => this.edit(Editor::None, window, cx),
                 NameEvent::Save if this.editor == Editor::Connect => this.connect(cx),
                 NameEvent::Save => this.submit_revision(cx),
@@ -63,6 +76,7 @@ impl Pane {
             },
         );
         Self {
+            live: live::Live::new(connection, cx),
             preview: false,
             entry: cx.focus_handle().tab_stop(true),
             peers: Vec::new(),
@@ -373,22 +387,7 @@ impl Render for Pane {
             .bg(c.surface)
             .child(ui::view_header("link-2", "Connections"));
         if !self.preview {
-            return frame.child(
-                ui::empty_state(
-                    ui::empty_tile("unplug", c.selected, c.muted),
-                    "Connections unavailable",
-                    "This version cannot read profile connections from Agent Backbone yet.",
-                )
-                .child(
-                    ui::button(
-                        "preview-connections",
-                        "Preview with sample data",
-                        ui::Button::Secondary,
-                    )
-                    .track_focus(&self.entry)
-                    .on_click(cx.listener(|this, _, _, cx| this.preview(true, cx))),
-                ),
-            );
+            return frame.child(self.live_view(cx));
         }
         let wide = !self.compact;
         let selected = self

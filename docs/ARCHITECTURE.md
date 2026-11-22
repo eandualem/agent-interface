@@ -1301,14 +1301,22 @@ its saved view kind across the workspace's tabs. Opening it uses an empty pane
 or creates a tab through the library's normal save path. The store rejects
 concurrent edits that would leave two Connections panes in one workspace. It
 saves the pane as an extension on an empty chooser so earlier schema-v2 readers
-can reopen the library. Folded sidebar sections
-retain their state in each window's Browser. The pane shows an unavailable
-state until the profile service supplies peer and review records. From that
-state a person can open a native preview with sample peers. The peer rail
-and conversation use the tile's measured width to switch between a split and
-a single column. Review decisions, draft gates and request responses in the
-preview belong to that view and expire on exit. The preview has no service
-client, credentials, or terminal input path.
+can reopen the library. Folded sidebar sections retain their state in each window's Browser.
+
+The pane reads peer records through the workspace profile's verified owner
+socket. A separate reader follows the profile event stream, preserving the
+last cursor across reconnects. Its hello and change events trigger a fresh
+overview, pending reviews and the selected generation's history. Changes during
+a read schedule another read. The service owns the identities, message bytes,
+review decisions, keys and relay. A relay upload has no terminal receipt.
+
+The pane sends explicit owner actions on its bound connection. A retry after a
+lost response reuses the same request key and body. Incoming messages can be
+passed or declined. Outgoing drafts can also be returned to the local agent
+with a revision note. History pagination uses the service cursor. When reads
+fail the pane retains the last snapshot and pauses changes. The separate sample
+preview uses in-memory records and decisions which expire when the person exits.
+Neither path sends keystrokes to a terminal.
 
 ### Bound native Policies
 

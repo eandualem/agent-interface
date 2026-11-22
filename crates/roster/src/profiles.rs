@@ -13,6 +13,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 pub mod accounts;
+pub mod peers;
 pub mod runs;
 pub mod runtime_catalog;
 pub mod runtime_context;

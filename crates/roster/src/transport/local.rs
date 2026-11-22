@@ -194,6 +194,7 @@ pub(crate) fn stream(
     socket: &str,
     path: &str,
     profile_id: &str,
+    cursor: Option<&str>,
     quiet: Duration,
     live: &dyn Fn() -> bool,
     chunk: &mut dyn FnMut(&[u8]) -> bool,
@@ -218,9 +219,13 @@ pub(crate) fn stream(
                 .uri(path)
                 .header("Host", "localhost")
                 .header("Accept", "text/event-stream")
-                .header("X-Backbone-Profile-ID", profile_id)
-                .body(Full::new(Bytes::new()))
-                .map_err(|_| None)?;
+                .header("X-Backbone-Profile-ID", profile_id);
+            let request = if let Some(cursor) = cursor {
+                request.header("Last-Event-ID", cursor)
+            } else {
+                request
+            };
+            let request = request.body(Full::new(Bytes::new())).map_err(|_| None)?;
             let (mut sender, connection) =
                 hyper::client::conn::http1::handshake(TokioIo::new(stream))
                     .await
