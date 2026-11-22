@@ -23,6 +23,14 @@ pub(super) struct Summary {
 }
 
 impl Summary {
+    #[cfg(test)]
+    pub(super) fn from_overview(overview: api::Overview) -> Self {
+        Self {
+            overview,
+            counts: HashMap::new(),
+        }
+    }
+
     fn read(c: &Connection) -> Result<Self, Error> {
         let overview = c.peer_overview()?;
         let mut counts = HashMap::new();
@@ -60,25 +68,31 @@ impl Summary {
             .count()
     }
 
+    pub fn declined_outgoing(&self) -> usize {
+        self.overview
+            .invitations
+            .iter()
+            .filter(|r| r.direction == api::Direction::Outgoing && r.state == "declined")
+            .count()
+    }
+
     pub fn attention(&self) -> bool {
-        self.overview.pending_reviews > 0
-            || self.requests() > 0
-            || self
-                .overview
-                .invitations
-                .iter()
-                .any(|r| r.direction == api::Direction::Outgoing && r.state == "declined")
+        self.overview.pending_reviews > 0 || self.requests() > 0 || self.declined_outgoing() > 0
     }
 
     pub fn label(&self) -> String {
         let reviews = self.overview.pending_reviews;
         let requests = self.requests();
+        let declined = self.declined_outgoing();
         let mut labels = Vec::new();
         if reviews > 0 {
             labels.push(format!("{reviews} review"));
         }
         if requests > 0 {
             labels.push(format!("{requests} req"));
+        }
+        if declined > 0 {
+            labels.push(format!("{declined} declined"));
         }
         if labels.is_empty() {
             format!(
@@ -147,6 +161,10 @@ impl Drop for Inbox {
 }
 
 impl Inbox {
+    pub fn profile_id(&self) -> &str {
+        &self.service.identity().profile_id
+    }
+
     pub fn shared(connection: &Connection, cx: &mut App) -> Entity<Self> {
         let key = connection.connection_key();
         if let Some(existing) = cx
@@ -279,5 +297,33 @@ impl Sources {
                     })
                     .flatten()
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn summary_label_reports_declined_outgoing_invitation() {
+        let summary = Summary {
+            overview: api::Overview {
+                local_id: "peer_local".into(),
+                pending_reviews: 0,
+                invitations: vec![api::Invitation {
+                    request_id: "req_1".into(),
+                    direction: api::Direction::Outgoing,
+                    peer_id: "peer_remote".into(),
+                    display_name: Some("Remote".into()),
+                    expires_at: "2026-11-23T00:00:00Z".into(),
+                    state: "declined".into(),
+                    generation: None,
+                }],
+                connections: Vec::new(),
+            },
+            counts: HashMap::new(),
+        };
+        assert!(summary.attention());
+        assert_eq!(summary.label(), "1 declined");
     }
 }

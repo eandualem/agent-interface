@@ -195,6 +195,8 @@ impl Management {
 
     /// A profile's Sign-in and Secrets panes, which only a serving profile has.
     fn served_panes(&mut self, cx: &mut Context<Self>) {
+        self.peer_identity = None;
+        self.copied_peer_id = false;
         let Page::Detail(profile) = &self.page else {
             return;
         };
@@ -236,6 +238,8 @@ impl Management {
         match result {
             Ok(page) => {
                 self.page = page;
+                self.peer_identity = None;
+                self.copied_peer_id = false;
                 self.error = None;
             }
             Err(error) => self.error = Some(error),
@@ -743,7 +747,9 @@ impl Render for Management {
                     if let Some(summary) = self
                         .peer_identity
                         .as_ref()
-                        .and_then(|(i, _)| i.read(cx).summary.as_ref())
+                        .map(|(i, _)| i.read(cx))
+                        .filter(|i| i.profile_id() == item.profile_id)
+                        .and_then(|i| i.summary.as_ref())
                     {
                         let shareable = summary.overview.local_id.clone();
                         section=section.child(ui::mono(shareable.clone())).child(ui::button("copy-profile-peer-id",if self.copied_peer_id{"Copied"}else{"Copy ID"},ui::Button::Secondary).on_click(cx.listener(move|p,_,_,cx|{

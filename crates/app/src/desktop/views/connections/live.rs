@@ -33,6 +33,72 @@ impl Change {
             _ => false,
         }
     }
+    fn target(&self, overview: &api::Overview) -> Option<Selection> {
+        match self {
+            Self::Invite(_) => None,
+            Self::Answer(request, _) => overview
+                .invitations
+                .iter()
+                .any(|r| &r.request_id == request && r.state != "accepted")
+                .then(|| Selection::Request(request.clone())),
+            Self::Disconnect(g) | Self::Gates(g, _) => overview
+                .connections
+                .iter()
+                .find(|p| &p.connection.generation == g)
+                .map(|p| Selection::Peer(p.connection.clone())),
+            Self::Review(m, _) => overview
+                .connections
+                .iter()
+                .any(|p| p.connection == m.connection)
+                .then(|| Selection::Peer(m.connection.clone())),
+        }
+    }
+
+    fn still_pending(&self, snapshot: &Snapshot) -> bool {
+        let overview = &snapshot.summary.overview;
+        match self {
+            Self::Invite(_) => true,
+            Self::Answer(request, _) => overview.invitations.iter().any(|r| {
+                &r.request_id == request
+                    && r.direction == Direction::Incoming
+                    && r.state == "pending"
+            }),
+            Self::Disconnect(g) => overview
+                .connections
+                .iter()
+                .any(|p| &p.connection.generation == g && p.state == "connected"),
+            Self::Gates(g, changes) => overview
+                .connections
+                .iter()
+                .find(|p| &p.connection.generation == g && p.state == "connected")
+                .is_some_and(|p| {
+                    changes.iter().any(|(d, policy, _)| match d {
+                        Direction::Incoming => p.gates.incoming != *policy,
+                        Direction::Outgoing => p.gates.outgoing != *policy,
+                    })
+                }),
+            Self::Review(m, _) => {
+                let connected = overview
+                    .connections
+                    .iter()
+                    .any(|p| p.connection == m.connection && p.state == "connected");
+                if !connected || snapshot.summary.count(&m.connection.generation) == 0 {
+                    return false;
+                }
+                if snapshot.selection.as_ref() == Some(&Selection::Peer(m.connection.clone()))
+                    && let Some(history) = &snapshot.history
+                    && let Some(item) = history
+                        .items
+                        .iter()
+                        .find(|item| item.message_id == m.message_id)
+                {
+                    return item.state == "pending_review";
+                }
+                true
+            }
+        }
+    }
+
     fn description(&self) -> String {
         match self {
             Self::Invite(id) => format!("Invitation to {id}"),
@@ -131,6 +197,11 @@ impl Snapshot {
                             return Err(Error::Invalid);
                         }
                         let mut prior = c.peer_history(id, Some(&cursor))?;
+                        let existing: HashSet<_> =
+                            page.items.iter().map(|m| m.message_id.as_str()).collect();
+                        prior
+                            .items
+                            .retain(|m| !existing.contains(m.message_id.as_str()));
                         prior.items.append(&mut page.items);
                         page = prior;
                     }
@@ -147,6 +218,12 @@ impl Snapshot {
     }
 }
 
+struct PendingRetry {
+    action: Change,
+    key: String,
+    error: Option<String>,
+}
+
 pub(super) struct Live {
     connection: Connection,
     selected: Option<Selection>,
@@ -155,7 +232,7 @@ pub(super) struct Live {
     reading: bool,
     dirty: bool,
     sending: bool,
-    retry: Option<(Change, String)>,
+    retry: Option<PendingRetry>,
     status: Option<String>,
     read_at: Option<String>,
     older_loading: bool,
@@ -254,12 +331,17 @@ impl Pane {
                             if live.selected != snapshot.selection {
                                 live.form = None;
                             }
+                            if live
+                                .retry
+                                .as_ref()
+                                .is_some_and(|pending| !pending.action.still_pending(&snapshot))
+                            {
+                                live.retry = None;
+                            }
                             live.selected = snapshot.selection.clone();
                             live.snapshot = Some(snapshot);
                             live.read_at = Some(chrono::Local::now().format("%H:%M").to_string());
-                            if live.retry.is_none() {
-                                live.status = None;
-                            }
+                            live.status = None;
                         }
                         Err(e) => live.status = Some(format!("Agent Backbone unavailable · {e:?}")),
                     }
@@ -295,7 +377,11 @@ impl Pane {
         {
             return;
         }
-        self.live.retry = Some((action, uuid::Uuid::new_v4().simple().to_string()));
+        self.live.retry = Some(PendingRetry {
+            action,
+            key: uuid::Uuid::new_v4().simple().to_string(),
+            error: None,
+        });
         self.send_live(cx);
     }
 
@@ -303,7 +389,12 @@ impl Pane {
         if self.live.sending || !self.live.stream_ok {
             return;
         }
-        let Some((change, key)) = self.live.retry.clone() else {
+        let Some((change, key)) = self
+            .live
+            .retry
+            .as_ref()
+            .map(|pending| (pending.action.clone(), pending.key.clone()))
+        else {
             return;
         };
         if self.preview || !change.belongs_to(self.live.selected.as_ref()) {
@@ -324,20 +415,23 @@ impl Pane {
                     Ok(()) => {
                         pane.live.retry = None;
                         pane.live.status = None;
+                        pane.live.inbox.update(cx, |inbox, cx| inbox.refresh(cx));
                     }
                     Err(error) => {
                         // A lost reply may already have committed. Retry the same bytes and key.
-                        if !matches!(
+                        if matches!(
                             error,
                             Error::Invalid | Error::Unavailable | Error::Refused(500..=599)
                         ) {
+                            if let Some(pending) = &mut pane.live.retry {
+                                pending.error = Some(format!("{description} · {error:?}"));
+                            }
+                            pane.live.inbox.update(cx, |inbox, cx| inbox.refresh(cx));
+                        } else {
                             pane.live.retry = None;
+                            pane.live.status = Some(format!("{description} · {error:?}"));
                         }
-                        pane.live.status = Some(format!("{description} · {error:?}"));
                     }
-                }
-                if result.is_ok() {
-                    pane.live.inbox.update(cx, |inbox, cx| inbox.refresh(cx));
                 }
                 cx.notify();
             });
@@ -436,6 +530,14 @@ impl Pane {
             Form::Gate(id, original, draft) => {
                 let mut menu = ui::menu().child(ui::menu_heading("Delivery gate"));
                 for d in [Direction::Incoming, Direction::Outgoing] {
+                    let original_policy = match d {
+                        Direction::Incoming => original.incoming,
+                        Direction::Outgoing => original.outgoing,
+                    };
+                    if original_policy == Policy::Unknown {
+                        menu = menu.child(format!("{d:?} · Unknown (unsupported by this version)"));
+                        continue;
+                    }
                     let mut row = div().flex().flex_wrap().child(format!("{d:?}"));
                     for choice in [Policy::Review, Policy::Auto] {
                         let id = id.clone();
@@ -633,36 +735,32 @@ impl Pane {
                     .child(name.to_owned())
                     .child(ui::mono(id.peer_id.clone()))
                     .child(format!("Left: {name} (external) · Right: main"));
-                if actions
-                    && peer.state == "connected"
-                    && peer.gates.incoming != Policy::Unknown
-                    && peer.gates.outgoing != Policy::Unknown
-                {
+                if actions && peer.state == "connected" {
                     let generation = id.generation.clone();
                     let disconnect = generation.clone();
-                    thread = thread.child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .child(self.live_button(
-                                "peer-gates",
-                                header,
-                                ui::Button::Secondary,
-                                cx,
-                                move |p, w, cx| {
-                                    p.show_form(Form::Gate(generation.clone(), gates, gates), w, cx)
-                                },
-                            ))
-                            .child(self.live_button(
-                                "peer-disconnect",
-                                "Disconnect",
-                                ui::Button::Danger,
-                                cx,
-                                move |p, w, cx| {
-                                    p.show_form(Form::Disconnect(disconnect.clone()), w, cx)
-                                },
-                            )),
-                    );
+                    let editable_gate = peer.gates.incoming != Policy::Unknown
+                        || peer.gates.outgoing != Policy::Unknown;
+                    let mut controls = div().flex().flex_wrap().items_center().gap(px(t.space.s6));
+                    if editable_gate {
+                        controls = controls.child(self.live_button(
+                            "peer-gates",
+                            header,
+                            ui::Button::Secondary,
+                            cx,
+                            move |p, w, cx| {
+                                p.show_form(Form::Gate(generation.clone(), gates, gates), w, cx)
+                            },
+                        ));
+                    } else {
+                        controls = controls.child(format!("{} · {header}", peer.state));
+                    }
+                    thread = thread.child(controls.child(self.live_button(
+                        "peer-disconnect",
+                        "Disconnect",
+                        ui::Button::Danger,
+                        cx,
+                        move |p, w, cx| p.show_form(Form::Disconnect(disconnect.clone()), w, cx),
+                    )));
                 } else {
                     thread = thread.child(format!("{} · {header}", peer.state));
                 }
@@ -980,22 +1078,47 @@ impl Pane {
                     .flex()
                     .flex_wrap()
                     .child(error.clone())
-                    .child(
-                        if self.live.retry.as_ref().is_some_and(|(action, _)| {
-                            action.belongs_to(self.live.selected.as_ref())
-                        }) {
-                            self.live_button(
-                                "retry-action",
-                                "Retry action",
-                                ui::Button::Secondary,
-                                cx,
-                                |p, _, cx| p.send_live(cx),
-                            )
-                        } else {
-                            refresh
-                        },
-                    ),
+                    .child(refresh),
             );
+        }
+        if let Some(pending) = &self.live.retry
+            && let Some(error) = &pending.error
+        {
+            let mut banner = div()
+                .bg(c.attention_soft)
+                .flex()
+                .flex_wrap()
+                .child(error.clone());
+            if pending.action.belongs_to(self.live.selected.as_ref()) {
+                if self.live.stream_ok && !self.live.sending {
+                    banner = banner.child(self.live_button(
+                        "retry-action",
+                        "Retry action",
+                        ui::Button::Secondary,
+                        cx,
+                        |p, _, cx| p.send_live(cx),
+                    ));
+                }
+            } else if let Some(target) = pending.action.target(&s.summary.overview) {
+                banner = banner.child(self.live_button(
+                    "retry-target",
+                    "Show target",
+                    ui::Button::Secondary,
+                    cx,
+                    move |p, _, cx| p.pick(Some(target.clone()), cx),
+                ));
+            }
+            banner = banner.child(self.live_button(
+                "dismiss-retry",
+                "Dismiss",
+                ui::Button::Secondary,
+                cx,
+                |p, _, cx| {
+                    p.live.retry = None;
+                    cx.notify();
+                },
+            ));
+            view = view.child(banner);
         }
         if let Some((next, name, _)) = s
             .summary
@@ -1016,5 +1139,46 @@ impl Pane {
             self.live.read_at.as_deref().unwrap_or("—"),
             s.summary.overview.pending_reviews
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retry_reconciliation_clears_committed_answer_and_disconnect() {
+        let generation = api::Generation {
+            peer_id: "peer_a".into(),
+            generation: "gen_1".into(),
+        };
+        let accepted = Snapshot {
+            summary: Arc::new(Summary::from_overview(api::Overview {
+                local_id: "peer_local".into(),
+                pending_reviews: 0,
+                invitations: vec![api::Invitation {
+                    request_id: "req_1".into(),
+                    direction: Direction::Incoming,
+                    peer_id: "peer_a".into(),
+                    display_name: None,
+                    expires_at: "2026-11-23T00:00:00Z".into(),
+                    state: "accepted".into(),
+                    generation: Some("gen_1".into()),
+                }],
+                connections: vec![api::Peer {
+                    connection: generation.clone(),
+                    display_name: None,
+                    state: "disconnected".into(),
+                    gates: api::Gates {
+                        incoming: Policy::Review,
+                        outgoing: Policy::Unknown,
+                    },
+                }],
+            })),
+            selection: Some(Selection::Peer(generation)),
+            history: None,
+        };
+        assert!(!Change::Answer("req_1".into(), true).still_pending(&accepted));
+        assert!(!Change::Disconnect("gen_1".into()).still_pending(&accepted));
     }
 }

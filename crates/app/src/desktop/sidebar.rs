@@ -1008,8 +1008,14 @@ impl Browser {
                         .filter(|r| r.state != "accepted")
                         .count()
             });
-            let label = if total > shown {
-                format!("{} other connections", total - shown)
+            let remaining = total.saturating_sub(shown);
+            let label = if remaining > 0 {
+                match (shown > 0, remaining) {
+                    (true, 1) => "1 other connection".into(),
+                    (true, n) => format!("{n} other connections"),
+                    (false, 1) => "1 connection".into(),
+                    (false, n) => format!("{n} connections"),
+                }
             } else {
                 "Open connections".into()
             };
