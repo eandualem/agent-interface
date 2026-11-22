@@ -146,17 +146,18 @@ pub fn may_quit(cx: &mut App) -> bool {
 /// Bring the Settings window forward, opening it if it is not open.
 pub fn show(cx: &mut App) {
     let origin = super::settings_profiles::Origin::capture(cx);
+    let active_browser = cx
+        .active_window()
+        .and_then(|w| w.downcast::<Browser>())
+        .is_some();
     let open = cx.try_global::<Open>().map(|Open(handle)| *handle);
     if let Some(handle) = open
         && handle
             .update(cx, |settings, window, cx| {
-                if cx
-                    .active_window()
-                    .and_then(|w| w.downcast::<Browser>())
-                    .is_some()
-                    && settings.origin != origin
+                if settings
+                    .origin
+                    .retarget(active_browser.then(|| origin.clone()))
                 {
-                    settings.origin = origin.clone();
                     settings.profiles = None;
                     cx.notify();
                 }

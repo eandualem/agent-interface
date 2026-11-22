@@ -1393,6 +1393,17 @@ mod tests {
         assert_eq!(lines[0], lines[1]);
         assert!(visible_from_profile("0a1b2c3d4e5f"));
         assert!(!visible_from_profile("000000000001"));
+        let super::super::Page::History { ids, rows, .. } = super::super::history(
+            &controller,
+            Some("000000000001"),
+            Some(vec![key.clone()]),
+            0,
+            &live,
+        )
+        .unwrap() else {
+            panic!("expected saved requests");
+        };
+        assert!(ids.is_empty() && rows.is_empty());
         let (record, _) = super::super::Command::Read.run(
             &controller,
             &key,

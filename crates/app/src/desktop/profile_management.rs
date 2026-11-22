@@ -226,10 +226,14 @@ impl Management {
         let Some(directory) = self.directory.clone() else {
             return;
         };
-        self.ticket.begin();
         let Some(client) = self.client.clone() else {
+            self.error = Some(controller::Error::Client(
+                crate::profiles::Error::Unavailable,
+            ));
+            cx.notify();
             return;
         };
+        self.ticket.begin();
         let profile = self.profile_id.clone();
         let setup = cx.new(|cx| setup::Pane::new(client, directory, profile, cx));
         self.attach_setup(setup, window, cx);

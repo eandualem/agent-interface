@@ -243,6 +243,9 @@ impl Controller {
         invocation: Invocation,
         live: &dyn Fn() -> bool,
     ) -> Result<Receipt, Error> {
+        if self.client.get().is_none() {
+            return Err(Error::Client(super::Error::Unavailable));
+        }
         let mut stored = self.load(key)?;
         if stored.operation.terminal().is_some() {
             return Err(Error::Completed);
@@ -256,9 +259,6 @@ impl Controller {
         }
         if !live() {
             return Err(Error::Client(super::Error::Cancelled));
-        }
-        if self.client.get().is_none() {
-            return Err(Error::Client(super::Error::Unavailable));
         }
         // Claim a new revision for every invocation. A concurrent result can
         // never overwrite another claim or terminal observation.

@@ -30,6 +30,18 @@ impl Origin {
         Self { window, directory }
     }
 
+    /// A command from Settings keeps the saved library. A command from a
+    /// workspace switches to that window and starts a fresh Profiles page.
+    pub fn retarget(&mut self, origin: Option<Self>) -> bool {
+        if let Some(origin) = origin
+            && *self != origin
+        {
+            *self = origin;
+            return true;
+        }
+        false
+    }
+
     fn browser(&self, cx: &App) -> Option<gpui::WindowHandle<Browser>> {
         self.window
             .into_iter()
@@ -235,5 +247,27 @@ impl Render for Profiles {
             ),
         );
         page.into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Origin;
+
+    #[test]
+    fn settings_keeps_its_library_until_another_workspace_opens_it() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let origin = |dir: &std::path::Path| Origin {
+            window: None,
+            directory: Some(dir.to_owned()),
+        };
+        let mut saved = origin(a.path());
+        assert!(saved.retarget(Some(origin(b.path()))));
+        assert!(!saved.retarget(None));
+        assert_eq!(saved.directory.as_deref(), Some(b.path()));
+        assert!(!saved.retarget(Some(origin(b.path()))));
+        assert!(saved.retarget(Some(origin(a.path()))));
+        assert_eq!(saved.directory.as_deref(), Some(a.path()));
     }
 }
