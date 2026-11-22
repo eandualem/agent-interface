@@ -1635,8 +1635,9 @@ Settings › Profiles opens one profile at a time. Opening it captures the
 selected library location once and opens a private lifecycle journal; it runs
 no lifecycle action, and the app has no start or stop of a profile's service.
 Saved requests enumerates bounded record IDs. The full history validates one
-page of durable snapshots at a time; a profile's page reads every record to find
-that profile's. Lifecycle
+page of durable snapshots at a time. A profile’s list includes its own records
+and unfinished creates that have no confirmed profile ID. Settings also offers
+the library’s full request history even when the profile list fails to load. Lifecycle
 records are kept, and the journal refuses new requests once it holds 4,096.
 Try the same request again is the one action on a sent request: it resends the
 same request under its original ID. Worker

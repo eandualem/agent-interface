@@ -21,7 +21,7 @@ const CREATE_TIMEOUT: Duration = Duration::from_secs(90);
 /// Keep it after errors: only asking again under the same ID can resolve
 /// uncertainty. No receipt is an authenticated content connection.
 pub struct Operation {
-    client: Client,
+    client: Option<Client>,
     prepared: Prepared,
 }
 
@@ -30,7 +30,7 @@ impl Operation {
     /// This does not run a command or change a service.
     pub fn new(client: &Client, prepared: Prepared) -> Self {
         Self {
-            client: client.clone(),
+            client: Some(client.clone()),
             prepared,
         }
     }
@@ -46,14 +46,29 @@ impl Operation {
 
     /// Restore under the current caller, however the app was launched this time.
     pub fn restore(client: &Client, bytes: &[u8]) -> Result<Self, Error> {
+        Self::restore_for_history(Some(client), bytes)
+    }
+
+    pub(super) fn restore_for_history(
+        client: Option<&Client>,
+        bytes: &[u8],
+    ) -> Result<Self, Error> {
         let state = super::recovery::restore_checkpoint(super::recovery::Kind::Lifecycle, bytes)?;
         let prepared = Prepared::restore(&state).map_err(Error::Profile)?;
-        Ok(Self::new(client, prepared))
+        Ok(Self {
+            client: client.cloned(),
+            prepared,
+        })
     }
 
     /// Original action for recovery presentation; never inferred from selection.
     pub fn action(&self) -> profiles::operations::Action {
         self.prepared.action()
+    }
+
+    /// The name the owner entered in this create request.
+    pub fn display_name(&self) -> Option<String> {
+        self.prepared.display_name()
     }
 
     /// Original durable ID, unchanged across submissions and unknown outcomes.
@@ -173,10 +188,11 @@ impl Operation {
     /// list that fails or cannot be read.
     fn unnamed(&self, name: &str, live: &dyn Fn() -> bool) -> Result<bool, Error> {
         use serde_json::Value;
-        let bytes = match self
-            .client
-            .read(&["profiles", "list", "--json"], live, TIMEOUT)
-        {
+        let bytes = match self.client.as_ref().ok_or(Error::Unavailable)?.read(
+            &["profiles", "list", "--json"],
+            live,
+            TIMEOUT,
+        ) {
             Ok(bytes) => bytes,
             Err(Error::Cancelled) => return Err(Error::Cancelled),
             Err(_) => return Ok(false),
@@ -208,6 +224,8 @@ impl Operation {
         let output = super::invocation_file::InvocationFile::new(&[])?.into_file();
         let child = self
             .client
+            .as_ref()
+            .ok_or(Error::Unavailable)?
             .command()
             .args(args)
             .stdin(Stdio::null())
