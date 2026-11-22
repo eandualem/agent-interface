@@ -106,6 +106,24 @@ pub struct Item {
     pub reason: Option<String>,
     /// The same, as the service's stable code, for logs.
     pub failure: Option<Failure>,
+    /// Whose accounts the profile's agents use.
+    pub accounts: Accounts,
+}
+
+/// Whose CLI and GitHub accounts a profile's agents use, as the service
+/// reports it. A value this app does not know, `null` or an absent field
+/// is `Unknown`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Accounts {
+    /// The machine user's, in their home directory.
+    MachineUser,
+    /// The profile's own, kept in its directory.
+    Own,
+    /// Not known.
+    #[default]
+    #[serde(other)]
+    Unknown,
 }
 
 /// Why the service does not serve a profile, by its stable code. A code this
