@@ -250,6 +250,14 @@ and environment. Navigating away before saving finishes cancels pending startup;
 choose Open terminal again when returning. Exited shells retain their output and
 are not restarted by this action.
 
+In a zsh, bash or fish terminal, typing `claude`, `codex` or `agy` first asks
+whether to start a Backbone agent instead, since a session started by hand has
+no Backbone skills, policies or messaging. Press Enter (or Y) and give the
+agent a name, by default the folder's, to start it with `backbone agent start`
+in that folder; it then appears among the agents. Answer n to run the program
+as typed. Agent sessions, scripts, pipes and computers without Backbone are
+never asked, and a `claude`, `codex` or `agy` function of your own is kept.
+
 Ordinary shells use the library's persistent tmux shell server; attachments use
 their saved source socket, or the source resolved from the launch environment.
 Moving the whole library folder on the same filesystem keeps its running ordinary
