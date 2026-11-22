@@ -762,7 +762,7 @@ impl Pane {
                         move |p, w, cx| p.show_form(Form::Disconnect(disconnect.clone()), w, cx),
                     )));
                 } else {
-                    thread = thread.child(format!("{} · {header}", peer.state));
+                    thread = thread.child(format!("{} · {header}", link_status(&peer.state)));
                 }
                 let Some(history) = &snapshot.history else {
                     return div().child(thread);
@@ -1142,9 +1142,36 @@ impl Pane {
     }
 }
 
+// Local revocation has stopped delivery; the peer has not yet acknowledged it.
+fn link_status(state: &str) -> String {
+    match state {
+        "revocation_pending" => "Stopped here, remote confirmation pending".into(),
+        s => s.replace('_', " "),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_local_disconnect_reads_as_stopped_until_the_peer_confirms() {
+        let actions: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../roster/src/profiles/peers/fixtures/peer-actions.json"
+        )))
+        .unwrap();
+        let state = |key: &str| {
+            serde_json::from_value::<api::Peer>(actions[key].clone())
+                .unwrap()
+                .state
+        };
+        assert_eq!(
+            link_status(&state("disconnect_requested")),
+            "Stopped here, remote confirmation pending"
+        );
+        assert_eq!(link_status(&state("disconnect_confirmed")), "disconnected");
+    }
 
     #[test]
     fn retry_reconciliation_clears_committed_answer_and_disconnect() {

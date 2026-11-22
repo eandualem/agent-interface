@@ -1,0 +1,38 @@
+{
+  "local_id": "v1:1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+  "invitations": [
+    {
+      "request_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5e",
+      "peer_id": "v1:2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e",
+      "display_name": "Second peer",
+      "direction": "incoming",
+      "expires_at": "2026-11-28T12:00:00Z",
+      "state": "pending",
+      "generation": null
+    },
+    {
+      "request_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c02",
+      "peer_id": "v1:e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
+      "display_name": null,
+      "direction": "outgoing",
+      "expires_at": "2026-11-28T12:00:00Z",
+      "state": "declined",
+      "generation": null
+    }
+  ],
+  "connections": [
+    {
+      "connection": {
+        "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+        "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+      },
+      "display_name": "Example peer",
+      "state": "connected",
+      "gates": {
+        "incoming": "auto",
+        "outgoing": "review"
+      }
+    }
+  ],
+  "pending_reviews": 2
+}

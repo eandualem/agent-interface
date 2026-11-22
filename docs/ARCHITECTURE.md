@@ -1357,11 +1357,16 @@ last cursor across reconnects. Its hello and change events trigger a fresh
 overview, pending reviews and the selected generation's history. Changes during
 a read schedule another read. The service owns the identities, message bytes,
 review decisions, keys and relay. A relay upload has no terminal receipt.
+The service's Connections fixtures are copied byte for byte into
+`crates/roster/src/profiles/peers/fixtures/`, and tests read them through the
+client types and compare the client's request bodies with them.
 
 The pane sends explicit owner actions on its bound connection. A retry after a
 lost response reuses the same request key and body. Incoming messages can be
 passed or declined. Outgoing drafts can also be returned to the local agent
-with a revision note. History pagination uses the service cursor. When reads
+with a revision note. After a local disconnect the thread reads "Stopped
+here, remote confirmation pending" until the peer acknowledges the revocation.
+History pagination uses the service cursor. When reads
 fail the pane retains the last snapshot and pauses changes. The separate sample
 preview uses in-memory records and decisions which expire when the person exits.
 Neither path sends keystrokes to a terminal.

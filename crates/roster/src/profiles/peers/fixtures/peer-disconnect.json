@@ -1,0 +1,12 @@
+{
+  "connection": {
+    "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+    "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+  },
+  "display_name": null,
+  "state": "revocation_pending",
+  "gates": {
+    "incoming": "auto",
+    "outgoing": "review"
+  }
+}

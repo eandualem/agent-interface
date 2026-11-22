@@ -149,3 +149,148 @@ fn a_new_policy_only_affects_its_own_direction() {
     assert_eq!(data.incoming, Policy::Review);
     assert_eq!(data.outgoing, Policy::Unknown);
 }
+
+macro_rules! fixture {
+    ($name:literal) => {
+        include_str!(concat!("../peers/fixtures/", $name, ".json"))
+    };
+}
+
+fn parse<T: serde::de::DeserializeOwned>(text: &str) -> T {
+    serde_json::from_str(text).unwrap()
+}
+
+#[test]
+fn service_fixtures_parse_into_the_client_shapes() {
+    use super::super::peers::{Answer, Invitation, Message, Overview, Page, Peer, Receipt, Review};
+    let overview: Overview = parse(fixture!("peer-overview"));
+    assert_eq!(overview.pending_reviews, 2);
+    assert_eq!(overview.invitations[1].state, "declined");
+    assert_eq!(overview.connections[0].gates.outgoing, Policy::Review);
+    let answer: Answer = parse(fixture!("peer-invitation-accepted"));
+    assert_eq!(
+        answer.invitation.generation.as_deref(),
+        Some(answer.connection.unwrap().connection.generation.as_str())
+    );
+    let history: Page<Message> = parse(fixture!("peer-history"));
+    assert!(matches!(history.items[1].receipt, Receipt::Uncertain));
+    assert!(
+        matches!(&history.items[3].receipt, Receipt::Confirmed { outcome, .. } if outcome == "declined")
+    );
+    let older: Page<Message> = parse(fixture!("peer-history-older"));
+    assert!(older.older.is_none());
+    let refused = older
+        .items
+        .iter()
+        .find(|m| m.state == "upload_failed")
+        .unwrap();
+    assert_eq!(
+        refused.upload_failure.as_ref().unwrap().code,
+        "mailbox_full"
+    );
+    let pending: Peer = parse(fixture!("peer-disconnect"));
+    assert_eq!(pending.state, "revocation_pending");
+    let reviews: Page<Review> = parse(fixture!("peer-reviews"));
+    assert_eq!(reviews.items.len(), 2);
+    let revoked: Message = parse(fixture!("peer-revoked-message"));
+    assert_eq!(revoked.state, "revoked");
+    let actions: Value = parse(fixture!("peer-actions"));
+    for key in [
+        "requester_after_decline",
+        "requester_after_expiry",
+        "requester_after_accept",
+    ] {
+        serde_json::from_value::<Invitation>(actions[key].clone()).unwrap();
+    }
+    for key in ["disconnect_requested", "disconnect_confirmed"] {
+        serde_json::from_value::<Peer>(actions[key].clone()).unwrap();
+    }
+}
+
+#[test]
+fn client_requests_match_the_service_action_exchanges() {
+    use super::super::peers::{Answer, Invitation, Message, Page, Peer, Review};
+    let actions: Value = parse(fixture!("peer-actions"));
+    let reviews: Page<Review> = parse(fixture!("peer-reviews"));
+    let outgoing = reviews.items[0].message.clone();
+    let incoming = reviews.items[1].message.clone();
+    let exchanges = [
+        "invite",
+        "accept",
+        "decline_invitation",
+        "gate",
+        "pass_message",
+        "decline_message",
+        "revise",
+        "pass_outgoing",
+        "decline_outgoing",
+    ];
+    let (dir, listener, socket) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(dir.path(), &socket);
+    let mut replies = vec![(200, identity)];
+    replies.extend(
+        exchanges
+            .iter()
+            .map(|k| (200, actions[k]["response"].clone())),
+    );
+    replies.push((200, actions["disconnect_requested"].clone()));
+    let server = serve(listener, replies);
+    let c = profile.connect().unwrap();
+    let generation = &incoming.connection.generation;
+    let peer_id = actions["invite"]["request"]["peer_id"].as_str().unwrap();
+    let invited: Invitation = c.invite_peer(peer_id, "k1").unwrap();
+    assert_eq!(invited.state, "pending");
+    let accepted: Answer = c.answer_peer(&invited.request_id, true, "k2").unwrap();
+    assert!(accepted.connection.is_some());
+    assert!(
+        c.answer_peer(&invited.request_id, false, "k3")
+            .unwrap()
+            .connection
+            .is_none()
+    );
+    let gated: Peer = c
+        .set_peer_gate(generation, Direction::Incoming, Policy::Auto, "k4")
+        .unwrap();
+    assert_eq!(gated.gates.incoming, Policy::Auto);
+    let decided: Vec<Message> = [
+        (&incoming, Decision::Pass),
+        (&incoming, Decision::Decline),
+        (&outgoing, Decision::Revise("Please include the version.")),
+        (&outgoing, Decision::Pass),
+        (&outgoing, Decision::Decline),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, (m, d))| c.review_peer_message(m, d, &format!("r{i}")).unwrap())
+    .collect();
+    let states: Vec<_> = decided.iter().map(|m| m.state.as_str()).collect();
+    assert_eq!(
+        states,
+        [
+            "passed",
+            "declined",
+            "revision_requested",
+            "passed",
+            "declined"
+        ]
+    );
+    assert_eq!(
+        c.disconnect_peer(generation, "k5").unwrap().state,
+        "revocation_pending"
+    );
+    let requests = server.join().unwrap();
+    let bodies: Vec<Value> = requests[1..]
+        .iter()
+        .map(|r| serde_json::from_str(r.split_once("\r\n\r\n").unwrap().1).unwrap())
+        .collect();
+    for (body, key) in bodies.iter().zip(exchanges) {
+        // The fixture server lowercases what it captures.
+        let request = actions[key]["request"].to_string().to_ascii_lowercase();
+        assert_eq!(body, &parse::<Value>(&request), "{key}");
+    }
+    assert_eq!(bodies.last().unwrap(), &json!({}));
+    assert!(requests[7].starts_with(&format!(
+        "post /api/peer-connections/{generation}/messages/{}/review ",
+        outgoing.message_id
+    )));
+}
