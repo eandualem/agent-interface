@@ -282,6 +282,24 @@ fn connect_selected(
     Ok(ready)
 }
 
+/// Whether a remote stream that ended with this reason may be opened again
+/// automatically: not when its access ended or its agent exited.
+fn retries_after_end(reason: &str) -> bool {
+    ![
+        crate::view::remote::PROCESS_EXITED,
+        crate::view::remote::ACCESS_ENDED,
+    ]
+    .contains(&reason)
+}
+
+/// Whether a failed remote open may be tried again automatically: the home
+/// or the agent's machine was unreachable (503), the profile service did not
+/// answer, or the connection closed during the open. Refusals wait for a person.
+fn retries_after_open(kind: std::io::ErrorKind) -> bool {
+    use std::io::ErrorKind::{HostUnreachable, NotConnected, UnexpectedEof};
+    matches!(kind, HostUnreachable | NotConnected | UnexpectedEof)
+}
+
 /// How often a lost attachment is tried again, in two-second refresh ticks:
 /// at once, then half as often after each failure, up to a limit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -317,6 +335,9 @@ impl Retry {
 pub(super) struct LiveTerminal {
     pub target: Target,
     refresh_on_reopen: bool,
+    /// Whether a remote pane's error is transient, so the automatic retry
+    /// may open it again.
+    remote_retry: bool,
     access: Option<agent_interface_roster::profiles::terminal::Access>,
     view: Option<Entity<TerminalView>>,
     error: Option<String>,
@@ -499,6 +520,7 @@ impl LiveTerminal {
         let mut terminal = Self {
             target,
             refresh_on_reopen: false,
+            remote_retry: false,
             view: None,
             access: None,
             error: None,
@@ -575,11 +597,12 @@ impl LiveTerminal {
                             }
                             if terminal.error.is_some()
                                 && terminal.target.leaf.attachment.is_some()
-                                && terminal.target.remote().is_none()
+                                && (terminal.target.remote().is_none() || terminal.remote_retry)
                                 && terminal.retry.due(terminal.shown)
                             {
                                 // Retry only the saved attachment. This never
                                 // starts an agent, server or replacement shell.
+                                // A remote pane retries only a transient loss.
                                 terminal.start(cx);
                             }
                         }
@@ -606,6 +629,7 @@ impl LiveTerminal {
         self.connecting = true;
         let target = self.target.clone();
         self.refresh_on_reopen = false;
+        self.remote_retry = false;
         let work = cx.background_executor().spawn(async move {
             let profile = target.remote().unwrap();
             let connection = target
@@ -629,6 +653,7 @@ impl LiveTerminal {
                 match result {
                     Ok((remote, size, access, updates)) => {
                         terminal.access = Some(access);
+                        terminal.retry = Retry::default();
                         let view = cx.new(|cx| {
                             TerminalView::embedded(
                                 Arc::new(remote),
@@ -648,10 +673,12 @@ impl LiveTerminal {
                         terminal.closed = Some(cx.subscribe(
                             &view,
                             |terminal, _, event: &crate::view::Disconnected, cx| {
-                                terminal.error =
-                                    Some(event.0.clone().unwrap_or_else(|| {
-                                        "Remote terminal connection lost".into()
-                                    }));
+                                let error = event
+                                    .0
+                                    .clone()
+                                    .unwrap_or_else(|| "Remote terminal connection lost".into());
+                                terminal.remote_retry = retries_after_end(&error);
+                                terminal.error = Some(error);
                                 cx.notify();
                             },
                         ));
@@ -665,6 +692,7 @@ impl LiveTerminal {
                     Err(error) => {
                         terminal.refresh_on_reopen =
                             error.kind() == std::io::ErrorKind::NotConnected;
+                        terminal.remote_retry = retries_after_open(error.kind());
                         if error.kind() == std::io::ErrorKind::AddrNotAvailable {
                             cx.emit(RefreshProfile);
                         }
@@ -1039,6 +1067,29 @@ pub(super) fn appearance() -> Appearance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_remote_pane_retries_only_a_transient_loss() {
+        use std::io::ErrorKind;
+        assert!(retries_after_end("Remote terminal connection lost"));
+        assert!(retries_after_end("unexpected end of file"));
+        assert!(!retries_after_end(crate::view::remote::ACCESS_ENDED));
+        assert!(!retries_after_end(crate::view::remote::PROCESS_EXITED));
+        for kind in [
+            ErrorKind::HostUnreachable,
+            ErrorKind::NotConnected,
+            ErrorKind::UnexpectedEof,
+        ] {
+            assert!(retries_after_open(kind), "{kind:?}");
+        }
+        for kind in [
+            ErrorKind::Other,
+            ErrorKind::AddrNotAvailable,
+            ErrorKind::InvalidData,
+        ] {
+            assert!(!retries_after_open(kind), "{kind:?}");
+        }
+    }
 
     #[test]
     fn a_lost_attachment_is_retried_less_often_until_it_is_shown_again() {

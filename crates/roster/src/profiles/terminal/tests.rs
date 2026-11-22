@@ -49,6 +49,10 @@ fn service_wire_examples_over_private_sockets() {
         for step in &steps {
             assert_eq!(step.octets, step.wire.len());
         }
+        // Only a 503 tells the pane it may try again by itself.
+        let transient = steps
+            .iter()
+            .any(|step| step.direction == "service" && step.wire.starts_with("HTTP/1.1 503"));
         let server = thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
             socket.set_read_timeout(Some(TIMEOUT)).unwrap();
@@ -75,8 +79,10 @@ fn service_wire_examples_over_private_sockets() {
         let (cols, rows) = if watch { (120, 40) } else { (80, 24) };
         let opened = open(Path::new(&path), "0a1b2c3d4e5f", "worker", cols, rows);
         if let Some(code) = name.strip_prefix("refused_") {
-            let reason = opened.err().expect("refusal").to_string();
+            let error = opened.err().expect("refusal");
+            let reason = error.to_string();
             assert!(reason.ends_with(&format!("({code})")), "{reason}");
+            assert_eq!(error.kind() == io::ErrorKind::HostUnreachable, transient);
         } else {
             let (mut stream, mut writer, _close) =
                 opened.unwrap_or_else(|error| panic!("{name}: {error}"));

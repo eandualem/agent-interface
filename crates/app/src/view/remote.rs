@@ -45,6 +45,10 @@ struct State {
     size: Option<(u16, u16)>,
 }
 
+/// Why a stream ended when trying again cannot help.
+pub(crate) const PROCESS_EXITED: &str = "Remote agent process exited";
+pub(crate) const ACCESS_ENDED: &str = "Remote terminal access ended";
+
 pub(crate) struct Remote {
     state: Arc<Mutex<State>>,
     work: SyncSender<Work>,
@@ -250,8 +254,8 @@ fn run(
                 }
                 return match end? {
                     Event::Ended(reason) => Ok(match reason.as_str() {
-                        "process_exited" => "Remote agent process exited",
-                        "access_ended" => "Remote terminal access ended",
+                        "process_exited" => PROCESS_EXITED,
+                        "access_ended" => ACCESS_ENDED,
                         _ => "Remote terminal connection lost",
                     }
                     .to_owned()),

@@ -303,7 +303,13 @@ fn open(
                     .ok()
                     .map(|r| format!("{} ({})", r.detail.message, r.detail.code))
                     .unwrap_or_else(|| format!("Terminal service returned {status}"));
-                return Err(io::Error::other(reason));
+                // 503: the home or the agent's machine cannot be reached now.
+                let kind = if status == hyper::StatusCode::SERVICE_UNAVAILABLE {
+                    io::ErrorKind::HostUnreachable
+                } else {
+                    io::ErrorKind::Other
+                };
+                return Err(io::Error::new(kind, reason));
             }
             if response
                 .headers()
