@@ -773,14 +773,25 @@ fn an_open_stream_slows_the_poll_and_its_end_reads_at_once() {
                 Ok((socket, _)) => socket,
                 Err(_) => {
                     if let Some((open, opened)) = &mut stream {
-                        if pushed.is_none() && opened.elapsed() > Duration::from_millis(500) {
+                        // Once the read the hello asked for has landed and
+                        // nothing else is being read.
+                        let last = reads.last().copied();
+                        if pushed.is_none()
+                            && last.is_some_and(|last: Instant| {
+                                last > *opened && last.elapsed() > Duration::from_millis(300)
+                            })
+                        {
                             write!(open, "id: a:2\nevent: resync\ndata: {{}}\n\n").unwrap();
                             pushed = Some(Instant::now());
                             fail = true;
                         }
-                        // Open five seconds: past the retry of the failed read
-                        // and a two-second poll after it.
-                        if opened.elapsed() > Duration::from_secs(5) {
+                        // Open three seconds past the retry of the failed
+                        // read, longer than a two-second poll.
+                        let retried = pushed.and_then(|pushed| {
+                            reads.iter().filter(|read| **read >= pushed).nth(1).copied()
+                        });
+                        if retried.is_some_and(|retried| retried.elapsed() > Duration::from_secs(3))
+                        {
                             stream = None;
                             closed = Some(Instant::now());
                         }

@@ -14,7 +14,7 @@ use std::{
 /// Between reads without the push stream.
 const POLL: Duration = Duration::from_secs(2);
 /// From the start of one read to the next while the push stream is open and
-/// the last read succeeded: the service's heartbeat, and half the 30 seconds
+/// the last roster and runs reads succeeded: the service's heartbeat, and half the 30 seconds
 /// after which a roster or runs list is no longer current. The stream carries
 /// states, waits and runs, but not an agent leaving, a new issue without a new
 /// state, or swarms and machines.
@@ -128,18 +128,20 @@ impl BoundRosterSource {
                             .is_none()
                             .then(|| shown.update.snapshot.clone())
                     };
-                    let good = listed.is_some();
+                    let mut good = listed.is_some();
                     if let Some(snapshot) = listed
                         && live()
                     {
                         // The new list shows before its ended runs are read.
                         let gone = book.list(&connection, &snapshot);
+                        good = !gone.missed();
                         show_runs(book.runs());
                         book.settle(&connection, gone, &live);
                         show_runs(book.runs());
                     }
                     // A failed read is tried again soon: the stream's states
-                    // wait for a good one.
+                    // wait for a good roster, and runs go stale 30 seconds
+                    // after the last good list.
                     let wait = if good && streaming.load(Ordering::Relaxed) {
                         STREAMED.saturating_sub(started.elapsed()).max(POLL)
                     } else {

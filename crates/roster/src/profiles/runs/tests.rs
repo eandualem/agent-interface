@@ -247,11 +247,13 @@ fn the_new_list_shows_first_and_a_stop_or_the_deadline_starts_no_lookup() {
     let stopped = Gone {
         runs: gone.runs.clone(),
         deadline: gone.deadline,
+        missed: false,
     };
     book.settle(&connection, stopped, &|| false);
     let late = Gone {
         runs: gone.runs.clone(),
         deadline: Some(Instant::now()),
+        missed: false,
     };
     book.settle(&connection, late, &|| true);
     assert!(book.runs().finished.is_empty());
@@ -381,6 +383,7 @@ fn a_roster_outage_counts_toward_a_stale_list_until_a_good_list_read() {
     let start = Instant::now();
     let at = |after: u64| start + Duration::from_secs(after);
     let gone = book.list_at(&connection, &read_at(&busy, at(0)), at(0));
+    assert!(!gone.missed());
     book.settle(&connection, gone, &|| true);
     // Roster reads that take their whole timeout and fail: the list goes
     // stale 30 seconds after the roster read its last good read followed,
@@ -391,6 +394,7 @@ fn a_roster_outage_counts_toward_a_stale_list_until_a_good_list_read() {
     assert!(book.runs().stale);
     // The roster is back but the list fails: it stays stale.
     let gone = book.list_at(&connection, &read_at(&busy, at(36)), at(36));
+    assert!(gone.missed());
     book.settle(&connection, gone, &|| true);
     assert!(book.runs().stale);
     // A good list clears it and still settles the review that ended.

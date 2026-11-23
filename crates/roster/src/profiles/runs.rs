@@ -165,6 +165,16 @@ pub struct Book {
 pub struct Gone {
     runs: Vec<Run>,
     deadline: Option<Instant>,
+    /// The list read failed.
+    missed: bool,
+}
+
+impl Gone {
+    /// Whether the list was asked for and could not be read, so it is due
+    /// again soon.
+    pub fn missed(&self) -> bool {
+        self.missed
+    }
 }
 
 impl Book {
@@ -205,7 +215,10 @@ impl Book {
                 // The list stays inside, so a later read still finds the
                 // runs that ended meanwhile.
                 self.expire_at(now);
-                return Gone::default();
+                return Gone {
+                    missed: true,
+                    ..Gone::default()
+                };
             }
         };
         self.listed_at = Some(roster.observed_at.unwrap_or(now));
@@ -218,6 +231,7 @@ impl Book {
         Gone {
             runs,
             deadline: Some(deadline),
+            missed: false,
         }
     }
 
