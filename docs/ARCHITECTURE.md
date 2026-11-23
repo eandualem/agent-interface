@@ -441,15 +441,16 @@ the team-wide Usage view. Skill previews keep their 256 KiB limit.
 
 The service also pushes agent state changes on `GET /api/stream`, as
 Server-Sent Events. `Connection::watch` follows that stream on a worker of its
-own. An `agent.state` (state, reason and since) or `agent.changed` (what an
-agent waits on, its background counts and its held and waiting deliveries) is
-applied to the agent with that name and registration and published at once,
-before any read; a state just reported is no longer stale. The issue an agent
-works on is not pushed, so a new state also asks for a read behind it, which
-corrects the row's issue number. The opening `hello`, `run.changed`,
-`agent.restart` (each step of an agent's own restart), `resync`, and a change
-for a registration the roster doesn't hold or can't be read each ask the
-roster worker for a read at once. A read that was out when a change
+own. An `agent.state` (state, reason, since and the issue the agent works
+on) or `agent.changed` (what an agent waits on, its background counts and its
+held and waiting deliveries) is applied to the agent with that name and
+registration and published at once, before any read; a state just reported is
+no longer stale. A `current_issue` of `null` means the agent works on no
+issue. An older service sends no `current_issue`, so its new state also asks
+for a read behind it, which corrects the row's issue number. The opening
+`hello`, `run.changed`, `agent.restart` (each step of an agent's own restart),
+`resync`, and a change for a registration the roster doesn't hold or can't be
+read each ask the roster worker for a read at once. A read that was out when a change
 arrived applies that change again to what it read, so an older read never puts
 an older state back on screen. A service that does not know a kind ignores it.
 No cursor is kept, so a stream opened again starts with a read. `agent.place`
@@ -457,8 +458,8 @@ is not followed, because the app shows no role or superior. A stream that
 breaks, or stays silent for 45 seconds against the
 service's 15-second heartbeat, is opened again two seconds later; a 404
 stops the worker. Without the stream, the roster is polled as before. The
-two-second poll continues, because agents joining or leaving the roster are
-not pushed.
+two-second poll continues, because agents joining or leaving the roster, and
+a change of issue without a change of state, are not pushed.
 
 Each agent in the service's list may say what it waits on outside itself and
 how many runs (reviews, builds, tests) and processes it has in the

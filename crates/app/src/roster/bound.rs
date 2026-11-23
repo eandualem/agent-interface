@@ -190,9 +190,10 @@ fn watch(
                     let mut shown = lock(&shown);
                     // A failed read's stale roster waits for a good one.
                     if shown.update.error.is_none() && shown.update.snapshot.apply(&change) {
-                        // The issue an agent works on isn't pushed, so a new
-                        // state shows at once and is read again behind it.
-                        let read = matches!(change, Change::State { .. });
+                        // An older service doesn't push the issue an agent
+                        // works on, so its new state shows at once and is
+                        // read again behind it.
+                        let read = matches!(change, Change::State { issue: None, .. });
                         if let Some(applied) = &mut shown.applied {
                             applied.push(change);
                         }
