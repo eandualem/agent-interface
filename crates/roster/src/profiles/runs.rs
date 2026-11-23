@@ -26,6 +26,9 @@ const LOOKING: Duration = Duration::from_secs(5);
 /// How long after its last good read a list is still shown, as the last
 /// good roster is.
 const STALE: Duration = Duration::from_secs(30);
+/// How often ended runs that still name a view are read again, so a view
+/// the service has ended stops being offered.
+const VIEWS: Duration = Duration::from_secs(30);
 
 /// One run, with the fields this app shows, as the service wrote them. An
 /// optional field that is mistyped reads as absent.
@@ -153,6 +156,8 @@ pub struct Book {
     /// When the roster read that the last good list read followed was
     /// observed: the moment both 30 seconds are counted from.
     listed_at: Option<Instant>,
+    /// When ended runs with a view were last due to be read again.
+    viewed_at: Option<Instant>,
 }
 
 /// Runs that left the list at one read, to read by their IDs until `deadline`.
@@ -179,6 +184,7 @@ impl Book {
     }
 
     fn list_at(&mut self, connection: &Connection, roster: &Snapshot, now: Instant) -> Gone {
+        self.review_views(connection, now);
         let reported = roster
             .details
             .values()
@@ -213,6 +219,31 @@ impl Book {
         Gone {
             runs,
             deadline: Some(deadline),
+        }
+    }
+
+    /// Read again, every 30 seconds, each ended run that still names a view,
+    /// and forget the view of one the service no longer knows. A failed read
+    /// keeps the run as it was.
+    fn review_views(&mut self, connection: &Connection, now: Instant) {
+        if self
+            .viewed_at
+            .is_some_and(|at| now.saturating_duration_since(at) < VIEWS)
+        {
+            return;
+        }
+        self.viewed_at = Some(now);
+        for kept in self
+            .runs
+            .finished
+            .iter_mut()
+            .filter(|run| run.view().is_some())
+        {
+            match connection.run_within(&kept.run_id, WAIT) {
+                Ok(run) => *kept = run,
+                Err(Error::Refused(404)) => kept.session = None,
+                Err(_) => {}
+            }
         }
     }
 

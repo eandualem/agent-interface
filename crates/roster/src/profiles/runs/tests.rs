@@ -480,3 +480,38 @@ fn a_run_shows_only_its_own_view_and_views_are_named_by_run() {
         assert!(!is_view(&loose), "{loose}");
     }
 }
+
+#[test]
+fn an_ended_runs_view_is_offered_until_the_service_ends_it() {
+    let mut ended = fixture("run");
+    ended["state"] = json!("finished");
+    ended["session"] = json!(format!("run-{REVIEW}"));
+    let mut gone = ended.clone();
+    gone["session"] = json!(null);
+    let build = json!({"items": [fixture("runs")["items"][1].clone()]});
+    let (connection, server) = served(vec![
+        (200, fixture("runs")),
+        (200, build.clone()),
+        (200, ended),
+        (200, build.clone()),
+        // 30 seconds on, the view is read again first.
+        (200, gone),
+        (200, build),
+    ]);
+    let busy = roster(include_bytes!("fixtures/agents.json"));
+    let mut book = Book::default();
+    let start = Instant::now();
+    for seconds in [0, 1, 2] {
+        let at = start + Duration::from_secs(seconds);
+        let left = book.list_at(&connection, &busy, at);
+        book.settle(&connection, left, &|| true);
+    }
+    assert!(book.runs().finished[0].view().is_some());
+    let left = book.list_at(&connection, &busy, start + Duration::from_secs(31));
+    book.settle(&connection, left, &|| true);
+    assert_eq!(ids(&book.runs().finished), [REVIEW]);
+    assert_eq!(book.runs().finished[0].view(), None);
+    let requests = server.join().unwrap();
+    assert!(requests[5].starts_with(&format!("GET /api/runs/{REVIEW} HTTP/1.1\r\n")));
+    assert_eq!(requests.len(), 7);
+}

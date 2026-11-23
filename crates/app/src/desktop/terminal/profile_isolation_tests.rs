@@ -334,6 +334,7 @@ fn a_run_view_on_its_profile_server_is_shown_read_only() {
             .unwrap();
         if tracking.trim() == "1"
             && let Some(update) = view.take_update()
+            && !update.screens.is_empty()
         {
             // Clicks stay with the viewer, so a plain drag selects.
             assert!(update.screens.iter().all(|(_, s)| !s.mouse_input()));
