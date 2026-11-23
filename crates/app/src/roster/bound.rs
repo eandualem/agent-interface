@@ -3,7 +3,7 @@
 use std::{
     io,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -13,7 +13,7 @@ use std::{
 
 use agent_interface_roster::Snapshot;
 use agent_interface_roster::profiles::{
-    Connection, Error, Identity,
+    Change, Connection, Error, Identity,
     runs::{Book, Runs},
 };
 
@@ -44,65 +44,85 @@ pub struct BoundRosterSource {
 }
 
 impl BoundRosterSource {
-    /// Read immediately, then two seconds after each completed attempt, and
-    /// at once when the Rust service's push stream reports a change. Runs
-    /// are read after each roster is published, so states never wait on them.
-    /// The connection retains its verified identity and socket for
-    /// this worker's lifetime. `wake` runs after publishing a complete update.
+    /// Read immediately, then two seconds after each completed attempt. The
+    /// Rust service's push stream, when the connection has one, changes an
+    /// agent's state or wait at once, and asks for a read at once for
+    /// anything else. Runs are read after each roster is published, so states
+    /// never wait on them. The connection retains its verified identity and
+    /// socket for this worker's lifetime. `wake` runs after publishing a
+    /// complete update.
     pub fn start(connection: Connection, wake: impl Fn() + Send + 'static) -> io::Result<Self> {
         let updates = Arc::new(Mutex::new(None));
-        let pending = Arc::clone(&updates);
+        let shown = Arc::new(Mutex::new(Shown {
+            update: BoundRosterUpdate {
+                identity: connection.identity().clone(),
+                snapshot: Snapshot::default(),
+                error: None,
+                runs: Runs::default(),
+            },
+            applied: None,
+            pending: Arc::clone(&updates),
+            wake: Box::new(wake),
+        }));
         let (stop, stopped) = mpsc::channel();
-        let (watched, refresh) = (connection.clone(), stop.clone());
+        let (watched, refresh, streamed) = (connection.clone(), stop.clone(), Arc::clone(&shown));
         let polling = Arc::new(AtomicBool::new(true));
         let wanted = Arc::clone(&polling);
         let worker = thread::Builder::new()
             .name("bound roster polling".into())
             .spawn(move || {
-                let mut update = BoundRosterUpdate {
-                    identity: connection.identity().clone(),
-                    snapshot: Snapshot::default(),
-                    error: None,
-                    runs: Runs::default(),
-                };
                 let mut book = Book::default();
-                let publish = |update: &BoundRosterUpdate| {
-                    *pending.lock().unwrap_or_else(|error| error.into_inner()) =
-                        Some(update.clone());
-                    wake();
-                };
                 let live = || wanted.load(Ordering::Relaxed);
                 // Publish the runs only when the book changed.
-                let show_runs = |update: &mut BoundRosterUpdate, runs: &Runs| {
-                    if *runs != update.runs {
-                        update.runs = runs.clone();
-                        publish(update);
+                let show_runs = |runs: &Runs| {
+                    let mut shown = lock(&shown);
+                    if *runs != shown.update.runs {
+                        shown.update.runs = runs.clone();
+                        shown.publish();
                     }
                 };
                 loop {
-                    match connection.roster() {
-                        Ok(snapshot) => {
-                            update.snapshot = snapshot;
-                            update.error = None;
+                    lock(&shown).applied = Some(Vec::new());
+                    let read = connection.roster();
+                    let listed = {
+                        let mut shown = lock(&shown);
+                        let applied = shown.applied.take().unwrap_or_default();
+                        match read {
+                            Ok(mut snapshot) => {
+                                // The stream's changes during the read are at
+                                // least as new as what it read.
+                                for change in &applied {
+                                    snapshot.apply(change);
+                                }
+                                shown.update.snapshot = snapshot;
+                                shown.update.error = None;
+                            }
+                            Err(error) => {
+                                shown.update.snapshot.unavailable();
+                                shown.update.error = Some(standing(shown.update.error, error));
+                            }
                         }
-                        Err(error) => {
-                            update.snapshot.unavailable();
-                            update.error = Some(standing(update.error, error));
+                        // The pass's first publication already says whether the
+                        // runs are too old to show, whatever the roster read did.
+                        book.expire();
+                        if *book.runs() != shown.update.runs {
+                            shown.update.runs = book.runs().clone();
                         }
-                    }
-                    // The pass's first publication already says whether the
-                    // runs are too old to show, whatever the roster read did.
-                    book.expire();
-                    if *book.runs() != update.runs {
-                        update.runs = book.runs().clone();
-                    }
-                    publish(&update);
-                    if update.error.is_none() && live() {
+                        shown.publish();
+                        shown
+                            .update
+                            .error
+                            .is_none()
+                            .then(|| shown.update.snapshot.clone())
+                    };
+                    if let Some(snapshot) = listed
+                        && live()
+                    {
                         // The new list shows before its ended runs are read.
-                        let gone = book.list(&connection, &update.snapshot);
-                        show_runs(&mut update, book.runs());
+                        let gone = book.list(&connection, &snapshot);
+                        show_runs(book.runs());
                         book.settle(&connection, gone, &live);
-                        show_runs(&mut update, book.runs());
+                        show_runs(book.runs());
                     }
                     match stopped.recv_timeout(Duration::from_secs(2)) {
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -125,20 +145,19 @@ impl BoundRosterSource {
             stream: None,
         };
         // Without a stream worker the roster is still polled.
-        source.stream = watch(watched, refresh).map(Some).unwrap_or_else(|error| {
-            tracing::warn!(event = "roster_stream_not_started", %error, "Agent state stream not followed");
-            None
-        });
+        source.stream = watch(watched, refresh, streamed)
+            .map(Some)
+            .unwrap_or_else(|error| {
+                tracing::warn!(event = "roster_stream_not_started", %error, "Agent state stream not followed");
+                None
+            });
         Ok(source)
     }
 
     /// Take the newest complete update. Failures replace unread successes and
     /// preserve only this worker's last successful observation and timestamp.
     pub fn take_update(&self) -> Option<BoundRosterUpdate> {
-        self.updates
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .take()
+        lock(&self.updates).take()
     }
 }
 
@@ -151,12 +170,14 @@ fn standing(reported: Option<Error>, error: Error) -> Error {
     }
 }
 
-/// Follow the connection's push stream on a worker of its own, asking the
-/// polling worker for a read at each change. The stream is opened again two
-/// seconds after it breaks, and not again once the service says it has none.
+/// Follow the connection's push stream on a worker of its own, applying each
+/// agent's state and wait to `shown` and asking the polling worker for a read
+/// for any other change, or one `shown` can't take. The stream is opened again
+/// two seconds after it breaks, and not again once the service says it has none.
 fn watch(
     connection: Connection,
     refresh: mpsc::Sender<bool>,
+    shown: Arc<Mutex<Shown>>,
 ) -> io::Result<(Arc<AtomicBool>, JoinHandle<()>)> {
     let live = Arc::new(AtomicBool::new(true));
     let wanted = Arc::clone(&live);
@@ -165,8 +186,23 @@ fn watch(
         .spawn(move || {
             let live = || wanted.load(Ordering::Relaxed);
             while live() {
-                let ended = connection.watch(&live, &mut || {
-                    let _ = refresh.send(false);
+                let ended = connection.watch(&live, &mut |change| {
+                    let mut shown = lock(&shown);
+                    // A failed read's stale roster waits for a good one.
+                    if shown.update.error.is_none() && shown.update.snapshot.apply(&change) {
+                        // The issue an agent works on isn't pushed, so a new
+                        // state shows at once and is read again behind it.
+                        let read = matches!(change, Change::State { .. });
+                        if let Some(applied) = &mut shown.applied {
+                            applied.push(change);
+                        }
+                        shown.publish();
+                        if read {
+                            let _ = refresh.send(false);
+                        }
+                    } else {
+                        let _ = refresh.send(false);
+                    }
                 });
                 if ended == Err(Error::Unsupported) {
                     break;
@@ -178,6 +214,28 @@ fn watch(
             }
         })?;
     Ok((live, worker))
+}
+
+/// The update both workers change, under one lock, so each publication is
+/// whole.
+struct Shown {
+    update: BoundRosterUpdate,
+    /// The stream's changes since the roster read that is out began; none
+    /// between reads.
+    applied: Option<Vec<Change>>,
+    pending: Arc<Mutex<Option<BoundRosterUpdate>>>,
+    wake: Box<dyn Fn() + Send>,
+}
+
+impl Shown {
+    fn publish(&self) {
+        *lock(&self.pending) = Some(self.update.clone());
+        (self.wake)();
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl Drop for BoundRosterSource {

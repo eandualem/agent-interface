@@ -331,6 +331,60 @@ impl Snapshot {
     pub fn unavailable(&mut self) {
         self.error = Some(UNAVAILABLE);
     }
+
+    /// Apply a state or wait the push stream reported for one agent, as the
+    /// next agents read would show it. False, changing nothing, for
+    /// [`profiles::Change::Read`] or when no agent of that name has that
+    /// registration. A state just reported is no longer stale.
+    pub fn apply(&mut self, change: &profiles::Change) -> bool {
+        use profiles::Change;
+        let (Change::State {
+            agent,
+            registration_id,
+            ..
+        }
+        | Change::Waits {
+            agent,
+            registration_id,
+            ..
+        }) = change
+        else {
+            return false;
+        };
+        let Some(details) = self
+            .details
+            .get_mut(agent)
+            .filter(|details| details.registration_id.as_ref() == Some(registration_id))
+        else {
+            return false;
+        };
+        match change {
+            Change::State {
+                state,
+                reason,
+                since,
+                ..
+            } => {
+                details.reason.clone_from(reason);
+                details.state_since = *since;
+                if details.state_source.as_deref() == Some("stale") {
+                    details.state_source = None;
+                    details.evidence.clear();
+                }
+                self.states.insert(agent.clone(), state.clone());
+            }
+            Change::Waits {
+                waiting,
+                background,
+                ..
+            } => {
+                details.waiting.clone_from(waiting);
+                details.background = *background;
+            }
+            Change::Read => {}
+        }
+        true
+    }
 }
 
 type Decoded = (BTreeMap<String, String>, BTreeMap<String, AgentDetails>);
@@ -781,6 +835,47 @@ mod tests {
         snapshot.update(nested.as_bytes());
         assert_eq!(snapshot.states["worker"], "unknown");
         assert_eq!(snapshot.error, Some(UNAVAILABLE));
+    }
+
+    #[test]
+    fn a_pushed_state_or_wait_changes_only_its_registered_agent() {
+        use profiles::Change;
+        let mut snapshot = Snapshot::default();
+        snapshot.update(
+            br#"{"items":[{"name":"worker","registration_id":"r1","state":"busy",
+                "state_source":"stale","evidence":["no report for 5 minutes"]}]}"#,
+        );
+        let state = |registration: &str| Change::State {
+            agent: "worker".into(),
+            registration_id: registration.into(),
+            state: "waiting_for_human".into(),
+            reason: Some("permission".into()),
+            since: Some(2.0),
+        };
+        assert!(!snapshot.apply(&state("r0")));
+        assert!(!snapshot.apply(&Change::Read));
+        assert_eq!(snapshot.states["worker"], "busy");
+        assert!(snapshot.apply(&state("r1")));
+        let details = &snapshot.details["worker"];
+        assert_eq!(snapshot.states["worker"], "waiting_for_human");
+        assert_eq!(
+            (details.reason.as_deref(), details.state_since),
+            (Some("permission"), Some(2.0))
+        );
+        assert_eq!(details.state_source, None);
+        assert!(details.evidence.is_empty());
+        let background = Some(Background {
+            running: 1,
+            queued: 0,
+            processes: 2,
+        });
+        assert!(snapshot.apply(&Change::Waits {
+            agent: "worker".into(),
+            registration_id: "r1".into(),
+            waiting: None,
+            background,
+        }));
+        assert_eq!(snapshot.details["worker"].background, background);
     }
 
     #[test]

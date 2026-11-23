@@ -367,6 +367,164 @@ fn pushed_state_and_run_changes_read_the_roster_and_runs_at_once() {
 }
 
 #[test]
+fn a_pushed_state_shows_before_a_read_and_outlives_a_read_it_overlaps() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let path = directory.path().join("api.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let identity = json!({
+        "protocol_version": 1, "profile_id": "0a1b2c3d4e5f", "display_name": "Work",
+        "instance_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d",
+        "machine": {"id": "5f2c9e0d1b7a4e38", "name": "laptop"}, "home": true
+    });
+    let mut entry = identity.clone();
+    entry["state"] = json!("serving");
+    entry["socket"] = json!(path);
+    entry["tmux_socket"] = json!(directory.path().join("tmux.sock"));
+    entry["credential_reference"] = json!({"type": "socket"});
+    let profile = Profile::parse(&serde_json::to_vec(&entry).unwrap()).unwrap();
+    let state = |state: &str| {
+        format!(
+            "event: agent.state\ndata: {}\n\n",
+            json!({"agent": "worker", "registration_id": "r1", "state": state,
+                "reason": null, "since": 1.0})
+        )
+    };
+    let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (counted, (push, pushed)) = (Arc::clone(&reads), mpsc::channel::<String>());
+    let (overlapped, overlap_done) = mpsc::channel();
+    let (release, released) = mpsc::channel::<()>();
+    let server = thread::spawn(move || {
+        listener.set_nonblocking(true).unwrap();
+        let mut stream = None::<std::os::unix::net::UnixStream>;
+        loop {
+            // A frame waits until the stream is open.
+            if let Some(open) = &mut stream
+                && let Ok(frame) = pushed.try_recv()
+            {
+                if frame.is_empty() {
+                    break;
+                }
+                open.write_all(frame.as_bytes()).unwrap();
+            }
+            let Ok((mut socket, _)) = listener.accept() else {
+                thread::sleep(Duration::from_millis(5));
+                continue;
+            };
+            socket.set_nonblocking(false).unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                socket.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            let request = String::from_utf8(request).unwrap();
+            if request.starts_with("GET /api/stream?") {
+                socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n")
+                    .unwrap();
+                stream = Some(socket);
+                continue;
+            }
+            let body = if request.starts_with("GET /api/profile ") {
+                identity.to_string()
+            } else if request.starts_with("GET /api/agents ") {
+                let read = counted.fetch_add(1, Ordering::SeqCst);
+                // The second read is held open, then answered with what it saw
+                // before the changes pushed while it was out.
+                let held = Instant::now();
+                while read == 1 && released.try_recv().is_err() {
+                    // Frames pushed meanwhile still reach the stream.
+                    assert!(held.elapsed() < Duration::from_secs(10), "never released");
+                    if let Ok(frame) = pushed.try_recv() {
+                        let open = stream.as_mut().unwrap();
+                        open.write_all(frame.as_bytes()).unwrap();
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                }
+                let state = if read == 0 { "idle" } else { "busy" };
+                json!({"items": [{"name": "worker", "registration_id": "r1", "state": state}]})
+                    .to_string()
+            } else {
+                if request.starts_with("GET /api/status/services ")
+                    && counted.load(Ordering::SeqCst) == 2
+                {
+                    let _ = overlapped.send(());
+                }
+                json!({"items": [], "machines": []}).to_string()
+            };
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+    });
+    let (wake, woken) = mpsc::channel();
+    let source = BoundRosterSource::start(profile.connect().unwrap(), move || {
+        let _ = wake.send(());
+    })
+    .unwrap();
+    let mut shown = None::<BoundRosterUpdate>;
+    let mut show = |until: &dyn Fn(&BoundRosterUpdate) -> bool| {
+        while !shown.as_ref().is_some_and(until) {
+            woken.recv_timeout(Duration::from_secs(10)).unwrap();
+            if let Some(update) = source.take_update() {
+                shown = Some(update);
+            }
+        }
+    };
+    let state_is = |state: &'static str| {
+        move |update: &BoundRosterUpdate| {
+            update.snapshot.states.get("worker").map(String::as_str) == Some(state)
+        }
+    };
+    show(&state_is("idle"));
+    // A pushed state shows while no later read can answer, and asks for a
+    // read behind it at once, not on the two-second timer.
+    push.send(state("busy")).unwrap();
+    let asked = Instant::now();
+    show(&state_is("busy"));
+    while reads.load(Ordering::SeqCst) < 2 {
+        assert!(asked.elapsed() < Duration::from_secs(1));
+        thread::sleep(Duration::from_millis(5));
+    }
+    // A wait pushed while that read is out outlives its older answer.
+    let waits = json!({"agent": "worker", "registration_id": "r1",
+        "waiting": {"on": "agent", "on_agent": "reviewer"},
+        "background": {"running": 0, "queued": 0, "processes": 0}, "processes": []});
+    push.send(format!("event: agent.changed\ndata: {waits}\n\n"))
+        .unwrap();
+    let waiting = |update: &BoundRosterUpdate| update.snapshot.details["worker"].waiting.is_some();
+    show(&waiting);
+    release.send(()).unwrap();
+    overlap_done.recv_timeout(Duration::from_secs(10)).unwrap();
+    thread::sleep(Duration::from_millis(300));
+    while woken.try_recv().is_ok() {
+        if let Some(update) = source.take_update() {
+            shown = Some(update);
+        }
+    }
+    let last = shown.unwrap();
+    assert!(waiting(&last), "{:?}", last.snapshot.details["worker"]);
+    assert_eq!(last.snapshot.states["worker"], "busy");
+    assert_eq!(reads.load(Ordering::SeqCst), 2);
+    // A registration the roster doesn't hold asks for a read.
+    push.send(state("busy").replace("\"r1\"", "\"r9\""))
+        .unwrap();
+    let asked = Instant::now();
+    while reads.load(Ordering::SeqCst) == 2 {
+        assert!(asked.elapsed() < Duration::from_secs(1));
+        thread::sleep(Duration::from_millis(5));
+    }
+    drop(source);
+    push.send(String::new()).unwrap();
+    server.join().unwrap();
+}
+
+#[test]
 fn a_read_after_a_refusal_clears_it_and_shows_the_new_roster() {
     use crate::roster::content::tests::{Reply, provider};
     let roster = |state: &str, reason: &str| {
