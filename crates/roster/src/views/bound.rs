@@ -10,6 +10,8 @@ use crate::profiles::{Connection, Identity};
 pub enum Request {
     /// The configured agents and running swarms.
     Team,
+    /// Agent chooser rows from the roster independently of swarm discovery.
+    Members,
     /// Token usage over a recent period.
     Usage(Range),
     /// Recorded deliveries, events and optional state history.

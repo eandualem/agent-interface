@@ -100,9 +100,12 @@ enum Page {
     },
 }
 
+pub(super) struct ShowConnections(pub String, pub String);
 pub(super) struct Management {
-    client: Client,
-    /// The one profile this page is for; its lists show only that profile's requests.
+    peer_identity: Option<(gpui::Entity<super::peer_inbox::Inbox>, gpui::Subscription)>,
+    copied_peer_id: bool,
+    client: Option<Client>,
+    /// The one profile this page is for; unfinished creates can lack a profile ID.
     profile_id: Option<String>,
     directory: Option<PathBuf>,
     setup: Option<(gpui::Entity<setup::Pane>, gpui::Subscription)>,
@@ -123,15 +126,18 @@ pub(super) struct Management {
     pub focus: FocusHandle,
 }
 impl EventEmitter<Back> for Management {}
+impl EventEmitter<ShowConnections> for Management {}
 impl EventEmitter<Open> for Management {}
 impl Management {
     pub fn new(
-        client: Client,
+        client: Option<Client>,
         directory: Option<PathBuf>,
         profile: Option<String>,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut pane = Self {
+            peer_identity: None,
+            copied_peer_id: false,
             client: client.clone(),
             profile_id: profile.clone(),
             directory: None,
@@ -189,12 +195,34 @@ impl Management {
 
     /// A profile's Sign-in and Secrets panes, which only a serving profile has.
     fn served_panes(&mut self, cx: &mut Context<Self>) {
+        self.peer_identity = None;
+        self.copied_peer_id = false;
         let Page::Detail(profile) = &self.page else {
             return;
         };
         if !has_served_panes(profile.item()) {
             return;
         }
+        let peer_profile = profile.clone();
+        let identity = peer_profile.item().profile_id.clone();
+        let work = cx
+            .background_executor()
+            .spawn(async move { peer_profile.connect() });
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |pane, cx| {
+                if !matches!(&pane.page,Page::Detail(p) if p.item().profile_id==identity) {
+                    return;
+                }
+                if let Ok(connection) = result {
+                    let inbox = super::peer_inbox::Inbox::shared(&connection, cx);
+                    let sub = cx.observe(&inbox, |_, _, cx| cx.notify());
+                    pane.peer_identity = Some((inbox, sub));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
         let logins = cx.new(|cx| accounts::Section::new(profile.clone(), cx));
         let subscription = cx.subscribe(&logins, |_, _, open: &Open, cx| cx.emit(open.clone()));
         self.logins = Some((logins, subscription));
@@ -210,10 +238,15 @@ impl Management {
         match result {
             Ok(page) => {
                 self.page = page;
+                self.peer_identity = None;
+                self.copied_peer_id = false;
                 self.error = None;
             }
             Err(error) => self.error = Some(error),
         }
+    }
+    pub(super) fn leave(&mut self) {
+        self.ticket.cancel();
     }
     fn back(&mut self, cx: &mut Context<Self>) {
         self.ticket.cancel();
@@ -226,8 +259,14 @@ impl Management {
         let Some(directory) = self.directory.clone() else {
             return;
         };
+        let Some(client) = self.client.clone() else {
+            self.error = Some(controller::Error::Client(
+                crate::profiles::Error::Unavailable,
+            ));
+            cx.notify();
+            return;
+        };
         self.ticket.begin();
-        let client = self.client.clone();
         let profile = self.profile_id.clone();
         let setup = cx.new(|cx| setup::Pane::new(client, directory, profile, cx));
         self.attach_setup(setup, window, cx);
@@ -279,7 +318,9 @@ impl Management {
             return;
         };
         let profile = profile.clone();
-        let client = self.client.clone();
+        let Some(client) = self.client.clone() else {
+            return;
+        };
         self.ticket.begin();
         let form =
             cx.new(|cx| choices::Form::new(client, directory, profile, "Cancel", window, cx));
@@ -389,14 +430,15 @@ impl Management {
         self.error = None;
         let ticket = self.ticket.begin();
         let worker = ticket.clone();
+        let profile = self.profile_id.clone();
         let work = cx.background_executor().spawn(async move {
-            let live = || worker.load(Ordering::Acquire);
-            let error = match command {
-                Command::Read => None,
-                Command::Submit => controller.submit(&key, &live).err(),
-                Command::Retry => controller.retry(&key, &live).err(),
-            };
-            (controller.read(&key), error)
+            command.run(
+                &controller,
+                &key,
+                profile.as_deref(),
+                &|| worker.load(Ordering::Acquire),
+                super::onboarding::probe::profile_client,
+            )
         });
         self.observe_operation(ticket, work, cx);
     }
@@ -495,6 +537,32 @@ enum Command {
     Retry,
 }
 impl Command {
+    fn run(
+        self,
+        controller: &Controller,
+        key: &str,
+        profile: Option<&str>,
+        live: &dyn Fn() -> bool,
+        resolve: impl FnOnce() -> Option<Client>,
+    ) -> (
+        Result<Snapshot, controller::Error>,
+        Option<controller::Error>,
+    ) {
+        let read = || scoped_record(controller, key, profile);
+        let snapshot = read();
+        if matches!(self, Self::Read) || snapshot.is_err() {
+            return (snapshot, None);
+        }
+        let result = controller
+            .ensure_provider(resolve)
+            .and_then(|()| match self {
+                Self::Submit => controller.submit(key, live),
+                Self::Retry => controller.retry(key, live),
+                Self::Read => unreachable!(),
+            });
+        (read(), result.err())
+    }
+
     fn allowed(self, snapshot: Option<&Snapshot>) -> bool {
         if matches!(self, Self::Read) {
             return true;
@@ -515,7 +583,7 @@ struct Opened {
     page: Result<Page, controller::Error>,
 }
 fn open_management(
-    client: Client,
+    client: Option<Client>,
     directory: Option<PathBuf>,
     profile: Option<String>,
     live: &AtomicBool,
@@ -525,11 +593,15 @@ fn open_management(
     // Keep the resolved library location even if this independent journal is
     // unsafe. Setup recovery must still enforce and use its own journal checks.
     let controller = journal::Journal::open(&directory.join("profile-operations"))
-        .map(|journal| Arc::new(Controller::new(journal, &client)))
+        .map(|journal| Arc::new(Controller::for_history(journal, client.as_ref())))
         .map_err(controller::Error::Storage);
     let page = match &controller {
         Ok(controller) => match profile {
             Some(id) => client
+                .as_ref()
+                .ok_or(controller::Error::Client(
+                    crate::profiles::Error::Unavailable,
+                ))?
                 .show(&id, &|| live.load(Ordering::Acquire))
                 .map(Page::Detail)
                 .map_err(controller::Error::Client),
@@ -551,29 +623,59 @@ fn history(
     offset: usize,
     live: &AtomicBool,
 ) -> Result<Page, controller::Error> {
-    let ids = match ids {
+    let cached = ids.is_some();
+    let mut ids = match ids {
         Some(ids) => ids,
-        None => controller
-            .ids()?
-            .into_iter()
-            .filter(|key| {
-                // A record that can't be read may be this profile's, so it stays.
-                profile.is_none_or(|id| match controller.read(key) {
-                    Ok(s) => s.identity.as_ref().is_some_and(|i| i.profile_id == id),
-                    Err(_) => true,
-                })
-            })
-            .collect(),
+        None => controller.ids()?,
     };
-    let offset = offset.min(ids.len().saturating_sub(1) / PAGE_SIZE * PAGE_SIZE);
+    // The requested offset belongs to the previously drawn list. Keep its
+    // first surviving unseen row when a request before it changes scope.
+    let mut removed_before = 0;
+    if profile.is_some() {
+        let mut position = 0;
+        ids.retain(|key| {
+            let keep = !matches!(
+                scoped_record(controller, key, profile),
+                Err(controller::Error::Missing)
+            );
+            if cached && !keep && position < offset {
+                removed_before += 1;
+            }
+            position += 1;
+            keep
+        });
+    }
+    let offset = offset.saturating_sub(removed_before);
+    let offset = if offset >= ids.len() {
+        ids.len().saturating_sub(1) / PAGE_SIZE * PAGE_SIZE
+    } else {
+        offset
+    };
     let mut rows = Vec::new();
     for key in ids.iter().skip(offset).take(PAGE_SIZE) {
         if !live.load(Ordering::Acquire) {
             return Err(controller::Error::Client(crate::profiles::Error::Cancelled));
         }
-        rows.push((key.clone(), controller.read(key)));
+        let record = scoped_record(controller, key, profile);
+        if !matches!(record, Err(controller::Error::Missing)) {
+            rows.push((key.clone(), record));
+        }
     }
     Ok(Page::History { ids, offset, rows })
+}
+fn scoped_record(
+    controller: &Controller,
+    key: &str,
+    profile: Option<&str>,
+) -> Result<Snapshot, controller::Error> {
+    let saved = controller.read(key)?;
+    if profile.is_some_and(|id| match &saved.identity {
+        Some(identity) => identity.profile_id != id,
+        None => saved.terminal.is_some(),
+    }) {
+        return Err(controller::Error::Missing);
+    }
+    Ok(saved)
 }
 fn action_label(action: Action) -> &'static str {
     match action {
@@ -675,7 +777,11 @@ impl Render for Management {
                                     ui::text(div().text_color(c.text), &t.text.group_title)
                                         .child(item.display_name.clone()),
                                 )
-                                .child(meta(state_line(item))),
+                                .child(meta(state_line(item)))
+                                .children(
+                                    super::profile_picker::whose_accounts(item.accounts)
+                                        .map(|words| meta(words.into())),
+                                ),
                         )
                         .child(ui::icon_button("management-more", "ellipsis").on_click(
                             cx.listener(|pane, _, _, cx| {
@@ -705,6 +811,43 @@ impl Render for Management {
                         );
                     }
                     body = body.child(div().flex().justify_end().child(menu));
+                }
+                if ready {
+                    let id = item.profile_id.clone();
+                    let name = item.display_name.clone();
+                    let mut section = div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(t.space.s6))
+                        .child("Connection identity");
+                    if let Some(summary) = self
+                        .peer_identity
+                        .as_ref()
+                        .map(|(i, _)| i.read(cx))
+                        .filter(|i| i.profile_id() == item.profile_id)
+                        .and_then(|i| i.summary.as_ref())
+                    {
+                        let shareable = summary.overview.local_id.clone();
+                        section=section.child(ui::mono(shareable.clone())).child(ui::button("copy-profile-peer-id",if self.copied_peer_id{"Copied"}else{"Copy ID"},ui::Button::Secondary).on_click(cx.listener(move|p,_,_,cx|{
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(shareable.clone()));p.copied_peer_id=true;cx.notify();
+                        }))).child("Share outside the app so another profile can send a connection request. Agent Backbone owns keys, encryption and relay delivery.");
+                    } else {
+                        section = section.child("Connection ID unavailable");
+                    }
+                    body = body.child(
+                        section.child(
+                            ui::button(
+                                "open-profile-connections",
+                                "Open connections",
+                                ui::Button::Secondary,
+                            )
+                            .on_click(cx.listener(
+                                move |_, _, _, cx| {
+                                    cx.emit(ShowConnections(id.clone(), name.clone()))
+                                },
+                            )),
+                        ),
+                    );
                 }
                 if self.logins.is_some() {
                     body = body.child(ui::group_title("Sign-in", ""));
@@ -746,7 +889,9 @@ impl Render for Management {
                     "Leaving stops waiting for it. Try the same request again to finish it.",
                 ));
                 if let Some(snapshot) = snapshot {
-                    body = body.child(meta(status(snapshot).into()));
+                    body = body
+                        .child(meta(status(snapshot).into()))
+                        .child(meta(format!("Request ID {}", snapshot.request_id).into()));
                 }
                 if !self.busy {
                     let mut row = div().flex().flex_wrap().gap(px(t.space.s8));
@@ -784,7 +929,7 @@ impl Render for Management {
             Page::History { ids, offset, rows } => {
                 body = body.child(ui::group_title(
                     "Saved requests",
-                    "Requests to create a profile.",
+                    "Requests to create a profile. Unfinished requests can have no assigned profile yet.",
                 ));
                 if rows.is_empty() {
                     body = body.child(ui::group_note("No saved requests."));
@@ -793,7 +938,10 @@ impl Render for Management {
                 for (index, (key, result)) in rows.iter().enumerate() {
                     let (label, detail) = match result {
                         Ok(snapshot) => (
-                            action_label(snapshot.action).to_owned(),
+                            snapshot
+                                .display_name
+                                .clone()
+                                .unwrap_or_else(|| action_label(snapshot.action).into()),
                             status(snapshot).to_owned(),
                         ),
                         Err(error) => (message(*error).to_owned(), String::new()),
@@ -819,7 +967,10 @@ impl Render for Management {
                 if !self.busy {
                     let mut pages = div().flex().gap(px(t.space.s8));
                     for (offset, label) in [
-                        (offset.checked_sub(PAGE_SIZE), "Previous"),
+                        (
+                            (*offset > 0).then(|| offset.saturating_sub(PAGE_SIZE)),
+                            "Previous",
+                        ),
                         (
                             (offset + PAGE_SIZE < ids.len()).then_some(offset + PAGE_SIZE),
                             "Next",

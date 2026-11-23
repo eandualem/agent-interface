@@ -2,6 +2,8 @@
   "name": "One Light",
   "extends": "light",
   "color": {
+    "outgoing_surface": "#e4e4e5",
+    "outgoing_border": "#dbdbdc",
     "ground": "#e0e0e1",
     "panel": "#eaeaeb",
     "surface": "#fafafa",

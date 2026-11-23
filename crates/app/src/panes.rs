@@ -83,6 +83,8 @@ struct State {
     closed: bool,
     /// Whether the panes are being dropped, so pending work is abandoned.
     cancelled: bool,
+    /// The owned child has exited, after any ordered detach command.
+    detached: bool,
     /// Whether the worker has stopped, after handing over every change, or
     /// because the panes are being dropped.
     finished: bool,
@@ -92,6 +94,8 @@ struct State {
     gone: Vec<PaneId>,
     /// Last size queued for this client, retained when its view is hidden.
     declared_size: Option<(u16, u16)>,
+    /// A profile agent should return to its session default when the tile leaves.
+    agent_default: Option<(u16, u16)>,
     /// The default text and background colours tmux reports to each pane.
     colors: Option<Colors>,
     /// Whether the session's windows changed since they were last listed.
@@ -147,6 +151,7 @@ enum ReplyOwner {
     GeometrySubscription,
     SourceSubscription,
     Size,
+    GuardedSize,
     Colors,
 }
 
@@ -199,7 +204,9 @@ fn write_commands(
     requests: mpsc::Receiver<WriteRequest>,
     control: &Control,
     shared: &Shared,
+    session: Option<u32>,
 ) {
+    let mut sized = false;
     while let Ok(WriteRequest::Command { line, owner, sent }) = requests.recv() {
         if shared.lock().cancelled {
             break;
@@ -211,6 +218,15 @@ fn write_commands(
             .push_back(owner);
         let result = stdin
             .write_all(line.as_bytes())
+            .and_then(|()| {
+                if matches!(owner, ReplyOwner::GuardedSize) {
+                    // list-commands has no after hook. A user hook must not hold
+                    // the control queue behind our internal reply boundary.
+                    writeln!(stdin, "list-commands -F {SIZE_COMPLETE} list-commands")
+                } else {
+                    Ok(())
+                }
+            })
             .and_then(|()| stdin.flush());
         let failed = result.is_err();
         if let Err(error) = &result {
@@ -223,12 +239,43 @@ fn write_commands(
         if let Some(sent) = sent {
             let _ = sent.send(result);
         }
+        if !failed && matches!(owner, ReplyOwner::Size | ReplyOwner::GuardedSize) {
+            sized = true;
+        }
         if failed {
             // Closing stdin ends the reader. Let the worker drain its final
             // output. The UI can also report the retained write error.
             break;
         }
     }
+    // Keep stdin open until tmux processes the restore and the following detach.
+    // Shutdown already bounds how long the owned process can take to exit.
+    let default = shared.lock().agent_default;
+    if sized && let (Some(session), Some(size)) = (session, default) {
+        let line = release_agent_size(session, size);
+        if writeln!(stdin, "{line}detach-client")
+            .and_then(|()| stdin.flush())
+            .is_ok()
+        {
+            let _wait = shared
+                .changed
+                .wait_timeout_while(shared.lock(), Duration::from_secs(1), |state| {
+                    !state.detached
+                })
+                .unwrap_or_else(|e| e.into_inner());
+        }
+    }
+}
+
+/// Restore while still participating, then withdraw. A sizing client in an
+/// unrelated session can otherwise prevent tmux from recalculating this window.
+// if-shell and each command in its chosen branch produce separate control replies.
+const SIZE_COMPLETE: &str = "agent-interface-size-complete";
+
+fn release_agent_size(session: u32, (cols, rows): (u16, u16)) -> String {
+    format!(
+        "if-shell -F '#{{==:#{{session_id}},${session}}}' {{ refresh-client -C {cols}x{rows} ; refresh-client -f ignore-size -C {cols}x{rows} }}\n"
+    )
 }
 
 struct LivePane {
@@ -589,7 +636,7 @@ impl Panes {
         let writer = spawn("tmux writer", {
             let control = Arc::clone(&panes.control);
             let shared = Arc::clone(&panes.shared);
-            move || write_commands(stdin, requests, &control, &shared)
+            move || write_commands(stdin, requests, &control, &shared, session)
         });
         match writer {
             Ok(writer) => panes.threads.push(writer),
@@ -788,19 +835,32 @@ impl Panes {
             .map_err(io::Error::other)
     }
 
+    /// Setting an agent policy never changes tmux until the tile declares a size.
+    pub(crate) fn set_agent_default(&self, size: Option<(u16, u16)>) -> bool {
+        let mut state = self.shared.lock();
+        let default = size.map(|(cols, rows)| (cols.max(80), rows));
+        let changed = state.agent_default != default;
+        state.agent_default = default;
+        changed
+    }
+
     /// Declares this client's size, as an ordinary tmux client in a terminal
     /// of `cols` by `rows` would. tmux then sizes the session's windows by its
     /// `window-size` option, counting this client from now on.
     pub fn set_size(&self, cols: u16, rows: u16) -> io::Result<()> {
         let mut state = self.shared.lock();
+        // A shown tile reflows at its own width; only the release on hide or
+        // close keeps an agent at least as wide as its session default.
         let size = (cols.max(1), rows.max(1));
-        self.control.send(
-            &format!(
-                "refresh-client -f '!ignore-size' -C {}x{}\n",
-                size.0, size.1
+        let command = format!("refresh-client -f '!ignore-size' -C {}x{}", size.0, size.1);
+        let (line, owner) = match (state.agent_default, self.source) {
+            (Some(_), Some((session, _))) => (
+                format!("if-shell -F '#{{==:#{{session_id}},${session}}}' {{ {command} }}\n"),
+                ReplyOwner::GuardedSize,
             ),
-            ReplyOwner::Size,
-        )?;
+            _ => (format!("{command}\n"), ReplyOwner::Size),
+        };
+        self.control.send(&line, owner)?;
         state.declared_size = Some(size);
         Ok(())
     }
@@ -819,15 +879,31 @@ impl Panes {
     /// Keep the client connected without contributing to tmux window sizing.
     pub(crate) fn ignore_size(&self) -> io::Result<()> {
         let state = self.shared.lock();
-        let Some((cols, rows)) = state.declared_size else {
+        let Some(declared) = state.declared_size else {
             return Ok(());
         };
-        // Changing flags alone does not recalculate background windows.
-        // Repeat the declared size to apply the flag to the whole session.
-        self.control.send(
-            &format!("refresh-client -f ignore-size -C {cols}x{rows}\n"),
-            ReplyOwner::Size,
-        )
+        let (line, owner) = match (state.agent_default, self.source) {
+            (Some(size), Some((session, _))) => {
+                (release_agent_size(session, size), ReplyOwner::GuardedSize)
+            }
+            _ => (
+                format!(
+                    "refresh-client -f ignore-size -C {}x{}\n",
+                    declared.0, declared.1
+                ),
+                ReplyOwner::Size,
+            ),
+        };
+        self.control.send(&line, owner)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn control_replies_drained(&self) -> bool {
+        self.control
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
     }
 
     /// Returns a terminal recovery or input transport failure.
@@ -870,13 +946,17 @@ impl Panes {
         let deadline = Instant::now() + Duration::from_secs(1);
         loop {
             match client.try_wait() {
-                Ok(Some(_)) => return,
+                Ok(Some(_)) => break,
                 Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
-                _ => break,
+                _ => {
+                    let _ = client.kill();
+                    let _ = client.wait();
+                    break;
+                }
             }
         }
-        let _ = client.kill();
-        let _ = client.wait();
+        self.shared.lock().detached = true;
+        self.shared.changed.notify_all();
     }
 }
 
@@ -1433,6 +1513,14 @@ fn apply(
                 // A rejected size leaves the window as it was; the view scales.
                 // tmux before 3.5 rejects colour reports; programs then see
                 // its default answer.
+                Some(ReplyOwner::GuardedSize) => {
+                    if reply.ok
+                        && reply.lines.len() == 1
+                        && reply.lines[0] == SIZE_COMPLETE.as_bytes()
+                    {
+                        pending.pop_front();
+                    }
+                }
                 Some(ReplyOwner::Size | ReplyOwner::Colors) => {
                     pending.pop_front();
                 }
@@ -1969,7 +2057,7 @@ mod tests {
                 sent: Some(sent),
             })
             .unwrap();
-        write_commands(stdin, requests, &control, &shared);
+        write_commands(stdin, requests, &control, &shared, None);
         assert!(received.recv().unwrap().is_err());
         let state = shared.lock();
         assert!(

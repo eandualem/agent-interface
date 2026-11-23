@@ -43,10 +43,22 @@ const UNAVAILABLE: &str = "Backbone unavailable; states stale";
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct AgentDetails {
+    /// Durable registration from the profile, when reported.
+    pub registration_id: Option<String>,
+    /// Machine serving this agent, when the profile reports it.
+    pub machine: Option<Machine>,
     /// Whether the provider observes an online agent, including unknown states.
     pub online: Option<bool>,
+    /// The model reported by the service and where that value came from.
+    pub model: Option<String>,
+    /// Whether the runtime reported the model or the service used its configuration.
+    pub model_source: Option<String>,
     /// Why the agent is waiting or blocked.
     pub reason: Option<String>,
+    /// Where the state came from (`push`, `pull`, `stale`, etc.).
+    pub state_source: Option<String>,
+    /// Human-readable observations explaining the state (e.g. how old a stale report is).
+    pub evidence: Vec<String>,
     /// The issue currently being worked on.
     pub current_issue: Option<u64>,
     /// Provider timestamp of the state observation.
@@ -103,6 +115,76 @@ pub struct HeldQueue {
     /// mistyped, deliveries are held for a reason not known.
     #[serde(default, deserialize_with = "lenient")]
     pub reason: Option<String>,
+}
+
+/// Machine identity reported by the profile. Names are for display only.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct Machine {
+    /// Stable machine identifier within the profile (64 hex on the Rust service).
+    pub id: String,
+    /// Human-readable machine name (missing or mistyped values default to empty).
+    #[serde(default, deserialize_with = "lenient_string")]
+    pub name: String,
+}
+
+impl Machine {
+    /// Whether this machine matches the connected local machine by full ID.
+    pub fn is_local(&self, local: &profiles::Identity) -> bool {
+        self.valid() && self.id == local.installation_id
+    }
+
+    /// Whether this machine is another machine in the profile by full ID.
+    pub fn is_remote(&self, local: &profiles::Identity) -> bool {
+        self.valid() && self.id != local.installation_id
+    }
+
+    /// The profile through which to open an agent hosted on another machine.
+    pub fn remote_profile(&self, local: &profiles::Identity) -> Option<String> {
+        self.is_remote(local).then(|| local.profile_id.clone())
+    }
+
+    pub(crate) fn valid(&self) -> bool {
+        !self.id.is_empty() && self.id.len() <= 256 && !self.id.chars().any(char::is_control)
+    }
+}
+
+/// Reachability of a profile machine as reported by `GET /api/status/services`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MachineState {
+    /// The machine is reachable.
+    Online,
+    /// The machine is currently unreachable.
+    Offline,
+    /// An unfamiliar state value reported by a newer service.
+    Unknown,
+}
+
+impl MachineState {
+    fn from_wire(value: &str) -> Self {
+        match value {
+            "online" => Self::Online,
+            "offline" => Self::Offline,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// One machine joined to the profile, as reported by `GET /api/status/services`.
+/// Machine IDs are compared in full; names are for display only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProfileMachine {
+    /// Stable machine identifier (64 lowercase hex digits on the Rust service).
+    pub id: String,
+    /// Human-readable display name.
+    pub name: String,
+    /// Whether this machine is the profile's home.
+    pub home: bool,
+    /// Reachability (`online`, `offline`, or `unknown`).
+    pub state: MachineState,
+    /// When the machine joined the profile, in RFC 3339.
+    pub joined_at: Option<String>,
+    /// When the home last heard from this machine, in RFC 3339.
+    pub last_seen: Option<String>,
 }
 
 /// What an agent waits on outside itself, as the Rust service reports it.
@@ -186,6 +268,33 @@ where
     Ok(object(raw.get()))
 }
 
+/// As [`lenient`], for a string field: missing, `null` or non-string reads as empty.
+pub(crate) fn lenient_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = <Box<RawValue> as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(serde_json::from_str::<String>(raw.get()).unwrap_or_default())
+}
+
+/// As [`lenient`], for an array of strings: non-array or non-string entries are skipped.
+pub(crate) fn lenient_strings<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = <Box<RawValue> as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(decode_strings(raw.get()))
+}
+
+pub(crate) fn decode_strings(raw: &str) -> Vec<String> {
+    serde_json::from_str::<Vec<&RawValue>>(raw)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| serde_json::from_str::<String>(entry.get()).ok())
+        .take(32)
+        .collect()
+}
+
 /// A running swarm: the agent that started it and the agents working in it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Swarm {
@@ -213,6 +322,11 @@ pub struct Snapshot {
     /// Whether `swarms` came from a response read in full, so a swarm missing
     /// from it has finished. False after a failed read or a skipped record.
     pub swarms_read: bool,
+    /// Profile machines from `GET /api/status/services`; empty when absent or unread.
+    pub machines: Vec<ProfileMachine>,
+    /// Whether `machines` came from a valid `GET /api/status/services` response
+    /// carrying a `machines` array, so a machine missing from it is not in the profile.
+    pub machines_read: bool,
     /// A fixed diagnostic when cached states are stale; none after success.
     pub error: Option<&'static str>,
     /// Last successful response time, or none before any successful response.
@@ -243,10 +357,84 @@ impl Snapshot {
         self.swarms = swarms;
     }
 
+    /// Apply one response from `GET /api/status/services`, or its absence/failure.
+    /// Unreadable or missing machine status leaves agent states intact.
+    pub fn update_machines(&mut self, response: Option<&[u8]>) {
+        match response.and_then(decode_machines) {
+            Some(machines) => {
+                self.machines = machines;
+                self.machines_read = true;
+            }
+            None => {
+                self.machines.clear();
+                self.machines_read = false;
+            }
+        }
+    }
+
     /// Mark a transport or configuration failure without retaining its details.
     /// This does not change the last successful observation time.
     pub fn unavailable(&mut self) {
         self.error = Some(UNAVAILABLE);
+    }
+
+    /// Apply a state, wait or terminal queue the push stream reported for one
+    /// agent, as the next agents read would show it. False, changing nothing, for
+    /// [`profiles::Change::Read`] or when no agent of that name has that
+    /// registration. A state just reported is no longer stale.
+    pub fn apply(&mut self, change: &profiles::Change) -> bool {
+        use profiles::Change;
+        let (Change::State {
+            agent,
+            registration_id,
+            ..
+        }
+        | Change::Waits {
+            agent,
+            registration_id,
+            ..
+        }) = change
+        else {
+            return false;
+        };
+        let Some(details) = self
+            .details
+            .get_mut(agent)
+            .filter(|details| details.registration_id.as_ref() == Some(registration_id))
+        else {
+            return false;
+        };
+        match change {
+            Change::State {
+                state,
+                reason,
+                since,
+                ..
+            } => {
+                details.reason.clone_from(reason);
+                details.state_since = *since;
+                if details.state_source.as_deref() == Some("stale") {
+                    details.state_source = None;
+                    details.evidence.clear();
+                }
+                self.states.insert(agent.clone(), state.clone());
+            }
+            Change::Waits {
+                waiting,
+                background,
+                queue,
+                ..
+            } => {
+                details.waiting.clone_from(waiting);
+                details.background = *background;
+                if let Some((held_queue, queued)) = queue {
+                    details.held_queue.clone_from(held_queue);
+                    details.queued = *queued;
+                }
+            }
+            Change::Read => {}
+        }
+        true
     }
 }
 
@@ -284,8 +472,19 @@ fn decode(response: &[u8]) -> Option<Decoded> {
         details.insert(
             name.clone(),
             AgentDetails {
+                registration_id: field("registration_id")
+                    .and_then(|value| serde_json::from_str(value).ok()),
+                machine: field("machine")
+                    .and_then(object::<Machine>)
+                    .filter(Machine::valid),
                 online: field("online").and_then(|value| serde_json::from_str(value).ok()),
+                model: field("model").and_then(|value| serde_json::from_str(value).ok()),
+                model_source: field("model_source")
+                    .and_then(|value| serde_json::from_str(value).ok()),
                 reason: field("reason").and_then(|value| serde_json::from_str(value).ok()),
+                state_source: field("state_source")
+                    .and_then(|value| serde_json::from_str(value).ok()),
+                evidence: field("evidence").map(decode_strings).unwrap_or_default(),
                 current_issue: field("current_issue")
                     .and_then(|value| serde_json::from_str(value).ok()),
                 state_since: field("state_since")
@@ -375,6 +574,65 @@ fn decode_swarms(response: &[u8]) -> Option<(Vec<Swarm>, bool)> {
         });
     }
     Some((swarms, complete))
+}
+
+/// Maximum profile machines read from one `GET /api/status/services` reply.
+const PROFILE_MACHINES: usize = 128;
+
+fn decode_machines(response: &[u8]) -> Option<Vec<ProfileMachine>> {
+    #[derive(serde::Deserialize, Default)]
+    #[serde(default)]
+    struct Raw {
+        id: Option<String>,
+        #[serde(deserialize_with = "lenient")]
+        name: Option<String>,
+        #[serde(deserialize_with = "lenient")]
+        home: Option<bool>,
+        #[serde(deserialize_with = "lenient")]
+        state: Option<String>,
+        #[serde(deserialize_with = "lenient")]
+        joined_at: Option<String>,
+        #[serde(deserialize_with = "lenient")]
+        last_seen: Option<String>,
+    }
+    if response.len() > RESPONSE_LIMIT || !within_depth(response) {
+        return None;
+    }
+    let document: BTreeMap<String, &RawValue> = serde_json::from_slice(response).ok()?;
+    let raw_machines: Vec<&RawValue> =
+        serde_json::from_str(document.get("machines")?.get()).ok()?;
+    let mut machines = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for entry in raw_machines {
+        let Some(raw) = object::<Raw>(entry.get()) else {
+            continue;
+        };
+        let Some(id) = raw.id else {
+            continue;
+        };
+        let machine = Machine {
+            id,
+            name: raw.name.unwrap_or_default(),
+        };
+        if !machine.valid() || !seen.insert(machine.id.clone()) {
+            continue;
+        }
+        machines.push(ProfileMachine {
+            id: machine.id,
+            name: machine.name,
+            home: raw.home.unwrap_or(false),
+            state: raw
+                .state
+                .as_deref()
+                .map_or(MachineState::Unknown, MachineState::from_wire),
+            joined_at: raw.joined_at,
+            last_seen: raw.last_seen,
+        });
+        if machines.len() == PROFILE_MACHINES {
+            break;
+        }
+    }
+    Some(machines)
 }
 
 // RawValue skips nested data without the normal Value recursion limit. Bound
@@ -543,6 +801,8 @@ mod tests {
         let mut snapshot = Snapshot::default();
         snapshot.update(include_bytes!("profiles/runs/fixtures/agents.json"));
         let worker = &snapshot.details["worker"];
+        assert_eq!(worker.model.as_deref(), Some("gpt-example"));
+        assert_eq!(worker.model_source.as_deref(), Some("observed"));
         assert_eq!(
             worker.waiting,
             Some(Waiting {
@@ -706,6 +966,62 @@ mod tests {
     }
 
     #[test]
+    fn a_pushed_state_wait_or_queue_changes_only_its_registered_agent() {
+        use profiles::Change;
+        let mut snapshot = Snapshot::default();
+        snapshot.update(
+            br#"{"items":[{"name":"worker","registration_id":"r1","state":"busy",
+                "state_source":"stale","evidence":["no report for 5 minutes"]}]}"#,
+        );
+        let state = |registration: &str| Change::State {
+            agent: "worker".into(),
+            registration_id: registration.into(),
+            state: "waiting_for_human".into(),
+            reason: Some("permission".into()),
+            since: Some(2.0),
+        };
+        assert!(!snapshot.apply(&state("r0")));
+        assert!(!snapshot.apply(&Change::Read));
+        assert_eq!(snapshot.states["worker"], "busy");
+        assert!(snapshot.apply(&state("r1")));
+        let details = &snapshot.details["worker"];
+        assert_eq!(snapshot.states["worker"], "waiting_for_human");
+        assert_eq!(
+            (details.reason.as_deref(), details.state_since),
+            (Some("permission"), Some(2.0))
+        );
+        assert_eq!(details.state_source, None);
+        assert!(details.evidence.is_empty());
+        let background = Some(Background {
+            running: 1,
+            queued: 0,
+            processes: 2,
+        });
+        let held = Some(HeldQueue {
+            reason: Some("uncertain_delivery".into()),
+        });
+        let waits = |queue| Change::Waits {
+            agent: "worker".into(),
+            registration_id: "r1".into(),
+            waiting: None,
+            background,
+            queue,
+        };
+        assert!(snapshot.apply(&waits(Some((held.clone(), 3)))));
+        let details = &snapshot.details["worker"];
+        assert_eq!(
+            (details.background, &details.held_queue, details.queued),
+            (background, &held, 3)
+        );
+        // A service that does not send the queue leaves it as read.
+        assert!(snapshot.apply(&waits(None)));
+        assert_eq!(snapshot.details["worker"].queued, 3);
+        assert!(snapshot.apply(&waits(Some((None, 0)))));
+        let details = &snapshot.details["worker"];
+        assert_eq!((&details.held_queue, details.queued), (&None, 0));
+    }
+
+    #[test]
     fn a_uuid_is_read_with_or_without_hyphens() {
         assert!(is_uuid("019a7b2c5d107c3e9a412f6b8c0d1e23"));
         assert!(is_uuid("019a7b2c-5d10-7c3e-9a41-2f6b8c0d1e23"));
@@ -717,6 +1033,113 @@ mod tests {
             "",
         ] {
             assert!(!is_uuid(refused), "{refused}");
+        }
+    }
+
+    #[test]
+    fn machine_identity_compares_full_64_hex_ids_not_names_or_prefixes() {
+        let local_id = "a".repeat(64);
+        let prefix_match = format!("{}b", "a".repeat(63));
+        let local = profiles::Identity {
+            profile_id: "profile-a".into(),
+            installation_id: local_id.clone(),
+            lifecycle_id: local_id.clone(),
+        };
+        let same_id_different_name = Machine {
+            id: local_id,
+            name: "renamed-host".into(),
+        };
+        assert!(same_id_different_name.is_local(&local));
+        assert!(!same_id_different_name.is_remote(&local));
+        assert_eq!(same_id_different_name.remote_profile(&local), None);
+
+        let near_match_same_name = Machine {
+            id: prefix_match,
+            name: "renamed-host".into(),
+        };
+        assert!(!near_match_same_name.is_local(&local));
+        assert!(near_match_same_name.is_remote(&local));
+        assert_eq!(
+            near_match_same_name.remote_profile(&local).as_deref(),
+            Some("profile-a")
+        );
+    }
+
+    #[test]
+    fn machines_and_stale_evidence_decode_from_services_and_agents() {
+        let mut snapshot = Snapshot::default();
+        let home_id = "0".repeat(64);
+        let worker_id = "1".repeat(64);
+        snapshot.update(
+            format!(
+                r#"{{"items":[
+                    {{"name":"remote-worker","registration_id":"0193a1b2c3d47e5f8a9b0c1d2e3f4a5b",
+                      "state":"busy","state_source":"stale",
+                      "evidence":["last machine report 4m ago", 7],
+                      "machine":{{"id":"{worker_id}","name":"build-linux"}}}},
+                    {{"name":"unplaced","state":"offline","machine":null,"state_source":"default","evidence":[]}}
+                ]}}"#
+            )
+            .as_bytes(),
+        );
+        let remote = &snapshot.details["remote-worker"];
+        assert_eq!(
+            remote.registration_id.as_deref(),
+            Some("0193a1b2c3d47e5f8a9b0c1d2e3f4a5b")
+        );
+        assert_eq!(remote.state_source.as_deref(), Some("stale"));
+        assert_eq!(remote.evidence, ["last machine report 4m ago"]);
+        assert_eq!(
+            remote.machine.as_ref().map(|m| m.id.as_str()),
+            Some(worker_id.as_str())
+        );
+        assert_eq!(snapshot.details["unplaced"].machine, None);
+
+        snapshot.update_machines(Some(
+            format!(
+                r#"{{"machines":[
+                    {{"id":"{home_id}","name":"laptop","home":true,"state":"online",
+                      "joined_at":"2026-11-15T18:57:29Z","last_seen":"2026-11-22T12:00:00Z"}},
+                    {{"id":"{worker_id}","name":"build-linux","home":false,"state":"offline",
+                      "joined_at":"2026-11-19T04:47:54Z","last_seen":"2026-11-22T11:55:00Z"}},
+                    {{"id":"{worker_id}","name":"duplicate-ignored","state":"online"}},
+                    {{"id":"bad\nid","name":"ctrl","state":"online"}},
+                    "not-an-object"
+                ]}}"#
+            )
+            .as_bytes(),
+        ));
+        assert!(snapshot.machines_read);
+        assert_eq!(snapshot.machines.len(), 2);
+        assert_eq!(snapshot.machines[0].state, MachineState::Online);
+        assert!(snapshot.machines[0].home);
+        assert_eq!(snapshot.machines[1].state, MachineState::Offline);
+        assert_eq!(
+            snapshot.machines[1].last_seen.as_deref(),
+            Some("2026-11-22T11:55:00Z")
+        );
+
+        // Missing or unreadable services reply clears machines without marking states stale.
+        snapshot.update_machines(Some(b"not json"));
+        assert!(!snapshot.machines_read);
+        assert!(snapshot.machines.is_empty());
+        assert!(snapshot.error.is_none());
+
+        // Missing, null, or mistyped machine.name must keep the valid machine ID intact.
+        snapshot.update(
+            format!(
+                r#"{{"items":[
+                    {{"name":"no-name","state":"busy","machine":{{"id":"{worker_id}"}}}},
+                    {{"name":"null-name","state":"idle","machine":{{"id":"{worker_id}","name":null}}}},
+                    {{"name":"num-name","state":"idle","machine":{{"id":"{worker_id}","name":7}}}}
+                ]}}"#
+            )
+            .as_bytes(),
+        );
+        for name in ["no-name", "null-name", "num-name"] {
+            let machine = snapshot.details[name].machine.as_ref().unwrap();
+            assert_eq!(machine.id, worker_id);
+            assert_eq!(machine.name, "");
         }
     }
 }

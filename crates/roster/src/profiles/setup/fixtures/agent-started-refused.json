@@ -1,0 +1,16 @@
+{
+  "ok": false,
+  "session": "builder",
+  "name": "builder",
+  "working_directory": "/home/sam/work/project",
+  "runtime": "claude",
+  "model": null,
+  "repo": "example/project",
+  "already_existed": false,
+  "ready": "not_waited",
+  "evidence": [
+    "the agent's files were written",
+    "the brief could not be written: no space left on device"
+  ],
+  "reason": "the brief could not be written: no space left on device"
+}

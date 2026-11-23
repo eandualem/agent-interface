@@ -103,6 +103,7 @@ fn equal_terminal_ids_keep_streams_and_input_isolated_when_one_profile_stops() {
                     empty: false,
                     view: None,
                     attachment: Some(Attachment {
+                        remote_profile: None,
                         session: "fixture".into(),
                         source_socket: None,
                     }),
@@ -262,4 +263,105 @@ fn bound_shell_attaches_to_the_provider_session_and_never_creates_one() {
         Some("The profile could not start this shell.")
     );
     provider.join().unwrap();
+}
+
+#[test]
+fn a_run_view_on_its_profile_server_is_shown_read_only() {
+    use crate::view::backend::{Backend, READ_ONLY, ReadOnly};
+    use agent_interface_term::input::{Button, Input, KeyPress, MouseAction, Pointer, Scroll};
+    const VIEW: &str = "run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60";
+    let server = TmuxServer::start().unwrap();
+    server
+        .run(&[
+            "new-session",
+            "-d",
+            "-s",
+            VIEW,
+            "sh",
+            "-c",
+            // A program that tracks the mouse, as a review's TUI does.
+            "printf 'run-output\\n\\033[?1000h'; exec cat",
+        ])
+        .unwrap();
+    let socket: PathBuf = server
+        .run(&["display-message", "-p", "#{socket_path}"])
+        .unwrap()
+        .trim()
+        .into();
+    let identity = json!({"protocol_version":1,"profile_id":"profile-a",
+        "instance_id":"instance-a","machine":{"id":"machine-a"}});
+    let (_directory, connection, provider) = provider_with_tmux(
+        "a",
+        (0..2)
+            .map(|_| Reply::ok("/api/profile", identity.clone()))
+            .collect(),
+        Some(socket),
+    );
+    let target = Target {
+        connection: Some(connection),
+        leaf: Leaf {
+            id: "123456abcdef".into(),
+            cwd: None,
+            empty: false,
+            view: None,
+            attachment: Some(Attachment {
+                remote_profile: None,
+                session: VIEW.into(),
+                source_socket: None,
+            }),
+        },
+        directory: None,
+        source: Err("bound".into()),
+    };
+    assert!(target.is_run_view());
+    // The same name on a server without a profile is a person's own session.
+    let mut own = target.clone();
+    own.connection = None;
+    assert!(!own.is_run_view());
+    let ready = connect(target).unwrap();
+    provider.join().unwrap();
+    let panes = ready.panes.as_ref().unwrap();
+    let view = ReadOnly(Arc::clone(panes));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    // The program's screen, as the pane sees it, tracks the mouse.
+    while !panes
+        .take_update()
+        .is_some_and(|update| update.screens.iter().any(|(_, s)| s.mouse_input()))
+    {
+        assert!(Instant::now() < deadline, "no screen tracking the mouse");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // The next screen, read through the view, keeps clicks for the viewer,
+    // so a plain drag selects.
+    panes.send_input(ready.input, b"next").unwrap();
+    loop {
+        if let Some(update) = view.take_update()
+            && !update.screens.is_empty()
+        {
+            assert!(update.screens.iter().all(|(_, s)| !s.mouse_input()));
+            break;
+        }
+        assert!(Instant::now() < deadline, "no later screen");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let key = Input::Key(KeyPress {
+        key: "t".into(),
+        text: Some("typed".into()),
+        ..KeyPress::default()
+    });
+    for refused in [key, Input::Paste("typed\r".into())] {
+        let error = view.send_reserved_input(ready.input, refused, None);
+        assert_eq!(error.unwrap_err().to_string(), READ_ONLY);
+    }
+    let pointer = Pointer::default();
+    for kept in [
+        Input::Scroll(Scroll::Lines(-1)),
+        Input::Wheel(pointer, -1),
+        Input::Click(pointer, Button::Left),
+        Input::Mouse(pointer, MouseAction::Press(Button::Left)),
+    ] {
+        view.send_reserved_input(ready.input, kept, None).unwrap();
+    }
+    let shown = server.run(&["capture-pane", "-p", "-t", VIEW]).unwrap();
+    assert!(!shown.contains("typed"), "{shown}");
 }

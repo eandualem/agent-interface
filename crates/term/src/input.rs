@@ -699,6 +699,10 @@ mod tests {
         let mut screen = crate::Screen::default();
         terminal.read_screen(&mut screen).unwrap();
         assert!(screen.mouse_input());
+        // A read-only viewer keeps the clicks for itself.
+        let mut kept = screen.clone();
+        kept.keep_mouse_local();
+        assert!(!kept.mouse_input());
         assert_eq!(
             terminal
                 .encode_input(&Input::Click(pointer, Button::Left))

@@ -550,15 +550,36 @@ pub(super) fn tab(
 
 /// `state` is the agent's state as the pane's header shows it: the card's
 /// details apply only while it is the state they were read with. `runs` are
-/// the agent's from its profile's roster.
-pub(super) fn overview(agent: &Agent, state: AgentState, runs: &Runs) -> AnyElement {
+/// the agent's from its profile's roster. With `open_view`, each run whose
+/// view lasts offers to open it.
+pub(super) fn overview<V: 'static>(
+    agent: &Agent,
+    state: AgentState,
+    runs: &Runs,
+    machine_label: Option<String>,
+    cx: &mut Context<V>,
+    open_view: Option<fn(&mut V, String, &mut Context<V>)>,
+) -> AnyElement {
     let (t, c) = (tokens(), colors());
     let matching = state == AgentState::from_runtime(&agent.state);
     let age = matching.then_some(agent.state_age_seconds).flatten();
+    let stale_evidence = (matching
+        && agent.state_source.as_deref() == Some("stale")
+        && state != AgentState::Offline)
+        .then(|| {
+            crate::desktop::agent_status::stale_note(&agent.evidence)
+                .unwrap_or_else(|| "State report is stale.".into())
+        });
     let mut body = list("agent-overview")
         .px(px(t.space.s18))
         .py(px(t.space.s16))
         .gap(px(t.space.s16));
+    if let Some(stale) = &stale_evidence {
+        body = body.child(
+            ui::text(div().text_color(c.attention_text), &t.text.body)
+                .child(format!("Stale state · {}", line(stale))),
+        );
+    }
     if state.needs_you() && matching {
         body = body.child(
             div()
@@ -596,11 +617,6 @@ pub(super) fn overview(agent: &Agent, state: AgentState, runs: &Runs) -> AnyElem
         body = body
             .child(ui::text(div().text_color(c.attention_text), &t.text.body).child(line(detail)));
     }
-    let model = agent
-        .model
-        .clone()
-        .map(|model| format!(" · {model}"))
-        .unwrap_or_else(|| " · its default model".into());
     let working = match (agent.current_issue, &agent.current_repo) {
         (Some(issue), Some(repo)) => format!("{repo}#{issue}"),
         (Some(issue), None) => format!("#{issue}"),
@@ -631,8 +647,12 @@ pub(super) fn overview(agent: &Agent, state: AgentState, runs: &Runs) -> AnyElem
                 div()
                     .flex()
                     .child(mono(agent.runtime.clone()).text_color(c.text))
-                    .child(div().text_color(c.muted).child(model)),
+                    .child(div().text_color(c.muted).child(format!(
+                        " · {}",
+                        model_label(agent.model.as_deref(), agent.model_source.as_deref())
+                    ))),
             ))
+            .children(machine_label.map(|machine| ui::fact("Machine", div().child(machine))))
             .child(ui::fact("Directory", mono(agent.dir.clone())))
             .child(ui::fact(
                 "Watches",
@@ -667,7 +687,7 @@ pub(super) fn overview(agent: &Agent, state: AgentState, runs: &Runs) -> AnyElem
         "newest first",
         &recent,
     ));
-    body = body.children(background(agent, runs));
+    body = body.children(background(agent, runs, cx, open_view));
     body.into_any_element()
 }
 
@@ -703,6 +723,8 @@ struct Work {
     when: String,
     result: String,
     text: String,
+    /// The session showing a run's output, while it lasts.
+    view: Option<String>,
 }
 
 /// A run's label, what a queued run waits on, and its last progress line.
@@ -725,6 +747,7 @@ fn active(run: &Run, now: f64) -> Work {
         when: age(since.as_deref(), now),
         result: line(&run.state),
         text: described(run),
+        view: run.view().map(str::to_owned),
     }
 }
 
@@ -741,6 +764,7 @@ fn ended(run: &Run, now: f64) -> Work {
         when: age(run.finished_at.as_deref(), now),
         result: line(&result.join(" · ")),
         text: described(run),
+        view: run.view().map(str::to_owned),
     }
 }
 
@@ -750,6 +774,7 @@ fn process(process: &Process, now: f64) -> Work {
         when: age(process.started_at.as_deref(), now),
         result: String::new(),
         text: line(&process.command),
+        view: None,
     }
 }
 
@@ -803,7 +828,12 @@ fn reported(counts: Background, rows: usize, active: usize) -> Option<String> {
 
 /// What the agent runs in the background; nothing for a service that doesn't
 /// report it.
-fn background(agent: &Agent, runs: &Runs) -> Option<gpui::Div> {
+fn background<V: 'static>(
+    agent: &Agent,
+    runs: &Runs,
+    cx: &mut Context<V>,
+    open_view: Option<fn(&mut V, String, &mut Context<V>)>,
+) -> Option<gpui::Div> {
     let counts = agent.background?;
     let (t, c) = (tokens(), colors());
     let mut section = div()
@@ -841,7 +871,14 @@ fn background(agent: &Agent, runs: &Runs) -> Option<gpui::Div> {
                     .text_ellipsis()
                     .text_color(c.muted)
                     .child(row.text),
-            ),
+            )
+            .when_some(open_view.zip(row.view), |el, (open, view)| {
+                el.child(
+                    ui::link(div().id(SharedString::from(format!("run-view-{view}"))))
+                        .child("View")
+                        .on_click(cx.listener(move |card, _, _, cx| open(card, view.clone(), cx))),
+                )
+            }),
         );
     }
     Some(section)
@@ -981,6 +1018,17 @@ pub(super) fn connections(agent: &Agent) -> AnyElement {
         .into_any_element()
 }
 
+fn model_label(model: Option<&str>, source: Option<&str>) -> String {
+    match (model, source) {
+        (Some(model), Some("observed")) => format!("{model} (reported by the runtime)"),
+        (Some(model), Some("configured")) => format!("{model} (configured)"),
+        (Some(model), Some("runtime_default")) => format!("{model} (runtime default)"),
+        (Some(model), _) => model.into(),
+        (None, Some("runtime_default")) => "its default model".into(),
+        (None, _) => "model unknown".into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1005,6 +1053,20 @@ mod tests {
 
     fn at(time: &str) -> f64 {
         epoch_seconds(time).unwrap()
+    }
+
+    #[test]
+    fn model_labels_distinguish_reported_and_configured_values() {
+        assert_eq!(
+            model_label(Some("m"), Some("observed")),
+            "m (reported by the runtime)"
+        );
+        assert_eq!(model_label(Some("m"), Some("configured")), "m (configured)");
+        assert_eq!(
+            model_label(None, Some("runtime_default")),
+            "its default model"
+        );
+        assert_eq!(model_label(Some("m"), Some("future")), "m");
     }
 
     #[test]
@@ -1036,6 +1098,7 @@ mod tests {
                 when: "10m".into(),
                 result: "running".into(),
                 text: "Review round 2, gpt-example · Reviewing crates/protocol/src/runs.rs".into(),
+                view: None,
             }
         );
         // A queued run counts from when it was queued.
@@ -1046,6 +1109,7 @@ mod tests {
                 when: "1m".into(),
                 result: "queued".into(),
                 text: "cargo build --workspace · waits on build slot".into(),
+                view: None,
             }
         );
         assert_eq!(
@@ -1055,8 +1119,16 @@ mod tests {
                 when: "2m".into(),
                 result: "failed · exit 101 · ran 7m".into(),
                 text: "cargo test --workspace · test result: FAILED. 211 passed; 1 failed".into(),
+                view: None,
             }
         );
+        // A run whose view lasts offers it, whether it runs or ended.
+        let mut viewed = failed.clone();
+        viewed.session = Some(format!("run-{}", viewed.run_id));
+        let view = viewed.session.clone();
+        assert_eq!(ended(&viewed, at("2026-11-10T10:23:47Z")).view, view);
+        viewed.state = "running".into();
+        assert_eq!(active(&viewed, at("2026-11-10T10:23:47Z")).view, view);
         let mut unknown = failed.clone();
         unknown.finished_at = Some("later".into());
         let work = ended(&unknown, at("2026-11-10T10:23:47Z"));

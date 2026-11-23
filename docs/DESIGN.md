@@ -386,8 +386,10 @@ is `meta`, with a trailing Install or Update), then Start, and More options
 opens one `panel` group with folder, instructions, model, hooks and greeting.
 Errors are `meta` in `attention_text` under the button. When something needs
 the person, the same shape holds one button: "Install tmux to continue", or
-"Agents can't start yet" with Continue with terminals and Details, whose
-reason is `meta` in the mono font on `field`.
+"Agents can't start yet" with Try again, Continue with terminals and Details,
+whose reason is `meta` in the mono font on `field`. Without Agent Backbone,
+"Agent Backbone isn't installed" has Continue with terminals as its button and
+Check again as a text action.
 
 When the guide's pane opens, the stage fades over `reveal_ms` and the
 navigation panel eases in from 24 px to the left. New profile, from the menu,

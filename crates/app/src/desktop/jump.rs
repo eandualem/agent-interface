@@ -48,6 +48,7 @@ pub(super) enum Target {
     Agent(super::navigation_origin::AgentTarget),
     Command(Create, Option<super::creation_origin::Target>),
     NewWorkspace,
+    Connections(super::creation_origin::Target),
     Settings,
 }
 
@@ -146,7 +147,11 @@ impl Browser {
             .as_ref()
             .map(|jump| jump.query.to_lowercase())
             .unwrap_or_default();
-        let matches = |text: &str| query.is_empty() || text.to_lowercase().contains(&query);
+        self.jump_hits_for(&query)
+    }
+
+    pub(super) fn jump_hits_for(&self, query: &str) -> Vec<Hit> {
+        let matches = |text: &str| query.is_empty() || text.to_lowercase().contains(query);
         let mut hits = Vec::new();
         let states = self.agent_states();
         if let Some(layout) = &self.layout {
@@ -192,20 +197,59 @@ impl Browser {
             }
         }
         if let Some(states) = &states {
+            let active = self.active_agents();
+            let local_machine = active.and_then(|agents| agents.local_machine_id());
             let mut agents: Vec<_> = states.iter().collect();
             agents.sort_by_key(|(name, state)| (!state.needs_you(), name.to_lowercase()));
             for (name, state) in agents {
-                if matches(name)
-                    && let Some(target) = self.agent_target(name)
-                {
+                let remote_machine = active.and_then(|agents| {
+                    let machine = agents.machine(name)?;
+                    local_machine
+                        .as_deref()
+                        .is_some_and(|local| local != machine.id.as_str())
+                        .then(|| agents.machine_display_name(&machine))
+                });
+                let stale = active.is_some_and(|agents| agents.get(name).stale);
+                let matched = matches(name) || remote_machine.as_deref().is_some_and(matches);
+                if matched && let Some(target) = self.agent_target(name) {
+                    let word = if stale {
+                        if *state == AgentState::Unknown {
+                            "stale".to_owned()
+                        } else {
+                            format!("{} · stale", state.word())
+                        }
+                    } else {
+                        state.word().to_owned()
+                    };
+                    let meta = match remote_machine {
+                        Some(machine) => format!("{word} · {machine}"),
+                        None => word,
+                    };
                     hits.push(Hit {
                         group: "AGENTS",
                         label: name.clone(),
-                        meta: state.word().into(),
-                        agent: Some(*state),
+                        meta,
+                        agent: Some(if stale { AgentState::Unknown } else { *state }),
                         target: Target::Agent(target),
                     });
                 }
+            }
+        }
+        if matches("Connections")
+            && self.connections_workspace().is_some()
+            && let Some(target) = self.creation_target()
+        {
+            let hit = Hit {
+                group: "COMMANDS",
+                label: "Connections".into(),
+                meta: String::new(),
+                agent: None,
+                target: Target::Connections(target),
+            };
+            if query == "connections" {
+                hits.insert(0, hit);
+            } else {
+                hits.push(hit);
             }
         }
         for (label, target) in [
@@ -270,6 +314,7 @@ impl Browser {
             Target::Command(action, target) => {
                 self.create_from(action, target.as_ref(), window, cx)
             }
+            Target::Connections(target) => self.open_connections(Some(&target), None, window, cx),
             Target::NewWorkspace => self.begin_workspace(window, cx),
             Target::Settings => cx.defer(super::settings_window::show),
         }

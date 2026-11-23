@@ -44,6 +44,34 @@ pub(crate) fn library_location(explicit: Option<&Path>) -> Result<PathBuf, Error
     resolve(explicit, &|name| std::env::var_os(name), &user_home)
 }
 
+/// Resolve the previous library location, including a folder whose ancestors
+/// no longer exist. Resolution must preserve the spelling used to name its server.
+pub(super) fn former_library(path: &Path) -> io::Result<PathBuf> {
+    validate_path_bytes(path)?;
+    if path.as_os_str().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Expected the former library folder",
+        ));
+    }
+    let expanded =
+        expand_home(path, &|name| std::env::var_os(name), &user_home).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Cannot resolve the former library's home directory",
+            )
+        })?;
+    // The final folder may now be a compatibility symlink pointing at the
+    // destination. Its original name is the legacy socket lookup key.
+    validate_path_bytes(&expanded)?;
+    let resolved = match (expanded.parent(), expanded.file_name()) {
+        (Some(parent), Some(name)) => resolve_path(parent)?.join(name),
+        _ => resolve_path(&expanded)?,
+    };
+    validate_path_bytes(&resolved)?;
+    Ok(resolved)
+}
+
 pub(crate) fn user_home(name: Option<&OsStr>) -> Option<PathBuf> {
     let user = match name {
         Some(name) => uzers::get_user_by_name(name),
@@ -137,27 +165,33 @@ fn resolve(
         })
 }
 
-pub(crate) fn resolve_path(path: &Path) -> io::Result<PathBuf> {
-    // Saved socket paths are untrusted. Bound both initial copying and work
-    // after symlink expansion; a missing prefix must not permit unlimited probes.
-    const MAX_PATH_BYTES: usize = 4096;
-    const MAX_COMPONENTS: usize = 4096;
-    let excessive = || {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "path resolution exceeds its limit",
-        )
-    };
+const MAX_PATH_BYTES: usize = 4096;
+
+fn excessive() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "path resolution exceeds its limit",
+    )
+}
+
+fn validate_path_bytes(path: &Path) -> io::Result<()> {
     if path.as_os_str().len() > MAX_PATH_BYTES {
         return Err(excessive());
     }
-    let mut components = 0;
     if path.as_os_str().as_bytes().contains(&0) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "path contains NUL",
         ));
     }
+    Ok(())
+}
+
+pub(crate) fn resolve_path(path: &Path) -> io::Result<PathBuf> {
+    // Bound initial copying and work after symlink expansion.
+    const MAX_COMPONENTS: usize = 4096;
+    validate_path_bytes(path)?;
+    let mut components = 0;
     enum Pending {
         Path(PathBuf),
         SaveLink(PathBuf),
@@ -259,6 +293,20 @@ fn expand_home(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_preserves_the_former_folder_name_if_it_is_now_a_symlink() {
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().canonicalize().unwrap();
+        let moved = root.join("moved");
+        let former = root.join("former");
+        std::fs::create_dir(&moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &former).unwrap();
+        assert_eq!(former_library(&former).unwrap(), former);
+        assert!(former_library(Path::new("bad\0name")).is_err());
+        assert!(former_library(Path::new(&"x".repeat(MAX_PATH_BYTES + 1))).is_err());
+        assert!(former_library(Path::new(&format!("~{}x", "/".repeat(MAX_PATH_BYTES)))).is_err());
+    }
 
     #[test]
     fn library_is_in_the_data_directory_unless_the_environment_names_one() {

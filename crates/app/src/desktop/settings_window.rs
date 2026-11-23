@@ -53,6 +53,7 @@ enum Page {
 }
 
 pub struct SettingsWindow {
+    origin: super::settings_profiles::Origin,
     page: Page,
     /// Built when Profiles is first chosen, so other pages never ask Agent Backbone.
     profiles: Option<gpui::Entity<super::settings_profiles::Profiles>>,
@@ -144,10 +145,24 @@ pub fn may_quit(cx: &mut App) -> bool {
 
 /// Bring the Settings window forward, opening it if it is not open.
 pub fn show(cx: &mut App) {
+    let origin = super::settings_profiles::Origin::capture(cx);
+    let active_browser = cx
+        .active_window()
+        .and_then(|w| w.downcast::<Browser>())
+        .is_some();
     let open = cx.try_global::<Open>().map(|Open(handle)| *handle);
     if let Some(handle) = open
         && handle
-            .update(cx, |_, window, _| window.activate_window())
+            .update(cx, |settings, window, cx| {
+                if settings
+                    .origin
+                    .retarget(active_browser.then(|| origin.clone()))
+                {
+                    settings.profiles = None;
+                    cx.notify();
+                }
+                window.activate_window();
+            })
             .is_ok()
     {
         return;
@@ -201,6 +216,7 @@ pub fn show(cx: &mut App) {
                 }
             });
             SettingsWindow {
+                origin,
                 page: Page::Appearance,
                 profiles: None,
                 error: None,
@@ -300,17 +316,32 @@ impl SettingsWindow {
         true
     }
 
+    fn leave_profiles(&mut self, cx: &mut Context<Self>) {
+        if let Some(profiles) = self.profiles.take() {
+            profiles.update(cx, |p, cx| p.leave(cx));
+        }
+    }
+
+    fn select_page(&mut self, page: Page, cx: &mut Context<Self>) {
+        if self.page == Page::Profiles && self.page != page {
+            self.leave_profiles(cx);
+        }
+        self.page = page;
+    }
+
     /// Whether the window may close now. Unsaved theme edits are only
     /// dropped on a second request: the first shows the editor and asks.
     fn may_close(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(editing) = &mut self.editing else {
+            self.leave_profiles(cx);
             return true;
         };
         if editing.discarding || editing.editor.read(cx).value() == editing.saved {
+            self.leave_profiles(cx);
             return true;
         }
         editing.discarding = true;
-        self.page = Page::Appearance;
+        self.select_page(Page::Appearance, cx);
         cx.notify();
         false
     }
@@ -1370,7 +1401,7 @@ impl Render for SettingsWindow {
                     ))
                     .child(name)
                     .on_click(cx.listener(move |view, _, _, cx| {
-                        view.page = page;
+                        view.select_page(page, cx);
                         view.recording = None;
                         view.refusal = None;
                         cx.notify();
@@ -1389,7 +1420,11 @@ impl Render for SettingsWindow {
             Page::Profiles => {
                 let profiles = self
                     .profiles
-                    .get_or_insert_with(|| cx.new(super::settings_profiles::Profiles::new))
+                    .get_or_insert_with(|| {
+                        cx.new(|cx| {
+                            super::settings_profiles::Profiles::new(self.origin.clone(), cx)
+                        })
+                    })
                     .clone();
                 div().flex().flex_col().pt(px(t.space.s12)).child(profiles)
             }

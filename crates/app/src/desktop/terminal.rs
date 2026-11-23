@@ -28,6 +28,10 @@ pub(super) struct Target {
 }
 
 impl Target {
+    fn remote(&self) -> Option<&str> {
+        self.leaf.attachment.as_ref()?.remote_profile.as_deref()
+    }
+
     fn profile_matches(&self, space: &agent_interface_core::Workspace) -> bool {
         space.profile_id.as_deref()
             == self
@@ -35,12 +39,34 @@ impl Target {
                 .as_ref()
                 .map(|c| c.identity().profile_id.as_str())
     }
+    fn remote_bound(&self) -> bool {
+        self.connection
+            .as_ref()
+            .is_some_and(|c| Some(c.identity().profile_id.as_str()) == self.remote())
+    }
+
     /// A provider's sign-in session. It does not come back once it ends.
     /// A session of that name on another tmux server is a person's own.
     pub fn is_sign_in(&self) -> bool {
         self.connection.as_ref().is_some_and(|connection| {
             self.leaf.attachment.as_ref().is_some_and(|attachment| {
-                attachment.session.starts_with("sign-in-")
+                attachment.remote_profile.is_none()
+                    && attachment.session.starts_with("sign-in-")
+                    && attachment
+                        .source_socket
+                        .as_deref()
+                        .is_none_or(|path| std::path::Path::new(path) == connection.tmux_socket())
+            })
+        })
+    }
+
+    /// A run's view on its profile's server: shown read-only, and gone for
+    /// good once it ends.
+    pub fn is_run_view(&self) -> bool {
+        self.connection.as_ref().is_some_and(|connection| {
+            self.leaf.attachment.as_ref().is_some_and(|attachment| {
+                attachment.remote_profile.is_none()
+                    && agent_interface_roster::profiles::runs::is_view(&attachment.session)
                     && attachment
                         .source_socket
                         .as_deref()
@@ -132,6 +158,7 @@ impl Target {
 }
 
 struct Ready {
+    default_size: (u16, u16),
     socket: PathBuf,
     panes: Option<Arc<Panes>>,
     layout: Option<agent_interface_tmux::layout::Change>,
@@ -170,6 +197,8 @@ fn bound_shell_folder(leaf: &Leaf) -> Option<&str> {
 
 const PROFILE_UNAVAILABLE: &str = "The workspace profile connection is unavailable.";
 const PROFILE_CHANGED: &str = "The workspace profile connection changed while attaching.";
+/// A run's view lasts about 30 minutes after the run's output ends.
+const RUN_VIEW_ENDED: &str = "This run's view has ended.";
 
 fn connect(target: Target) -> Result<Ready, String> {
     connect_selected(target, None, false)
@@ -180,6 +209,9 @@ fn connect_selected(
     selected: Option<SessionWindow>,
     reopened: bool,
 ) -> Result<Ready, String> {
+    if target.remote().is_some() {
+        return Err("Remote terminal requires a profile stream".into());
+    }
     let bound = target.connection.clone();
     if let Some(connection) = &bound {
         connection
@@ -251,6 +283,7 @@ fn connect_selected(
     )
     .map_err(|e| e.to_string())?;
     let ready = Ready {
+        default_size: connection.default_size,
         socket,
         panes: Some(Arc::new(panes)),
         window: connection.layout.window,
@@ -265,6 +298,41 @@ fn connect_selected(
             .map_err(|_| PROFILE_CHANGED.to_owned())?;
     }
     Ok(ready)
+}
+
+/// Whether a remote stream that ended with this reason may be opened again
+/// automatically: only when its connection was lost, not when its access
+/// ended, its agent exited or the stream broke the protocol.
+fn retries_after_end(reason: &str) -> bool {
+    reason == crate::view::remote::CONNECTION_LOST
+}
+
+/// How long a remote stream stays up before its loss retries at once again.
+const STABLE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Whether a failed remote open may be tried again automatically: the home
+/// or the agent's machine was unreachable (503), the profile service did not
+/// answer or was restarting, or the connection closed or timed out during the
+/// open. Refusals and protocol errors wait for a person, except that an agent
+/// this pane `launched` has no session yet (`not_found`) while it starts.
+fn retries_after_open(error: &std::io::Error, launched: bool) -> bool {
+    use std::io::ErrorKind::{
+        BrokenPipe, ConnectionAborted, ConnectionRefused, ConnectionReset, HostUnreachable,
+        NotConnected, NotFound, TimedOut, UnexpectedEof,
+    };
+    matches!(
+        error.kind(),
+        HostUnreachable
+            | NotConnected
+            | UnexpectedEof
+            | ConnectionReset
+            | ConnectionAborted
+            | BrokenPipe
+            | ConnectionRefused
+            | NotFound
+            | TimedOut
+    ) || (launched
+        && agent_interface_roster::profiles::terminal::refusal_code(error) == Some("not_found"))
 }
 
 /// How often a lost attachment is tried again, in two-second refresh ticks:
@@ -694,6 +762,9 @@ fn ended(
         (Some(true), ..) => "Restarting and resuming its conversation…".into(),
         (None, Some(name), _) => format!("{name} is not running."),
         (None, None, true) if sign_in => "This sign-in has ended.".into(),
+        (None, None, true) if error == RUN_VIEW_ENDED => {
+            "A run's view lasts about 30 minutes after its output ends.".into()
+        }
         (None, None, true) => "Waiting for this session. Reconnecting automatically.".into(),
         (None, None, false) => "Could not start this terminal’s shell.".into(),
     };
@@ -750,6 +821,13 @@ fn drawn(
 
 pub(super) struct LiveTerminal {
     pub target: Target,
+    refresh_on_reopen: bool,
+    /// Whether a remote pane's error is transient, so the automatic retry
+    /// may open it again.
+    remote_retry: bool,
+    /// This pane started its remote agent: keep opening it until it runs.
+    launched: bool,
+    access: Option<agent_interface_roster::profiles::terminal::Access>,
     view: Option<Entity<TerminalView>>,
     error: Option<String>,
     connecting: bool,
@@ -773,6 +851,8 @@ pub(super) struct LiveTerminal {
     /// Whether the next connection shows another window of the session it
     /// shows, which is no new session.
     switching: bool,
+    protect_size: bool,
+    default_size: Option<(u16, u16)>,
     launching: bool,
     launch_result: Option<agent_interface_roster::lifecycle::Outcome>,
     /// Whether the browser shows this terminal. A hidden one keeps its
@@ -789,12 +869,14 @@ pub(super) struct LiveTerminal {
 }
 
 pub(super) struct Detach;
+pub(super) struct RefreshProfile;
 /// The sign-in session this pane showed is over.
 pub(super) struct SignInEnded;
 pub(super) struct OpenTerminal;
 /// The terminal's session is attached and can take the keyboard.
 pub(super) struct Connected;
 
+impl gpui::EventEmitter<RefreshProfile> for LiveTerminal {}
 impl gpui::EventEmitter<Detach> for LiveTerminal {}
 impl gpui::EventEmitter<SignInEnded> for LiveTerminal {}
 impl gpui::EventEmitter<OpenTerminal> for LiveTerminal {}
@@ -810,8 +892,26 @@ impl LiveTerminal {
     }
 
     /// Only the browser knows whether an attachment is a registered agent.
-    pub fn set_agent(&mut self, agent: Option<String>, cx: &mut Context<Self>) {
+    pub fn set_agent(
+        &mut self,
+        agent: Option<String>,
+        protect_size: Option<bool>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(protect_size) = protect_size
+            && self.protect_size != protect_size
+        {
+            self.protect_size = protect_size;
+            if let Some(view) = &self.view {
+                let size = self.default_size.filter(|_| protect_size);
+                view.update(cx, |view, cx| view.set_agent_default(size, cx));
+            }
+        }
         if self.agent != agent {
+            // Another stopped state is not the one this pane started from.
+            if agent.is_some() {
+                self.launched = false;
+            }
             self.agent = agent;
             self.launch_result = None;
             self.retry = Retry::default();
@@ -913,9 +1013,27 @@ impl LiveTerminal {
             let result = work.await;
             let _ = this.update(cx, |terminal, cx| {
                 terminal.launching = false;
-                if terminal.agent == Some(agent) {
-                    terminal.launch_result = Some(result);
-                    terminal.start(cx);
+                let remote = terminal.target.remote().is_some();
+                let same = terminal.agent.as_ref() == Some(&agent);
+                // The roster may list a remote agent as running before its
+                // start returns; its pane still has to open.
+                if same || (remote && terminal.agent.is_none()) {
+                    use agent_interface_roster::lifecycle::Outcome;
+                    // A remote stream that opened meanwhile stays as it is.
+                    let closed = !remote || terminal.error.is_some();
+                    terminal.launched = remote
+                        && closed
+                        && matches!(result, Outcome::Accepted(_) | Outcome::AlreadyRunning);
+                    if terminal.launched {
+                        // Open it as soon as it is up, not after an earlier backoff.
+                        terminal.retry = Retry::default();
+                    }
+                    if same {
+                        terminal.launch_result = Some(result);
+                    }
+                    if closed {
+                        terminal.start(cx);
+                    }
                 }
                 cx.notify();
             });
@@ -938,7 +1056,10 @@ impl LiveTerminal {
 
     /// The browser shows this terminal again: follow the window list, and
     /// try a lost attachment at the next refresh.
-    pub fn show(&mut self) {
+    pub fn show(&mut self, cx: &gpui::App) {
+        if let Some(view) = &self.view {
+            view.read(cx).show();
+        }
         self.shown = true;
         self.retry = Retry::default();
     }
@@ -977,6 +1098,7 @@ impl LiveTerminal {
             return;
         }
         self.target.leaf = leaf;
+        self.restoring = false;
         self.start_window(self.selected_window.clone(), Some(environment), false, cx);
     }
 
@@ -992,7 +1114,11 @@ impl LiveTerminal {
     ) -> Self {
         let mut terminal = Self {
             target,
+            refresh_on_reopen: false,
+            remote_retry: false,
+            launched: false,
             view: None,
+            access: None,
             error: None,
             connecting: false,
             windows: Vec::new(),
@@ -1007,6 +1133,8 @@ impl LiveTerminal {
             error_is_end: false,
             roster: None,
             switching: false,
+            protect_size: false,
+            default_size: None,
             launching: false,
             launch_result: None,
             shown: true,
@@ -1068,11 +1196,14 @@ impl LiveTerminal {
                                 }
                             }
                             if terminal.error.is_some()
+                                && terminal.error.as_deref() != Some(RUN_VIEW_ENDED)
                                 && terminal.target.leaf.attachment.is_some()
+                                && (terminal.target.remote().is_none() || terminal.remote_retry)
                                 && terminal.retry.due(terminal.shown)
                             {
                                 // Retry only the saved attachment. This never
                                 // starts an agent, server or replacement shell.
+                                // A remote pane retries only a transient loss.
                                 terminal.start(cx);
                             }
                         }
@@ -1090,6 +1221,115 @@ impl LiveTerminal {
         }
     }
 
+    /// Open a remote pane again, or refresh its profile first when the open
+    /// found the profile unavailable.
+    fn reopen_remote(&mut self, cx: &mut Context<Self>) {
+        if self.refresh_on_reopen {
+            cx.emit(RefreshProfile)
+        } else {
+            self.start(cx)
+        }
+    }
+
+    fn start_remote(&mut self, reconnect: bool, cx: &mut Context<Self>) {
+        use crate::view::remote::{PANE, Remote, layout};
+        self.closed = None;
+        // A reconnect keeps the last screen and reason until the new stream
+        // opens, instead of flashing an empty Connecting panel each attempt.
+        if !reconnect {
+            self.view = None;
+            self.access = None;
+            self.error = None;
+        }
+        self.connecting = true;
+        let target = self.target.clone();
+        self.refresh_on_reopen = false;
+        self.remote_retry = false;
+        let work = cx.background_executor().spawn(async move {
+            let profile = target.remote().unwrap();
+            let connection = target
+                .connection
+                .as_ref()
+                .filter(|c| c.identity().profile_id == profile)
+                .ok_or_else(|| std::io::Error::other(format!("This terminal belongs to profile {profile}. Open it in a workspace bound to that profile.")))?;
+            let agent = &target.leaf.attachment.as_ref().unwrap().session;
+            let (stream, writer, close) = connection.open_terminal(agent)?;
+            let (wake, updates) = mpsc::unbounded();
+            let (size, access) = (stream.size, stream.access);
+            let remote = Remote::start(stream, writer, close, move || {
+                let _ = wake.unbounded_send(());
+            })?;
+            Ok::<_, std::io::Error>((remote, size, access, updates))
+        });
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |terminal, cx| {
+                terminal.connecting = false;
+                match result {
+                    Ok((remote, size, access, updates)) => {
+                        terminal.error = None;
+                        terminal.launched = false;
+                        terminal.launch_result = None;
+                        terminal.access = Some(access);
+                        let view = cx.new(|cx| {
+                            TerminalView::embedded(
+                                Arc::new(remote),
+                                vec![layout(size)],
+                                PANE,
+                                appearance(),
+                                updates,
+                                cx,
+                            )
+                        });
+                        if terminal.hold_size {
+                            view.update(cx, |view, cx| view.hold_size(true, cx));
+                        }
+                        if !terminal.shown {
+                            view.update(cx, |view, cx| view.hide(cx));
+                        }
+                        // Keep the backoff across a stream that opens and drops
+                        // at once; reset it after one that stayed up.
+                        let opened = std::time::Instant::now();
+                        terminal.closed = Some(cx.subscribe(
+                            &view,
+                            move |terminal, _, event: &crate::view::Disconnected, cx| {
+                                let error = event
+                                    .0
+                                    .clone()
+                                    .unwrap_or_else(|| crate::view::remote::CONNECTION_LOST.into());
+                                terminal.remote_retry = retries_after_end(&error);
+                                if opened.elapsed() >= STABLE {
+                                    terminal.retry = Retry::default();
+                                }
+                                terminal.error = Some(error);
+                                cx.notify();
+                            },
+                        ));
+                        cx.subscribe(&view, |_, _, _: &crate::view::Focus, cx| {
+                            cx.emit(crate::view::Focus)
+                        })
+                        .detach();
+                        terminal.view = Some(view);
+                        cx.emit(Connected);
+                    }
+                    Err(error) => {
+                        terminal.refresh_on_reopen = matches!(
+                            error.kind(),
+                            std::io::ErrorKind::NotConnected | std::io::ErrorKind::PermissionDenied
+                        );
+                        terminal.remote_retry = retries_after_open(&error, terminal.launched);
+                        terminal.launched &= terminal.remote_retry;
+                        if error.kind() == std::io::ErrorKind::AddrNotAvailable {
+                            cx.emit(RefreshProfile);
+                        }
+                        terminal.error = Some(error.to_string());
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
     fn start_window(
         &mut self,
         selected: Option<SessionWindow>,
@@ -1098,6 +1338,10 @@ impl LiveTerminal {
         cx: &mut Context<Self>,
     ) {
         let switching = std::mem::take(&mut self.switching);
+        if self.target.remote().is_some() {
+            self.start_remote(reconnect, cx);
+            return;
+        }
         // A switch to another window keeps hearing whether the session it
         // shows ends; its new view replaces this once it is ready.
         if !switching {
@@ -1114,6 +1358,7 @@ impl LiveTerminal {
         self.restarts.attempting(switching);
         let target = self.target.clone();
         let opened_shell = environment.is_some();
+        let automatic = self.restoring;
         let connection = cx.background_executor().spawn(async move {
             let attempt = CONNECTION_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let span = tracing::debug_span!("terminal_connect", attempt, pane_id = %target.leaf.id, attached = target.leaf.attachment.is_some(), explicit_open = environment.is_some());
@@ -1128,7 +1373,7 @@ impl LiveTerminal {
                     }
                     let directory = library::library_directory(target.directory.as_deref())
                         .map_err(|error| error.to_string())?;
-                    let socket = library::shell_socket_for_creation(&directory, &target.leaf.id)
+                    let socket = library::prepare_shell(&directory, &target.leaf.id, automatic)
                         .map_err(|error| error.to_string())?;
                     agent_interface_tmux::shells::ensure(
                         &socket,
@@ -1171,9 +1416,16 @@ impl LiveTerminal {
                             .iter()
                             .find(|window| window.id == ready.window)
                             .cloned();
+                        let panes = ready.panes.take().unwrap();
+                        let panes: Arc<dyn crate::view::backend::Backend> =
+                            if terminal.target.is_run_view() {
+                                Arc::new(crate::view::backend::ReadOnly(panes))
+                            } else {
+                                panes
+                            };
                         let view = cx.new(|cx| {
                             TerminalView::embedded(
-                                ready.panes.take().unwrap(),
+                                panes,
                                 ready.layout.take().unwrap().panes,
                                 ready.input,
                                 appearance(),
@@ -1181,6 +1433,10 @@ impl LiveTerminal {
                                 cx,
                             )
                         });
+                        terminal.default_size = Some(ready.default_size);
+                        if terminal.protect_size {
+                            view.update(cx, |view,cx| view.set_agent_default(terminal.default_size,cx));
+                        }
                         if terminal.hold_size {
                             view.update(cx, |view, cx| view.hold_size(true, cx));
                         }
@@ -1189,12 +1445,14 @@ impl LiveTerminal {
                             |terminal, _, event: &crate::view::Disconnected, cx| {
                                 tracing::warn!(event = "terminal_disconnected", pane_id = %terminal.target.leaf.id, attached = terminal.target.leaf.attachment.is_some(), has_failure = event.0.is_some(), "Terminal connection ended");
                                 terminal.error_is_end = true;
-                                terminal.error = Some(
+                                terminal.error = Some(if terminal.target.is_run_view() {
+                                    RUN_VIEW_ENDED.into()
+                                } else {
                                     event
                                         .0
                                         .clone()
-                                        .unwrap_or_else(|| "Session disconnected".into()),
-                                );
+                                        .unwrap_or_else(|| "Session disconnected".into())
+                                });
                                 terminal.restarts.disconnected();
                                 // A shell lost while shown, such as when its server
                                 // stops, gets the same one automatic restart.
@@ -1235,7 +1493,11 @@ impl LiveTerminal {
                             // connection that failed to verify may come back.
                             let session_gone =
                                 error != PROFILE_UNAVAILABLE && error != PROFILE_CHANGED;
-                            terminal.error = Some(error);
+                            terminal.error = Some(if session_gone && terminal.target.is_run_view() {
+                                RUN_VIEW_ENDED.into()
+                            } else {
+                                error
+                            });
                             terminal.error_is_end = false;
                             terminal.restarts.attach_failed(switching);
                             if session_gone && terminal.target.is_sign_in() {
@@ -1315,6 +1577,20 @@ impl Render for LiveTerminal {
             .min_h_0()
             .overflow_hidden()
             .bg(c.surface)
+            .when_some(self.access, |el, access| {
+                el.child(line(
+                    match access {
+                        agent_interface_roster::profiles::terminal::Access::Watch => {
+                            "Remote terminal · Watch only"
+                        }
+                        agent_interface_roster::profiles::terminal::Access::Type => {
+                            "Remote terminal · Can type"
+                        }
+                    }
+                    .into(),
+                    c.muted,
+                ))
+            })
             .child(
                 div().flex_1().min_h_0().children(
                     (!self.connecting || self.error.is_some())
@@ -1329,6 +1605,9 @@ impl Render for LiveTerminal {
             .when_some(drawn.ended, |el, ended| {
                 let attached = self.target.leaf.attachment.is_some();
                 let launching = self.launching;
+                // A remote pane that is no stopped agent says what went wrong
+                // and offers to open it again.
+                let remote = self.target.remote().is_some() && self.agent.is_none();
                 // In a short pane the text scrolls and the buttons stay.
                 el.child(
                     div()
@@ -1336,7 +1615,7 @@ impl Render for LiveTerminal {
                         .min_h_0()
                         .overflow_y_scroll()
                         .children(ended.error.map(|error| line(error, c.attention_text)))
-                        .child(line(ended.message, c.muted))
+                        .when(!remote, |el| el.child(line(ended.message, c.muted)))
                         // Shown whole, wrapping, as the service wrote it.
                         .children(ended.reason.map(|reason| line(reason, c.muted))),
                 )
@@ -1348,6 +1627,8 @@ impl Render for LiveTerminal {
                         .gap(gpui::px(t.space.s8))
                         .px(gpui::px(t.space.s12))
                         .pb(gpui::px(t.space.s8))
+                        // A stopped agent offers its launch whichever machine
+                        // it runs on.
                         .when(ended.launch, |el| {
                             el.child(
                                 ui::button("resume-agent", "Resume", ui::Button::Primary)
@@ -1364,7 +1645,30 @@ impl Render for LiveTerminal {
                                     })),
                             )
                         })
-                        .when(!attached, |el| {
+                        // The roster may lag; the remote open says what is wrong.
+                        .when(self.target.remote_bound(), |el| {
+                            el.child(
+                                ui::button(
+                                    "reopen-remote",
+                                    "Open again",
+                                    if remote {
+                                        ui::Button::Primary
+                                    } else {
+                                        ui::Button::Secondary
+                                    },
+                                )
+                                .on_click(
+                                    cx.listener(|terminal, _, _, cx| terminal.reopen_remote(cx)),
+                                ),
+                            )
+                        })
+                        .when(remote, |el| {
+                            el.child(
+                                ui::button("detach-remote", "Detach", ui::Button::Secondary)
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(Detach))),
+                            )
+                        })
+                        .when(!remote && !attached, |el| {
                             el.child(
                                 ui::button("open-terminal", "Open terminal", ui::Button::Secondary)
                                     .on_click(cx.listener(|terminal, _, _, cx| {
@@ -1377,19 +1681,20 @@ impl Render for LiveTerminal {
                                     })),
                             )
                         })
-                        .when(attached, |el| {
+                        .when(!remote && attached, |el| {
                             el.child(
                                 ui::button("detach", "Detach", ui::Button::Secondary)
                                     .on_click(cx.listener(|_, _, _, cx| cx.emit(Detach))),
                             )
                         }),
                 )
-                .when(launching, |el| {
+                .when(!remote && launching, |el| {
                     el.child(line("Asking Backbone…".into(), c.muted))
                 })
-                .when_some(self.launch_result.as_ref(), |el, result| {
-                    el.child(line(result.message(), c.muted))
-                })
+                .when_some(
+                    self.launch_result.as_ref().filter(|_| !remote),
+                    |el, result| el.child(line(result.message(), c.muted)),
+                )
             })
             // Last, so it paints over the terminal, whose size it leaves alone.
             .when(drawn.pending, |el| {
@@ -1422,6 +1727,64 @@ pub(super) fn appearance() -> Appearance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_remote_pane_retries_only_a_transient_loss() {
+        use std::io::ErrorKind;
+        assert!(retries_after_end(crate::view::remote::CONNECTION_LOST));
+        assert!(!retries_after_end("Invalid remote terminal response"));
+        assert!(!retries_after_end(crate::view::remote::ACCESS_ENDED));
+        assert!(!retries_after_end(crate::view::remote::PROCESS_EXITED));
+        let refused = |kind, code: &str| {
+            std::io::Error::new(
+                kind,
+                agent_interface_roster::profiles::terminal::Refused {
+                    code: code.into(),
+                    reason: format!("Refused ({code})"),
+                },
+            )
+        };
+        for kind in [
+            ErrorKind::HostUnreachable,
+            ErrorKind::NotConnected,
+            ErrorKind::UnexpectedEof,
+            ErrorKind::ConnectionReset,
+            ErrorKind::ConnectionRefused,
+            ErrorKind::TimedOut,
+        ] {
+            assert!(retries_after_open(&kind.into(), false), "{kind:?}");
+        }
+        for kind in [
+            ErrorKind::Other,
+            ErrorKind::PermissionDenied,
+            ErrorKind::AddrNotAvailable,
+            ErrorKind::InvalidData,
+        ] {
+            assert!(!retries_after_open(&kind.into(), false), "{kind:?}");
+        }
+        // Only an agent this pane started, with no session yet, is waited for.
+        assert!(!retries_after_open(
+            &refused(ErrorKind::Other, "not_found"),
+            false
+        ));
+        assert!(retries_after_open(
+            &refused(ErrorKind::Other, "not_found"),
+            true
+        ));
+        for code in ["forbidden", "invalid_request"] {
+            assert!(
+                !retries_after_open(&refused(ErrorKind::Other, code), true),
+                "{code}"
+            );
+        }
+        for kind in [
+            ErrorKind::Other,
+            ErrorKind::PermissionDenied,
+            ErrorKind::AddrNotAvailable,
+        ] {
+            assert!(!retries_after_open(&kind.into(), true), "{kind:?}");
+        }
+    }
 
     #[test]
     fn a_lost_attachment_is_retried_less_often_until_it_is_shown_again() {
@@ -1505,6 +1868,7 @@ mod tests {
         let mut model = agent_interface_core::Layout::initial("/tmp".into());
         model.workspaces[0].profile_id = Some("profile-a".into());
         model.attach(Some(Attachment {
+            remote_profile: None,
             session: "same-name".into(),
             source_socket: None,
         }));
@@ -1558,6 +1922,7 @@ mod tests {
         );
         let mut model = agent_interface_core::Layout::initial("/tmp".into());
         model.attach(Some(Attachment {
+            remote_profile: None,
             session: "fixture".into(),
             source_socket: None,
         }));
@@ -1585,6 +1950,7 @@ mod tests {
     fn attachment_survives_navigation_and_detach_returns_the_same_pane_to_its_chooser() {
         let mut model = agent_interface_core::Layout::initial("/work".into());
         model.attach(Some(Attachment {
+            remote_profile: None,
             session: "worker".into(),
             source_socket: Some("/fixture/source".into()),
         }));
@@ -1621,6 +1987,7 @@ mod tests {
             &tab,
             &target.leaf.id,
             Some(Attachment {
+                remote_profile: None,
                 session: "replacement".into(),
                 source_socket: Some("/fixture/source".into()),
             })
@@ -1646,6 +2013,7 @@ mod tests {
         layout.add_tab(Some("kept".into()), "/".into(), true);
         layout.add_tab(Some("sign-in-codex".into()), "/".into(), true);
         layout.attach(Some(Attachment {
+            remote_profile: None,
             session: "sign-in-codex".into(),
             source_socket: None,
         }));
@@ -1694,6 +2062,7 @@ mod tests {
                 empty: false,
                 view: None,
                 attachment: Some(Attachment {
+                    remote_profile: None,
                     session: "returning".into(),
                     source_socket: Some(socket.trim().into()),
                 }),
@@ -1819,6 +2188,7 @@ mod tests {
                 empty: false,
                 view: None,
                 attachment: Some(Attachment {
+                    remote_profile: None,
                     session: "window-source".into(),
                     source_socket: Some(socket.trim().into()),
                 }),
@@ -1928,6 +2298,133 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_tile_takes_its_own_size_and_releases_it_on_hide_or_direct_close() {
+        let server = TmuxServer::start().unwrap();
+        for session in ["agent", "other"] {
+            server
+                .run(&[
+                    "new-session",
+                    "-d",
+                    "-s",
+                    session,
+                    "-x",
+                    "120",
+                    "-y",
+                    "40",
+                    "cat",
+                ])
+                .unwrap();
+        }
+        let socket = server
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap();
+        let open = |session: &str| {
+            connect(Target {
+                connection: None,
+                leaf: Leaf {
+                    id: "abcdef123456".into(),
+                    cwd: None,
+                    empty: false,
+                    view: None,
+                    attachment: Some(Attachment {
+                        session: session.into(),
+                        source_socket: Some(socket.trim().into()),
+                        remote_profile: None,
+                    }),
+                },
+                directory: None,
+                source: Err("use fixture socket".into()),
+            })
+            .unwrap()
+        };
+        let wait = |session: &str, expected: &str| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let size = server
+                    .run(&[
+                        "display-message",
+                        "-p",
+                        "-t",
+                        &format!("={session}:"),
+                        "#{window_width}x#{window_height}",
+                    ])
+                    .unwrap();
+                if size.trim() == expected {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "expected {expected}, saw {size}");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        let other = open("other");
+        other.panes.as_ref().unwrap().set_size(95, 30).unwrap();
+        wait("other", "95x30");
+        let ready = open("agent");
+        let panes = ready.panes.as_ref().unwrap();
+        panes.set_agent_default(Some(ready.default_size));
+        panes.set_size(20, 10).unwrap();
+        wait("agent", "20x10");
+        panes.ignore_size().unwrap();
+        wait("agent", "120x40");
+        panes.set_size(94, 33).unwrap();
+        wait("agent", "94x33");
+        let pane_id = server
+            .run(&["display-message", "-p", "-t", "=agent:", "#{pane_id}"])
+            .unwrap();
+        let pane = agent_interface_tmux::control::PaneId(
+            pane_id.trim().trim_start_matches('%').parse().unwrap(),
+        );
+        panes.send_input(pane, b"after-sizing\n").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            assert_eq!(panes.failure(), None);
+            if panes.control_replies_drained()
+                && server
+                    .run(&["capture-pane", "-p", "-t", "=agent:"])
+                    .unwrap()
+                    .contains("after-sizing")
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "input after guarded sizing did not reach the pane"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        drop(ready);
+        wait("agent", "120x40");
+        wait("other", "95x30");
+        let again = open("agent");
+        let panes = again.panes.as_ref().unwrap();
+        panes.set_agent_default(Some(again.default_size));
+        panes.set_size(20, 10).unwrap();
+        wait("agent", "20x10");
+        panes.ignore_size().unwrap();
+        drop(again);
+        wait("agent", "120x40");
+        wait("other", "95x30");
+        // tmux can reassign a surviving client when a session is destroyed.
+        // A late release for the old agent must not resize its new session.
+        let reassigned = open("agent");
+        let panes = reassigned.panes.as_ref().unwrap();
+        panes.set_agent_default(Some(reassigned.default_size));
+        panes.set_size(80, 24).unwrap();
+        wait("agent", "80x24");
+        let client = server
+            .run(&["list-clients", "-t", "=agent:", "-F", "#{client_name}"])
+            .unwrap();
+        server
+            .run(&["switch-client", "-c", client.trim(), "-t", "=other:"])
+            .unwrap();
+        drop(other);
+        wait("other", "80x24");
+        panes.ignore_size().unwrap();
+        drop(reassigned);
+        wait("other", "80x24");
+    }
+
+    #[test]
     fn a_declared_size_resizes_the_session_like_an_ordinary_client() {
         let server = TmuxServer::start().unwrap();
         server
@@ -1968,6 +2465,7 @@ mod tests {
                 empty: false,
                 view: None,
                 attachment: Some(Attachment {
+                    remote_profile: None,
                     session: "sized".into(),
                     source_socket: Some(socket.trim().into()),
                 }),
@@ -2124,6 +2622,7 @@ mod tests {
                 empty: false,
                 view: None,
                 attachment: Some(Attachment {
+                    remote_profile: None,
                     session: session.into(),
                     source_socket: Some(socket.to_str().unwrap().into()),
                 }),

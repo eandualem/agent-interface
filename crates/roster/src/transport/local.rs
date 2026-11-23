@@ -84,7 +84,7 @@ fn method(body: &Option<Vec<u8>>) -> &'static str {
 
 /// The effective user, once `socket` is this user's private socket in this
 /// user's private folder.
-fn owned(socket: &Path) -> Result<u32, Option<u16>> {
+pub(crate) fn owned(socket: &Path) -> Result<u32, Option<u16>> {
     let uid = rustix::process::geteuid().as_raw();
     let metadata = fs::symlink_metadata(socket).map_err(|error| {
         tracing::debug!(event = "provider_socket_metadata_failed", error_kind = ?error.kind(), os_error = error.raw_os_error(), "Provider socket metadata unavailable");
@@ -194,6 +194,7 @@ pub(crate) fn stream(
     socket: &str,
     path: &str,
     profile_id: &str,
+    cursor: Option<&str>,
     quiet: Duration,
     live: &dyn Fn() -> bool,
     chunk: &mut dyn FnMut(&[u8]) -> bool,
@@ -218,9 +219,13 @@ pub(crate) fn stream(
                 .uri(path)
                 .header("Host", "localhost")
                 .header("Accept", "text/event-stream")
-                .header("X-Backbone-Profile-ID", profile_id)
-                .body(Full::new(Bytes::new()))
-                .map_err(|_| None)?;
+                .header("X-Backbone-Profile-ID", profile_id);
+            let request = if let Some(cursor) = cursor {
+                request.header("Last-Event-ID", cursor)
+            } else {
+                request
+            };
+            let request = request.body(Full::new(Bytes::new())).map_err(|_| None)?;
             let (mut sender, connection) =
                 hyper::client::conn::http1::handshake(TokioIo::new(stream))
                     .await

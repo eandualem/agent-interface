@@ -1,0 +1,23 @@
+{
+  "invitation": {
+    "request_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5e",
+    "peer_id": "v1:2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e",
+    "display_name": "Second peer",
+    "direction": "incoming",
+    "expires_at": "2026-11-28T12:00:00Z",
+    "state": "accepted",
+    "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c6a"
+  },
+  "connection": {
+    "connection": {
+      "peer_id": "v1:2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e",
+      "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c6a"
+    },
+    "display_name": "Second peer",
+    "state": "connected",
+    "gates": {
+      "incoming": "review",
+      "outgoing": "review"
+    }
+  }
+}

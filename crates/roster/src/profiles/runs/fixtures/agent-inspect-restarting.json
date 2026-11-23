@@ -109,5 +109,7 @@
     }
   ],
   "ceiling": [],
-  "takes_issues": true
+  "takes_issues": true,
+  "held_queue": null,
+  "queued": 0
 }

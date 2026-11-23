@@ -74,7 +74,9 @@
         "phase": "waiting",
         "resume": false,
         "start_at": "2026-11-19T15:04:00Z"
-      }
+      },
+      "held_queue": null,
+      "queued": 0
     },
     {
       "name": "reviewer",
@@ -117,7 +119,9 @@
       "mode": "sandboxed",
       "grants": [],
       "ceiling": [],
-      "takes_issues": false
+      "takes_issues": false,
+      "held_queue": null,
+      "queued": 0
     }
   ],
   "total": 2

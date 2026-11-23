@@ -249,6 +249,8 @@ impl Browser {
             self.icon_picker(cx)
         } else if self.tab_menu.is_some() {
             self.tab_options(cx)
+        } else if self.agent_menu.is_some() {
+            self.agent_options(cx)
         } else if self.workspace_menu {
             self.workspace_options(cx)
         } else {

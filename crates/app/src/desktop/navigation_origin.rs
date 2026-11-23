@@ -19,6 +19,7 @@ pub(super) struct Origin {
 pub(super) struct AgentTarget {
     pub origin: Origin,
     pub name: String,
+    pub remote_profile: Option<String>,
 }
 
 /// A new subscription generation follows a moved pane; queued old events expire.
@@ -29,8 +30,12 @@ pub(super) struct ViewEvents {
 }
 
 impl ViewEvents {
+    pub fn belongs_to(&self, origin: Option<&Origin>) -> bool {
+        self.ticket.as_deref() == origin
+    }
+
     pub fn refresh(&mut self, origin: Option<Origin>) -> Option<Rc<Origin>> {
-        if self.ticket.as_deref() == origin.as_ref() {
+        if self.belongs_to(origin.as_ref()) {
             return None;
         }
         self.subscription = None;
@@ -123,11 +128,46 @@ impl Browser {
     }
 
     pub(super) fn agent_target(&self, name: &str) -> Option<AgentTarget> {
-        let workspace = &self.layout.as_ref()?.model().workspace()?.id;
+        let space = self.layout.as_ref()?.model().workspace()?;
+        self.agent_target_in(space, name)
+    }
+
+    fn agent_target_in(
+        &self,
+        space: &agent_interface_core::Workspace,
+        name: &str,
+    ) -> Option<AgentTarget> {
+        let remote = match self.workspace_profiles.route(space) {
+            Route::Bound(connection) => self
+                .workspace_agents(space)
+                .and_then(|agents| agents.machine(name))
+                .and_then(|machine| machine.remote_profile(connection.identity())),
+            _ => None,
+        };
         Some(AgentTarget {
-            origin: self.navigation_origin(workspace)?,
+            remote_profile: remote,
+            origin: self.navigation_origin(&space.id)?,
             name: name.to_owned(),
         })
+    }
+
+    /// Check a delayed sidebar click against its original roster before navigating.
+    pub(super) fn remote_target_is_current(&self, target: &AgentTarget) -> bool {
+        self.layout
+            .as_ref()
+            .and_then(|layout| {
+                layout
+                    .model()
+                    .workspaces
+                    .iter()
+                    .find(|space| space.id == target.origin.workspace)
+            })
+            .and_then(|space| self.agent_target_in(space, &target.name))
+            .is_some_and(|now| {
+                now.origin == target.origin
+                    && now.remote_profile.is_some()
+                    && now.remote_profile == target.remote_profile
+            })
     }
 
     /// Resolve the original agent row without consulting the selected profile.
@@ -156,7 +196,8 @@ impl Browser {
                         .into_iter()
                         .find(|leaf| {
                             leaf.attachment.as_ref().is_some_and(|attachment| {
-                                attachment.session == target.name
+                                attachment.remote_profile == target.remote_profile
+                                    && attachment.session == target.name
                                     && attachment.source_socket.as_deref().is_none_or(|path| {
                                         std::path::Path::new(path) == connection.tmux_socket()
                                     })

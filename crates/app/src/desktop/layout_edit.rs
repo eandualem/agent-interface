@@ -358,6 +358,7 @@ mod tests {
         let directory = directory.canonicalize().unwrap();
         let mut model = Layout::initial("/saved".into());
         model.attach(Some(Attachment {
+            remote_profile: None,
             session: "external".into(),
             source_socket: Some("/external/socket".into()),
         }));

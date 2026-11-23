@@ -2,6 +2,8 @@
   "name": "Tokyo Night",
   "extends": "dark",
   "color": {
+    "outgoing_surface": "#13131a",
+    "outgoing_border": "#292e42",
     "ground": "#16161e",
     "panel": "#16161e",
     "surface": "#1a1b26",

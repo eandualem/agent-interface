@@ -2,6 +2,8 @@
   "name": "GitHub Light",
   "extends": "light",
   "color": {
+    "outgoing_surface": "#f0f3f6",
+    "outgoing_border": "#d0d7de",
     "ground": "#eaeef2",
     "panel": "#f6f8fa",
     "surface": "#ffffff",

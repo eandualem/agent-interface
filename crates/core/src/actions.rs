@@ -278,6 +278,13 @@ impl Layout {
                     .iter()
                     .any(|pane| pane.id == pane_id && pane.empty && pane.attachment.is_none())
         });
+        if view.kind == crate::ViewKind::Connections
+            && self
+                .workspace()
+                .is_some_and(|space| space.connections_panes().next().is_some())
+        {
+            return false;
+        }
         if !empty || !view.is_valid() || !self.choose_pane(pane_id) {
             return false;
         }
@@ -469,17 +476,20 @@ impl Layout {
         let Some(source) = self.workspace() else {
             return false;
         };
+        let Some(target) = self.workspaces.iter().find(|space| space.id == destination) else {
+            return false;
+        };
+        let Some(tab) = self.tab() else {
+            return false;
+        };
         if source.id == destination
-            || !self
-                .workspaces
-                .iter()
-                .any(|space| space.id == destination && space.profile_id == source.profile_id)
+            || source.profile_id != target.profile_id
+            || (tab.connections_panes().next().is_some()
+                && target.connections_panes().next().is_some())
         {
             return false;
         }
-        let Some(tab) = self.tab().cloned() else {
-            return false;
-        };
+        let tab = tab.clone();
         self.close_tab();
         self.selected = destination.to_owned();
         let space = self.workspace_mut().expect("destination exists");
@@ -905,6 +915,7 @@ mod tests {
     #[test]
     fn a_group_tab_puts_the_lead_left_and_tiles_the_others_in_equal_rows() {
         let attachment = |name: &str| Attachment {
+            remote_profile: None,
             session: name.into(),
             source_socket: Some("/fixture/source".into()),
         };
@@ -954,6 +965,7 @@ mod tests {
     #[test]
     fn a_finished_group_closes_only_tabs_still_showing_just_that_group() {
         let attachment = |name: &str| Attachment {
+            remote_profile: None,
             session: name.into(),
             source_socket: Some("/fixture/source".into()),
         };
@@ -991,6 +1003,7 @@ mod tests {
     fn moving_panes_preserves_contents_and_collapses_the_old_parent() {
         let mut model = Layout::initial("/tmp".into());
         model.attach(Some(Attachment {
+            remote_profile: None,
             session: "fixture".into(),
             source_socket: None,
         }));
@@ -1103,6 +1116,7 @@ mod tests {
         model.split(Direction::Right, "/tmp".into(), false);
         let second = model.pane().unwrap().id.clone();
         let attachment = Attachment {
+            remote_profile: None,
             session: "work".into(),
             source_socket: Some("/tmp/source.sock".into()),
         };
@@ -1116,6 +1130,7 @@ mod tests {
 
         let target = model.attachment_target().unwrap();
         model.attach(Some(Attachment {
+            remote_profile: None,
             source_socket: Some("/tmp/peer.sock".into()),
             ..attachment
         }));
@@ -1135,6 +1150,7 @@ mod tests {
         assert_eq!(model.pane().unwrap().id, second);
 
         model.attach(Some(Attachment {
+            remote_profile: None,
             session: "other".into(),
             source_socket: None,
         }));
@@ -1153,6 +1169,7 @@ mod tests {
         assert!(model.show_view(&tab, &pane, View::of(ViewKind::Team)));
         let target = model.attachment_target().unwrap();
         let attachment = Attachment {
+            remote_profile: None,
             session: "work".into(),
             source_socket: None,
         };
@@ -1180,6 +1197,7 @@ mod tests {
         assert!(!model.fill_pane(&tab, &first, None));
         assert_eq!(model, before);
         let attachment = Attachment {
+            remote_profile: None,
             session: "work".into(),
             source_socket: Some("/tmp/source.sock".into()),
         };
@@ -1323,6 +1341,7 @@ mod tests {
     fn renaming_normalizes_names_and_preserves_terminal_identity() {
         let mut model = Layout::initial("/tmp".into());
         model.attach(Some(Attachment {
+            remote_profile: None,
             session: "worker".into(),
             source_socket: None,
         }));
@@ -1356,6 +1375,7 @@ mod tests {
         let original = model.pane().unwrap().clone();
         let tab_name = model.tab().unwrap().name.clone();
         let attached = Attachment {
+            remote_profile: None,
             session: "worker".into(),
             source_socket: Some("/tmp/source.sock".into()),
         };

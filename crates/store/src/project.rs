@@ -94,25 +94,48 @@ impl<'a> Projection<'a> {
         let object = match node {
             Node::Leaf(leaf) => {
                 let mut item = self.object(&leaf.id, &["first", "second", "direction", "ratio"])?;
+                let remote = leaf
+                    .attachment
+                    .as_ref()
+                    .and_then(|a| a.remote_profile.as_ref());
+                optional(&mut item, "remote_profile", remote.map(String::as_str));
                 item.insert(
                     "agent".into(),
                     value(leaf.attachment.as_ref().map(|a| a.session.clone())),
                 );
                 optional(&mut item, "cwd", leaf.cwd.as_deref());
-                optional(
-                    &mut item,
-                    "source_socket",
+                // A directory can never name a tmux socket. Older writers clear
+                // these known attachment fields when a pane is replaced or detached.
+                let socket = if remote.is_some() {
+                    Some(super::schema::REMOTE_SOURCE)
+                } else {
                     leaf.attachment
                         .as_ref()
-                        .and_then(|a| a.source_socket.as_deref()),
-                );
-                if leaf.empty {
+                        .and_then(|a| a.source_socket.as_deref())
+                };
+                optional(&mut item, "source_socket", socket);
+                let view = leaf.view.as_ref();
+                let connections =
+                    view.is_some_and(|v| v.kind == agent_interface_core::ViewKind::Connections);
+                if connections && leaf.empty {
+                    return Err(format!("{}: a view pane cannot also be empty", leaf.id));
+                }
+                if connections {
+                    item.insert("connections_pane".into(), value(true));
+                } else if matches!(item.get("connections_pane"), Some(Field::Raw(raw)) if raw.get() == "true")
+                {
+                    item.remove("connections_pane");
+                }
+                if leaf.empty || connections {
                     item.insert("empty".into(), value(true));
                 } else {
                     item.remove("empty");
                 }
-                let view = leaf.view.as_ref();
-                optional(&mut item, "view", view.map(|view| view.kind.as_str()));
+                optional(
+                    &mut item,
+                    "view",
+                    view.filter(|_| !connections).map(|v| v.kind.as_str()),
+                );
                 optional(
                     &mut item,
                     "view_agent",
@@ -145,6 +168,7 @@ impl<'a> Projection<'a> {
                         "agent",
                         "cwd",
                         "source_socket",
+                        "remote_profile",
                         "view",
                         "view_agent",
                         "view_section",

@@ -30,6 +30,9 @@ use gpui::{
 use crate::panes::{PaneLayout, Panes};
 
 mod accessibility;
+pub(crate) mod backend;
+pub(crate) mod remote;
+use backend::Backend;
 mod clipboard;
 mod scroll;
 mod selection;
@@ -99,7 +102,7 @@ fn is_monospaced(text_system: &TextSystem, appearance: &Appearance) -> bool {
 /// A view that draws the panes of one tmux window and sends typed keys to one
 /// of them.
 pub struct TerminalView {
-    panes: Option<Arc<Panes>>,
+    panes: Option<Arc<dyn Backend>>,
     grid: Rc<RefCell<Grid>>,
     // Input goes to this exact pane after explicit clicking or navigation.
     input: Option<PaneId>,
@@ -174,7 +177,7 @@ impl TerminalView {
     /// A terminal inside a workspace. It takes focus only on a click and a
     /// detached session does not close the application.
     pub(crate) fn embedded(
-        panes: Arc<Panes>,
+        panes: Arc<dyn Backend>,
         layout: Vec<PaneLayout>,
         input: PaneId,
         appearance: Appearance,
@@ -186,7 +189,7 @@ impl TerminalView {
 
     #[allow(clippy::too_many_arguments)]
     fn create(
-        panes: Arc<Panes>,
+        panes: Arc<dyn Backend>,
         layout: Vec<PaneLayout>,
         input: PaneId,
         appearance: Appearance,
@@ -347,12 +350,24 @@ impl TerminalView {
         cx.notify();
     }
 
-    fn panes(&self) -> &Panes {
+    fn panes(&self) -> &dyn Backend {
         self.panes.as_deref().expect("terminal entity is alive")
+    }
+
+    pub(crate) fn set_agent_default(&mut self, size: Option<(u16, u16)>, cx: &mut Context<Self>) {
+        if self.panes().set_agent_default(size) {
+            self.grid.borrow_mut().requested = None;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn show(&self) {
+        self.panes().set_visible(true);
     }
 
     /// A retained hidden view must not constrain a displayed client's size.
     pub(crate) fn hide(&mut self, cx: &mut Context<Self>) {
+        self.panes().set_visible(false);
         let mut grid = self.grid.borrow_mut();
         if grid.contributes_size && self.panes().ignore_size().is_ok() {
             grid.contributes_size = false;
@@ -1260,8 +1275,8 @@ impl InputQueue {
     }
 }
 
-pub(crate) fn input_queue(
-    panes: Arc<Panes>,
+pub(crate) fn input_queue<B: Backend + ?Sized + 'static>(
+    panes: Arc<B>,
     report: impl Fn(Option<String>) + Send + 'static,
 ) -> InputQueue {
     let (sender, pending) = std::sync::mpsc::channel::<(PaneId, Input, Arc<InputReservation>)>();

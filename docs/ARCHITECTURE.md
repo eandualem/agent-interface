@@ -9,26 +9,66 @@ webview; the app runs no daemon.
 
 A **library** is a directory containing `layouts.db`. It stores workspaces,
 tabs and split layouts. Each leaf in a layout either opens an ordinary shell
-on the library's persistent tmux server or attaches to an existing tmux session.
+on the library's persistent tmux server, attaches to a local session, or opens a profile agent terminal stream.
 An empty leaf starts no shell.
 
-Leaves connect on first display and retain their control-mode clients (`tmux -C`)
+An ordinary shell that is zsh, bash or fish also defines `claude`, `codex` and
+`agy` as shell functions, loaded after the person's own start-up files from
+`shell-guard/` beside the library's tmux socket. Typed at a terminal, each one
+asks whether to start a Backbone agent (`backbone agent start`) instead of an
+unmanaged session; inside an agent's session (`BACKBONE_AGENT`), from a script
+or pipe, or without the `backbone` program, it runs the program as typed. A
+function of the same name from the person's own files is left in place. zsh
+reads the files through `ZDOTDIR`, which they unset again so the person's own
+files come from their home or the `ZDOTDIR` their `~/.zshenv` sets, and
+defines the functions at its first prompt. A `ZDOTDIR` set in the system's
+`zshenv` replaces the app's before zsh reads it, so such a shell starts without
+the guard and runs the programs as typed. fish reads them with
+`--init-command`. bash starts with `--rcfile`, which reads the login start-up
+files as `bash -l` would, because macOS's bash 3.2 ignores `ENV` in POSIX mode.
+The shell then reports itself as not a login shell and does not read
+`~/.bash_logout`, and where bash was built to read `/etc/bash.bashrc`, as on
+Debian and Ubuntu, that file runs a second time from `/etc/profile`. Other
+shells start unchanged. Profile workspaces' shells belong to the Backbone
+service.
+
+Local terminals connect on first display and retain their control-mode clients (`tmux -C`)
 when tabs or workspaces change. The owning native window keeps each connection
 until its target is removed or replaced, the library changes, or the window
 closes. Hidden terminals continue consuming output, preserving their state at
 the cost of retaining their workers and scrollback. A saved Detach action clears
 the pane’s attachment or view and returns the same pane to its chooser, including
-ordinary terminals. The ordinary shell remains available to reopen. Detach, Close
-Pane and Close Tab never send a session-termination command. Closing the final pane closes
+ordinary terminals. The ordinary shell remains available to reopen. Detach never
+sends a session-termination command, and neither do Close Pane and Close Tab outside a
+profile's workspace; in one, they end the profile's shells of the closed panes (see
+the bound shells below). Closing the final pane closes
 its tab. An attached session retains its own lifetime policy, including tmux's
 `destroy-unattached` option.
 
-Each displayed native viewport participates in tmux's window sizing. Hidden
+A displayed terminal, profile agent or ordinary shell, declares the native viewport dimensions, so a narrow tile reflows at its own width. When a profile agent is hidden or detached, its control client withdraws using the session’s configured default dimensions, at least 80 columns, so a background prompt stays usable. tmux applies its window sizing policy if other clients are present. Hidden
 clients keep their connections with `ignore-size`; their next paint restores
 sizing participation at the current viewport dimensions. Resizing a viewport can
 change the geometry seen by other clients of the same window. Choosing a tmux
 window within an attachment is local to that native leaf; it does not switch
 another client's selected window.
+
+For a remote agent, the roster and new-pane chooser use the agent's machine ID
+and the verified profile's local machine ID to select the transport. The layout
+retains the agent name and profile ID. On restore, the client verifies the selected
+service instance. The profile home resolves the agent's current machine.
+The roster crate authenticates the Unix peer and upgrades a profile-scoped
+HTTP request to `backbone-terminal-v1`. The service grants watch or type access.
+A reader decodes bounded newline-delimited JSON frames and preserves output bytes
+across frame boundaries. A separate worker owns one Ghostty engine and publishes
+screen updates to the same native grid used for local terminals.
+
+Older layout readers retain the agent name with a directory as its socket field,
+so replacing or detaching it clears the stream target. A restarted profile
+instance is resolved again for each workspace that shared its binding.
+Hiding a remote pane pauses its view. A buffer overrun triggers a full repaint.
+A watch grant keeps the host's grid dimensions. Only a typing grant permits
+encoded input and resize requests. Closing the pane detaches the socket. A
+refusal or ended stream leaves the reason and an explicit reopen action in the pane.
 
 ## Crate boundaries
 
@@ -244,8 +284,8 @@ returns its roster; these reads change nothing. The scene waits on the icon at i
 handoff until the check has answered, and the tagline then reads "Getting
 things ready…".
 
-The agent service is started without asking and is never named on screen
-unless the person opens Details. When it doesn't answer, first run runs Agent
+The agent service is started without asking and is not named on screen
+unless the person opens Details, or no `backbone` command is installed. When it doesn't answer, first run runs Agent
 Backbone's own setup, `backbone setup --file REQUEST --jsonl` with a schema-3
 `initialize` request (`profile_name: Default`, `service: user` and the
 `core-v1` starter), which decides what the computer is: it keeps a profile the
@@ -261,7 +301,8 @@ such as how to start the service (`service_unavailable`, which names
 follow, Try again sends it again, else a new one. The service is then given
 30 seconds to answer. If it still does not answer, "Agents can't start yet" offers Try again
 and Continue with terminals; Details holds the technical reason and where the
-service's log is. tmux and Git, when missing, are one screen with one Install
+service's log is. Without a `backbone` command nothing has failed: "Agent
+Backbone isn't installed" offers Continue with terminals and Check again. tmux and Git, when missing, are one screen with one Install
 button. They install through the system's own installer: Apple's command line
 tools or Homebrew on macOS, and on Linux the package manager behind `pkexec`'s
 graphical password prompt; without a package manager or that prompt, the
@@ -397,13 +438,20 @@ the team-wide Usage view. Skill previews keep their 256 KiB limit.
 
 The service also pushes agent state changes on `GET /api/stream`, as
 Server-Sent Events. `Connection::watch` follows that stream on a worker of its
-own and reads only each frame's kind: the opening `hello`, `agent.state`,
-`agent.changed` (what an agent waits on, its background counts or its held
-deliveries), `agent.restart` (each step of an agent's own restart),
-`run.changed` and `resync` each ask the roster worker for a read at once. A service that
-does not know a kind ignores it. The frames' values are
-not applied and no cursor is kept, so a stream opened again simply reads the
-states again. A stream that breaks, or stays silent for 45 seconds against the
+own. An `agent.state` (state, reason and since) or `agent.changed` (what an
+agent waits on, its background counts and its held and waiting deliveries) is
+applied to the agent with that name and registration and published at once,
+before any read; a state just reported is no longer stale. The issue an agent
+works on is not pushed, so a new state also asks for a read behind it, which
+corrects the row's issue number. The opening `hello`, `run.changed`,
+`agent.restart` (each step of an agent's own restart), `resync`, and a change
+for a registration the roster doesn't hold or can't be read each ask the
+roster worker for a read at once. A read that was out when a change
+arrived applies that change again to what it read, so an older read never puts
+an older state back on screen. A service that does not know a kind ignores it.
+No cursor is kept, so a stream opened again starts with a read. `agent.place`
+is not followed, because the app shows no role or superior. A stream that
+breaks, or stays silent for 45 seconds against the
 service's 15-second heartbeat, is opened again two seconds later; a 404
 stops the worker. Without the stream, the roster is polled as before. The
 two-second poll continues, because agents joining or leaving the roster are
@@ -518,9 +566,9 @@ changes invalidate them. Visible working and starting indicators animate using G
 static. State labels retain the distinction between starting and busy, and
 between blocked and waiting for a person. Each connection-owned roster worker reads
 immediately and then two seconds after each completed request. After a good
-roster it also reads the running swarms, which only group agents in the
-navigation panel: a failed swarm read clears the grouping without marking agent
-states stale. Each window remembers the swarms it has seen running; when a
+roster it also reads the running swarms and the profile's machines (`GET /api/status/services`), which only group agents in the
+navigation panel and Team view: a failed swarm read clears swarm folding and a failed machine-status read clears machine reachability (`status unknown`) without marking agent
+states stale; remote agents still carrying `machine` from `/api/agents` remain grouped under their machine IDs. Machine IDs are compared in full against the connected profile's local machine ID; names are display-only. One-machine profiles keep the flat layout; multi-machine profiles group remote agents under their machine's name and live reachability (online, offline with last-seen age, or not in profile), surface stale `state_source` observations with their evidence, and offer Start, Stop and Restart directly through the profile service, reporting the service's refusal reason when a machine cannot be reached. Each window remembers the swarms it has seen running; when a
 readable list stops naming one, it closes the tabs still named after that swarm
 whose every pane attaches to a session seen in that swarm, on its tmux server. A failed or partly unreadable list never counts as
 a finish, and a swarm that ends while the app is closed leaves its tab. Its live model
@@ -1070,8 +1118,18 @@ window identifiers use `io.github.eandualem.agent-interface`; macOS uses the sam
 bundle identifier. The executable, workspace crates, package archives and new
 install, configuration and data directories use `agent-interface`. The installer
 replaces only an installation and launchers that carry its own marker, and rolls
-back the app and launchers on failure. Library directories stay in place: their
-absolute path determines the ordinary-shell socket hash.
+back the app and launchers on failure. The ordinary-shell registry in the user's private socket directory maps
+a library directory and database identity to its tmux socket. A rename preserves
+both identities. Registration is serialized and committed atomically before
+publishing the portable `.shell-server.json` marker. A hard link kept outside
+the library indicates whether the source still holds its marker. It lives
+beside the registry when possible, otherwise in a private sibling directory
+on the source volume. A different filesystem identity requires the owner's
+choice when the original disappears and matching sessions remain. This
+distinguishes an intended destination from a backup carrying the same marker.
+A legacy path-named socket at the original location is registered when it
+contains a saved pane's exact session. The guide covers recovery across
+volumes and after moving a library before registration.
 The Linux launcher uses the packaged Agent Interface icon.
 Under WSL, the installer installs missing Ubuntu runtime packages through apt
 and registers its desktop entry in `/usr/share/applications`, which
@@ -1294,6 +1352,36 @@ paths. Its child profile restricts capabilities. This optional system setup
 requires sudo; refusal or failure does not block installing native views. `LIBGL_ALWAYS_SOFTWARE=1` selects
 WebKitGTK's nonaccelerated drawing policy for headless/software environments.
 
+### Profile Connections
+
+A Connections pane belongs to the selected workspace's profile. The sidebar,
+Jump and the new-pane chooser share one navigation path. It finds the pane by
+its saved view kind across the workspace's tabs. Opening it uses an empty pane
+or creates a tab through the library's normal save path. The store rejects
+concurrent edits that would leave two Connections panes in one workspace. It
+saves the pane as an extension on an empty chooser so earlier schema-v2 readers
+can reopen the library. Folded sidebar sections retain their state in each window's Browser.
+
+The pane reads peer records through the workspace profile's verified owner
+socket. A separate reader follows the profile event stream, preserving the
+last cursor across reconnects. Its hello and change events trigger a fresh
+overview, pending reviews and the selected generation's history. Changes during
+a read schedule another read. The service owns the identities, message bytes,
+review decisions, keys and relay. A relay upload has no terminal receipt.
+The service's Connections fixtures are copied byte for byte into
+`crates/roster/src/profiles/peers/fixtures/`, and tests read them through the
+client types and compare the client's request bodies with them.
+
+The pane sends explicit owner actions on its bound connection. A retry after a
+lost response reuses the same request key and body. Incoming messages can be
+passed or declined. Outgoing drafts can also be returned to the local agent
+with a revision note. After a local disconnect the thread reads "Stopped
+here, remote confirmation pending" until the peer acknowledges the revocation.
+History pagination uses the service cursor. When reads
+fail the pane retains the last snapshot and pauses changes. The separate sample
+preview uses in-memory records and decisions which expire when the person exits.
+Neither path sends keystrokes to a terminal.
+
 ### Bound native Policies
 
 Bound native Policies retain shared catalog IDs with the displayed instruction layers. Shared bodies come from the exact immutable provider revision, and discussions retain that artifact, revision and connection. Base and swarm briefs remain provider-owned read-only previews without artifact discussion authority. Catalog binding refusals invalidate the whole library; missing IDs cannot fall back to preview text or local paths. Reader completion tickets cancel closed openings and reject results after reopening the same path.
@@ -1357,7 +1445,13 @@ Bound panes never create ordinary shells on the window's own server.
 A bound shell comes from the provider: when a pane with no attachment connects,
 `POST /api/profile/shells` ensures a session for the pane on the verified tmux socket,
 and the app then attaches to it. A new pane sends no folder, so the shell starts in the
-profile's home. The app
+profile's home. When a saved Close Pane or Close Tab leaves no pane holding the shell,
+`DELETE /api/profile/shells/{shell_id}` ends it; the app never kills the session
+itself. Before closing, it reads each shell's panes (`list-panes`, then the terminal's
+foreground process group with `ps`) and asks the person first when a command other
+than the shell is in the foreground; a shell it cannot read counts as busy. A shell the
+service did not end is reported in the status bar. These shells are left out of
+session choosers. The app
 sends no environment and never starts a bound tmux server, so the app's launch
 context cannot reach the shell. Signing a CLI account in works the same way:
 `POST /api/profile/accounts/sign-in` returns a session on that socket, and the pane
@@ -1626,8 +1720,9 @@ Settings › Profiles opens one profile at a time. Opening it captures the
 selected library location once and opens a private lifecycle journal; it runs
 no lifecycle action, and the app has no start or stop of a profile's service.
 Saved requests enumerates bounded record IDs. The full history validates one
-page of durable snapshots at a time; a profile's page reads every record to find
-that profile's. Lifecycle
+page of durable snapshots at a time. A profile’s list includes its own records
+and unfinished creates that have no confirmed profile ID. Settings also offers
+the library’s full request history even when the profile list fails to load. Lifecycle
 records are kept, and the journal refuses new requests once it holds 4,096.
 Try the same request again is the one action on a sent request: it resends the
 same request under its original ID. Worker

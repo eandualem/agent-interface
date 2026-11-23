@@ -25,6 +25,7 @@ mod new_pane;
 use chooser::{Choice, SessionChooser};
 use layout_edit::{Create, Selection};
 mod components;
+mod connections;
 mod design;
 mod frame;
 mod icons;
@@ -35,8 +36,10 @@ mod onboarding;
 mod pane_cards;
 mod pane_drag;
 mod pane_motion;
+mod peer_inbox;
 mod profile_management;
 mod profile_picker;
+mod profile_shells;
 mod settings;
 mod settings_profiles;
 mod settings_window;
@@ -443,6 +446,12 @@ fn open_browser_with_status(
     .map_err(|error| error.to_string())
 }
 
+/// What a pane opened beside another shows.
+enum Beside {
+    View(View),
+    Session(Attachment),
+}
+
 struct EditingName {
     origin: Option<navigation_origin::Origin>,
     target: Option<NameEdit>,
@@ -628,6 +637,28 @@ fn saved_view(layout: &Layout, id: &str, view: &View) -> bool {
     })
 }
 
+struct AgentMenu {
+    ticket: Rc<()>,
+    origin: navigation_origin::Origin,
+    connection: agent_interface_roster::profiles::Connection,
+    target: navigation_origin::AgentTarget,
+    name: String,
+    registration_id: Option<String>,
+    state: agent_status::AgentState,
+    stale: bool,
+    stale_reason: Option<String>,
+    machine: Option<String>,
+    in_flight: bool,
+}
+
+#[derive(Clone, Copy)]
+enum AgentAction {
+    OpenTerminal,
+    Start { resume: bool },
+    Stop,
+    Restart { resume: bool },
+}
+
 #[derive(Default)]
 struct Browser {
     library: Option<Library>,
@@ -699,6 +730,21 @@ struct Browser {
     jump: Option<jump::Jump>,
     /// A navigation panel drag: where it started and the width then.
     sidebar_drag: Option<(gpui::Pixels, gpui::Pixels, Option<u32>)>,
+    agents_collapsed: bool,
+    connections_collapsed: bool,
+    peer_inboxes: HashMap<
+        String,
+        (
+            agent_interface_roster::profiles::ConnectionKey,
+            gpui::Entity<peer_inbox::Inbox>,
+            gpui::Subscription,
+        ),
+    >,
+    peer_to_open: Option<(
+        String,
+        agent_interface_roster::profiles::ConnectionKey,
+        peer_inbox::Selection,
+    )>,
     reset_focus: bool,
     painted_pane_focus: Option<String>,
     navigation: Option<gpui::FocusHandle>,
@@ -709,6 +755,7 @@ struct Browser {
     save_notice: Option<String>,
     name_click: Option<(String, bool)>,
     tab_menu: Option<TabMenu>,
+    agent_menu: Option<AgentMenu>,
     chooser: Option<Attaching>,
     // A failed proposed edit remains detached until its transaction succeeds.
     pending_save: Option<(Document, Layout)>,
@@ -716,6 +763,11 @@ struct Browser {
     creation_from: Option<Selection>,
     /// Agents whose swarms are listed under them in the navigation panel.
     expanded_agents: std::collections::HashSet<String>,
+    /// Remote machine IDs whose offline agents are expanded in the navigation panel.
+    expanded_machines: std::collections::HashSet<String>,
+    /// In-flight Start/Stop/Restart actions keyed by connection and agent name.
+    agent_actions_in_flight:
+        std::collections::HashSet<(agent_interface_roster::profiles::ConnectionKey, String)>,
     /// Swarms seen running, by workspace and swarm name, with their server
     /// and every session seen in them; kept until no tab is left to close
     /// for a finished one.
@@ -726,6 +778,11 @@ struct Browser {
     shell_environment: Option<Result<agent_interface_tmux::shells::Environment, String>>,
     shell_after_save: Option<Leaf>,
     shell_to_open: Option<Leaf>,
+    /// The profile's shells of panes being closed, ended once the close is
+    /// saved and no pane holds them.
+    shells_after_close: Option<(agent_interface_roster::profiles::Connection, Vec<String>)>,
+    /// A close waits for its shells' check, or for the person's answer.
+    close_pending: bool,
     /// The pane Open terminal asked for, focused once its shell is attached.
     terminal_to_focus: Option<String>,
     resize: Option<split_resize::Drag>,
@@ -765,7 +822,7 @@ impl Browser {
     }
 
     fn close_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.saving || self.save_failed {
+        if self.saving || self.save_failed || self.close_pending {
             return;
         }
         let Some(origin) = self.selected_navigation_origin() else {
@@ -778,14 +835,95 @@ impl Browser {
             return;
         };
         let (tab, pane) = (tab.id.clone(), pane.clone());
-        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
-            self.apply(update);
-        }
-        let Some(proposal) = self.close_pane_for(&origin, &tab, &pane) else {
-            cx.notify();
+        let shells = self.own_shells([&pane]);
+        self.close_checked(shells, window, cx, move |browser, window, cx| {
+            if browser.saving || browser.save_failed {
+                return false;
+            }
+            if let Some(update) = browser.library.as_ref().and_then(Library::take_update) {
+                browser.apply(update);
+            }
+            let Some(proposal) = browser.close_pane_for(&origin, &tab, &pane) else {
+                cx.notify();
+                return false;
+            };
+            browser.save_edit(proposal, window, cx);
+            true
+        });
+    }
+
+    /// The shells the selected workspace's profile may have opened for
+    /// `leaves`, one named for each, with its connection; none in a workspace
+    /// without a reachable profile.
+    fn own_shells<'a>(
+        &self,
+        leaves: impl IntoIterator<Item = &'a Leaf>,
+    ) -> Option<(agent_interface_roster::profiles::Connection, Vec<String>)> {
+        let space = self.layout.as_ref()?.model().workspace()?;
+        let workspace_profiles::Route::Bound(connection) = self.workspace_profiles.route(space)
+        else {
+            return None;
+        };
+        let ids: Vec<String> = leaves.into_iter().map(|leaf| leaf.id.clone()).collect();
+        (!ids.is_empty()).then(|| (connection.clone(), ids))
+    }
+
+    /// Close with `close` at once or, while a command runs in one of
+    /// `shells`, once the person agrees to end it. `close` says whether it
+    /// saved the close; the shells end after that save.
+    fn close_checked(
+        &mut self,
+        shells: Option<(agent_interface_roster::profiles::Connection, Vec<String>)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        close: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) -> bool + 'static,
+    ) {
+        let Some((connection, ids)) = shells else {
+            close(self, window, cx);
             return;
         };
-        self.save_edit(proposal, window, cx);
+        self.close_pending = true;
+        let (socket, checked) = (connection.tmux_socket().to_owned(), ids.clone());
+        let running = cx
+            .background_executor()
+            .spawn(async move { profile_shells::running(&socket, &checked) });
+        cx.spawn_in(window, async move |this, cx| {
+            let agreed = if running.await {
+                let Ok(answer) = this.update_in(cx, |_, window, cx| {
+                    window.prompt(
+                        gpui::PromptLevel::Warning,
+                        "Close this terminal?",
+                        Some("A command is still running in it. Closing ends it."),
+                        &[
+                            gpui::PromptButton::ok("Close"),
+                            gpui::PromptButton::cancel("Cancel"),
+                        ],
+                        cx,
+                    )
+                }) else {
+                    return;
+                };
+                answer.await == Ok(0)
+            } else {
+                true
+            };
+            let _ = this.update_in(cx, |browser, window, cx| {
+                browser.close_pending = false;
+                if agreed {
+                    browser.shells_after_close = Some((connection, ids));
+                    if !close(browser, window, cx) {
+                        browser.shells_after_close = None;
+                        // Changed while the person was asked: say why nothing closed.
+                        if browser.save_notice.is_none() {
+                            browser.save_notice =
+                                Some("Nothing was closed. Choose Close again.".into());
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn detach_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -819,7 +957,7 @@ impl Browser {
     }
 
     fn close_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.saving || self.save_failed {
+        if self.saving || self.save_failed || self.close_pending {
             return;
         }
         let Some(origin) = self.selected_navigation_origin() else {
@@ -828,17 +966,40 @@ impl Browser {
         let Some(model) = self.layout.as_ref().map(WindowLayout::model) else {
             return;
         };
-        let Some(tab) = model.tab().map(|tab| tab.id.clone()) else {
+        let Some(tab) = model.tab() else {
             return;
         };
-        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
-            self.apply(update);
-        }
-        let Some(proposal) = self.close_tab_for(&origin, &tab) else {
-            cx.notify();
-            return;
-        };
-        self.save_edit(proposal, window, cx);
+        let shells = self.own_shells(tab.tree.leaves());
+        let checked = shells.as_ref().map(|(_, ids)| ids.clone());
+        let tab = tab.id.clone();
+        self.close_checked(shells, window, cx, move |browser, window, cx| {
+            if browser.saving || browser.save_failed {
+                return false;
+            }
+            if let Some(update) = browser.library.as_ref().and_then(Library::take_update) {
+                browser.apply(update);
+            }
+            // A pane that arrived during the check was neither checked nor
+            // would its shell end.
+            let now = browser
+                .layout
+                .as_ref()
+                .and_then(|layout| layout.model().tab())
+                .filter(|shown| shown.id == tab)
+                .and_then(|shown| browser.own_shells(shown.tree.leaves()))
+                .map(|(_, ids)| ids);
+            if now != checked {
+                browser.save_notice = Some("The tab changed. Choose Close Tab again.".into());
+                cx.notify();
+                return false;
+            }
+            let Some(proposal) = browser.close_tab_for(&origin, &tab) else {
+                cx.notify();
+                return false;
+            };
+            browser.save_edit(proposal, window, cx);
+            true
+        });
     }
 
     fn detach_pane(&mut self, target: &Target, window: &mut Window, cx: &mut Context<Self>) {
@@ -967,11 +1128,15 @@ impl Browser {
         self.chooser = None;
         self.shell_after_save = None;
         self.shell_to_open = None;
+        self.shells_after_close = None;
         self.resize = None;
         self.pane_drag = None;
         self.pane_motion = None;
         self.name_click = None;
         self.tab_menu = None;
+        self.agent_menu = None;
+        self.expanded_machines.clear();
+        self.agent_actions_in_flight.clear();
         self.save_notice = None;
         self.stop_reader(cx);
         self.terminals.clear();
@@ -984,16 +1149,34 @@ impl Browser {
         self.start_reader(cx);
     }
 
-    /// Show the tab holding this agent's session: the current tab if it does,
-    /// else the first in saved order. Nothing is attached or started.
+    /// Focus the agent's existing pane or open a remote agent in a new tab.
     fn go_to_agent_target(
         &mut self,
         target: &navigation_origin::AgentTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.select_agent_target(target) {
+        let current = target.remote_profile.is_none() || self.remote_target_is_current(target);
+        if current && self.select_agent_target(target) {
             self.save_notice = None;
+        } else if current
+            && target.remote_profile.is_some()
+            && !self.saving
+            && !self.save_failed
+            && self.select_workspace_origin(&target.origin)
+            && let Some(layout) = &self.layout
+        {
+            let (base, mut proposed) = layout.save_snapshot();
+            if proposed.add_tab(Some(target.name.clone()), "/".into(), true)
+                && proposed.attach(Some(Attachment {
+                    session: target.name.clone(),
+                    remote_profile: target.remote_profile.clone(),
+                    source_socket: None,
+                }))
+            {
+                self.creation_from = Some(Selection::capture(layout.model()));
+                self.save_edit((base, proposed), window, cx);
+            }
         } else {
             self.save_notice = Some("The original agent destination is unavailable.".into());
         }
@@ -1370,6 +1553,7 @@ impl Browser {
             return;
         };
         let attachment = |session: &str| Attachment {
+            remote_profile: None,
             session: session.into(),
             source_socket: Some(source.clone()),
         };
@@ -1554,6 +1738,12 @@ impl Browser {
                             }
                         }
                         browser.creation_from = None;
+                        if let Some((connection, ids)) = browser.shells_after_close.take()
+                            && !result.conflict
+                            && let Some(layout) = &browser.layout
+                        {
+                            browser.end_shells(connection, profile_shells::released(layout.model(), ids), cx);
+                        }
                         browser.shell_to_open = if result.conflict { browser.shell_after_save = None; None } else { browser.shell_after_save.take() };
                         browser.start_reader(cx);
                         if result.conflict {
@@ -1590,6 +1780,39 @@ impl Browser {
         cx.notify();
     }
 
+    /// Ask the profile to end the shells `ids`, whose panes are closed, and
+    /// say so when one did not end.
+    fn end_shells(
+        &self,
+        connection: agent_interface_roster::profiles::Connection,
+        ids: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if ids.is_empty() {
+            return;
+        }
+        let ended = cx.background_executor().spawn(async move {
+            let mut all = true;
+            for id in ids {
+                if let Err(error) = connection.end_shell(&id) {
+                    tracing::warn!(event = "profile_shell_not_ended", pane_id = %id, ?error, "A closed pane's shell was not ended");
+                    all = false;
+                }
+            }
+            all
+        });
+        cx.spawn(async move |this, cx| {
+            if !ended.await {
+                let _ = this.update(cx, |browser, cx| {
+                    browser.save_notice =
+                        Some("The profile did not end a closed terminal's shell.".into());
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
     fn discard_save(&mut self, cx: &mut Context<Self>) {
         if !self.save_failed || self.saving {
             return;
@@ -1607,6 +1830,7 @@ impl Browser {
         self.creation_from = None;
         self.shell_after_save = None;
         self.shell_to_open = None;
+        self.shells_after_close = None;
         self.resize = None;
         self.pane_drag = None;
         // A carried pane has no drag left to let it go.
@@ -1672,10 +1896,145 @@ impl Browser {
         }
         self.editing = None;
         self.chooser = None;
+        self.agent_menu = None;
         self.workspace_menu = false;
         if let Some(focus) = &self.navigation {
             window.focus(focus, cx);
         }
+        cx.notify();
+    }
+
+    fn open_agent_menu(
+        &mut self,
+        name: &str,
+        at: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(space) = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().workspace())
+        else {
+            return;
+        };
+        let workspace_profiles::Route::Bound(connection) = self.workspace_profiles.route(space)
+        else {
+            return;
+        };
+        let Some(target) = self.agent_target(name) else {
+            return;
+        };
+        let Some(origin) = self.selected_navigation_origin() else {
+            return;
+        };
+        let Some(agents) = self.active_agents() else {
+            return;
+        };
+        let status = agents.get(name);
+        let machine = agents
+            .machine(name)
+            .filter(|machine| machine.is_remote(connection.identity()))
+            .map(|machine| agents.machine_display_name(&machine));
+        let in_flight = self
+            .agent_actions_in_flight
+            .contains(&(connection.connection_key(), name.to_owned()));
+        let registration_id = agents.registration_id(name);
+        let connection = connection.clone();
+        self.close_menus();
+        self.menu_at = Some(at);
+        self.agent_menu = Some(AgentMenu {
+            ticket: Rc::new(()),
+            origin,
+            connection,
+            target,
+            name: name.to_owned(),
+            registration_id,
+            state: status.state,
+            stale: status.stale,
+            stale_reason: status.stale_reason.clone(),
+            machine,
+            in_flight,
+        });
+        if let Some(focus) = &self.navigation {
+            window.focus(focus, cx);
+        }
+        cx.notify();
+    }
+
+    fn take_agent_menu(&mut self, ticket: &Rc<()>) -> Option<AgentMenu> {
+        if !self
+            .agent_menu
+            .as_ref()
+            .is_some_and(|menu| Rc::ptr_eq(&menu.ticket, ticket))
+        {
+            return None;
+        }
+        self.agent_menu.take()
+    }
+
+    fn agent_action(
+        &mut self,
+        ticket: &Rc<()>,
+        action: AgentAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(menu) = self.take_agent_menu(ticket) else {
+            return;
+        };
+        if !self.selected_origin_is_current(Some(&menu.origin)) {
+            self.save_notice = Some("The workspace changed. Open the agent menu again.".into());
+            cx.notify();
+            return;
+        }
+        match action {
+            AgentAction::OpenTerminal => {
+                self.go_to_agent_target(&menu.target, window, cx);
+                return;
+            }
+            AgentAction::Start { .. } | AgentAction::Stop | AgentAction::Restart { .. } => {}
+        }
+        let key = (menu.connection.connection_key(), menu.name.clone());
+        if !self.agent_actions_in_flight.insert(key.clone()) {
+            return;
+        }
+        let origin = menu.origin;
+        let connection = menu.connection;
+        let name = menu.name;
+        let registration = menu.registration_id;
+        self.save_notice = Some(match action {
+            AgentAction::Start { resume: true } => format!("Resuming {name}…"),
+            AgentAction::Start { resume: false } => format!("Starting {name}…"),
+            AgentAction::Stop => format!("Stopping {name}…"),
+            AgentAction::Restart { .. } => format!("Restarting {name}…"),
+            AgentAction::OpenTerminal => unreachable!(),
+        });
+        let work = cx.background_executor().spawn(async move {
+            match action {
+                AgentAction::Start { resume } => {
+                    connection.start_agent(&name, resume).roster_message()
+                }
+                AgentAction::Stop => connection
+                    .stop_agent(&name, registration.as_deref())
+                    .message(),
+                AgentAction::Restart { resume } => {
+                    connection.restart_agent(&name, resume).message()
+                }
+                AgentAction::OpenTerminal => unreachable!(),
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            let message = work.await;
+            let _ = this.update(cx, |browser, cx| {
+                browser.agent_actions_in_flight.remove(&key);
+                if browser.selected_origin_is_current(Some(&origin)) {
+                    browser.save_notice = Some(message);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
     }
 
@@ -1792,6 +2151,9 @@ impl Browser {
                     );
                 } else if layout.model_mut().transfer_tab(&destination) {
                     self.save(cx);
+                } else {
+                    self.save_notice =
+                        Some("The destination changed or already has a Connections pane.".into());
                 }
             }
         }
@@ -1824,6 +2186,7 @@ impl Browser {
         self.profile_picker_requested = false;
         self.profile_change = None;
         self.tab_menu = None;
+        self.agent_menu = None;
         self.workspace_menu = false;
         self.icon_picker = false;
     }
@@ -1839,6 +2202,7 @@ impl Browser {
         self.workspace_menu
             || self.icon_picker
             || self.tab_menu.is_some()
+            || self.agent_menu.is_some()
             || self.editing.is_some()
             || self.chooser.is_some()
             || self.jump.is_some()
@@ -2045,9 +2409,15 @@ impl Browser {
         true
     }
 
-    /// Split `pane` and show `view` in the new pane to its right, saved like
-    /// any split before it appears.
-    fn open_beside(&mut self, pane: &str, view: View, window: &mut Window, cx: &mut Context<Self>) {
+    /// Split `pane` and show `content` in the new pane to its right, saved
+    /// like any split before it appears.
+    fn open_beside(
+        &mut self,
+        pane: &str,
+        content: Beside,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.saving || self.save_failed {
             return;
         }
@@ -2086,7 +2456,11 @@ impl Browser {
         ) else {
             return;
         };
-        if !proposed.show_view(&tab, &added, view) {
+        let shown = match content {
+            Beside::View(view) => proposed.show_view(&tab, &added, view),
+            Beside::Session(attachment) => proposed.attach(Some(attachment)),
+        };
+        if !shown {
             return;
         }
         // The new pane is not in the displayed tree yet; select it once saved.
@@ -2100,7 +2474,14 @@ impl Browser {
 
     /// Attach a session chosen in an empty pane's chooser, saved like any
     /// attachment before the pane changes.
-    fn attach_into(&mut self, pane: &str, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+    fn attach_into(
+        &mut self,
+        pane: &str,
+        name: &str,
+        remote: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.saving || self.save_failed {
             return;
         }
@@ -2111,20 +2492,30 @@ impl Browser {
         if owner.is_none() || owner != self.pane_owner(pane) {
             return;
         }
-        let source = match self.pane_connection(pane) {
-            Ok(Some(connection)) => connection.tmux_socket().to_str().map(str::to_owned),
-            Ok(None) => self
-                .source
-                .as_ref()
-                .and_then(|source| source.as_ref().ok())
-                .and_then(|path| path.to_str())
-                .map(str::to_owned),
-            Err(()) => None,
-        };
-        let Some(source) = source else {
-            self.save_notice = Some("The workspace session source is unavailable.".into());
-            cx.notify();
-            return;
+        let source = match (remote.as_deref(), self.pane_connection(pane)) {
+            (Some(profile), Ok(Some(connection)))
+                if connection.identity().profile_id == profile =>
+            {
+                None
+            }
+            (None, Ok(connection)) => {
+                let socket = match connection {
+                    Some(c) => c.tmux_socket().to_str().map(str::to_owned),
+                    None => self
+                        .source
+                        .as_ref()
+                        .and_then(|s| s.as_ref().ok())
+                        .and_then(|p| p.to_str())
+                        .map(str::to_owned),
+                };
+                let Some(socket) = socket else {
+                    self.save_notice = Some("The workspace session source is unavailable.".into());
+                    cx.notify();
+                    return;
+                };
+                Some(socket)
+            }
+            _ => return,
         };
         let Some(layout) = &mut self.layout else {
             return;
@@ -2147,8 +2538,9 @@ impl Browser {
             return;
         }
         let attachment = Attachment {
+            remote_profile: remote,
             session: name.into(),
-            source_socket: Some(source),
+            source_socket: source,
         };
         if let Some(proposal) = destination.propose(layout, attachment) {
             self.pending_save = Some(proposal);
@@ -2347,6 +2739,7 @@ impl Browser {
             return;
         };
         let attachment = Attachment {
+            remote_profile: None,
             session: name.into(),
             source_socket: Some(chooser.source),
         };
@@ -2577,30 +2970,23 @@ impl Browser {
 }
 
 impl Browser {
-    /// The Backbone agent a pane attaches, its roster status and the roster
-    /// it comes from: none for a session on another tmux server, whatever
-    /// its name, or a pane whose profile has no roster.
-    fn pane_agent(
-        &self,
-        leaf: &Leaf,
-    ) -> Option<(
-        String,
-        std::rc::Rc<agent_status::Status>,
-        agent_status::LiveAgents,
-    )> {
+    /// The local Backbone agent a pane attaches and the roster it comes
+    /// from: none for a remote agent, a session on another tmux server,
+    /// whatever its name, or a pane whose profile has no roster.
+    fn pane_agent(&self, leaf: &Leaf) -> Option<(String, agent_status::LiveAgents)> {
         let attachment = leaf.attachment.as_ref()?;
         let connection = self.pane_connection(&leaf.id).ok()??;
-        if attachment
-            .source_socket
-            .as_deref()
-            .is_some_and(|path| std::path::Path::new(path) != connection.tmux_socket())
+        if attachment.remote_profile.is_some()
+            || attachment
+                .source_socket
+                .as_deref()
+                .is_some_and(|path| std::path::Path::new(path) != connection.tmux_socket())
         {
             return None;
         }
         let space = self.layout.as_ref()?.model().workspace_for_pane(&leaf.id)?;
         let agents = self.workspace_agents(space)?.clone();
-        let status = agents.get(&attachment.session);
-        Some((attachment.session.clone(), status, agents))
+        Some((attachment.session.clone(), agents))
     }
 }
 
@@ -2751,8 +3137,8 @@ impl Render for Browser {
                         .flatten();
                     terminal.update(cx, |terminal, cx| {
                         terminal.set_cwd(leaf);
-                        if let Some((name, _, agents)) = status {
-                            terminal.set_restart(Some((name, agents)), cx);
+                        if let Some(status) = status {
+                            terminal.set_restart(Some(status), cx);
                         }
                     });
                 }
@@ -2799,6 +3185,19 @@ impl Render for Browser {
                     })
                     .flatten();
                 let terminal = cx.new(|cx| LiveTerminal::new(target, selected, environment, cx));
+                cx.subscribe(
+                    &terminal,
+                    |browser, terminal, _: &terminal::RefreshProfile, cx| {
+                        let target = &terminal.read(cx).target;
+                        if let Some(connection) = &target.connection {
+                            browser
+                                .workspace_profiles
+                                .expire_connection(&connection.connection_key());
+                            cx.notify();
+                        }
+                    },
+                )
+                .detach();
                 // A terminal made while panes move keeps its session's size too.
                 if self.pane_motion.is_some() {
                     terminal.update(cx, |terminal, cx| terminal.hold_size(true, cx));
@@ -2892,16 +3291,43 @@ impl Render for Browser {
                 .detach();
                 self.terminals.insert(leaf.id.clone(), terminal);
             }
-            // A stopped Backbone agent's pane offers Resume and Start new,
-            // and a restarting one says so, whatever the roster's state.
+            // A stopped Backbone agent's pane offers Resume and Start new.
+            // A remote agent of the bound profile offers them too. A local
+            // agent's pane also says when it restarts, whatever its state.
             let status = self.pane_agent(leaf);
-            let agent = status.as_ref().and_then(|(name, status, _)| {
-                (status.state == components::AgentState::Offline).then(|| name.clone())
+            let sizing = leaf.attachment.as_ref().and_then(|attachment| {
+                let connection = self.pane_connection(&leaf.id).ok()??;
+                let remote = attachment.remote_profile.as_deref();
+                if let Some(profile) = remote {
+                    if profile != connection.identity().profile_id {
+                        return None;
+                    }
+                // A session on another tmux server is not this profile's
+                // agent, whatever its name.
+                } else if attachment
+                    .source_socket
+                    .as_deref()
+                    .is_some_and(|path| std::path::Path::new(path) != connection.tmux_socket())
+                {
+                    return None;
+                }
+                let space = self.layout.as_ref()?.model().workspace_for_pane(&leaf.id)?;
+                let roster = self.workspace_agents(space);
+                // A remote pane's size stays its own, as before.
+                let registered = match remote {
+                    Some(_) => Some(false),
+                    None => roster.and_then(|r| r.registered(&attachment.session)),
+                };
+                let stopped = roster.is_some_and(|r| {
+                    r.get(&attachment.session).state == components::AgentState::Offline
+                });
+                Some((stopped.then(|| attachment.session.clone()), registered))
             });
             if let Some(terminal) = self.terminals.get(&leaf.id) {
+                let (stopped, protect_size) = sizing.unwrap_or((None, Some(false)));
                 terminal.update(cx, |terminal, cx| {
-                    terminal.set_agent(agent, cx);
-                    terminal.set_restart(status.map(|(name, _, agents)| (name, agents)), cx);
+                    terminal.set_agent(stopped, protect_size, cx);
+                    terminal.set_restart(status, cx);
                 });
             }
         }
@@ -2921,6 +3347,13 @@ impl Render for Browser {
                         .is_some_and(|layout| saved_view(layout.model(), id, &pane.view)))
         });
         for (id, view) in shown.clone() {
+            if view.kind == agent_interface_core::ViewKind::Connections
+                && self.views.get(&id).is_some_and(|(_, events)| {
+                    !events.belongs_to(self.pane_navigation_origin(&id).as_ref())
+                })
+            {
+                self.views.remove(&id);
+            }
             if !self.views.contains_key(&id) {
                 let Ok(connection) = self.pane_connection(&id) else {
                     continue;
@@ -2956,6 +3389,24 @@ impl Render for Browser {
                     .insert(id, (pane, navigation_origin::ViewEvents::default()));
             }
         }
+        if let Some((workspace, key, selection)) = self.peer_to_open.take()
+            && let Some(layout) = &self.layout
+            && let Some(space) = layout.model().workspace()
+            && space.id == workspace
+            && matches!(self.workspace_profiles.route(space),workspace_profiles::Route::Bound(c) if c.connection_key()==key)
+        {
+            if let Some(pane) = layout.model().pane()
+                && pane
+                    .view
+                    .as_ref()
+                    .is_some_and(|view| view.kind == agent_interface_core::ViewKind::Connections)
+                && let Some((view, _)) = self.views.get(&pane.id)
+            {
+                view.update(cx, |v, cx| v.pick_peer(selection, cx));
+            } else if self.saving {
+                self.peer_to_open = Some((workspace, key, selection));
+            }
+        }
         // A transfer may preserve the view entity and provider, but changes the
         // workspace owning fresh events. Renew the subscription even for retained
         // hidden conversations; the old generation cannot navigate after a move.
@@ -2986,7 +3437,22 @@ impl Render for Browser {
                         }
                         match event {
                             views::ViewEvent::OpenBeside(view) => {
-                                browser.open_beside(&leaf, view.clone(), window, cx)
+                                browser.open_beside(&leaf, Beside::View(view.clone()), window, cx)
+                            }
+                            views::ViewEvent::RunView(session) => {
+                                // Run views are kept on the profile's own server.
+                                let Ok(Some(connection)) = browser.pane_connection(&leaf) else {
+                                    return;
+                                };
+                                let attachment = Attachment {
+                                    remote_profile: None,
+                                    session: session.clone(),
+                                    source_socket: connection
+                                        .tmux_socket()
+                                        .to_str()
+                                        .map(str::to_owned),
+                                };
+                                browser.open_beside(&leaf, Beside::Session(attachment), window, cx)
                             }
                             views::ViewEvent::Focus => {
                                 // Page IPC is asynchronous: a click notification can
@@ -3022,7 +3488,7 @@ impl Render for Browser {
             {
                 terminal.update(cx, |terminal, cx| terminal.hide(cx));
             } else if !terminal.read(cx).is_shown() {
-                terminal.update(cx, |terminal, _| terminal.show());
+                terminal.update(cx, |terminal, cx| terminal.show(cx));
             }
         }
         for (id, (view, _)) in &self.views {
@@ -3041,7 +3507,15 @@ impl Render for Browser {
             .filter(|leaf| leaf.empty && leaf.attachment.is_none())
             .map(|leaf| leaf.id.clone())
             .collect();
-        self.new_panes.retain(|id, _| empty.contains(id));
+        let placement = self.selected_navigation_origin().zip(
+            self.layout
+                .as_ref()
+                .and_then(|layout| layout.model().tab())
+                .map(|tab| tab.id.clone()),
+        );
+        self.new_panes.retain(|id, (chooser, _)| {
+            empty.contains(id) && chooser.read(cx).placement == placement
+        });
         for id in empty {
             if !self.new_panes.contains_key(&id) {
                 let Ok(connection) = self.pane_connection(&id) else {
@@ -3062,12 +3536,16 @@ impl Render for Browser {
                 }
                 let socket = self.source.clone().and_then(Result::ok);
                 let pane = id.clone();
-                let chooser = cx.new(|cx| match connection {
-                    Some(connection) => {
-                        new_pane::NewPane::new_bound(pane, connection, agents, window, cx)
-                            .expect("matching workspace roster")
-                    }
-                    None => new_pane::NewPane::new(pane, socket, window, cx),
+                let chooser = cx.new(|cx| {
+                    let mut chooser = match connection {
+                        Some(connection) => {
+                            new_pane::NewPane::new_bound(pane, connection, agents, window, cx)
+                                .expect("matching workspace roster")
+                        }
+                        None => new_pane::NewPane::new(pane, socket, window, cx),
+                    };
+                    chooser.placement = placement.clone();
+                    chooser
                 });
                 let events =
                     cx.subscribe_in(&chooser, window, |browser, chooser, event, window, cx| {
@@ -3092,8 +3570,29 @@ impl Render for Browser {
                             new_pane::NewPaneEvent::OpenTerminal => {
                                 browser.open_terminal_in_empty(&pane, window, cx)
                             }
+                            new_pane::NewPaneEvent::Remote(name, remote) => {
+                                browser.attach_into(&pane, name, Some(remote.clone()), window, cx)
+                            }
                             new_pane::NewPaneEvent::Attach(name) => {
-                                browser.attach_into(&pane, name, window, cx)
+                                browser.attach_into(&pane, name, None, window, cx)
+                            }
+                            new_pane::NewPaneEvent::OpenView(view)
+                                if view.kind == agent_interface_core::ViewKind::Connections =>
+                            {
+                                let Some((origin, tab)) = &chooser.placement else {
+                                    return;
+                                };
+                                if !browser.selected_origin_is_current(Some(origin))
+                                    || !browser
+                                        .layout
+                                        .as_ref()
+                                        .and_then(|layout| layout.model().tab())
+                                        .is_some_and(|selected| &selected.id == tab)
+                                {
+                                    return;
+                                }
+                                let target = browser.creation_target();
+                                browser.open_connections(target.as_ref(), Some(&pane), window, cx);
                             }
                             new_pane::NewPaneEvent::OpenView(view) => {
                                 browser.open_view(&pane, view.clone(), window, cx);
@@ -3295,7 +3794,10 @@ impl Render for Browser {
                             return;
                         }
                     }
-                    if (browser.tab_menu.is_some() || browser.workspace_menu || browser.icon_picker)
+                    if (browser.tab_menu.is_some()
+                        || browser.agent_menu.is_some()
+                        || browser.workspace_menu
+                        || browser.icon_picker)
                         && key.key == "escape"
                     {
                         browser.close_menus();
@@ -3396,6 +3898,7 @@ impl Render for Browser {
                     if command.is_none()
                         && browser.chooser.is_none()
                         && browser.tab_menu.is_none()
+                        && browser.agent_menu.is_none()
                         && !browser.workspace_menu
                         && !browser.icon_picker
                         && browser
@@ -3562,6 +4065,7 @@ fn setup_agent_layout(
     }
     let added = proposed.add_tab(Some(name.into()), "/".into(), true)
         && proposed.attach(Some(Attachment {
+            remote_profile: None,
             session: name.into(),
             source_socket: None,
         }));
@@ -3833,6 +4337,7 @@ mod tests {
         let mut model = base.model().clone();
         model.add_tab(None, "/work".into(), true);
         model.attach(Some(Attachment {
+            remote_profile: None,
             session: "worker".into(),
             source_socket: Some("/fixture/source".into()),
         }));
@@ -3868,6 +4373,7 @@ mod tests {
         let pane = model.pane().unwrap().id.clone();
         let edit = AttachmentEdit::capture(&model).unwrap();
         let attachment = Attachment {
+            remote_profile: None,
             session: "existing worker".into(),
             source_socket: Some("/fixture/source".into()),
         };
@@ -3922,6 +4428,7 @@ mod tests {
         let ordinary = AttachmentEdit::capture(window.model()).unwrap();
         assert!(ordinary.propose_shell(&mut window).is_some());
         window.model_mut().attach(Some(Attachment {
+            remote_profile: None,
             session: "external".into(),
             source_socket: Some("/fixture/source".into()),
         }));
@@ -3953,6 +4460,7 @@ mod tests {
             .propose(
                 &mut window,
                 Attachment {
+                    remote_profile: None,
                     session: "worker".into(),
                     source_socket: Some("/fixture/source".into()),
                 },
@@ -4030,6 +4538,7 @@ mod tests {
         destination.apply(
             &mut proposed,
             Attachment {
+                remote_profile: None,
                 session: "local".into(),
                 source_socket: Some("/fixture/source".into()),
             },
@@ -4037,6 +4546,7 @@ mod tests {
         let mut peer = store.load().unwrap();
         let mut peer_model = peer.model().clone();
         peer_model.attach(Some(Attachment {
+            remote_profile: None,
             session: "peer".into(),
             source_socket: Some("/fixture/source".into()),
         }));

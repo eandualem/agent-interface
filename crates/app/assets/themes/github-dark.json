@@ -2,6 +2,8 @@
   "name": "GitHub Dark",
   "extends": "dark",
   "color": {
+    "outgoing_surface": "#0c1015",
+    "outgoing_border": "#30363d",
     "ground": "#010409",
     "panel": "#010409",
     "surface": "#0d1117",

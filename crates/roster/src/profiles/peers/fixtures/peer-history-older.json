@@ -1,0 +1,144 @@
+{
+  "items": [
+    {
+      "connection": {
+        "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+        "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+      },
+      "message_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c20",
+      "direction": "outgoing",
+      "text": "Is the staging build ready?",
+      "submitted_at": "2026-11-10T10:00:00Z",
+      "expires_at": "2026-11-17T10:00:00Z",
+      "state": "outcome_unknown",
+      "receipt": {
+        "kind": "missing"
+      }
+    },
+    {
+      "connection": {
+        "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+        "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+      },
+      "message_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c21",
+      "direction": "outgoing",
+      "text": "Is the staging build ready?",
+      "submitted_at": "2026-11-11T10:00:00Z",
+      "expires_at": "2026-11-18T10:00:00Z",
+      "state": "expired",
+      "receipt": {
+        "kind": "missing"
+      }
+    },
+    {
+      "connection": {
+        "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+        "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+      },
+      "message_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c23",
+      "direction": "outgoing",
+      "text": "Is the staging build ready?",
+      "submitted_at": "2026-11-20T11:59:00Z",
+      "expires_at": "2026-11-27T11:59:00Z",
+      "state": "upload_failed",
+      "receipt": {
+        "kind": "missing"
+      },
+      "upload_failure": {
+        "code": "mailbox_full",
+        "retry_at": "2026-11-21T12:05:00Z"
+      }
+    },
+    {
+      "connection": {
+        "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+        "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+      },
+      "message_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c40",
+      "direction": "outgoing",
+      "text": "Is the staging build ready?",
+      "submitted_at": "2026-11-20T12:00:00Z",
+      "expires_at": "2026-11-27T12:00:00Z",
+      "state": "outcome_unknown",
+      "receipt": {
+        "kind": "uncertain"
+      }
+    },
+    {
+      "connection": {
+        "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+        "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+      },
+      "message_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c41",
+      "direction": "outgoing",
+      "text": "Is the staging build ready?",
+      "submitted_at": "2026-11-20T12:01:00Z",
+      "expires_at": "2026-11-27T12:01:00Z",
+      "state": "uploaded",
+      "receipt": {
+        "kind": "missing"
+      }
+    },
+    {
+      "connection": {
+        "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+        "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+      },
+      "message_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c42",
+      "direction": "outgoing",
+      "text": "Is the staging build ready?",
+      "submitted_at": "2026-11-20T12:02:00Z",
+      "expires_at": "2026-11-27T12:02:00Z",
+      "state": "received",
+      "receipt": {
+        "kind": "missing"
+      }
+    },
+    {
+      "connection": {
+        "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+        "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+      },
+      "message_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c43",
+      "direction": "outgoing",
+      "text": "Is the staging build ready?",
+      "submitted_at": "2026-11-20T12:03:00Z",
+      "expires_at": "2026-11-27T12:03:00Z",
+      "state": "queued",
+      "receipt": {
+        "kind": "missing"
+      }
+    },
+    {
+      "connection": {
+        "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+        "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+      },
+      "message_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c44",
+      "direction": "outgoing",
+      "text": "Is the staging build ready?",
+      "submitted_at": "2026-11-20T12:04:00Z",
+      "expires_at": "2026-11-27T12:04:00Z",
+      "state": "upload_unconfirmed",
+      "receipt": {
+        "kind": "missing"
+      }
+    },
+    {
+      "connection": {
+        "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+        "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+      },
+      "message_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c52",
+      "direction": "incoming",
+      "text": "Is the package ready to try?",
+      "submitted_at": "2026-11-20T16:00:00Z",
+      "expires_at": "2026-11-27T16:00:00Z",
+      "state": "pending_review",
+      "receipt": {
+        "kind": "missing"
+      }
+    }
+  ],
+  "older": null
+}

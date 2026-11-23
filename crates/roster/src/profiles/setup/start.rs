@@ -110,6 +110,8 @@ pub struct Started {
     pub name: String,
     /// Whether it reached its prompt.
     pub ready: Readiness,
+    /// The service's optional explanation for a refused launch.
+    pub reason: Option<String>,
     /// What its machine saw, for a person to read.
     pub evidence: Vec<String>,
 }

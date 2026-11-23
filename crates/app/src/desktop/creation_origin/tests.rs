@@ -174,3 +174,21 @@ fn retired_menu_dispatch_cannot_consume_a_replacement_menus_creation_target() {
     assert!(browser.take_tab_menu(&fresh_ticket).is_none());
     assert!(browser.tab_menu.is_some());
 }
+
+#[test]
+fn exact_connections_query_targets_the_selected_workspace_before_global_tabs() {
+    let (_a, a, a_server) = provider("a", vec![]);
+    let (_b, b, b_server) = provider("b", vec![]);
+    a_server.join().unwrap();
+    b_server.join().unwrap();
+    let mut browser = browser(&a, &b);
+    browser.layout.as_mut().unwrap().model_mut().workspaces[1].tabs[0].name = "Connections".into();
+    let hits = browser.jump_hits_for("connections");
+    assert!(
+        matches!(&hits[0].target, super::super::jump::Target::Connections(target) if browser.creation_is_current(target))
+    );
+    assert!(
+        hits.iter()
+            .any(|hit| matches!(hit.target, super::super::jump::Target::Tab { .. }))
+    );
+}

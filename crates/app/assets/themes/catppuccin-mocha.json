@@ -2,6 +2,8 @@
   "name": "Catppuccin Mocha",
   "extends": "dark",
   "color": {
+    "outgoing_surface": "#252535",
+    "outgoing_border": "#45475a",
     "ground": "#11111b",
     "panel": "#181825",
     "surface": "#1e1e2e",

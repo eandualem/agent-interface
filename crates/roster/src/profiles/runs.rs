@@ -26,6 +26,9 @@ const LOOKING: Duration = Duration::from_secs(5);
 /// How long after its last good read a list is still shown, as the last
 /// good roster is.
 const STALE: Duration = Duration::from_secs(30);
+/// How often ended runs that still name a view are read again, so a view
+/// the service has ended stops being offered.
+const VIEWS: Duration = Duration::from_secs(30);
 
 /// One run, with the fields this app shows, as the service wrote them. An
 /// optional field that is mistyped reads as absent.
@@ -64,9 +67,34 @@ pub struct Run {
     /// Its last progress line.
     #[serde(default, deserialize_with = "crate::lenient")]
     pub progress: Option<String>,
+    /// The session on the profile's tmux server of the agent's machine that
+    /// shows a copy of what it prints, while that session lasts.
+    #[serde(default, deserialize_with = "crate::lenient")]
+    pub session: Option<String>,
     /// Who reviews, for a review.
     #[serde(default, deserialize_with = "crate::lenient_object")]
     pub review: Option<Review>,
+}
+
+impl Run {
+    /// The session showing its output, only when the service named this
+    /// run's own view.
+    pub fn view(&self) -> Option<&str> {
+        self.session.as_deref().filter(|session| {
+            is_view(session) && session.strip_prefix(VIEW) == Some(self.run_id.as_str())
+        })
+    }
+}
+
+/// What the name of a run's view starts with, before the run's ID.
+const VIEW: &str = "run-";
+
+/// Whether `session` is named as a run's view is: `run-` and a run's ID. The
+/// service keeps these on a profile's tmux server; they are not shells.
+pub fn is_view(session: &str) -> bool {
+    session.strip_prefix(VIEW).is_some_and(|id| {
+        id.len() == 32 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    })
 }
 
 /// Who a review run asked, as the service wrote it.
@@ -128,6 +156,8 @@ pub struct Book {
     /// When the roster read that the last good list read followed was
     /// observed: the moment both 30 seconds are counted from.
     listed_at: Option<Instant>,
+    /// When ended runs with a view were last due to be read again.
+    viewed_at: Option<Instant>,
 }
 
 /// Runs that left the list at one read, to read by their IDs until `deadline`.
@@ -191,6 +221,39 @@ impl Book {
         }
     }
 
+    /// Read again, every 30 seconds, ended runs that still name a view, as
+    /// many as a round of lookups reads, and forget the view of one the
+    /// service no longer knows. A failed read keeps the run as it was.
+    fn review_views(&mut self, connection: &Connection, now: Instant, live: &dyn Fn() -> bool) {
+        if self
+            .viewed_at
+            .is_some_and(|at| now.saturating_duration_since(at) < VIEWS)
+        {
+            return;
+        }
+        self.viewed_at = Some(now);
+        let deadline = now + LOOKING;
+        for kept in self
+            .runs
+            .finished
+            .iter_mut()
+            // Oldest first: views end in the order their runs ended.
+            .rev()
+            .filter(|run| run.view().is_some())
+            .take(LOOKUPS)
+        {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() || !live() {
+                break;
+            }
+            match connection.run_within(&kept.run_id, left.min(WAIT)) {
+                Ok(run) => *kept = run,
+                Err(Error::Refused(404)) => kept.session = None,
+                Err(_) => {}
+            }
+        }
+    }
+
     /// Mark the list stale when it is too old to show. The worker calls it at
     /// the start of every pass, before the pass publishes anything.
     pub fn expire(&mut self) {
@@ -214,9 +277,14 @@ impl Book {
 
     /// Read each run that left the list once by its ID and keep those that
     /// ended, newest first. A run that can't be read, or isn't reached
-    /// before the deadline or while `live`, is forgotten. Runs on an I/O
-    /// worker.
+    /// before the deadline or while `live`, is forgotten. Then read again the
+    /// ended runs whose views are due. Runs on an I/O worker.
     pub fn settle(&mut self, connection: &Connection, gone: Gone, live: &dyn Fn() -> bool) {
+        self.settle_gone(connection, gone, live);
+        self.review_views(connection, Instant::now(), live);
+    }
+
+    fn settle_gone(&mut self, connection: &Connection, gone: Gone, live: &dyn Fn() -> bool) {
         let Some(deadline) = gone.deadline else {
             return;
         };

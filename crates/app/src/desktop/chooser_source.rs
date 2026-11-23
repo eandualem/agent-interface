@@ -4,7 +4,7 @@ use std::{io, path::PathBuf, time::Duration};
 
 use agent_interface_core::View;
 use agent_interface_roster::{
-    profiles::Connection,
+    profiles::{self, Connection, runs},
     views::{Member, Request},
 };
 
@@ -32,6 +32,12 @@ impl Origin {
         matches!(self, Self::Bound(_))
     }
 
+    /// A remote terminal is opened by agent name on this profile's socket.
+    pub fn remote_profile(&self, member: &Member) -> Option<String> {
+        let identity = self.connection()?.identity();
+        member.machine.as_ref()?.remote_profile(identity)
+    }
+
     /// Bind navigation to the registration in the displayed profile list.
     pub fn agent_view(&self, member: &Member) -> Option<View> {
         self.connection()?;
@@ -44,7 +50,7 @@ impl Origin {
         let Some(connection) = self.connection() else {
             return Ok(None);
         };
-        Source::start(connection, Request::Team, Duration::from_secs(3), wake).map(Some)
+        Source::start(connection, Request::Members, Duration::from_secs(3), wake).map(Some)
     }
 
     pub fn sessions(&self, wake: impl Fn() + Send + 'static) -> io::Result<Option<Sessions>> {
@@ -72,9 +78,17 @@ impl Sessions {
         self.source.set_active(active);
     }
 
+    /// The latest sessions, without a profile's run views, which open under
+    /// their agent's runs, read-only, or its panes' shells, which belong to
+    /// their panes.
     pub fn take_update(&self) -> Option<Observation> {
-        let update = self.source.take_update()?;
+        let mut update = self.source.take_update()?;
         let expected = self.origin.connection().map(Connection::identity);
+        if expected.is_some() {
+            update
+                .sessions
+                .retain(|session| !runs::is_view(session) && !profiles::is_shell(session));
+        }
         (update.identity.as_ref() == expected).then_some(update)
     }
 }
@@ -88,10 +102,69 @@ mod tests {
     use std::sync::mpsc;
 
     #[test]
+    fn only_an_agent_on_a_different_machine_uses_a_profile_stream() {
+        let (_dir, connection, server) = provider("a", vec![]);
+        let identity = connection.identity().clone();
+        let origin = Origin::Bound(connection);
+        let mut member = Member::default();
+        assert!(origin.remote_profile(&member).is_none());
+        member.machine = Some(agent_interface_roster::Machine {
+            id: identity.installation_id.clone(),
+            name: "same label".into(),
+        });
+        assert!(origin.remote_profile(&member).is_none());
+        member.machine.as_mut().unwrap().id = "other".into();
+        assert_eq!(origin.remote_profile(&member), Some(identity.profile_id));
+        assert!(
+            Origin::Standalone { socket: None }
+                .remote_profile(&member)
+                .is_none()
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_server_without_a_profile_lists_sessions_named_as_run_views_or_shells() {
+        let tmux = TmuxServer::start().unwrap();
+        for session in ["run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60", "shell-0123456789ab"] {
+            tmux.run(&["new-session", "-d", "-s", session]).unwrap();
+        }
+        let socket: PathBuf = tmux
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap()
+            .trim_end()
+            .into();
+        let (wake, ready) = mpsc::channel();
+        let source = Origin::Standalone {
+            socket: Some(socket),
+        }
+        .sessions(move || {
+            let _ = wake.send(());
+        })
+        .unwrap()
+        .unwrap();
+        ready.recv_timeout(Duration::from_secs(10)).unwrap();
+        let observed = source.take_update().unwrap();
+        assert_eq!(
+            observed.sessions,
+            [
+                "fixture",
+                "run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60",
+                "shell-0123456789ab"
+            ]
+        );
+    }
+
+    #[test]
     fn chooser_bound_session_discovery_uses_only_authenticated_socket() {
         let tmux = TmuxServer::start().unwrap();
         tmux.run(&["new-session", "-d", "-s", "bound-only"])
             .unwrap();
+        // A run's view opens under its agent, and a pane's shell belongs to
+        // its pane: neither is a loose session.
+        for session in ["run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60", "shell-0123456789ab"] {
+            tmux.run(&["new-session", "-d", "-s", session]).unwrap();
+        }
         let socket: PathBuf = tmux
             .run(&["display-message", "-p", "#{socket_path}"])
             .unwrap()
@@ -126,6 +199,36 @@ mod tests {
     }
 
     #[test]
+    fn remote_chooser_members_need_only_the_agents_endpoint() {
+        let (_dir, connection, server) = provider(
+            "a",
+            vec![Reply::ok(
+                "/api/agents",
+                serde_json::json!({"items":[{"name":"worker","machine":{"id":"remote","name":"Linux"}}]}),
+            )],
+        );
+        let origin = Origin::Bound(connection);
+        let (tx, rx) = mpsc::channel();
+        let source = origin
+            .team(move || {
+                let _ = tx.send(());
+            })
+            .unwrap()
+            .unwrap();
+        rx.recv_timeout(Duration::from_secs(8)).unwrap();
+        let (request, result) = source.take_update().unwrap();
+        assert_eq!(request, Request::Members);
+        let agent_interface_roster::views::Data::Team(team) = result.unwrap() else {
+            panic!("missing members")
+        };
+        assert_eq!(
+            origin.remote_profile(&team.members[0]).as_deref(),
+            Some("profile-a")
+        );
+        source.set_active(false);
+        server.join().unwrap();
+    }
+    #[test]
     fn chooser_team_read_keeps_binding_and_refuses_replacement() {
         let (_dir, connection, server) = provider(
             "a",
@@ -144,7 +247,7 @@ mod tests {
             .unwrap();
         ready.recv_timeout(Duration::from_secs(10)).unwrap();
         let (request, result) = source.take_update().unwrap();
-        assert_eq!(request, Request::Team);
+        assert_eq!(request, Request::Members);
         assert!(result.is_err());
         drop(source);
         server.join().unwrap();

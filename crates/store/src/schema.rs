@@ -39,6 +39,8 @@ fn name(item: &Object, at: &str) -> Result<String> {
     Ok(value)
 }
 
+/// A reserved directory, never a usable socket for an older layout reader.
+pub(super) const REMOTE_SOURCE: &str = "/";
 fn path(item: &Object, key: &str, at: &str) -> Result<Option<String>> {
     if !item.contains_key(key) {
         return Ok(None);
@@ -191,12 +193,39 @@ fn node(
             return Err(format!("{at}.source_socket: socket without an attachment"));
         }
         let view = view(item, session.is_some() || empty, at)?;
+        // Previous schema-v2 readers show this extension as an empty chooser.
+        // An occupied leaf written by an older reader takes precedence.
+        let connections = empty && item.get("connections_pane") == Some(&Value::Bool(true));
+        let view = if connections {
+            Some(View::of(ViewKind::Connections))
+        } else {
+            view
+        };
+        let empty = empty && !connections;
+        let remote_profile = if socket.as_deref() == Some(REMOTE_SOURCE) {
+            item.get("remote_profile")
+                .map(|value| {
+                    value
+                        .as_str()
+                        .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_graphic()))
+                        .map(str::to_owned)
+                        .ok_or_else(|| format!("{at}.remote_profile: invalid profile"))
+                })
+                .transpose()?
+        } else {
+            None
+        };
         leaves.push(id.clone());
         Ok(Node::Leaf(Leaf {
             id,
             attachment: session.map(|session| Attachment {
+                source_socket: if remote_profile.is_some() {
+                    None
+                } else {
+                    socket
+                },
+                remote_profile,
                 session,
-                source_socket: socket,
             }),
             cwd: path(item, "cwd", at)?,
             empty,
@@ -363,7 +392,7 @@ fn read_layout(value: &Value, navigation: bool) -> Result<Layout> {
                 "{at}.selected: expected an existing tab identity (or empty for an empty workspace)"
             ));
         }
-        workspaces.push(Workspace {
+        let space = Workspace {
             id,
             name,
             icon,
@@ -371,7 +400,13 @@ fn read_layout(value: &Value, navigation: bool) -> Result<Layout> {
             profile_id,
             tabs,
             selected,
-        });
+        };
+        if space.connections_panes().nth(1).is_some() {
+            return Err(format!(
+                "{at}: a workspace may have only one Connections pane"
+            ));
+        }
+        workspaces.push(space);
     }
     let selected = if navigation {
         string(root, "selected", "layout")?

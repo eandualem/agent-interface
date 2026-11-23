@@ -8,6 +8,8 @@ use crate::profiles::{Connection, Identity};
 pub enum Request {
     /// Configured agents and swarms from the captured profile.
     Team,
+    /// Agent chooser rows from the roster independently of swarm discovery.
+    Members,
     /// Tag membership and shared library associations.
     Tags,
     /// Policy layers with catalog identities and provider-owned base/swarm text.
@@ -85,6 +87,7 @@ pub struct Read {
 /// Pagination and later detail requests must use this same connection.
 pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool) -> Read {
     let observation = match request {
+        Request::Members => Some(super::bound::Request::Members),
         Request::Team => Some(super::bound::Request::Team),
         Request::Tags => Some(super::bound::Request::Tags),
         Request::Policies => Some(super::bound::Request::Policies),
@@ -111,7 +114,8 @@ pub fn read(connection: &Connection, request: &Request, live: &dyn Fn() -> bool)
     }
     let api = Api::new(connection, live);
     let result = match request {
-        Request::Team
+        Request::Members
+        | Request::Team
         | Request::Tags
         | Request::Policies
         | Request::Skills

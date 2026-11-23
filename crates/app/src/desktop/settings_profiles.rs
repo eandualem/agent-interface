@@ -17,19 +17,60 @@ enum List {
     Ready(Vec<Item>),
 }
 
+#[derive(Clone, PartialEq)]
+pub(super) struct Origin {
+    window: Option<gpui::WindowHandle<Browser>>,
+    directory: Option<std::path::PathBuf>,
+}
+
+impl Origin {
+    pub fn capture(cx: &App) -> Self {
+        let window = super::browser_window(cx);
+        let directory = window.and_then(|w| w.read(cx).ok()?.directory.clone());
+        Self { window, directory }
+    }
+
+    /// A command from Settings keeps the saved library. A command from a
+    /// workspace switches to that window and starts a fresh Profiles page.
+    pub fn retarget(&mut self, origin: Option<Self>) -> bool {
+        if let Some(origin) = origin
+            && *self != origin
+        {
+            *self = origin;
+            return true;
+        }
+        false
+    }
+
+    fn browser(&self, cx: &App) -> Option<gpui::WindowHandle<Browser>> {
+        self.window
+            .into_iter()
+            .chain(
+                cx.windows()
+                    .into_iter()
+                    .filter_map(|w| w.downcast::<Browser>()),
+            )
+            .find(|w| w.read(cx).is_ok_and(|b| b.directory == self.directory))
+    }
+}
+
 pub(super) struct Profiles {
+    origin: Origin,
     client: Option<Client>,
     list: List,
     detail: Option<(Entity<Management>, Vec<Subscription>)>,
 }
 
 impl Profiles {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(origin: Origin, cx: &mut Context<Self>) -> Self {
         let mut page = Self {
+            origin,
             client: None,
             list: List::Loading,
             detail: None,
         };
+        cx.observe_global::<super::peer_inbox::Sources>(|_, cx| cx.notify())
+            .detach();
         page.refresh(cx);
         page
     }
@@ -64,23 +105,52 @@ impl Profiles {
         cx.notify();
     }
 
-    fn open(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(client) = self.client.clone() else {
-            return;
-        };
-        let directory = library_directory(cx);
-        let pane = cx.new(|cx| Management::new(client, directory.clone(), Some(id), cx));
+    fn open(&mut self, id: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+        let directory = self.origin.directory.clone();
+        let pane = cx.new(|cx| Management::new(client, directory.clone(), id, cx));
         window.focus(&pane.read(cx).focus.clone(), cx);
         let back = cx.subscribe(&pane, |page, _, _: &Back, cx| {
             page.detail = None;
             page.refresh(cx);
         });
+        let location = directory.clone();
+        let connections = cx.subscribe(
+            &pane,
+            move |_, _, open: &super::profile_management::ShowConnections, cx| {
+                let profile = open.0.clone();
+                let name = open.1.clone();
+                let directory = location.clone();
+                cx.defer(move |cx| {
+                    let current = super::browser_window(cx);
+                    if let Some(w) = current
+                        .into_iter()
+                        .chain(
+                            cx.windows()
+                                .into_iter()
+                                .filter_map(|w| w.downcast::<Browser>()),
+                        )
+                        .find(|w| w.read(cx).is_ok_and(|b| b.directory == directory))
+                    {
+                        let _ = w.update(cx, |b, window, cx| {
+                            b.open_profile_connections(&profile, &name, window, cx)
+                        });
+                    }
+                });
+            },
+        );
         let open = cx.subscribe(&pane, move |page, _, open: &Open, cx| {
             let (open, client, directory) = (open.clone(), page.client.clone(), directory.clone());
             cx.defer(move |cx| show_in_browser(open, client, directory, cx));
         });
-        self.detail = Some((pane, vec![back, open]));
+        self.detail = Some((pane, vec![back, open, connections]));
         cx.notify();
+    }
+
+    pub fn leave(&mut self, cx: &mut Context<Self>) {
+        if let Some((pane, _)) = self.detail.take() {
+            pane.update(cx, |p, _| p.leave());
+        }
     }
 
     /// A sign-in pane closed in a main window.
@@ -89,14 +159,6 @@ impl Profiles {
             pane.update(cx, |pane, cx| pane.sign_in_ended(profile_id, runtime, cx));
         }
     }
-}
-
-/// The open library's folder, from the first main window.
-fn library_directory(cx: &App) -> Option<std::path::PathBuf> {
-    cx.windows()
-        .into_iter()
-        .filter_map(|window| window.downcast::<Browser>())
-        .find_map(|window| window.read(cx).ok().and_then(|b| b.directory.clone()))
 }
 
 /// Open in the window whose library recorded the setup, else the usual one.
@@ -127,8 +189,8 @@ fn show_in_browser(
     }
 }
 
-fn new_profile(client: Option<Client>, cx: &mut App) {
-    if let Some(handle) = super::browser_window(cx) {
+fn new_profile(origin: &Origin, client: Option<Client>, cx: &mut App) {
+    if let Some(handle) = origin.browser(cx) {
         let _ = handle.update(cx, |browser, window, cx| {
             if let Some(client) = client {
                 browser.use_profile_client(client);
@@ -176,22 +238,30 @@ impl Render for Profiles {
                         State::Ready => "".into(),
                         State::Failed => "Didn't finish".into(),
                     };
-                    card =
-                        card.child(
-                            ui::group_row(
-                                SharedString::from(format!("settings-profile-{id}")),
-                                index == 0,
-                                Some(
-                                    ui::profile_mark(&item.display_name, t.size.profile_mark)
-                                        .into_any_element(),
-                                ),
-                                item.display_name.clone(),
-                                div().text_color(c.muted).child(state),
-                            )
-                            .on_click(cx.listener(
-                                move |page, _, window, cx| page.open(id.clone(), window, cx),
-                            )),
-                        );
+                    card = card.child(
+                        ui::group_row(
+                            SharedString::from(format!("settings-profile-{id}")),
+                            index == 0,
+                            Some(
+                                ui::profile_mark(&item.display_name, t.size.profile_mark)
+                                    .into_any_element(),
+                            ),
+                            item.display_name.clone(),
+                            match super::peer_inbox::Sources::attention(&id, cx) {
+                                Some(label) => div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(t.space.s4))
+                                    .text_color(c.attention_text)
+                                    .child(ui::dot(c.attention))
+                                    .child(label),
+                                None => div().text_color(c.muted).child(state),
+                            },
+                        )
+                        .on_click(cx.listener(
+                            move |page, _, window, cx| page.open(Some(id.clone()), window, cx),
+                        )),
+                    );
                 }
                 if !items.is_empty() {
                     page = page.child(card);
@@ -201,12 +271,45 @@ impl Render for Profiles {
                         ui::button("settings-new-profile", "New profile", ui::Button::Secondary)
                             .on_click(cx.listener(|page, _, _, cx| {
                                 let client = page.client.clone();
-                                cx.defer(move |cx| new_profile(client, cx));
+                                let origin = page.origin.clone();
+                                cx.defer(move |cx| new_profile(&origin, client, cx));
                             })),
                     ),
                 );
             }
         }
+        page = page.child(
+            div().flex().child(
+                ui::button(
+                    "settings-profile-requests",
+                    "Saved requests",
+                    ui::Button::Secondary,
+                )
+                .on_click(cx.listener(|page, _, window, cx| page.open(None, window, cx))),
+            ),
+        );
         page.into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Origin;
+
+    #[test]
+    fn settings_keeps_its_library_until_another_workspace_opens_it() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let origin = |dir: &std::path::Path| Origin {
+            window: None,
+            directory: Some(dir.to_owned()),
+        };
+        let mut saved = origin(a.path());
+        assert!(saved.retarget(Some(origin(b.path()))));
+        assert!(!saved.retarget(None));
+        assert_eq!(saved.directory.as_deref(), Some(b.path()));
+        assert!(!saved.retarget(Some(origin(b.path()))));
+        assert!(saved.retarget(Some(origin(a.path()))));
+        assert_eq!(saved.directory.as_deref(), Some(a.path()));
     }
 }
