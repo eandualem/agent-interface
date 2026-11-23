@@ -38,8 +38,10 @@ until its target is removed or replaced, the library changes, or the window
 closes. Hidden terminals continue consuming output, preserving their state at
 the cost of retaining their workers and scrollback. A saved Detach action clears
 the pane’s attachment or view and returns the same pane to its chooser, including
-ordinary terminals. The ordinary shell remains available to reopen. Detach, Close
-Pane and Close Tab never send a session-termination command. Closing the final pane closes
+ordinary terminals. The ordinary shell remains available to reopen. Detach never
+sends a session-termination command, and neither do Close Pane and Close Tab outside a
+profile's workspace; in one, they end the profile's shells of the closed panes (see
+the bound shells below). Closing the final pane closes
 its tab. An attached session retains its own lifetime policy, including tmux's
 `destroy-unattached` option.
 
@@ -1442,7 +1444,13 @@ Bound panes never create ordinary shells on the window's own server.
 A bound shell comes from the provider: when a pane with no attachment connects,
 `POST /api/profile/shells` ensures a session for the pane on the verified tmux socket,
 and the app then attaches to it. A new pane sends no folder, so the shell starts in the
-profile's home. The app
+profile's home. When a saved Close Pane or Close Tab leaves no pane holding the shell,
+`DELETE /api/profile/shells/{shell_id}` ends it; the app never kills the session
+itself. Before closing, it reads each shell's panes (`list-panes`, then the terminal's
+foreground process group with `ps`) and asks the person first when a command other
+than the shell is in the foreground; a shell it cannot read counts as busy. A shell the
+service did not end is reported in the status bar. These shells are left out of
+session choosers. The app
 sends no environment and never starts a bound tmux server, so the app's launch
 context cannot reach the shell. Signing a CLI account in works the same way:
 `POST /api/profile/accounts/sign-in` returns a session on that socket, and the pane

@@ -4,7 +4,7 @@ use std::{io, path::PathBuf, time::Duration};
 
 use agent_interface_core::View;
 use agent_interface_roster::{
-    profiles::{Connection, runs},
+    profiles::{self, Connection, runs},
     views::{Member, Request},
 };
 
@@ -78,13 +78,16 @@ impl Sessions {
         self.source.set_active(active);
     }
 
-    /// The latest sessions, without a profile's run views: those open
-    /// under their agent's runs, read-only.
+    /// The latest sessions, without a profile's run views, which open under
+    /// their agent's runs, read-only, or its panes' shells, which belong to
+    /// their panes.
     pub fn take_update(&self) -> Option<Observation> {
         let mut update = self.source.take_update()?;
         let expected = self.origin.connection().map(Connection::identity);
         if expected.is_some() {
-            update.sessions.retain(|session| !runs::is_view(session));
+            update
+                .sessions
+                .retain(|session| !runs::is_view(session) && !profiles::is_shell(session));
         }
         (update.identity.as_ref() == expected).then_some(update)
     }
@@ -121,15 +124,11 @@ mod tests {
     }
 
     #[test]
-    fn a_server_without_a_profile_lists_sessions_named_as_run_views() {
+    fn a_server_without_a_profile_lists_sessions_named_as_run_views_or_shells() {
         let tmux = TmuxServer::start().unwrap();
-        tmux.run(&[
-            "new-session",
-            "-d",
-            "-s",
-            "run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60",
-        ])
-        .unwrap();
+        for session in ["run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60", "shell-0123456789ab"] {
+            tmux.run(&["new-session", "-d", "-s", session]).unwrap();
+        }
         let socket: PathBuf = tmux
             .run(&["display-message", "-p", "#{socket_path}"])
             .unwrap()
@@ -148,7 +147,11 @@ mod tests {
         let observed = source.take_update().unwrap();
         assert_eq!(
             observed.sessions,
-            ["fixture", "run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60"]
+            [
+                "fixture",
+                "run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60",
+                "shell-0123456789ab"
+            ]
         );
     }
 
@@ -157,14 +160,11 @@ mod tests {
         let tmux = TmuxServer::start().unwrap();
         tmux.run(&["new-session", "-d", "-s", "bound-only"])
             .unwrap();
-        // A run's view opens under its agent, never as a loose session.
-        tmux.run(&[
-            "new-session",
-            "-d",
-            "-s",
-            "run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60",
-        ])
-        .unwrap();
+        // A run's view opens under its agent, and a pane's shell belongs to
+        // its pane: neither is a loose session.
+        for session in ["run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60", "shell-0123456789ab"] {
+            tmux.run(&["new-session", "-d", "-s", session]).unwrap();
+        }
         let socket: PathBuf = tmux
             .run(&["display-message", "-p", "#{socket_path}"])
             .unwrap()

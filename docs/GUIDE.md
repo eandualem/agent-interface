@@ -22,7 +22,8 @@ A **workspace** is a collection of tabs. A **tab** contains one or more
 **panes**. Each pane holds a terminal session, a native view such as Skills,
 or an experimental HTML artifact.
 A session is the running work shown inside a terminal pane; closing its pane
-does not send a session-termination command.
+does not send a session-termination command, except for the shell a profile's
+workspace opened for that pane (see Close Pane below).
 
 Use the workspace heading to choose a workspace, then choose a tab. The saved
 split layout contains actual sessions; click a terminal before typing. Command-1
@@ -176,7 +177,9 @@ pane after saving. Closing the last pane closes its tab. **Close Tab**
 tab and detaches its clients. Closing the last tab leaves the
 window open. Use the window close control or **Close Window** in the application
 menu to close the whole window. Ordinary shells keep running; external sessions
-retain their own tmux lifetime policy.
+retain their own tmux lifetime policy. In a profile's workspace, closing a pane or
+tab ends the shell the profile opened for each pane, and asks first while a command
+is still running in one.
 
 The agent roster refreshes immediately, then two seconds after each completed
 request, and at once when Agent Backbone reports a changed state. Team, Activity
@@ -296,7 +299,8 @@ ordinary-shell directories, including parked shells, without copying external
 session directories. Failed reads retain saved paths. Return to shell in tab options restores the existing ordinary shell
 after saving; choose Open terminal if that shell is absent. The chooser lists tmux sessions
 without optional agent metadata. In a profile's workspace it leaves out run views,
-which open from their agent's card.
+which open from their agent's card, and the shells the profile opened for panes,
+which belong to their panes.
 
 Attached sessions reconnect automatically when the saved session returns on its
 source server. Attempts run at the two-second window-refresh interval and never
