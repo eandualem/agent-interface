@@ -23,6 +23,8 @@ pub mod setup;
 mod stream;
 pub mod terminal;
 
+pub use stream::Change;
+
 use crate::{RESPONSE_LIMIT, Snapshot, transport::local};
 
 /// A served profile. Display names are not identity.

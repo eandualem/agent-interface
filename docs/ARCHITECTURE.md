@@ -436,12 +436,17 @@ the team-wide Usage view. Skill previews keep their 256 KiB limit.
 
 The service also pushes agent state changes on `GET /api/stream`, as
 Server-Sent Events. `Connection::watch` follows that stream on a worker of its
-own and reads only each frame's kind: the opening `hello`, `agent.state`,
-`agent.changed` (what an agent waits on, or its background counts), `run.changed`
-and `resync` each ask the roster worker for a read at once. A service that
-does not know a kind ignores it. The frames' values are
-not applied and no cursor is kept, so a stream opened again simply reads the
-states again. A stream that breaks, or stays silent for 45 seconds against the
+own. An `agent.state` (state, reason and since) or `agent.changed` (what an
+agent waits on, and its background counts) is applied to the agent with that
+name and registration and published at once, without a read; a state just
+reported is no longer stale. The opening `hello`, `run.changed`, `resync`, and
+a change for a registration the roster doesn't hold or can't be read each ask
+the roster worker for a read at once. A read that was out when a change
+arrived applies that change again to what it read, so an older read never puts
+an older state back on screen. A service that does not know a kind ignores it.
+No cursor is kept, so a stream opened again starts with a read. `agent.place`
+is not followed, because the app shows no role or superior. A stream that
+breaks, or stays silent for 45 seconds against the
 service's 15-second heartbeat, is opened again two seconds later; a 404
 stops the worker. Without the stream, the roster is polled as before. The
 two-second poll continues, because agents joining or leaving the roster are
