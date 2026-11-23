@@ -385,7 +385,6 @@ impl Pane {
             || !action.belongs_to(self.live.selected.as_ref())
             || self.live.sending
             || self.live.retry.is_some()
-            || (self.live.reading && !matches!(action, Change::Invite(_)))
             || self.live.status.is_some()
             || !self.live.stream_ok
         {
@@ -1043,10 +1042,14 @@ impl Pane {
                 }
                 let mut column =
                     column.child(self.live_header(name, Some(state), cx).child(controls));
-                if actions
-                    && connected
-                    && matches!(self.live.form, Some(Form::Gate(..) | Form::Disconnect(_)))
-                {
+                // An open form stays usable while only a read is in flight: the
+                // service checks each change, and the next read reconciles it.
+                let held = connected
+                    && self.live.stream_ok
+                    && !self.live.sending
+                    && self.live.status.is_none()
+                    && self.live.retry.is_none();
+                if held && matches!(self.live.form, Some(Form::Gate(..) | Form::Disconnect(_))) {
                     column = column.child(
                         div()
                             .px(px(t.space.s12))
@@ -1080,12 +1083,6 @@ impl Pane {
                     .bytes()
                     .fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize))
                     % 4];
-                // A note being written stays mounted while only a read is in flight.
-                let held = connected
-                    && self.live.stream_ok
-                    && !self.live.sending
-                    && self.live.status.is_none()
-                    && self.live.retry.is_none();
                 for m in &history.items {
                     body =
                         body.child(self.live_card(name, tint, m, actions && connected, held, cx));
