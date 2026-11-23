@@ -234,6 +234,8 @@ pub(super) struct Live {
     sending: bool,
     retry: Option<PendingRetry>,
     status: Option<String>,
+    /// A refused action: shown until dismissed, without pausing the pane.
+    notice: Option<String>,
     read_at: Option<String>,
     older_loading: bool,
     oldest: Option<String>,
@@ -260,6 +262,7 @@ impl Live {
             sending: false,
             retry: None,
             status: None,
+            notice: None,
             read_at: None,
             older_loading: false,
             oldest: None,
@@ -325,10 +328,21 @@ impl Pane {
                 if live.selected == expected && live.stream_ok {
                     match result {
                         Ok(snapshot) => {
-                            if matches!(&live.form,Some(Form::Gate(id,original,_)) if !snapshot.summary.overview.connections.iter().any(|p| &p.connection.generation==id && &p.gates==original)) {
-                                live.form=None;
+                            let connected = |id: &str| {
+                                snapshot.summary.overview.connections.iter().any(|p| {
+                                    p.connection.generation == id && p.state == "connected"
+                                })
+                            };
+                            if matches!(&live.form,Some(Form::Gate(id,original,_)) if !snapshot.summary.overview.connections.iter().any(|p| &p.connection.generation==id && &p.gates==original))
+                                || matches!(&live.form, Some(Form::Gate(id, ..) | Form::Disconnect(id)) if !connected(id))
+                                || matches!(&live.form, Some(Form::Decline(m) | Form::Revise(m)) if !connected(&m.connection.generation))
+                            {
+                                live.form = None;
                             }
-                            if live.selected != snapshot.selection {
+                            // The Connect panel belongs to no selection.
+                            if live.selected != snapshot.selection
+                                && !matches!(live.form, Some(Form::Connect))
+                            {
                                 live.form = None;
                             }
                             if live
@@ -371,15 +385,15 @@ impl Pane {
             || !action.belongs_to(self.live.selected.as_ref())
             || self.live.sending
             || self.live.retry.is_some()
-            || self.live.reading
             || self.live.status.is_some()
             || !self.live.stream_ok
         {
             return;
         }
+        self.live.notice = None;
         self.live.retry = Some(PendingRetry {
             action,
-            key: uuid::Uuid::new_v4().simple().to_string(),
+            key: request_key(),
             error: None,
         });
         self.send_live(cx);
@@ -401,6 +415,7 @@ impl Pane {
             return;
         }
         let description = change.description();
+        let invite = matches!(change, Change::Invite(_));
         self.live.sending = true;
         self.live.form = None;
         let service = self.live.connection.clone();
@@ -429,7 +444,14 @@ impl Pane {
                             pane.live.inbox.update(cx, |inbox, cx| inbox.refresh(cx));
                         } else {
                             pane.live.retry = None;
-                            pane.live.status = Some(format!("{description}: {}", failure(error)));
+                            pane.live.notice = Some(match (invite, error) {
+                                // The service has no invitation route yet.
+                                (true, Error::Refused(404)) => {
+                                    "This Agent Backbone can\u{2019}t send connection requests yet. Nothing was sent.".into()
+                                }
+                                (_, error) => format!("{description}: {}", failure(error)),
+                            });
+                            pane.live.inbox.update(cx, |inbox, cx| inbox.refresh(cx));
                         }
                     }
                 }
@@ -446,7 +468,10 @@ impl Pane {
             return;
         }
         match &self.live.form {
-            Some(Form::Connect) => self.change(Change::Invite(value), cx),
+            // An ID never contains spaces; a paste can carry a line break.
+            Some(Form::Connect) => {
+                self.change(Change::Invite(value.split_whitespace().collect()), cx)
+            }
             Some(Form::Revise(m)) => self.change(
                 Change::Review(Box::new(m.clone()), DecisionKind::Revise(value)),
                 cx,
@@ -482,13 +507,9 @@ impl Pane {
         cx.notify();
     }
 
+    /// A confirmation, gate choice or note, drawn where it applies.
     fn live_form(&self, cx: &Context<Self>) -> Div {
-        let base = div()
-            .flex()
-            .flex_col()
-            .gap(px(tokens().space.s6))
-            .p(px(tokens().space.s8))
-            .bg(colors().panel);
+        let (t, c) = (tokens(), colors());
         let Some(form) = &self.live.form else {
             return div();
         };
@@ -502,43 +523,81 @@ impl Pane {
                 cx.notify();
             },
         );
-        let (label, action) = match form {
-            Form::Connect | Form::Revise(_) => {
-                let (hint, send) = if matches!(form, Form::Connect) {
-                    ("Peer connection ID", "Send")
-                } else {
-                    ("Revision note", "Send note to main")
-                };
-                return base.child(hint).child(self.input.clone()).child(
-                    div()
-                        .flex()
-                        .child(self.live_button(
-                            "live-submit",
-                            send,
-                            ui::Button::Primary,
-                            cx,
-                            |pane, _, cx| pane.submit_live_form(cx),
-                        ))
-                        .child(cancel),
-                );
+        let strip = |text: String| {
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(px(t.space.s8))
+                .child(
+                    ui::text(
+                        div()
+                            .flex_grow(1.0)
+                            .flex_basis(px(t.size.empty_width / 2.0))
+                            .min_w_0()
+                            .text_color(c.text_2),
+                        &t.text.body,
+                    )
+                    .child(text),
+                )
+        };
+        let (label, prompt, action) = match form {
+            Form::Connect => return div(),
+            Form::Revise(_) => {
+                return div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(t.space.s6))
+                    .child(
+                        ui::text(div().text_color(c.text_2), &t.text.meta)
+                            .child("Revision note for main"),
+                    )
+                    .child(field_box(hinted(&self.input, "What should main change?", cx)))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap(px(t.space.s8))
+                            .child(self.live_button(
+                                "live-submit",
+                                "Send note to main",
+                                ui::Button::Primary,
+                                cx,
+                                |pane, _, cx| pane.submit_live_form(cx),
+                            ))
+                            .child(cancel),
+                    );
             }
             Form::Decline(message) => (
                 "Confirm decline",
+                "Decline this message? It will not be delivered.".to_owned(),
                 Change::Review(Box::new(message.clone()), DecisionKind::Decline),
             ),
-            Form::Disconnect(id) => ("Confirm disconnect", Change::Disconnect(id.clone())),
+            Form::Disconnect(id) => (
+                "Disconnect",
+                "Disconnect? Delivery stops here at once; the other profile confirms when it next connects.".to_owned(),
+                Change::Disconnect(id.clone()),
+            ),
             Form::Gate(id, original, draft) => {
-                let mut menu = ui::menu().child(ui::menu_heading("Delivery gate"));
+                let mut menu = ui::menu()
+                    .min_w_0()
+                    .max_w_full()
+                    .gap(px(t.space.s8))
+                    .child(ui::menu_heading("Delivery gate"));
                 for d in [Direction::Incoming, Direction::Outgoing] {
                     let original_policy = match d {
                         Direction::Incoming => original.incoming,
                         Direction::Outgoing => original.outgoing,
                     };
+                    let name = match d {
+                        Direction::Incoming => "↙ Incoming",
+                        Direction::Outgoing => "↗ Outgoing",
+                    };
                     if original_policy == Policy::Unknown {
-                        menu = menu.child(format!("{d:?} · Unknown (unsupported by this version)"));
+                        menu = menu.child(format!("{name} · unknown to this version"));
                         continue;
                     }
-                    let mut row = div().flex().flex_wrap().child(format!("{d:?}"));
+                    let mut row = ui::segments();
                     for choice in [Policy::Review, Policy::Auto] {
                         let id = id.clone();
                         let original = *original;
@@ -549,25 +608,30 @@ impl Pane {
                         };
                         let selected = *current == choice;
                         *current = choice;
-                        row = row.child(self.live_button(
-                            format!("gate-{d:?}-{choice:?}"),
-                            format!("{choice:?}"),
-                            if selected {
-                                ui::Button::Primary
-                            } else {
-                                ui::Button::Secondary
-                            },
-                            cx,
-                            move |p, _, cx| {
-                                p.live.form = Some(Form::Gate(id.clone(), original, next));
-                                cx.notify();
-                            },
-                        ));
+                        row = row.child(
+                            ui::segment(format!("gate-{d:?}-{choice:?}"), format!("{choice:?}"), selected)
+                                .focusable()
+                                .tab_stop(true)
+                                .on_click(cx.listener(move |p, _, _, cx| {
+                                    p.live.form = Some(Form::Gate(id.clone(), original, next));
+                                    cx.notify();
+                                })),
+                        );
                     }
-                    menu = menu.child(row);
+                    menu = menu.child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(t.space.s8))
+                            .child(name)
+                            .child(row),
+                    );
                 }
+                let buttons = div().flex().flex_wrap().gap(px(t.space.s8));
                 if original == draft {
-                    return menu.child(cancel);
+                    return menu.child(buttons.child(cancel));
                 }
                 let changes = [
                     (Direction::Incoming, original.incoming, draft.incoming),
@@ -575,7 +639,7 @@ impl Pane {
                 ]
                 .into_iter()
                 .filter(|(_, a, b)| a != b)
-                .map(|(d, _, p)| (d, p, uuid::Uuid::new_v4().simple().to_string()))
+                .map(|(d, _, p)| (d, p, request_key()))
                 .collect();
                 let action = Change::Gates(id.clone(), changes);
                 let automatic = draft.incoming == Policy::Auto || draft.outgoing == Policy::Auto;
@@ -586,18 +650,128 @@ impl Pane {
                     cx,
                     move |pane, _, cx| pane.change(action.clone(), cx),
                 );
-                return menu.when(automatic,|el|el.child("Future messages on an Auto direction skip review. Already-waiting messages stay in review."))
-                    .child(apply).child(cancel);
+                return menu
+                    .when(automatic, |el| {
+                        el.child(
+                            ui::text(div().text_color(c.muted), &t.text.meta).child(
+                                "Future messages on an Auto direction skip review. Already-waiting messages stay in review.",
+                            ),
+                        )
+                    })
+                    .child(buttons.child(apply).child(cancel));
             }
         };
-        base.child(self.live_button(
-            "live-confirm",
-            label,
-            ui::Button::Danger,
+        strip(prompt)
+            .child(self.live_button(
+                "live-confirm",
+                label,
+                ui::Button::Danger,
+                cx,
+                move |pane, _, cx| pane.change(action.clone(), cx),
+            ))
+            .child(cancel)
+    }
+
+    /// ＋'s panel: paste another profile's ID, or copy this one's.
+    fn connect_panel(&self, local: &str, actions: bool, cx: &Context<Self>) -> gpui::Stateful<Div> {
+        let (t, c) = (tokens(), colors());
+        let label = |text: &'static str| {
+            ui::text(div().text_color(c.text_2), &t.text.meta)
+                .font_weight(t.text.row_selected.weight())
+                .child(text)
+        };
+        let note =
+            |text: &'static str| ui::text(div().text_color(c.muted), &t.text.meta).child(text);
+        let close = |pane: &mut Self, cx: &mut Context<Self>| {
+            pane.live.form = None;
+            cx.notify();
+        };
+        let mut send = div().flex().flex_wrap().gap(px(t.space.s8));
+        if actions {
+            send = send.child(self.live_button(
+                "live-submit",
+                "Send request",
+                ui::Button::Primary,
+                cx,
+                |pane, _, cx| pane.submit_live_form(cx),
+            ));
+        }
+        let local = local.to_owned();
+        ui::menu()
+            .id("connect-panel")
+            .absolute()
+            .top(px(t.space.s8))
+            .left(px(t.space.s8))
+            .max_h(gpui::relative(0.94))
+            .overflow_y_scroll()
+            .w(px(t.size.connections_rail * 2.0))
+            .max_w(gpui::relative(0.92))
+            .gap(px(t.space.s8))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .font_weight(t.text.row_selected.weight())
+                            .child("Connect a profile"),
+                    )
+                    .child(
+                        ui::interaction_icon_button("close-connect", "x", "Close")
+                            .tab_stop(true)
+                            .on_click(cx.listener(move |pane, _, _, cx| close(pane, cx))),
+                    ),
+            )
+            .child(label("Send a connection request"))
+            .child(field_box(hinted(&self.input, "Paste the other profile’s ID", cx)))
+            .child(send.child(self.live_button(
+                "live-cancel",
+                "Cancel",
+                ui::Button::Secondary,
+                cx,
+                move |pane, _, cx| close(pane, cx),
+            )))
+            .child(note(if actions && cfg!(target_os = "macos") {
+                "⌘↵ sends. Both directions start on Review once they accept."
+            } else if actions {
+                "Ctrl+↵ sends. Both directions start on Review once they accept."
+            } else {
+                "Sending is paused until Agent Backbone answers."
+            }))
+            .child(div().h(px(t.size.hairline)).bg(c.line))
+            .child(label("This profile’s ID"))
+            .child(field_box(ui::mono(local.clone()).text_color(c.text_2)))
+            .child(div().flex().child(self.copy_button("copy-local-id", "Copy ID", local, false, cx)))
+            .child(note(
+                "Share it outside the app so the other profile can send you a request. Agent Backbone handles keys and relay delivery.",
+            ))
+    }
+
+    fn copy_button(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        local: String,
+        entry: bool,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let button = self.live_button(
+            id,
+            if self.copied { "Copied" } else { label },
+            ui::Button::Secondary,
             cx,
-            move |pane, _, cx| pane.change(action.clone(), cx),
-        ))
-        .child(cancel)
+            move |p, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(local.clone()));
+                p.copied = true;
+                cx.notify();
+            },
+        );
+        if entry {
+            button.track_focus(&self.entry)
+        } else {
+            button
+        }
     }
 
     fn live_older(&mut self, cx: &mut Context<Self>) {
@@ -654,9 +828,61 @@ impl Pane {
         .detach();
     }
 
+    /// On a narrow tile, a thread without its header still offers the way back.
+    fn back_bar(&self, cx: &Context<Self>) -> Option<Div> {
+        let (t, c) = (tokens(), colors());
+        self.compact.then(|| {
+            div()
+                .flex()
+                .flex_shrink_0()
+                .px(px(t.space.s12))
+                .py(px(t.space.s8))
+                .border_b(px(t.size.hairline))
+                .border_color(c.line)
+                .child(self.back_button(cx))
+        })
+    }
+
+    fn back_button(&self, cx: &Context<Self>) -> gpui::Stateful<Div> {
+        ui::back_button("peer-back", "All")
+            .focusable()
+            .tab_stop(true)
+            .track_focus(&self.entry)
+            .on_click(cx.listener(|p, _, _, cx| p.pick(None, cx)))
+    }
+
+    /// The thread's top line: a way back on a narrow tile, the peer's mark
+    /// and name, its state, and any controls.
+    fn live_header(&self, name: &str, state: Option<Div>, cx: &Context<Self>) -> Div {
+        let (t, c) = (tokens(), colors());
+        div()
+            .flex()
+            .flex_shrink_0()
+            .flex_wrap()
+            .items_center()
+            .gap(px(t.space.s8))
+            .px(px(t.space.s12))
+            .py(px(t.space.s8))
+            .border_b(px(t.size.hairline))
+            .border_color(c.line)
+            .when(self.compact, |el| el.child(self.back_button(cx)))
+            .child(ui::profile_mark(name, t.size.view_tile))
+            .child(
+                div()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .font_weight(t.text.row_selected.weight())
+                    .child(name.to_owned()),
+            )
+            .children(state)
+    }
+
     fn live_thread(&self, snapshot: &Snapshot, actions: bool, cx: &Context<Self>) -> Div {
         let (t, c) = (tokens(), colors());
-        let mut thread = div()
+        let column = div().flex_1().min_w_0().min_h_0().flex().flex_col();
+        let body = div()
             .id("peer-history")
             .flex_1()
             .min_w_0()
@@ -665,42 +891,94 @@ impl Pane {
             .p(px(t.space.s12))
             .flex()
             .flex_col()
-            .gap(px(t.space.s8));
-        if self.compact {
-            thread = thread.child(self.live_button(
-                "peer-back",
-                "← All",
-                ui::Button::Secondary,
-                cx,
-                |p, _, cx| p.pick(None, cx),
-            ));
-        }
+            .gap(px(t.space.s10));
+        let meta = |text: String| ui::text(div().text_color(c.muted), &t.text.meta).child(text);
+        // Without a peer header, a narrow tile still needs its way back.
+        let empty = |title: &'static str, body: &'static str| {
+            div()
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .children(self.back_bar(cx))
+                .child(div().flex_1().min_h_0().child(ui::empty_state(
+                    ui::empty_tile("link-2", c.selected, c.muted),
+                    title,
+                    body,
+                )))
+        };
         if self.live.selected != snapshot.selection {
-            return div().child(thread.child("Reading conversation…"));
+            return empty("Reading conversation…", "");
         }
         match &snapshot.selection {
-            None => return div().child(thread.child("Choose a peer to see its conversation.")),
+            None => empty("No peer selected", "Choose a peer to see its conversation."),
             Some(Selection::Request(id)) => {
-                if let Some(r) = snapshot
+                let Some(r) = snapshot
                     .summary
                     .overview
                     .invitations
                     .iter()
                     .find(|r| &r.request_id == id)
-                {
-                    thread = thread
-                        .child(r.display_name.clone().unwrap_or_else(|| r.peer_id.clone()))
-                        .child(ui::mono(r.peer_id.clone()))
-                        .child(format!("{:?} request · {}", r.direction, r.state));
-                    if r.display_name.is_some() {
-                        thread = thread.child("Name provided by requester");
-                    }
-                    if r.direction == Direction::Incoming && r.state == "pending" {
-                        thread=thread.child("Accepting opens this agent-to-agent connection. Both directions start on Review.");
-                        if actions {
+                else {
+                    return empty("No longer listed", "Choose another peer.");
+                };
+                let name = r.display_name.clone().unwrap_or_else(|| r.peer_id.clone());
+                let incoming = r.direction == Direction::Incoming;
+                let waiting = incoming && r.state == "pending";
+                let state = match (incoming, r.state.as_str()) {
+                    (true, "pending") => ui::tag("Connection request", ui::Tone::Attention),
+                    (false, "pending") => ui::tag("Pending", ui::Tone::Tag),
+                    (false, "declined") => ui::tag("Declined", ui::Tone::Attention),
+                    (_, s) => ui::tag(s.replace('_', " "), ui::Tone::Quiet),
+                };
+                let mut card = body.child(
+                    div()
+                        .max_w(px(t.size.empty_width * 1.6))
+                        .flex()
+                        .flex_col()
+                        .gap(px(t.space.s10))
+                        .p(px(t.space.s14))
+                        .rounded(px(t.radius.popover))
+                        .bg(c.panel)
+                        .border(px(t.size.hairline))
+                        .border_color(if waiting { c.attention } else { c.line })
+                        .child(
+                            div().font_weight(t.text.row_selected.weight()).child(
+                                match (incoming, r.state.as_str()) {
+                                    (true, "pending") => format!("{name} wants to connect"),
+                                    (false, "pending") => {
+                                        format!("Waiting for {name} to accept")
+                                    }
+                                    (false, "declined") => {
+                                        "Connection request declined".to_owned()
+                                    }
+                                    _ => format!(
+                                        "{} request · {}",
+                                        if incoming { "Incoming" } else { "Outgoing" },
+                                        r.state.replace('_', " ")
+                                    ),
+                                },
+                            ),
+                        )
+                        .children(
+                            r.display_name
+                                .is_some()
+                                .then(|| meta("Name provided by requester".into())),
+                        )
+                        .child(field_box(ui::mono(r.peer_id.clone()).text_color(c.text_2)))
+                        .when(waiting, |el| {
+                            el.child(
+                                ui::text(div().text_color(c.text_2), &t.text.body).child(format!(
+                                    "Accepting lets {name}’s agent send messages to your profile. Both directions start on Review, so nothing passes without you."
+                                )),
+                            )
+                        })
+                        .when(waiting && actions, |el| {
+                            let mut buttons = div().flex().flex_wrap().gap(px(t.space.s8));
                             for (accept, label) in [(true, "Accept"), (false, "Decline")] {
                                 let id = id.clone();
-                                thread = thread.child(self.live_button(
+                                buttons = buttons.child(self.live_button(
                                     format!("answer-{accept}"),
                                     label,
                                     if accept {
@@ -709,14 +987,16 @@ impl Pane {
                                         ui::Button::Danger
                                     },
                                     cx,
-                                    move |p, _, cx| {
-                                        p.change(Change::Answer(id.clone(), accept), cx)
-                                    },
+                                    move |p, _, cx| p.change(Change::Answer(id.clone(), accept), cx),
                                 ));
                             }
-                        }
-                    }
-                }
+                            el.child(buttons)
+                        }),
+                );
+                card = card.items_center();
+                column
+                    .child(self.live_header(&name, Some(state), cx))
+                    .child(card)
             }
             Some(Selection::Peer(id)) => {
                 let Some(peer) = snapshot
@@ -726,148 +1006,347 @@ impl Pane {
                     .iter()
                     .find(|p| &p.connection == id)
                 else {
-                    return div();
+                    return empty("No longer listed", "Choose another peer.");
                 };
                 let name = peer.display_name.as_deref().unwrap_or(&id.peer_id);
                 let gates = peer.gates;
-                let header = format!("↙ {:?} · ↗ {:?}", gates.incoming, gates.outgoing);
-                thread = thread
-                    .child(name.to_owned())
-                    .child(ui::mono(id.peer_id.clone()))
-                    .child(format!("Left: {name} (external) · Right: main"));
-                if actions && peer.state == "connected" {
+                let gate_label = format!("↙ {:?} · ↗ {:?}", gates.incoming, gates.outgoing);
+                let connected = peer.state == "connected";
+                let state = if connected {
+                    ui::tag("Connected", ui::Tone::Done)
+                } else if peer.state == "revocation_pending" {
+                    ui::tag(link_status(&peer.state), ui::Tone::Attention)
+                } else {
+                    ui::tag(link_status(&peer.state), ui::Tone::Quiet)
+                };
+                let mut controls = div()
+                    .ml_auto()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(px(t.space.s6));
+                let editable =
+                    gates.incoming != Policy::Unknown || gates.outgoing != Policy::Unknown;
+                if actions && connected && editable {
                     let generation = id.generation.clone();
-                    let disconnect = generation.clone();
-                    let editable_gate = peer.gates.incoming != Policy::Unknown
-                        || peer.gates.outgoing != Policy::Unknown;
-                    let mut controls = div().flex().flex_wrap().items_center().gap(px(t.space.s6));
-                    if editable_gate {
-                        controls = controls.child(self.live_button(
-                            "peer-gates",
-                            header,
-                            ui::Button::Secondary,
-                            cx,
-                            move |p, w, cx| {
-                                p.show_form(Form::Gate(generation.clone(), gates, gates), w, cx)
-                            },
-                        ));
-                    } else {
-                        controls = controls.child(format!("{} · {header}", peer.state));
-                    }
-                    thread = thread.child(controls.child(self.live_button(
+                    controls = controls.child(self.live_button(
+                        "peer-gates",
+                        format!("{gate_label} ⌄"),
+                        ui::Button::Secondary,
+                        cx,
+                        move |p, w, cx| {
+                            p.show_form(Form::Gate(generation.clone(), gates, gates), w, cx)
+                        },
+                    ));
+                } else {
+                    controls = controls.child(ui::tag(gate_label, ui::Tone::Quiet));
+                }
+                if actions && connected {
+                    let disconnect = id.generation.clone();
+                    controls = controls.child(self.live_button(
                         "peer-disconnect",
                         "Disconnect",
                         ui::Button::Danger,
                         cx,
                         move |p, w, cx| p.show_form(Form::Disconnect(disconnect.clone()), w, cx),
-                    )));
-                } else {
-                    thread = thread.child(format!("{} · {header}", link_status(&peer.state)));
+                    ));
                 }
+                let mut column =
+                    column.child(self.live_header(name, Some(state), cx).child(controls));
+                // An open form stays usable while only a read is in flight: the
+                // service checks each change, and the next read reconciles it.
+                let held = connected
+                    && self.live.stream_ok
+                    && !self.live.sending
+                    && self.live.status.is_none()
+                    && self.live.retry.is_none();
+                if held && matches!(self.live.form, Some(Form::Gate(..) | Form::Disconnect(_))) {
+                    column = column.child(
+                        div()
+                            .px(px(t.space.s12))
+                            .py(px(t.space.s8))
+                            .bg(c.panel)
+                            .border_b(px(t.size.hairline))
+                            .border_color(c.line)
+                            .child(self.live_form(cx)),
+                    );
+                }
+                // A self-reported name never hides the identity it stands for.
+                let mut body = body
+                    .children(
+                        peer.display_name
+                            .is_some()
+                            .then(|| ui::mono(id.peer_id.clone()).text_color(c.muted)),
+                    )
+                    .child(meta(format!(
+                        "Left: {name} (external · available to main) · Right: main"
+                    )));
                 let Some(history) = &snapshot.history else {
-                    return div().child(thread);
+                    return column.child(body);
                 };
                 if history.older.is_some() {
-                    thread = thread.child(self.live_button(
+                    body = body.child(div().flex().justify_center().child(self.live_button(
                         "older-history",
                         "Older messages",
                         ui::Button::Secondary,
                         cx,
                         |pane, _, cx| pane.live_older(cx),
-                    ));
+                    )));
                 }
+                if history.items.is_empty() {
+                    body = body.child(meta("No messages yet.".into()));
+                }
+                let tint = [c.info, c.violet, c.green, c.accent][id
+                    .peer_id
+                    .bytes()
+                    .fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize))
+                    % 4];
                 for m in &history.items {
-                    let outgoing = m.direction == Direction::Outgoing;
-                    let waiting = m.state == "pending_review";
-                    let mut card = div()
-                        .min_w_0()
-                        .flex_shrink_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(t.space.s6))
-                        .max_w(gpui::relative(if waiting { 0.88 } else { 0.82 }))
-                        .p(px(t.space.s10))
-                        .rounded(px(t.radius.card))
-                        .border_1()
-                        .border_color(if waiting { c.attention } else { c.line })
-                        .bg(if outgoing {
-                            c.outgoing_surface
-                        } else {
-                            c.panel
-                        })
-                        .when(outgoing, |e| e.self_end())
-                        .when(!outgoing, |e| {
-                            e.self_start().border_l(px(2.5)).border_color(c.info)
-                        })
-                        .child(format!(
-                            "{} · {}",
-                            if outgoing { "main" } else { name },
-                            m.submitted_at
-                        ))
-                        .child(m.text.clone());
-                    let receipt = match &m.receipt {
-                        api::Receipt::Missing => match m.state.as_str() {
-                            "received" => "Stored by peer · terminal receipt pending".into(),
-                            "uploaded" => "Uploaded to relay · terminal receipt pending".into(),
-                            "queued" => "Queued · terminal receipt pending".into(),
-                            "upload_unconfirmed" => "Upload unconfirmed".into(),
-                            "outcome_unknown" => "Delivery outcome unknown".into(),
-                            s => s.replace('_', " "),
-                        },
-                        api::Receipt::Uncertain => "Delivery uncertain".into(),
-                        api::Receipt::Confirmed {
-                            outcome,
-                            recorded_at,
-                        } => format!("{outcome} · receipt received {recorded_at}"),
-                    };
-                    card = card.child(ui::mono(receipt));
-                    if let Some(f) = &m.upload_failure {
-                        card = card.child(ui::mono(f.code.clone()));
-                    }
-                    if waiting && actions && peer.state == "connected" {
-                        let pass = m.clone();
-                        let decline = m.clone();
-                        let mut row = div().flex().flex_wrap().child(self.live_button(
-                            format!("pass-{}", m.message_id),
-                            "Pass through",
-                            ui::Button::Primary,
-                            cx,
-                            move |p, _, cx| {
-                                p.change(
-                                    Change::Review(Box::new(pass.clone()), DecisionKind::Pass),
-                                    cx,
-                                )
-                            },
-                        ));
-                        if outgoing {
-                            let msg = m.clone();
-                            row = row.child(self.live_button(
-                                format!("revise-{}", m.message_id),
-                                "Ask to revise",
-                                ui::Button::Secondary,
-                                cx,
-                                move |p, w, cx| p.show_form(Form::Revise(msg.clone()), w, cx),
-                            ));
-                        }
-                        card = card
-                            .child(row.child(self.live_button(
-                                format!("decline-{}", m.message_id),
-                                "Decline",
-                                ui::Button::Danger,
-                                cx,
-                                move |p, w, cx| p.show_form(Form::Decline(decline.clone()), w, cx),
-                            )))
-                            .child(if outgoing {
-                                format!("Sends unchanged to {name}")
-                            } else {
-                                "Makes available & notifies main".into()
-                            });
-                    }
-                    thread = thread.child(card);
+                    body =
+                        body.child(self.live_card(name, tint, m, actions && connected, held, cx));
                 }
+                column.child(body)
             }
         }
-        div().min_h_0().min_w_0().flex_1().flex().child(thread)
+    }
+
+    /// One message: the peer's on the left with its tint, main's on the right,
+    /// and a dashed outline while it waits for review.
+    fn live_card(
+        &self,
+        name: &str,
+        tint: gpui::Rgba,
+        m: &api::Message,
+        actions: bool,
+        held: bool,
+        cx: &Context<Self>,
+    ) -> Div {
+        let (t, c) = (tokens(), colors());
+        let outgoing = m.direction == Direction::Outgoing;
+        let waiting = m.state == "pending_review";
+        let meta = |text: String| ui::text(div().text_color(c.muted), &t.text.meta).child(text);
+        let mut card = div()
+            .min_w_0()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap(px(t.space.s6))
+            .max_w(gpui::relative(if waiting { 0.88 } else { 0.82 }))
+            .p(px(t.space.s10))
+            .rounded(px(t.radius.card))
+            .border(px(t.size.hairline))
+            .bg(if outgoing && !waiting {
+                c.outgoing_surface
+            } else {
+                c.panel
+            })
+            .border_color(if outgoing { c.outgoing_border } else { c.line })
+            .when(outgoing, |el| el.self_end().rounded_tr(px(t.radius.key)))
+            .when(!outgoing, |el| {
+                el.self_start()
+                    .rounded_tl(px(t.radius.key))
+                    .border_l(px(t.space.s2))
+                    .border_color(tint)
+            })
+            .when(waiting, |el| {
+                el.border(px(t.size.hairline))
+                    .border_dashed()
+                    .border_color(c.attention)
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .justify_between()
+                    .gap(px(t.space.s12))
+                    .child(
+                        ui::mono(if outgoing {
+                            "main".to_owned()
+                        } else {
+                            name.to_owned()
+                        })
+                        .text_color(if outgoing {
+                            c.text_2
+                        } else {
+                            tint
+                        }),
+                    )
+                    .child(
+                        ui::text(
+                            div().text_color(if waiting { c.attention_text } else { c.muted }),
+                            &t.text.meta,
+                        )
+                        .child(if waiting {
+                            format!("review · {}", clock(&m.submitted_at))
+                        } else {
+                            clock(&m.submitted_at)
+                        }),
+                    ),
+            )
+            .child(ui::text(div().text_color(c.text), &t.text.body).child(m.text.clone()));
+        let receipt = match &m.receipt {
+            _ if waiting => None,
+            api::Receipt::Missing => Some(match m.state.as_str() {
+                "received" => "Stored by peer · terminal receipt pending".into(),
+                "uploaded" => "Uploaded to relay · terminal receipt pending".into(),
+                "queued" => "Queued · terminal receipt pending".into(),
+                "upload_unconfirmed" => "Upload unconfirmed".into(),
+                "outcome_unknown" => "Delivery outcome unknown".into(),
+                s => s.replace('_', " "),
+            }),
+            api::Receipt::Uncertain => Some("Delivery uncertain".into()),
+            api::Receipt::Confirmed {
+                outcome,
+                recorded_at,
+            } => Some(format!(
+                "{} · receipt received {}",
+                outcome.replace('_', " "),
+                clock(recorded_at)
+            )),
+        };
+        card = card.children(receipt.map(meta));
+        if let Some(f) = &m.upload_failure {
+            card = card.child(ui::mono(f.code.clone()).text_color(c.attention_text));
+        }
+        let ours = matches!(
+            &self.live.form,
+            Some(Form::Decline(x) | Form::Revise(x)) if x.message_id == m.message_id
+        );
+        if waiting && ours && held {
+            return card.child(self.live_form(cx));
+        }
+        if !(waiting && actions) {
+            return card;
+        }
+        let pass = m.clone();
+        let decline = m.clone();
+        let mut row = div()
+            .flex()
+            .flex_wrap()
+            .gap(px(t.space.s8))
+            .child(self.live_button(
+                format!("pass-{}", m.message_id),
+                "Pass through",
+                ui::Button::Primary,
+                cx,
+                move |p, _, cx| {
+                    p.change(
+                        Change::Review(Box::new(pass.clone()), DecisionKind::Pass),
+                        cx,
+                    )
+                },
+            ));
+        if outgoing {
+            let msg = m.clone();
+            row = row.child(self.live_button(
+                format!("revise-{}", m.message_id),
+                "Ask to revise",
+                ui::Button::Secondary,
+                cx,
+                move |p, w, cx| p.show_form(Form::Revise(msg.clone()), w, cx),
+            ));
+        }
+        card.child(row.child(self.live_button(
+            format!("decline-{}", m.message_id),
+            "Decline",
+            ui::Button::Danger,
+            cx,
+            move |p, w, cx| p.show_form(Form::Decline(decline.clone()), w, cx),
+        )))
+        .child(meta(if outgoing {
+            format!("Pass through sends it unchanged to {name}.")
+        } else {
+            "Pass through makes it available to main and notifies it.".into()
+        }))
+    }
+
+    /// The peer column for the service's invitations and connections.
+    fn live_rail(&self, s: &Snapshot, cx: &Context<Self>) -> Div {
+        let c = colors();
+        let mut rows = div()
+            .id("live-peers")
+            .min_h_0()
+            .flex_1()
+            .overflow_y_scroll();
+        let query = self.filter.read(cx).value().trim().to_lowercase();
+        let mut shown = 0;
+        let mut add = |rows: gpui::Stateful<Div>,
+                       selection: Selection,
+                       name: Option<&str>,
+                       peer: &str,
+                       (mark, label, color): (&'static str, String, gpui::Rgba),
+                       needs: bool| {
+            let name = name.unwrap_or(peer);
+            if (self.needs_you && !needs)
+                || !(name.to_lowercase().contains(&query) || peer.to_lowercase().contains(&query))
+            {
+                return rows;
+            }
+            shown += 1;
+            let id = match &selection {
+                Selection::Peer(g) => format!("peer-{}", g.generation),
+                Selection::Request(r) => format!("invite-{r}"),
+            };
+            let selected = self.live.selected.as_ref() == Some(&selection);
+            rows.child(
+                peer_row(id, selected, name.to_owned(), mark, label, color)
+                    .on_click(cx.listener(move |p, _, _, cx| p.pick(Some(selection.clone()), cx))),
+            )
+        };
+        for r in &s.summary.overview.invitations {
+            if r.state == "accepted" {
+                continue;
+            }
+            let incoming = r.direction == Direction::Incoming;
+            let status = match (incoming, r.state.as_str()) {
+                (true, "pending") => ("!", "request".into(), c.attention_text),
+                (false, "declined") => ("!", "declined".into(), c.attention_text),
+                (false, "pending") => ("◷", "pending".into(), c.accent_text),
+                (_, state) => ("·", state.replace('_', " "), c.muted),
+            };
+            let needs = status.0 == "!";
+            rows = add(
+                rows,
+                Selection::Request(r.request_id.clone()),
+                r.display_name.as_deref(),
+                &r.peer_id,
+                status,
+                needs,
+            );
+        }
+        for p in &s.summary.overview.connections {
+            let count = s.summary.count(&p.connection.generation);
+            let letter = |policy: Policy| match policy {
+                Policy::Review => "R",
+                Policy::Auto => "A",
+                Policy::Unknown => "?",
+            };
+            let status = if count > 0 {
+                ("!", format!("{count} review"), c.attention_text)
+            } else if p.state == "connected" {
+                (
+                    "●",
+                    format!("{}/{}", letter(p.gates.incoming), letter(p.gates.outgoing)),
+                    c.ok,
+                )
+            } else if p.state == "revocation_pending" {
+                ("⊘", "stopped".into(), c.muted)
+            } else {
+                ("○", p.state.replace('_', " "), c.muted)
+            };
+            rows = add(
+                rows,
+                Selection::Peer(p.connection.clone()),
+                p.display_name.as_deref(),
+                &p.connection.peer_id,
+                status,
+                count > 0,
+            );
+        }
+        if shown == 0 {
+            rows = rows.child(no_rows("No matching peers"));
+        }
+        self.rail_frame(rows, true, cx, |p, w, cx| p.show_form(Form::Connect, w, cx))
     }
 
     pub(super) fn live_view(&self, cx: &Context<Self>) -> Div {
@@ -878,8 +1357,7 @@ impl Pane {
             .min_h_0()
             .min_w_0()
             .flex()
-            .flex_col()
-            .gap(px(t.space.s6));
+            .flex_col();
         let entity = cx.entity().downgrade();
         view = view.child(
             canvas(
@@ -904,28 +1382,49 @@ impl Pane {
             cx,
             |pane, _, cx| pane.live.inbox.update(cx, |inbox, cx| inbox.refresh(cx)),
         );
+        let buttons = || {
+            div()
+                .flex()
+                .flex_wrap()
+                .justify_center()
+                .gap(px(t.space.s8))
+        };
         let Some(s) = &self.live.snapshot else {
-            return view
-                .child(ui::empty_state(
-                    ui::empty_tile("unplug", c.selected, c.muted),
-                    if self.live.status.is_some() {
-                        "Connections unavailable"
+            let failed = self.live.status.clone();
+            return view.child(ui::empty_state(
+                ui::empty_tile(
+                    "unplug",
+                    c.selected,
+                    if failed.is_some() {
+                        c.attention
                     } else {
-                        "Reading profile connections…"
+                        c.muted
                     },
-                    self.live.status.clone().unwrap_or_default(),
-                ))
-                .child(refresh)
-                .child(
-                    self.live_button(
-                        "preview-connections",
-                        "Preview with sample data",
-                        ui::Button::Secondary,
-                        cx,
-                        |pane, _, cx| pane.preview(true, cx),
-                    )
-                    .track_focus(&self.entry),
-                );
+                ),
+                if failed.is_some() {
+                    "Connections unavailable"
+                } else {
+                    "Reading profile connections…"
+                },
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(t.space.s12))
+                    .children(failed)
+                    .child(
+                        buttons().child(refresh).child(
+                            self.live_button(
+                                "preview-connections",
+                                "Preview with sample data",
+                                ui::Button::Secondary,
+                                cx,
+                                |pane, _, cx| pane.preview(true, cx),
+                            )
+                            .track_focus(&self.entry),
+                        ),
+                    ),
+            ));
         };
         let actions = self.live.stream_ok
             && !self.live.reading
@@ -933,165 +1432,75 @@ impl Pane {
             && self.live.status.is_none()
             && self.live.retry.is_none();
         let local = s.summary.overview.local_id.clone();
-        view = view.child(
-            div()
-                .p(px(t.space.s6))
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap(px(t.space.s6))
-                .child(ui::mono(local.clone()))
-                .child(
-                    self.live_button(
-                        "copy-local-id",
-                        if self.copied { "Copied" } else { "Copy ID" },
-                        ui::Button::Secondary,
-                        cx,
-                        move |p, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(local.clone()));
-                            p.copied = true;
-                            cx.notify();
-                        },
-                    )
-                    .track_focus(&self.entry),
-                )
-                .when(actions, |el| {
-                    el.child(self.live_button(
-                        "invite-peer",
-                        "Connect a profile",
-                        ui::Button::Secondary,
-                        cx,
-                        |p, w, cx| p.show_form(Form::Connect, w, cx),
-                    ))
-                }),
-        );
-        if self.live.form.is_some() {
-            view = view.child(self.live_form(cx));
-        }
-        let mut content = div().flex().flex_1().min_h_0().min_w_0();
-        if !self.compact || !self.show_thread {
-            let mut rail = div()
-                .w(px(t.size.connections_rail))
-                .max_w_full()
-                .min_h_0()
-                .p(px(t.space.s6))
-                .flex()
-                .flex_col()
-                .gap(px(t.space.s4));
-            let mut filters = div().flex();
-            for (needs, label) in [(false, "All"), (true, "Needs you")] {
-                filters = filters.child(self.live_button(
-                    format!("needs-{needs}"),
-                    label,
-                    if self.needs_you == needs {
-                        ui::Button::Primary
-                    } else {
-                        ui::Button::Secondary
-                    },
+        let overview = &s.summary.overview;
+        // An invitation waits only for the service, not for a read in flight.
+        let can_send = self.live.stream_ok
+            && !self.live.sending
+            && self.live.status.is_none()
+            && self.live.retry.is_none();
+        let listed = !overview.connections.is_empty()
+            || overview.invitations.iter().any(|r| r.state != "accepted");
+        let mut main = div().relative().flex_1().min_h_0().min_w_0().flex();
+        if !listed {
+            let mut choices = buttons();
+            if can_send {
+                choices = choices.child(self.live_button(
+                    "invite-peer",
+                    "Connect a profile",
+                    ui::Button::Primary,
                     cx,
-                    move |p, _, cx| {
-                        p.needs_you = needs;
-                        cx.notify();
-                    },
+                    |p, w, cx| p.show_form(Form::Connect, w, cx),
                 ));
             }
-            rail = rail.child(filters).child(self.filter.clone());
-            let mut rows = div().id("live-peers").min_h_0().overflow_y_scroll();
-            let query = self.filter.read(cx).value().trim().to_lowercase();
-            let mut add = |selection: Selection,
-                           name: Option<&str>,
-                           peer: &str,
-                           mark: String,
-                           needs: bool| {
-                let name = name.unwrap_or(peer);
-                if (!self.needs_you || needs)
-                    && (name.to_lowercase().contains(&query)
-                        || peer.to_lowercase().contains(&query))
-                {
-                    let id = match &selection {
-                        Selection::Peer(g) => format!("peer-{}", g.generation),
-                        Selection::Request(r) => format!("invite-{r}"),
-                    };
-                    let row = ui::row(id, self.live.selected.as_ref() == Some(&selection))
-                        .focusable()
-                        .tab_stop(true)
-                        .child(name.to_owned())
-                        .child(ui::mono(mark))
-                        .on_click(
-                            cx.listener(move |p, _, _, cx| p.pick(Some(selection.clone()), cx)),
-                        );
-                    rows = std::mem::replace(&mut rows, div().id("live-peers")).child(row);
-                }
-            };
-            for r in &s.summary.overview.invitations {
-                if r.state == "accepted" {
-                    continue;
-                }
-                let needs = (r.direction == Direction::Incoming && r.state == "pending")
-                    || (r.direction == Direction::Outgoing && r.state == "declined");
-                add(
-                    Selection::Request(r.request_id.clone()),
-                    r.display_name.as_deref(),
-                    &r.peer_id,
-                    if needs {
-                        format!(
-                            "! {}",
-                            if r.state == "pending" {
-                                "request"
-                            } else {
-                                &r.state
-                            }
-                        )
-                    } else {
-                        r.state.clone()
-                    },
-                    needs,
-                );
-            }
-            for p in &s.summary.overview.connections {
-                let count = s.summary.count(&p.connection.generation);
-                add(
-                    Selection::Peer(p.connection.clone()),
-                    p.display_name.as_deref(),
-                    &p.connection.peer_id,
-                    if count > 0 {
-                        format!("! {count} review")
-                    } else {
-                        p.state.clone()
-                    },
-                    count > 0,
-                );
-            }
-            content = content.child(rail.child(rows));
-        }
-        if !self.compact || self.show_thread {
-            content = content.child(self.live_thread(s, actions, cx));
-        }
-        if s.summary.overview.connections.is_empty() && s.summary.overview.invitations.is_empty() {
-            view = view.child(
-                ui::text(div().px(px(t.space.s6)).text_color(c.muted), &t.text.meta)
-                    .child("No profile connections yet."),
-            );
-        }
-        view = view.child(content);
-        if let Some(error) = &self.live.status {
-            view = view.child(
+            main = main.child(ui::empty_state(
+                ui::empty_tile("link-2", c.selected, c.muted),
+                "No profile connections yet",
                 div()
-                    .bg(c.attention_soft)
                     .flex()
-                    .flex_wrap()
-                    .child(error.clone())
-                    .child(refresh),
-            );
+                    .flex_col()
+                    .items_center()
+                    .gap(px(t.space.s12))
+                    .child(
+                        "Connect this profile to another Agent Backbone profile so your agents can message each other, with your review in each direction.",
+                    )
+                    .child(choices.child(self.copy_button(
+                        "copy-my-id",
+                        "Copy my ID",
+                        local.clone(),
+                        true,
+                        cx,
+                    ))),
+            ));
+        } else {
+            if !self.compact || !self.show_thread {
+                main = main.child(self.live_rail(s, cx));
+            }
+            if !self.compact || self.show_thread {
+                main = main.child(self.live_thread(s, actions, cx));
+            }
+        }
+        if matches!(self.live.form, Some(Form::Connect)) {
+            main = main.child(self.connect_panel(&local, can_send, cx));
+        }
+        view = view.child(main);
+        if let Some(error) = &self.live.status {
+            view = view.child(band(error.clone()).child(refresh));
+        } else if let Some(notice) = &self.live.notice {
+            view = view.child(band(notice.clone()).child(self.live_button(
+                "dismiss-notice",
+                "Dismiss",
+                ui::Button::Secondary,
+                cx,
+                |p, _, cx| {
+                    p.live.notice = None;
+                    cx.notify();
+                },
+            )));
         }
         if let Some(pending) = &self.live.retry
             && let Some(error) = &pending.error
         {
-            let mut banner = div()
-                .bg(c.attention_soft)
-                .flex()
-                .flex_wrap()
-                .child(error.clone());
+            let mut banner = band(error.clone());
             if pending.action.belongs_to(self.live.selected.as_ref()) {
                 if self.live.stream_ok && !self.live.sending {
                     banner = banner.child(self.live_button(
@@ -1123,26 +1532,93 @@ impl Pane {
             ));
             view = view.child(banner);
         }
+        let pending = s.summary.overview.pending_reviews;
+        let mut footer = div()
+            .flex()
+            .flex_shrink_0()
+            .flex_wrap()
+            .items_center()
+            .justify_between()
+            .gap(px(t.space.s8))
+            .px(px(t.space.s12))
+            .py(px(t.space.s6))
+            .border_t(px(t.size.hairline))
+            .border_color(c.line)
+            .child(
+                ui::text(div().min_w_0().text_color(c.muted), &t.text.meta).child(format!(
+                    "Agent-to-agent via Agent Backbone · read {}{}",
+                    self.live.read_at.as_deref().unwrap_or("—"),
+                    if pending > 0 {
+                        format!(" · {pending} waiting for review")
+                    } else {
+                        String::new()
+                    }
+                )),
+            );
         if let Some((next, name, _)) = s
             .summary
             .attention_rows()
             .into_iter()
             .find(|(id, _, _)| Some(id) != self.live.selected.as_ref())
         {
-            view = view.child(self.live_button(
-                "next-waiting",
-                format!("Next waiting: {name} →"),
-                ui::Button::Secondary,
-                cx,
-                move |p, _, cx| p.pick(Some(next.clone()), cx),
-            ));
+            footer = footer.child(
+                ui::text(
+                    div()
+                        .id("next-waiting")
+                        .focusable()
+                        .tab_stop(true)
+                        .cursor_pointer()
+                        .text_color(c.accent_text)
+                        .hover(|el| el.underline()),
+                    &t.text.meta,
+                )
+                .child(format!("Next waiting: {name} →"))
+                .on_click(cx.listener(move |p, _, _, cx| p.pick(Some(next.clone()), cx))),
+            );
         }
-        view.child(ui::mono(format!(
-            "Agent-to-agent via Agent Backbone · read {} · {} pending review",
-            self.live.read_at.as_deref().unwrap_or("—"),
-            s.summary.overview.pending_reviews
-        )))
+        view.child(footer)
     }
+}
+
+/// A padded attention band along the bottom: what went wrong, then its buttons.
+fn band(message: String) -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex()
+        .flex_shrink_0()
+        .flex_wrap()
+        .items_center()
+        .gap(px(t.space.s8))
+        .px(px(t.space.s12))
+        .py(px(t.space.s6))
+        .bg(c.attention_soft)
+        .border_t(px(t.size.hairline))
+        .border_color(c.line)
+        .child(
+            ui::text(
+                // A readable width before the buttons may sit beside it.
+                div()
+                    .flex_grow(1.0)
+                    .flex_basis(px(t.size.empty_width / 2.0))
+                    .min_w_0()
+                    .text_color(c.attention_text),
+                &t.text.meta,
+            )
+            .child(message),
+        )
+}
+
+/// A change's repeat key: Agent Backbone takes only a UUIDv7 in 32 hex digits
+/// and refuses any other request ID before routing it.
+fn request_key() -> String {
+    uuid::Uuid::now_v7().simple().to_string()
+}
+
+/// A service timestamp as local HH:MM, or as sent when it does not parse.
+fn clock(stamp: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(stamp)
+        .map(|at| at.with_timezone(&chrono::Local).format("%H:%M").to_string())
+        .unwrap_or_else(|_| stamp.to_owned())
 }
 
 // Local revocation has stopped delivery; the peer has not yet acknowledged it.
@@ -1156,6 +1632,13 @@ fn link_status(state: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_keys_are_the_uuid_v7_agent_backbone_accepts() {
+        let key = request_key();
+        assert_eq!(key.len(), 32);
+        assert_eq!(uuid::Uuid::parse_str(&key).unwrap().get_version_num(), 7);
+    }
 
     #[test]
     fn a_local_disconnect_reads_as_stopped_until_the_peer_confirms() {
