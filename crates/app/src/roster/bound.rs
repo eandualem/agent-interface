@@ -14,10 +14,10 @@ use std::{
 /// Between reads without the push stream.
 const POLL: Duration = Duration::from_secs(2);
 /// From the start of one read to the next while the push stream is open and
-/// the last roster, swarms, machines and runs reads succeeded: the service's heartbeat, and half the 30 seconds
-/// after which a roster or runs list is no longer current. The stream carries
-/// states, waits and runs, but not an agent leaving, a new issue without a new
-/// state, or swarms and machines.
+/// the last roster, swarms, machines and runs reads succeeded: the service's
+/// heartbeat, and half the 30 seconds after which a roster or runs list is no
+/// longer current. The stream carries states, waits and runs, but not an agent
+/// leaving, a new issue without a new state, or swarms and machines.
 const STREAMED: Duration = Duration::from_secs(15);
 
 use agent_interface_roster::Snapshot;
@@ -55,10 +55,10 @@ pub struct BoundRosterSource {
 impl BoundRosterSource {
     /// Read immediately, then two seconds after each completed attempt, or 15
     /// seconds after the start of a good read while the Rust service's push
-    /// stream is open. The stream, when the
-    /// connection has one, changes an agent's state or wait at once, and asks
-    /// for a read at once for anything else and when it ends. Runs are read after each roster is published, so states
-    /// never wait on them. The connection retains its verified identity and
+    /// stream is open. The stream, when the connection has one, changes an
+    /// agent's state or wait at once, and asks for a read at once for anything
+    /// else and when it ends. Runs are read after each roster is published, so
+    /// states never wait on them. The connection retains its verified identity and
     /// socket for this worker's lifetime. `wake` runs after publishing a
     /// complete update.
     pub fn start(connection: Connection, wake: impl Fn() + Send + 'static) -> io::Result<Self> {
