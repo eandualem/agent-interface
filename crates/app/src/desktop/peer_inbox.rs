@@ -21,7 +21,6 @@ pub(super) fn failure(error: Error) -> String {
         }
         Error::Unsupported => UNSUPPORTED.into(),
         Error::Refused(404) => "That request or connection no longer exists.".into(),
-        Error::Refused(403) => "Only the profile\u{2019}s owner can manage its Connections.".into(),
         Error::BindingRequired | Error::BindingMismatch | Error::RegistrationChanged => {
             "This workspace no longer matches its profile. Open the workspace again.".into()
         }
