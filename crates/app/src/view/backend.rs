@@ -80,7 +80,12 @@ pub(crate) const READ_ONLY: &str = "This view is read-only.";
 
 impl Backend for ReadOnly {
     fn take_update(&self) -> Option<Update> {
-        self.0.take_update()
+        // The program gets no clicks, so a drag selects and the wheel scrolls.
+        let mut update = self.0.take_update()?;
+        for (_, screen) in &mut update.screens {
+            screen.keep_mouse_local();
+        }
+        Some(update)
     }
     fn recycle(&self, screens: Vec<Screen>) {
         self.0.recycle(screens)

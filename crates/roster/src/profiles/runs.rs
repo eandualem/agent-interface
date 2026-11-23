@@ -77,9 +77,9 @@ impl Run {
     /// The session showing its output, only when the service named this
     /// run's own view.
     pub fn view(&self) -> Option<&str> {
-        self.session
-            .as_deref()
-            .filter(|session| session.strip_prefix(VIEW) == Some(self.run_id.as_str()))
+        self.session.as_deref().filter(|session| {
+            is_view(session) && session.strip_prefix(VIEW) == Some(self.run_id.as_str())
+        })
     }
 }
 

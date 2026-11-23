@@ -465,6 +465,10 @@ fn a_run_shows_only_its_own_view_and_views_are_named_by_run() {
         run.session = Some(other);
         assert_eq!(run.view(), None);
     }
+    // An ID not named as views are is never offered as one.
+    run.run_id = REVIEW.to_uppercase();
+    run.session = Some(format!("run-{}", run.run_id));
+    assert_eq!(run.view(), None);
     assert!(is_view(&format!("run-{REVIEW}")));
     for loose in [
         "run-".to_owned(),

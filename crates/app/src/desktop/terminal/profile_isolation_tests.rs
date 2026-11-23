@@ -268,7 +268,7 @@ fn bound_shell_attaches_to_the_provider_session_and_never_creates_one() {
 #[test]
 fn a_run_view_on_its_profile_server_is_shown_read_only() {
     use crate::view::backend::{Backend, READ_ONLY, ReadOnly};
-    use agent_interface_term::input::{Input, KeyPress, Scroll};
+    use agent_interface_term::input::{Button, Input, KeyPress, MouseAction, Pointer, Scroll};
     const VIEW: &str = "run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60";
     let server = TmuxServer::start().unwrap();
     server
@@ -279,7 +279,8 @@ fn a_run_view_on_its_profile_server_is_shown_read_only() {
             VIEW,
             "sh",
             "-c",
-            "printf 'run-output\\n'; exec cat",
+            // A program that tracks the mouse, as a review's TUI does.
+            "printf 'run-output\\n\\033[?1000h'; exec cat",
         ])
         .unwrap();
     let socket: PathBuf = server
@@ -319,8 +320,28 @@ fn a_run_view_on_its_profile_server_is_shown_read_only() {
     assert!(!own.is_run_view());
     let ready = connect(target).unwrap();
     provider.join().unwrap();
-    wait_for_text(&ready, "run-output", "typed");
     let view = ReadOnly(Arc::clone(ready.panes.as_ref().unwrap()));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let tracking = server
+            .run(&[
+                "display-message",
+                "-p",
+                "-t",
+                VIEW,
+                "#{mouse_standard_flag}",
+            ])
+            .unwrap();
+        if tracking.trim() == "1"
+            && let Some(update) = view.take_update()
+        {
+            // Clicks stay with the viewer, so a plain drag selects.
+            assert!(update.screens.iter().all(|(_, s)| !s.mouse_input()));
+            break;
+        }
+        assert!(Instant::now() < deadline, "no update with tracking on");
+        std::thread::sleep(Duration::from_millis(5));
+    }
     let key = Input::Key(KeyPress {
         key: "t".into(),
         text: Some("typed".into()),
@@ -330,10 +351,15 @@ fn a_run_view_on_its_profile_server_is_shown_read_only() {
         let error = view.send_reserved_input(ready.input, refused, None);
         assert_eq!(error.unwrap_err().to_string(), READ_ONLY);
     }
-    view.send_reserved_input(ready.input, Input::Scroll(Scroll::Lines(-1)), None)
-        .unwrap();
-    std::thread::sleep(Duration::from_millis(200));
-    take_text(&ready, "typed");
+    let pointer = Pointer::default();
+    for kept in [
+        Input::Scroll(Scroll::Lines(-1)),
+        Input::Wheel(pointer, -1),
+        Input::Click(pointer, Button::Left),
+        Input::Mouse(pointer, MouseAction::Press(Button::Left)),
+    ] {
+        view.send_reserved_input(ready.input, kept, None).unwrap();
+    }
     let shown = server.run(&["capture-pane", "-p", "-t", VIEW]).unwrap();
     assert!(!shown.contains("typed"), "{shown}");
 }

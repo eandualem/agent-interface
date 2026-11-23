@@ -655,6 +655,7 @@ impl LiveTerminal {
                                 }
                             }
                             if terminal.error.is_some()
+                                && terminal.error.as_deref() != Some(RUN_VIEW_ENDED)
                                 && terminal.target.leaf.attachment.is_some()
                                 && (terminal.target.remote().is_none() || terminal.remote_retry)
                                 && terminal.retry.due(terminal.shown)
@@ -1075,6 +1076,9 @@ impl Render for LiveTerminal {
                             (Some(name), _) => format!("{name} is not running."),
                             (None, true) if self.target.is_sign_in() => {
                                 "This sign-in has ended.".into()
+                            }
+                            (None, true) if self.error.as_deref() == Some(RUN_VIEW_ENDED) => {
+                                "A run's view lasts about 30 minutes after its output ends.".into()
                             }
                             (None, true) => {
                                 "Waiting for this session. Reconnecting automatically.".into()
