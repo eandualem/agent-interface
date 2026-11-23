@@ -11,20 +11,31 @@ use std::{
     time::Duration,
 };
 
+const UNSUPPORTED: &str = "This Agent Backbone version doesn\u{2019}t offer Connections.";
+
 /// What the person reads when a Connections request fails.
-pub(super) fn failure(error: Error) -> &'static str {
+pub(super) fn failure(error: Error) -> String {
     match error {
-        Error::Unavailable => "Agent Backbone isn\u{2019}t answering.",
-        Error::Unsupported | Error::Refused(404) => {
-            "This Agent Backbone version doesn\u{2019}t offer Connections."
+        Error::Unavailable | Error::Refused(500..=599) => {
+            "Agent Backbone isn\u{2019}t answering. Try again.".into()
         }
-        Error::Refused(403) => "Only the profile\u{2019}s owner can manage its Connections.",
+        Error::Unsupported => UNSUPPORTED.into(),
+        Error::Refused(404) => "That request or connection no longer exists.".into(),
+        Error::Refused(403) => "Only the profile\u{2019}s owner can manage its Connections.".into(),
         Error::BindingRequired | Error::BindingMismatch | Error::RegistrationChanged => {
-            "This workspace\u{2019}s profile changed. Open the workspace again."
+            "This workspace no longer matches its profile. Open the workspace again.".into()
         }
-        Error::NotReady => "The profile isn\u{2019}t ready yet.",
-        Error::Invalid => "Agent Backbone sent a reply this app couldn\u{2019}t read.",
-        Error::Refused(_) => "Agent Backbone refused the request.",
+        Error::NotReady => "The profile isn\u{2019}t ready yet.".into(),
+        Error::Invalid => "The request or its reply wasn\u{2019}t valid.".into(),
+        Error::Refused(status) => format!("Agent Backbone refused the request (status {status})."),
+    }
+}
+
+/// [`failure`] for the overview: without its route, the service has no Connections.
+fn overview_failure(error: Error) -> String {
+    match error {
+        Error::Refused(404) => UNSUPPORTED.into(),
+        _ => failure(error),
     }
 }
 
@@ -277,7 +288,7 @@ impl Inbox {
                             inbox.error = None;
                             inbox.read_at = Some(chrono::Local::now().format("%H:%M").to_string());
                         }
-                        Err(error) => inbox.error = Some(failure(error).to_owned()),
+                        Err(error) => inbox.error = Some(overview_failure(error)),
                     }
                 }
                 if cx.has_global::<Sources>() {
@@ -321,12 +332,9 @@ mod tests {
 
     #[test]
     fn a_service_without_connections_says_so() {
-        for error in [Error::Unsupported, Error::Refused(404)] {
-            assert_eq!(
-                failure(error),
-                "This Agent Backbone version doesn\u{2019}t offer Connections."
-            );
-        }
+        assert_eq!(overview_failure(Error::Refused(404)), UNSUPPORTED);
+        assert_eq!(failure(Error::Unsupported), UNSUPPORTED);
+        assert_ne!(failure(Error::Refused(404)), UNSUPPORTED);
     }
 
     #[test]

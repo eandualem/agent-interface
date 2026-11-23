@@ -343,7 +343,7 @@ impl Pane {
                             live.read_at = Some(chrono::Local::now().format("%H:%M").to_string());
                             live.status = None;
                         }
-                        Err(e) => live.status = Some(failure(e).to_owned()),
+                        Err(e) => live.status = Some(failure(e)),
                     }
                 }
                 if std::mem::take(&mut live.dirty) {

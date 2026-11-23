@@ -341,9 +341,10 @@ it from the sidebar's **CONNECTIONS** section, from Jump, or in an empty pane
 under **Skills, usage, team…**; a workspace has one Connections pane. It shows
 this profile's connection ID with **Copy ID**, **Connect a profile** to send a
 request, incoming and outgoing requests to accept or decline, and a review gate
-for each direction of a connection. **Preview with sample data** shows the pane
-with example records that change nothing. Delivering messages between profiles
-needs a later Agent Backbone release.
+for each direction of a connection. When Connections can't be read, the pane
+says why, with **Retry** and **Preview with sample data**, which shows example
+records that change nothing. Delivering messages between profiles needs a later
+Agent Backbone release.
 
 ## Rename and save changes
 

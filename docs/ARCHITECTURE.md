@@ -299,7 +299,8 @@ such as how to start the service (`service_unavailable`, which names
 follow, Try again sends it again, else a new one. The service is then given
 30 seconds to answer. If it still does not answer, "Agents can't start yet" offers Try again
 and Continue with terminals; Details holds the technical reason and where the
-service's log is. tmux and Git, when missing, are one screen with one Install
+service's log is. Without a `backbone` command nothing has failed: "Agent
+Backbone isn't installed" offers Continue with terminals and Check again. tmux and Git, when missing, are one screen with one Install
 button. They install through the system's own installer: Apple's command line
 tools or Homebrew on macOS, and on Linux the package manager behind `pkexec`'s
 graphical password prompt; without a package manager or that prompt, the
