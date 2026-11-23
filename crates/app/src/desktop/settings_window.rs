@@ -1304,7 +1304,7 @@ impl SettingsWindow {
             .child(Self::heading("Agents"))
             .child(Self::section([
                 Self::label("AGENT BACKBONE").into_any_element(),
-                Self::note("A workspace with a profile shows its agents. States refresh every two seconds.")
+                Self::note("A workspace with a profile shows its agents. States change as Agent Backbone reports them.")
                     .into_any_element(),
             ]))
             .child(

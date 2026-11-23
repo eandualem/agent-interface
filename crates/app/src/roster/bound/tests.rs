@@ -759,8 +759,11 @@ fn an_open_stream_slows_the_poll_and_its_end_reads_at_once() {
     let profile = Profile::parse(&serde_json::to_vec(&entry).unwrap()).unwrap();
     let server = thread::spawn(move || {
         listener.set_nonblocking(true).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + Duration::from_secs(25);
         let mut stream = None::<(std::os::unix::net::UnixStream, Instant)>;
+        // When a resync was pushed, and whether the read it asks for is to fail.
+        let mut pushed = None::<Instant>;
+        let mut fail = false;
         let mut closed = None::<Instant>;
         let mut reads = Vec::new();
         // Until two reads follow the stream's end.
@@ -769,13 +772,18 @@ fn an_open_stream_slows_the_poll_and_its_end_reads_at_once() {
             let mut socket = match listener.accept() {
                 Ok((socket, _)) => socket,
                 Err(_) => {
-                    // The stream stays open three seconds, past a two-second poll.
-                    if stream
-                        .as_ref()
-                        .is_some_and(|(_, opened)| opened.elapsed() > Duration::from_secs(3))
-                    {
-                        stream = None;
-                        closed = Some(Instant::now());
+                    if let Some((open, opened)) = &mut stream {
+                        if pushed.is_none() && opened.elapsed() > Duration::from_millis(500) {
+                            write!(open, "id: a:2\nevent: resync\ndata: {{}}\n\n").unwrap();
+                            pushed = Some(Instant::now());
+                            fail = true;
+                        }
+                        // Open five seconds: past the retry of the failed read
+                        // and a two-second poll after it.
+                        if opened.elapsed() > Duration::from_secs(5) {
+                            stream = None;
+                            closed = Some(Instant::now());
+                        }
                     }
                     thread::sleep(Duration::from_millis(5));
                     continue;
@@ -807,33 +815,42 @@ fn an_open_stream_slows_the_poll_and_its_end_reads_at_once() {
                 }
                 continue;
             }
+            let mut status = 200;
             let body = if request.starts_with("GET /api/profile ") {
                 identity.to_string()
             } else {
                 if request.starts_with("GET /api/agents ") {
                     reads.push(Instant::now());
+                    if std::mem::take(&mut fail) {
+                        status = 503;
+                    }
                 }
                 json!({"items": [{"name": "worker", "state": "idle"}]}).to_string()
             };
             write!(
                 socket,
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             )
             .unwrap();
         }
-        (closed.unwrap(), reads)
+        (pushed.unwrap(), closed.unwrap(), reads)
     });
     let source = BoundRosterSource::start(profile.connect().unwrap(), || {}).unwrap();
-    let (closed, reads) = server.join().unwrap();
+    let (pushed, closed, reads) = server.join().unwrap();
     drop(source);
-    let opened = closed - Duration::from_secs(3);
-    // The stream's hello asks for a read; then none while it is open.
+    // While the stream is open the only reads after its hello are the failed
+    // one the resync asked for and its retry two seconds later.
+    let open: Vec<_> = reads
+        .iter()
+        .filter(|read| **read >= pushed && **read < closed)
+        .collect();
+    assert_eq!(open.len(), 2, "{reads:?}");
+    assert!(*open[0] - pushed < Duration::from_secs(1), "{reads:?}");
+    let retry = *open[1] - *open[0];
     assert!(
-        reads
-            .iter()
-            .all(|read| *read < opened + Duration::from_secs(1) || *read >= closed),
-        "{reads:?}"
+        retry > Duration::from_millis(1500) && retry < Duration::from_secs(3),
+        "{retry:?}"
     );
     let after: Vec<_> = reads.iter().filter(|read| **read >= closed).collect();
     assert!(*after[0] - closed < Duration::from_secs(1), "{reads:?}");

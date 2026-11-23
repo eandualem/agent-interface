@@ -13,10 +13,11 @@ use std::{
 
 /// Between reads without the push stream.
 const POLL: Duration = Duration::from_secs(2);
-/// Between reads while the push stream is open: the service's heartbeat, and
-/// half the 30 seconds after which a roster or runs list is no longer current.
-/// The stream carries states, waits and runs, but not an agent leaving, a new
-/// issue without a new state, or swarms and machines.
+/// From the start of one read to the next while the push stream is open and
+/// the last read succeeded: the service's heartbeat, and half the 30 seconds
+/// after which a roster or runs list is no longer current. The stream carries
+/// states, waits and runs, but not an agent leaving, a new issue without a new
+/// state, or swarms and machines.
 const STREAMED: Duration = Duration::from_secs(15);
 
 use agent_interface_roster::Snapshot;
@@ -53,7 +54,8 @@ pub struct BoundRosterSource {
 
 impl BoundRosterSource {
     /// Read immediately, then two seconds after each completed attempt, or 15
-    /// while the Rust service's push stream is open. The stream, when the
+    /// seconds after the start of a good read while the Rust service's push
+    /// stream is open. The stream, when the
     /// connection has one, changes an agent's state or wait at once, and asks
     /// for a read at once for anything else and when it ends. Runs are read after each roster is published, so states
     /// never wait on them. The connection retains its verified identity and
@@ -92,6 +94,7 @@ impl BoundRosterSource {
                     }
                 };
                 loop {
+                    let started = std::time::Instant::now();
                     lock(&shown).applied = Some(Vec::new());
                     let read = connection.roster();
                     let listed = {
@@ -125,6 +128,7 @@ impl BoundRosterSource {
                             .is_none()
                             .then(|| shown.update.snapshot.clone())
                     };
+                    let good = listed.is_some();
                     if let Some(snapshot) = listed
                         && live()
                     {
@@ -134,8 +138,10 @@ impl BoundRosterSource {
                         book.settle(&connection, gone, &live);
                         show_runs(book.runs());
                     }
-                    let wait = if streaming.load(Ordering::Relaxed) {
-                        STREAMED
+                    // A failed read is tried again soon: the stream's states
+                    // wait for a good one.
+                    let wait = if good && streaming.load(Ordering::Relaxed) {
+                        STREAMED.saturating_sub(started.elapsed()).max(POLL)
                     } else {
                         POLL
                     };

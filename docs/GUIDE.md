@@ -183,8 +183,9 @@ retain their own tmux lifetime policy. In a profile's workspace, closing a pane 
 tab ends the shell the profile opened for each pane, and asks first while a command
 is still running in one.
 
-The agent roster refreshes immediately, then two seconds after each completed
-request, and at once when Agent Backbone reports a changed state. Team, Activity
+The agent roster refreshes immediately, and at once when Agent Backbone reports
+a changed state. It is also read again two seconds after each completed request,
+or every 15 seconds while Agent Backbone's push stream is connected. Team, Activity
 and the report, answer and document lists are read again three seconds after
 each read, Usage after 15 seconds, and Skills, Policies and Tags after 30; an
 open Document is read again only when you refresh it. Current plans and
