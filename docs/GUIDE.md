@@ -558,8 +558,8 @@ workbook from those artifacts so readers can inspect the underlying data.
 Open **Reports & updates → Sheets**, choose a workbook, then a tab. The workspace's
 profile must be one that Agent Backbone serves.
 The grid is read-only. Select a cell, then drag, Shift-click or Shift-arrow to select a
-range. Click a column letter or row number to select the whole column or row, and
-Shift-click another to select several. Arrow keys and Tab move the selection.
+range. Click a column letter or row number to select that column or row on the
+displayed page, and Shift-click another to select several. Arrow keys and Tab move the selection.
 **⌘C** (Ctrl+C on Linux) copies the selection as tab-separated rows, and
 double-clicking a cell copies its value; **Copied** shows briefly under the grid.
 Row and column paging keep large
