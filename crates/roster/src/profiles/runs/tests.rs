@@ -493,10 +493,9 @@ fn an_ended_runs_view_is_offered_until_the_service_ends_it() {
         (200, fixture("runs")),
         (200, build.clone()),
         (200, ended),
-        (200, build.clone()),
-        // 30 seconds on, the view is read again first.
-        (200, gone),
         (200, build),
+        // 30 seconds on, the view is read again.
+        (200, gone),
     ]);
     let busy = roster(include_bytes!("fixtures/agents.json"));
     let mut book = Book::default();
@@ -507,11 +506,14 @@ fn an_ended_runs_view_is_offered_until_the_service_ends_it() {
         book.settle(&connection, left, &|| true);
     }
     assert!(book.runs().finished[0].view().is_some());
-    let left = book.list_at(&connection, &busy, start + Duration::from_secs(31));
-    book.settle(&connection, left, &|| true);
+    // A pass that is closing reads nothing.
+    book.review_views(&connection, start + Duration::from_secs(31), &|| false);
+    assert!(book.runs().finished[0].view().is_some());
+    book.viewed_at = None;
+    book.review_views(&connection, start + Duration::from_secs(31), &|| true);
     assert_eq!(ids(&book.runs().finished), [REVIEW]);
     assert_eq!(book.runs().finished[0].view(), None);
     let requests = server.join().unwrap();
     assert!(requests[5].starts_with(&format!("GET /api/runs/{REVIEW} HTTP/1.1\r\n")));
-    assert_eq!(requests.len(), 7);
+    assert_eq!(requests.len(), 6);
 }

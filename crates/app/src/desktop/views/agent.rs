@@ -550,9 +550,8 @@ pub(super) fn tab(
 
 /// `state` is the agent's state as the pane's header shows it: the card's
 /// details apply only while it is the state they were read with. `runs` are
-/// the agent's from its profile's roster.
-/// The agent's overview. With `open_view`, each run whose view lasts offers
-/// to open it.
+/// the agent's from its profile's roster. With `open_view`, each run whose
+/// view lasts offers to open it.
 pub(super) fn overview<V: 'static>(
     agent: &Agent,
     state: AgentState,

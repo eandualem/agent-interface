@@ -187,9 +187,10 @@ Interactions are read every 20 seconds while shown, and Sheets when opened or re
 An agent's card rereads its overview and connections every three
 seconds, its usage every 15 and its skills and policies every 30. Its
 Background section lists the agent's runs, such as reviews and builds. A run
-that Agent Backbone keeps a view of shows **View**, which opens the run's output
-read-only in a pane beside the card. A view lasts about 30 minutes after the
-run's output ends. A rotating
+that Agent Backbone keeps a view of shows **View** when the agent runs on this
+machine. It opens the run's output read-only in a pane beside the card. A view
+lasts about 30 minutes after the run's output ends; then the pane says it has
+ended and does not reconnect. A rotating
 ring marks working or starting agents; labels distinguish starting, working,
 blocked, needs you, idle and unknown. Failed requests show unavailable or stale
 data, rather than treating the last successful state as current. These are

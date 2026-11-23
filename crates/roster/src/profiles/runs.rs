@@ -184,7 +184,6 @@ impl Book {
     }
 
     fn list_at(&mut self, connection: &Connection, roster: &Snapshot, now: Instant) -> Gone {
-        self.review_views(connection, now);
         let reported = roster
             .details
             .values()
@@ -222,10 +221,10 @@ impl Book {
         }
     }
 
-    /// Read again, every 30 seconds, each ended run that still names a view,
-    /// and forget the view of one the service no longer knows. A failed read
-    /// keeps the run as it was.
-    fn review_views(&mut self, connection: &Connection, now: Instant) {
+    /// Read again, every 30 seconds, ended runs that still name a view, as
+    /// many as a round of lookups reads, and forget the view of one the
+    /// service no longer knows. A failed read keeps the run as it was.
+    fn review_views(&mut self, connection: &Connection, now: Instant, live: &dyn Fn() -> bool) {
         if self
             .viewed_at
             .is_some_and(|at| now.saturating_duration_since(at) < VIEWS)
@@ -233,13 +232,19 @@ impl Book {
             return;
         }
         self.viewed_at = Some(now);
+        let deadline = now + LOOKING;
         for kept in self
             .runs
             .finished
             .iter_mut()
             .filter(|run| run.view().is_some())
+            .take(LOOKUPS)
         {
-            match connection.run_within(&kept.run_id, WAIT) {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() || !live() {
+                break;
+            }
+            match connection.run_within(&kept.run_id, left.min(WAIT)) {
                 Ok(run) => *kept = run,
                 Err(Error::Refused(404)) => kept.session = None,
                 Err(_) => {}
@@ -270,9 +275,14 @@ impl Book {
 
     /// Read each run that left the list once by its ID and keep those that
     /// ended, newest first. A run that can't be read, or isn't reached
-    /// before the deadline or while `live`, is forgotten. Runs on an I/O
-    /// worker.
+    /// before the deadline or while `live`, is forgotten. Then read again the
+    /// ended runs whose views are due. Runs on an I/O worker.
     pub fn settle(&mut self, connection: &Connection, gone: Gone, live: &dyn Fn() -> bool) {
+        self.settle_gone(connection, gone, live);
+        self.review_views(connection, Instant::now(), live);
+    }
+
+    fn settle_gone(&mut self, connection: &Connection, gone: Gone, live: &dyn Fn() -> bool) {
         let Some(deadline) = gone.deadline else {
             return;
         };
