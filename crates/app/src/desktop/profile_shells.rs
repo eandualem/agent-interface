@@ -13,14 +13,20 @@ use std::{path::Path, process::Command};
 use agent_interface_core::Layout;
 
 /// Those of `ids` no pane in `layout` holds: a pane closed here, not one
-/// that moved to another tab.
+/// that moved to another tab, and not a shell another pane is attached to.
 pub(super) fn released(layout: &Layout, ids: Vec<String>) -> Vec<String> {
     let held = |id: &String| {
+        let session = format!("shell-{id}");
         layout.workspaces.iter().any(|space| {
-            space
-                .tabs
-                .iter()
-                .any(|tab| tab.tree.leaves().iter().any(|leaf| &leaf.id == id))
+            space.tabs.iter().any(|tab| {
+                tab.tree.leaves().iter().any(|leaf| {
+                    &leaf.id == id
+                        || leaf
+                            .attachment
+                            .as_ref()
+                            .is_some_and(|a| a.session == session)
+                })
+            })
         })
     };
     ids.into_iter().filter(|id| !held(id)).collect()
@@ -87,7 +93,17 @@ mod tests {
         // A pane in another tab, or one moved there, still holds its shell.
         let kept = model.workspaces[0].tabs[0].tree.leaves()[0].id.clone();
         let closed = "0123456789ab".to_owned();
-        assert_eq!(released(&model, vec![kept, closed.clone()]), [closed]);
+        assert_eq!(
+            released(&model, vec![kept, closed.clone()]),
+            std::slice::from_ref(&closed)
+        );
+        // A pane attached to the closed pane's shell still holds it.
+        assert!(model.attach(Some(agent_interface_core::Attachment {
+            session: format!("shell-{closed}"),
+            remote_profile: None,
+            source_socket: None,
+        })));
+        assert!(released(&model, vec![closed]).is_empty());
     }
 
     #[test]

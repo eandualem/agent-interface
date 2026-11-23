@@ -913,6 +913,11 @@ impl Browser {
                     browser.shells_after_close = Some((connection, ids));
                     if !close(browser, window, cx) {
                         browser.shells_after_close = None;
+                        // Changed while the person was asked: say why nothing closed.
+                        if browser.save_notice.is_none() {
+                            browser.save_notice =
+                                Some("Nothing was closed. Choose Close again.".into());
+                        }
                     }
                 }
                 cx.notify();
