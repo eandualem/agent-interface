@@ -781,9 +781,11 @@ fn an_open_stream_slows_the_poll_and_its_end_reads_at_once() {
                 Err(_) => {
                     if let Some((open, opened)) = &mut stream {
                         // Once the read the hello asked for has landed and
-                        // nothing else is being read.
+                        // nothing else is being read: the first read always
+                        // runs, and the hello's comes after it.
                         let last = reads.last().copied();
                         if pushed.is_none()
+                            && reads.len() >= 2
                             && last.is_some_and(|last: Instant| {
                                 last > *opened && last.elapsed() > Duration::from_millis(300)
                             })
