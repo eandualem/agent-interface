@@ -235,6 +235,47 @@ fn bound_shell_request_carries_no_environment_and_checks_its_reply() {
 }
 
 #[test]
+fn ending_a_shell_deletes_it_by_its_id_and_never_sends_another_name() {
+    let (directory, listener, socket) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(directory.path(), &socket);
+    let server = serve(
+        listener,
+        vec![
+            (200, identity),
+            (204, json!(null)),
+            (503, json!({"detail": {"code": "shell_unavailable"}})),
+        ],
+    );
+    let connection = profile.connect().unwrap();
+    assert_eq!(connection.end_shell("123456abcdef"), Ok(()));
+    assert_eq!(
+        connection.end_shell("0123456789ab"),
+        Err(Error::Refused(503))
+    );
+    // A name the service would refuse is never sent.
+    for id in ["123456ABCDEF", "123456abcde", "../agents/x", ""] {
+        assert_eq!(connection.end_shell(id), Err(Error::Invalid));
+    }
+    let requests = server.join().unwrap();
+    assert!(requests[1].starts_with("delete /api/profile/shells/123456abcdef "));
+    assert!(requests[2].starts_with("delete /api/profile/shells/0123456789ab "));
+}
+
+#[test]
+fn a_pane_s_shell_is_named_shell_and_twelve_hex_digits() {
+    assert!(super::is_shell("shell-0123456789ab"));
+    for other in [
+        "shell-0123456789AB",
+        "shell-0123",
+        "shell-0123456789abc",
+        "worker",
+        "run-0123456789ab",
+    ] {
+        assert!(!super::is_shell(other), "{other}");
+    }
+}
+
+#[test]
 fn starting_a_stopped_agent_uses_the_bound_route_and_reports_the_outcome() {
     use crate::lifecycle::Outcome;
     let (directory, listener, socket) = crate::transport::tests::local_listener();

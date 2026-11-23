@@ -1442,7 +1442,11 @@ Bound panes never create ordinary shells on the window's own server.
 A bound shell comes from the provider: when a pane with no attachment connects,
 `POST /api/profile/shells` ensures a session for the pane on the verified tmux socket,
 and the app then attaches to it. A new pane sends no folder, so the shell starts in the
-profile's home. The app
+profile's home. When a saved Close Pane or Close Tab leaves no pane holding the shell,
+`DELETE /api/profile/shells/{shell_id}` ends it; the app never kills the session
+itself. Before closing, it reads each shell's panes (`list-panes`, then the terminal's
+foreground process group with `ps`) and asks the person first when a command other
+than the shell is in the foreground. These shells are left out of session choosers. The app
 sends no environment and never starts a bound tmux server, so the app's launch
 context cannot reach the shell. Signing a CLI account in works the same way:
 `POST /api/profile/accounts/sign-in` returns a session on that socket, and the pane

@@ -353,6 +353,17 @@ impl Connection {
         Ok(reply.session)
     }
 
+    /// End the shell [`Connection::ensure_shell`] opened as `shell_id`. The
+    /// service answers alike whether it still ran or had ended already. Runs
+    /// on an I/O worker.
+    pub fn end_shell(&self, shell_id: &str) -> Result<(), Error> {
+        if !is_shell(&format!("{SHELL}{shell_id}")) {
+            return Err(Error::Invalid);
+        }
+        let path = format!("/api/profile/shells/{shell_id}");
+        successful(&self.write("DELETE", &path, None, None)?)
+    }
+
     /// Ask the service for a session that signs a CLI account in for `runtime`
     /// inside this profile, and return its name on this connection's tmux socket.
     /// A repeat reuses the session while it is live; see
@@ -644,6 +655,18 @@ impl Connection {
         }
         Ok(response)
     }
+}
+
+/// What the name of a pane's shell starts with, before its pane's ID.
+const SHELL: &str = "shell-";
+
+/// Whether `session` is named as a pane's shell is: `shell-` and 12
+/// lowercase hexadecimal digits. Each belongs to the pane it was opened for,
+/// so it is never a session to attach on its own.
+pub fn is_shell(session: &str) -> bool {
+    session.strip_prefix(SHELL).is_some_and(|id| {
+        id.len() == 12 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    })
 }
 
 fn successful(response: &local::Response) -> Result<(), Error> {

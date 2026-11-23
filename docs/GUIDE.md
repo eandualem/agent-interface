@@ -176,7 +176,9 @@ pane after saving. Closing the last pane closes its tab. **Close Tab**
 tab and detaches its clients. Closing the last tab leaves the
 window open. Use the window close control or **Close Window** in the application
 menu to close the whole window. Ordinary shells keep running; external sessions
-retain their own tmux lifetime policy.
+retain their own tmux lifetime policy. In a profile's workspace, closing a pane or
+tab ends the shell the profile opened for each pane, and asks first while a command
+is still running in one.
 
 The agent roster refreshes immediately, then two seconds after each completed
 request, and at once when Agent Backbone reports a changed state. Team, Activity
@@ -296,7 +298,8 @@ ordinary-shell directories, including parked shells, without copying external
 session directories. Failed reads retain saved paths. Return to shell in tab options restores the existing ordinary shell
 after saving; choose Open terminal if that shell is absent. The chooser lists tmux sessions
 without optional agent metadata. In a profile's workspace it leaves out run views,
-which open from their agent's card.
+which open from their agent's card, and the shells the profile opened for panes,
+which belong to their panes.
 
 Attached sessions reconnect automatically when the saved session returns on its
 source server. Attempts run at the two-second window-refresh interval and never

@@ -39,6 +39,7 @@ mod pane_motion;
 mod peer_inbox;
 mod profile_management;
 mod profile_picker;
+mod profile_shells;
 mod settings;
 mod settings_profiles;
 mod settings_window;
@@ -777,6 +778,11 @@ struct Browser {
     shell_environment: Option<Result<agent_interface_tmux::shells::Environment, String>>,
     shell_after_save: Option<Leaf>,
     shell_to_open: Option<Leaf>,
+    /// The profile's shells of panes being closed, ended once the close is
+    /// saved and no pane holds them.
+    shells_after_close: Option<(agent_interface_roster::profiles::Connection, Vec<String>)>,
+    /// A close waits for its shells' check, or for the person's answer.
+    close_pending: bool,
     /// The pane Open terminal asked for, focused once its shell is attached.
     terminal_to_focus: Option<String>,
     resize: Option<split_resize::Drag>,
@@ -816,7 +822,7 @@ impl Browser {
     }
 
     fn close_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.saving || self.save_failed {
+        if self.saving || self.save_failed || self.close_pending {
             return;
         }
         let Some(origin) = self.selected_navigation_origin() else {
@@ -829,14 +835,89 @@ impl Browser {
             return;
         };
         let (tab, pane) = (tab.id.clone(), pane.clone());
-        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
-            self.apply(update);
-        }
-        let Some(proposal) = self.close_pane_for(&origin, &tab, &pane) else {
-            cx.notify();
+        let shells = self.own_shells([&pane]);
+        self.close_checked(shells, window, cx, move |browser, window, cx| {
+            if browser.saving || browser.save_failed {
+                return false;
+            }
+            if let Some(update) = browser.library.as_ref().and_then(Library::take_update) {
+                browser.apply(update);
+            }
+            let Some(proposal) = browser.close_pane_for(&origin, &tab, &pane) else {
+                cx.notify();
+                return false;
+            };
+            browser.save_edit(proposal, window, cx);
+            true
+        });
+    }
+
+    /// The shells the selected workspace's profile opened for `leaves`, with
+    /// its connection; none in a workspace without a reachable profile.
+    fn own_shells<'a>(
+        &self,
+        leaves: impl IntoIterator<Item = &'a Leaf>,
+    ) -> Option<(agent_interface_roster::profiles::Connection, Vec<String>)> {
+        let space = self.layout.as_ref()?.model().workspace()?;
+        let workspace_profiles::Route::Bound(connection) = self.workspace_profiles.route(space)
+        else {
+            return None;
+        };
+        let ids = profile_shells::own(leaves);
+        (!ids.is_empty()).then(|| (connection.clone(), ids))
+    }
+
+    /// Close with `close` at once or, while a command runs in one of
+    /// `shells`, once the person agrees to end it. `close` says whether it
+    /// saved the close; the shells end after that save.
+    fn close_checked(
+        &mut self,
+        shells: Option<(agent_interface_roster::profiles::Connection, Vec<String>)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        close: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) -> bool + 'static,
+    ) {
+        let Some((connection, ids)) = shells else {
+            close(self, window, cx);
             return;
         };
-        self.save_edit(proposal, window, cx);
+        self.close_pending = true;
+        let (socket, checked) = (connection.tmux_socket().to_owned(), ids.clone());
+        let running = cx
+            .background_executor()
+            .spawn(async move { profile_shells::running(&socket, &checked) });
+        cx.spawn_in(window, async move |this, cx| {
+            let agreed = if running.await {
+                let Ok(answer) = this.update_in(cx, |_, window, cx| {
+                    window.prompt(
+                        gpui::PromptLevel::Warning,
+                        "Close this terminal?",
+                        Some("A command is still running in it. Closing ends it."),
+                        &[
+                            gpui::PromptButton::ok("Close"),
+                            gpui::PromptButton::cancel("Cancel"),
+                        ],
+                        cx,
+                    )
+                }) else {
+                    return;
+                };
+                answer.await == Ok(0)
+            } else {
+                true
+            };
+            let _ = this.update_in(cx, |browser, window, cx| {
+                browser.close_pending = false;
+                if agreed {
+                    browser.shells_after_close = Some((connection, ids));
+                    if !close(browser, window, cx) {
+                        browser.shells_after_close = None;
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn detach_focused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -870,7 +951,7 @@ impl Browser {
     }
 
     fn close_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.saving || self.save_failed {
+        if self.saving || self.save_failed || self.close_pending {
             return;
         }
         let Some(origin) = self.selected_navigation_origin() else {
@@ -879,17 +960,25 @@ impl Browser {
         let Some(model) = self.layout.as_ref().map(WindowLayout::model) else {
             return;
         };
-        let Some(tab) = model.tab().map(|tab| tab.id.clone()) else {
+        let Some(tab) = model.tab() else {
             return;
         };
-        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
-            self.apply(update);
-        }
-        let Some(proposal) = self.close_tab_for(&origin, &tab) else {
-            cx.notify();
-            return;
-        };
-        self.save_edit(proposal, window, cx);
+        let shells = self.own_shells(tab.tree.leaves());
+        let tab = tab.id.clone();
+        self.close_checked(shells, window, cx, move |browser, window, cx| {
+            if browser.saving || browser.save_failed {
+                return false;
+            }
+            if let Some(update) = browser.library.as_ref().and_then(Library::take_update) {
+                browser.apply(update);
+            }
+            let Some(proposal) = browser.close_tab_for(&origin, &tab) else {
+                cx.notify();
+                return false;
+            };
+            browser.save_edit(proposal, window, cx);
+            true
+        });
     }
 
     fn detach_pane(&mut self, target: &Target, window: &mut Window, cx: &mut Context<Self>) {
@@ -1018,6 +1107,7 @@ impl Browser {
         self.chooser = None;
         self.shell_after_save = None;
         self.shell_to_open = None;
+        self.shells_after_close = None;
         self.resize = None;
         self.pane_drag = None;
         self.pane_motion = None;
@@ -1627,6 +1717,12 @@ impl Browser {
                             }
                         }
                         browser.creation_from = None;
+                        if let Some((connection, ids)) = browser.shells_after_close.take()
+                            && !result.conflict
+                            && let Some(layout) = &browser.layout
+                        {
+                            browser.end_shells(connection, profile_shells::released(layout.model(), ids), cx);
+                        }
                         browser.shell_to_open = if result.conflict { browser.shell_after_save = None; None } else { browser.shell_after_save.take() };
                         browser.start_reader(cx);
                         if result.conflict {
@@ -1663,6 +1759,27 @@ impl Browser {
         cx.notify();
     }
 
+    /// Ask the profile to end the shells `ids`, whose panes are closed.
+    fn end_shells(
+        &self,
+        connection: agent_interface_roster::profiles::Connection,
+        ids: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if ids.is_empty() {
+            return;
+        }
+        cx.background_executor()
+            .spawn(async move {
+                for id in ids {
+                    if let Err(error) = connection.end_shell(&id) {
+                        tracing::warn!(event = "profile_shell_not_ended", pane_id = %id, ?error, "A closed pane's shell was not ended");
+                    }
+                }
+            })
+            .detach();
+    }
+
     fn discard_save(&mut self, cx: &mut Context<Self>) {
         if !self.save_failed || self.saving {
             return;
@@ -1680,6 +1797,7 @@ impl Browser {
         self.creation_from = None;
         self.shell_after_save = None;
         self.shell_to_open = None;
+        self.shells_after_close = None;
         self.resize = None;
         self.pane_drag = None;
         // A carried pane has no drag left to let it go.
