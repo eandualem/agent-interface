@@ -102,6 +102,10 @@ pub(super) struct Sheets {
     history_cursors: Vec<Option<String>>,
     history_cursor: Option<String>,
     selection: Option<Selection>,
+    /// A left-button press on a cell is extending the selection.
+    dragging: bool,
+    /// Which copy the "Copied" indicator belongs to, and whether it shows.
+    copied: (usize, bool),
     /// The open workbook's conversation.
     conversation: Entity<Conversation>,
     /// Each workbook's conversation, by workbook identity, so a thread never
@@ -136,6 +140,8 @@ impl Sheets {
             history_cursors: Vec::new(),
             history_cursor: None,
             selection: None,
+            dragging: false,
+            copied: (0, false),
             conversation,
             conversations: std::collections::HashMap::new(),
             message: None,
@@ -396,6 +402,41 @@ impl Sheets {
         });
         cx.notify();
     }
+    /// Select whole columns (or rows) of the displayed cells from their
+    /// headers, extending from the selection's anchor with Shift.
+    fn select_line(&mut self, column: bool, index: usize, extend: bool, cx: &mut Context<Self>) {
+        if self.busy || self.pending.is_some() {
+            return;
+        }
+        let Some(open) = &self.open else {
+            return;
+        };
+        let (rows, columns) = (open.grid.rows.len(), open.grid.columns.len());
+        if let Some(selection) =
+            line_selection(self.selection, column, index, extend, rows, columns)
+        {
+            self.selection = Some(selection);
+            cx.notify();
+        }
+    }
+    /// Show "Copied" briefly; a later copy keeps it up for its own while.
+    fn flash_copied(&mut self, cx: &mut Context<Self>) {
+        let copy = self.copied.0 + 1;
+        self.copied = (copy, true);
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(1500))
+                .await;
+            let _ = this.update(cx, |s, cx| {
+                if s.copied.0 == copy {
+                    s.copied.1 = false;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
     /// Route a conversation's sends and retries to this view's delivery.
     fn watch(conversation: &Entity<Conversation>, cx: &mut Context<Self>) -> Subscription {
         cx.subscribe(conversation, |s, conversation, event, cx| match *event {
@@ -623,6 +664,35 @@ impl Render for Sheets {
     }
 }
 
+fn line_selection(
+    current: Option<Selection>,
+    column: bool,
+    index: usize,
+    extend: bool,
+    rows: usize,
+    columns: usize,
+) -> Option<Selection> {
+    if rows == 0 || columns == 0 {
+        return None;
+    }
+    let anchor = |axis: fn((usize, usize)) -> usize| {
+        current
+            .filter(|_| extend)
+            .map_or(index, |selection| axis(selection.anchor))
+    };
+    if column {
+        (index < columns).then(|| Selection {
+            anchor: (0, anchor(|cell| cell.1)),
+            end: (rows - 1, index),
+        })
+    } else {
+        (index < rows).then(|| Selection {
+            anchor: (anchor(|cell| cell.0), 0),
+            end: (index, columns - 1),
+        })
+    }
+}
+
 // Grid columns are fixed-width; reveal the keyboard endpoint without moving
 // an already visible cell. A narrow viewport aligns its leading edge.
 fn reveal_column(offset: gpui::Pixels, viewport: gpui::Pixels, column: usize) -> gpui::Pixels {
@@ -773,6 +843,19 @@ mod tests {
             selection_label("Runs", &[2], &[3, 1]).as_deref(),
             Some("Runs: 2 selected cells")
         );
+    }
+    #[test]
+    fn headers_select_whole_columns_and_rows_and_shift_extends_them() {
+        let column = line_selection(None, true, 2, false, 5, 4).unwrap();
+        assert_eq!(column.bounds(), (0..=4, 2..=2));
+        let columns = line_selection(Some(column), true, 0, true, 5, 4).unwrap();
+        assert_eq!(columns.bounds(), (0..=4, 0..=2));
+        let row = line_selection(Some(columns), false, 3, false, 5, 4).unwrap();
+        assert_eq!(row.bounds(), (3..=3, 0..=3));
+        let rows = line_selection(Some(row), false, 1, true, 5, 4).unwrap();
+        assert_eq!(rows.bounds(), (1..=3, 0..=3));
+        assert!(line_selection(None, true, 4, false, 5, 4).is_none());
+        assert!(line_selection(None, false, 0, false, 0, 4).is_none());
     }
     #[test]
     fn keyboard_columns_remain_visible_in_both_directions() {

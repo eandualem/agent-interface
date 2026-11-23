@@ -1,5 +1,5 @@
 use super::*;
-use gpui::{ClipboardItem, uniform_list};
+use gpui::{ClipboardItem, MouseButton, MouseDownEvent, MouseMoveEvent, uniform_list};
 
 /// The width of a column of cells.
 pub(super) const CELL: f32 = 160.;
@@ -75,13 +75,29 @@ impl Sheets {
                     .justify_center()
                     .border_r(px(t.size.hairline))
                     .border_color(c.line)
+                    .cursor_pointer()
                     .when(on, |el| el.bg(c.selected).text_color(c.accent_text))
-                    .child(column_name(column.index)),
+                    .child(column_name(column.index))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |s, event: &MouseDownEvent, window, cx| {
+                            s.select_line(true, index, event.modifiers.shift, cx);
+                            window.focus(&s.focus, cx);
+                        }),
+                    ),
             );
         }
         let table = div()
             .id("sheet-grid-horizontal")
             .track_scroll(&self.columns_scroll)
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|s, _, _, _| s.dragging = false),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|s, _, _, _| s.dragging = false),
+            )
             .flex_1()
             .min_h_0()
             .overflow_x_scroll()
@@ -224,7 +240,15 @@ impl Sheets {
             )
             .font_weight(gpui::FontWeight::NORMAL)
             .when(selected_row, |el| el.bg(c.selected))
-            .child(r.index.to_string()),
+            .cursor_pointer()
+            .child(r.index.to_string())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |s, event: &MouseDownEvent, window, cx| {
+                    s.select_line(false, row, event.modifiers.shift, cx);
+                    window.focus(&s.focus, cx);
+                }),
+            ),
         );
         for (column, col) in open.grid.columns.iter().enumerate() {
             let cell = open.grid.cell(&r.row_id, &col.column_id);
@@ -280,9 +304,25 @@ impl Sheets {
                             .text_ellipsis()
                             .child(display),
                     )
-                    .on_click(cx.listener(move |s, event: &gpui::ClickEvent, window, cx| {
-                        s.select(row, column, event.modifiers().shift, cx);
-                        window.focus(&s.focus, cx);
+                    // Press to select, Shift to extend, drag over cells for a
+                    // range; a double-click copies the cell's value.
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |s, event: &MouseDownEvent, window, cx| {
+                            if event.click_count == 2 {
+                                s.copy_cell(row, column, cx);
+                            } else {
+                                s.select(row, column, event.modifiers.shift, cx);
+                                s.dragging = true;
+                            }
+                            window.focus(&s.focus, cx);
+                        }),
+                    )
+                    .on_mouse_move(cx.listener(move |s, event: &MouseMoveEvent, _, cx| {
+                        let moved = s.selection.is_some_and(|s| s.end != (row, column));
+                        if s.dragging && event.pressed_button == Some(MouseButton::Left) && moved {
+                            s.select(row, column, true, cx);
+                        }
                     })),
             );
         }
@@ -366,6 +406,18 @@ impl Sheets {
             &t.text.status,
         )
         .child(tabs)
+        .when(self.copied.1, |el| {
+            el.child(
+                div()
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .gap(px(t.space.s4))
+                    .text_color(c.text)
+                    .child(ui::icon("check", t.size.icon - 1.0, c.accent))
+                    .child("Copied"),
+            )
+        })
         .child(
             ui::text(
                 div()
@@ -431,28 +483,47 @@ impl Sheets {
             cx.notify();
             return;
         };
-        let (rows, cols) = selection.bounds();
-        let text = rows
-            .map(|r| {
-                cols.clone()
-                    .map(|c| {
-                        let row = &open.grid.rows[r].row_id;
-                        let col = &open.grid.columns[c].column_id;
-                        let cell = open.grid.cell(row, col);
-                        clipboard_value(
-                            cell.map(|c| c.display.as_str()).unwrap_or_default(),
-                            cell.is_some_and(|c| matches!(c.value, Value::Text(_))),
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\t")
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let text = tsv(selection, |r, c| {
+            let row = &open.grid.rows[r].row_id;
+            let col = &open.grid.columns[c].column_id;
+            let cell = open.grid.cell(row, col);
+            clipboard_value(
+                cell.map(|c| c.display.as_str()).unwrap_or_default(),
+                cell.is_some_and(|c| matches!(c.value, Value::Text(_))),
+            )
+        });
         cx.write_to_clipboard(ClipboardItem::new_string(text));
-        self.notice = Some("Copied displayed values as tab-separated text.".into());
-        cx.notify();
+        self.flash_copied(cx);
     }
+    /// A double-click copies one cell's displayed value as it is.
+    fn copy_cell(&mut self, row: usize, column: usize, cx: &mut Context<Self>) {
+        let Some(open) = self.open.as_ref() else {
+            return;
+        };
+        let (Some(r), Some(c)) = (open.grid.rows.get(row), open.grid.columns.get(column)) else {
+            return;
+        };
+        let value = open
+            .grid
+            .cell(&r.row_id, &c.column_id)
+            .map(|cell| cell.display.clone())
+            .unwrap_or_default();
+        cx.write_to_clipboard(ClipboardItem::new_string(value));
+        self.flash_copied(cx);
+    }
+}
+/// The selected cells as tab-separated rows, one line per row.
+fn tsv(selection: Selection, value: impl Fn(usize, usize) -> String) -> String {
+    let (rows, columns) = selection.bounds();
+    rows.map(|r| {
+        columns
+            .clone()
+            .map(|c| value(r, c))
+            .collect::<Vec<_>>()
+            .join("\t")
+    })
+    .collect::<Vec<_>>()
+    .join("\n")
 }
 fn copy_selection(selection: Option<Selection>, rows: usize, columns: usize) -> Option<Selection> {
     if rows == 0 || columns == 0 {
@@ -499,6 +570,29 @@ mod tests {
             selected.bounds()
         );
         assert!(copy_selection(None, 0, 4).is_none());
+    }
+
+    #[test]
+    fn a_range_copies_as_tab_separated_rows_with_tabs_and_newlines_quoted() {
+        let cells = [
+            ["name", "note"],
+            ["a\tb", "line 1\nline 2"],
+            ["say \"hi\"", "3"],
+        ];
+        let range = Selection {
+            anchor: (2, 1),
+            end: (0, 0),
+        };
+        let text = tsv(range, |r, c| clipboard_value(cells[r][c], true));
+        assert_eq!(
+            text,
+            "name\tnote\n\"a\tb\"\t\"line 1\nline 2\"\n\"say \"\"hi\"\"\"\t3"
+        );
+        let one = Selection {
+            anchor: (1, 1),
+            end: (1, 1),
+        };
+        assert_eq!(tsv(one, |r, c| cells[r][c].into()), "line 1\nline 2");
     }
 
     #[test]
