@@ -738,3 +738,164 @@ fn machine_offline_and_recovery_updates_roster_live_without_restart() {
     drop(source);
     server.join().unwrap();
 }
+
+#[test]
+fn an_open_stream_slows_the_poll_and_its_end_reads_at_once() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let path = directory.path().join("api.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let identity = json!({
+        "protocol_version": 1, "profile_id": "0a1b2c3d4e5f", "display_name": "Work",
+        "instance_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d",
+        "machine": {"id": "5f2c9e0d1b7a4e38", "name": "laptop"}, "home": true
+    });
+    let mut entry = identity.clone();
+    entry["state"] = json!("serving");
+    entry["socket"] = json!(path);
+    entry["tmux_socket"] = json!(directory.path().join("tmux.sock"));
+    entry["credential_reference"] = json!({"type": "socket"});
+    let profile = Profile::parse(&serde_json::to_vec(&entry).unwrap()).unwrap();
+    let runs = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../roster/src/profiles/runs/fixtures/runs.json"
+    ));
+    let server = thread::spawn(move || {
+        listener.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(25);
+        let mut stream = None::<(std::os::unix::net::UnixStream, Instant)>;
+        // When a resync was pushed, whether the roster read it asks for is to
+        // fail, then the runs list read after it, then the machines read.
+        let mut pushed = None::<Instant>;
+        let mut fail = false;
+        let mut fail_runs = false;
+        let mut fail_machines = false;
+        let mut closed = None::<Instant>;
+        let mut reads = Vec::new();
+        // Until two reads follow the stream's end.
+        while closed.is_none_or(|closed| reads.iter().filter(|read| **read > closed).count() < 2) {
+            assert!(Instant::now() < deadline, "{reads:?}");
+            let mut socket = match listener.accept() {
+                Ok((socket, _)) => socket,
+                Err(_) => {
+                    if let Some((open, opened)) = &mut stream {
+                        // Once the read the hello asked for has landed and
+                        // nothing else is being read: the first read always
+                        // runs, and the hello's comes after it.
+                        let last = reads.last().copied();
+                        if pushed.is_none()
+                            && reads.len() >= 2
+                            && last.is_some_and(|last: Instant| {
+                                last > *opened && last.elapsed() > Duration::from_millis(300)
+                            })
+                        {
+                            write!(open, "id: a:2\nevent: resync\ndata: {{}}\n\n").unwrap();
+                            pushed = Some(Instant::now());
+                            fail = true;
+                        }
+                        // Open three seconds past the retry of the failed
+                        // machines read, longer than a two-second poll.
+                        let retried = pushed.and_then(|pushed| {
+                            reads.iter().filter(|read| **read >= pushed).nth(3).copied()
+                        });
+                        if retried.is_some_and(|retried| retried.elapsed() > Duration::from_secs(3))
+                        {
+                            stream = None;
+                            closed = Some(Instant::now());
+                        }
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+            };
+            socket.set_nonblocking(false).unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                socket.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            let request = String::from_utf8(request).unwrap();
+            if request.starts_with("GET /api/stream") {
+                // Opened once; asked again after its end, the service has none.
+                if closed.is_none() {
+                    write!(
+                        socket,
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\nevent: hello\ndata: {{}}\n\n"
+                    )
+                    .unwrap();
+                    stream = Some((socket, Instant::now()));
+                } else {
+                    write!(
+                        socket,
+                        "HTTP/1.1 404 Fixture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                    .unwrap();
+                }
+                continue;
+            }
+            let mut status = 200;
+            let body = if request.starts_with("GET /api/profile ") {
+                identity.to_string()
+            } else if request.starts_with("GET /api/swarms ") {
+                json!({"items": []}).to_string()
+            } else if request.starts_with("GET /api/status/services ") {
+                if std::mem::take(&mut fail_machines) {
+                    status = 503;
+                }
+                json!({"machines": []}).to_string()
+            } else if request.starts_with("GET /api/runs ") {
+                if std::mem::take(&mut fail_runs) {
+                    status = 503;
+                    fail_machines = true;
+                }
+                runs.to_owned()
+            } else {
+                assert!(request.starts_with("GET /api/agents "), "{request}");
+                reads.push(Instant::now());
+                if std::mem::take(&mut fail) {
+                    status = 503;
+                    fail_runs = true;
+                }
+                // A running agent, so the runs are listed after each roster.
+                json!({"items": [{"name": "worker", "state": "working",
+                    "background": {"running": 1, "queued": 0}}]})
+                .to_string()
+            };
+            write!(
+                socket,
+                "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+        (pushed.unwrap(), closed.unwrap(), reads)
+    });
+    let source = BoundRosterSource::start(profile.connect().unwrap(), || {}).unwrap();
+    let (pushed, closed, reads) = server.join().unwrap();
+    drop(source);
+    // While the stream is open the only reads after its hello are the failed
+    // one the resync asked for, then a read two seconds after each: one whose
+    // runs list fails, one whose machines read fails, and a good one.
+    let open: Vec<_> = reads
+        .iter()
+        .filter(|read| **read >= pushed && **read < closed)
+        .collect();
+    assert_eq!(open.len(), 4, "{reads:?}");
+    assert!(*open[0] - pushed < Duration::from_secs(1), "{reads:?}");
+    for pair in open.windows(2) {
+        let retry = *pair[1] - *pair[0];
+        assert!(
+            retry > Duration::from_millis(1500) && retry < Duration::from_secs(3),
+            "{retry:?}"
+        );
+    }
+    let after: Vec<_> = reads.iter().filter(|read| **read >= closed).collect();
+    assert!(*after[0] - closed < Duration::from_secs(1), "{reads:?}");
+    let gap = *after[1] - *after[0];
+    assert!(
+        gap > Duration::from_millis(1500) && gap < Duration::from_secs(3),
+        "{gap:?}"
+    );
+}
