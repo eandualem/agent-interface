@@ -308,10 +308,17 @@ fn retries_after_end(reason: &str) -> bool {
 }
 
 /// Whether a remote pane opens its stream again automatically: after a
-/// transient loss, or while its agent restarts, whose old session's end
-/// ("process exited") then waits for no person.
-fn reopens_remote(transient: bool, restarts: &Restarts) -> bool {
-    transient || restarts.under_way()
+/// transient loss, or after what a restart causes (`restarting`: its old
+/// session's process exited, or its new session is not there yet) while
+/// its agent restarts. Any other refusal waits for a person.
+fn reopens_remote(transient: bool, restarting: bool, restarts: &Restarts) -> bool {
+    transient || (restarting && restarts.under_way())
+}
+
+/// Whether a remote pane says what went wrong instead of its pane's message:
+/// a pane that shows no stopped agent and no restart.
+fn remote_failure(remote: bool, agent: Option<&str>, restart: Option<&RestartShown>) -> bool {
+    remote && agent.is_none() && !matches!(restart, Some(RestartShown::Restarting { .. }))
 }
 
 /// How long a remote stream stays up before its loss retries at once again.
@@ -832,6 +839,9 @@ pub(super) struct LiveTerminal {
     /// Whether a remote pane's error is transient, so the automatic retry
     /// may open it again.
     remote_retry: bool,
+    /// Whether a remote pane's error is what its agent's restart causes, so
+    /// the automatic retry may open it again while the restart is under way.
+    remote_restarting: bool,
     /// This pane started its remote agent: keep opening it until it runs.
     launched: bool,
     access: Option<agent_interface_roster::profiles::terminal::Access>,
@@ -1123,6 +1133,7 @@ impl LiveTerminal {
             target,
             refresh_on_reopen: false,
             remote_retry: false,
+            remote_restarting: false,
             launched: false,
             view: None,
             access: None,
@@ -1206,7 +1217,11 @@ impl LiveTerminal {
                                 && terminal.error.as_deref() != Some(RUN_VIEW_ENDED)
                                 && terminal.target.leaf.attachment.is_some()
                                 && (terminal.target.remote().is_none()
-                                    || reopens_remote(terminal.remote_retry, &terminal.restarts))
+                                    || reopens_remote(
+                                        terminal.remote_retry,
+                                        terminal.remote_restarting,
+                                        &terminal.restarts,
+                                    ))
                                 && terminal.retry.due(terminal.shown)
                             {
                                 // Retry only the saved attachment. This never
@@ -1253,6 +1268,7 @@ impl LiveTerminal {
         let target = self.target.clone();
         self.refresh_on_reopen = false;
         self.remote_retry = false;
+        self.remote_restarting = false;
         let work = cx.background_executor().spawn(async move {
             let profile = target.remote().unwrap();
             let connection = target
@@ -1308,6 +1324,8 @@ impl LiveTerminal {
                                     .clone()
                                     .unwrap_or_else(|| crate::view::remote::CONNECTION_LOST.into());
                                 terminal.remote_retry = retries_after_end(&error);
+                                terminal.remote_restarting =
+                                    error == crate::view::remote::PROCESS_EXITED;
                                 if opened.elapsed() >= STABLE {
                                     terminal.retry = Retry::default();
                                 }
@@ -1330,6 +1348,9 @@ impl LiveTerminal {
                             std::io::ErrorKind::NotConnected | std::io::ErrorKind::PermissionDenied
                         );
                         terminal.remote_retry = retries_after_open(&error, terminal.launched);
+                        terminal.remote_restarting =
+                            agent_interface_roster::profiles::terminal::refusal_code(&error)
+                                == Some("not_found");
                         terminal.launched &= terminal.remote_retry;
                         if error.kind() == std::io::ErrorKind::AddrNotAvailable {
                             cx.emit(RefreshProfile);
@@ -1570,6 +1591,7 @@ impl Render for LiveTerminal {
             .child(text)
         };
         let attached = self.view.is_some() && !self.client_gone(cx);
+        let restart = self.restarts.shown(attached);
         let drawn = drawn(
             &self.restarts,
             self.error.as_deref(),
@@ -1619,9 +1641,13 @@ impl Render for LiveTerminal {
             .when_some(drawn.ended, |el, ended| {
                 let attached = self.target.leaf.attachment.is_some();
                 let launching = self.launching;
-                // A remote pane that is no stopped agent says what went wrong
-                // and offers to open it again.
-                let remote = self.target.remote().is_some() && self.agent.is_none();
+                // A remote pane that is no stopped agent and does not restart
+                // says what went wrong and offers to open it again.
+                let remote = remote_failure(
+                    self.target.remote().is_some(),
+                    self.agent.as_deref(),
+                    restart.as_ref(),
+                );
                 // In a short pane the text scrolls and the buttons stay.
                 el.child(
                     div()
@@ -2900,9 +2926,11 @@ mod tests {
             .ended
             .unwrap()
         };
-        // With no restart, an exited process waits for a person.
-        assert!(!reopens_remote(false, &Restarts::default()));
-        assert!(reopens_remote(true, &Restarts::default()));
+        // With no restart, an exited process waits for a person, and a
+        // remote pane that shows no stopped agent says what went wrong.
+        assert!(!reopens_remote(false, true, &Restarts::default()));
+        assert!(reopens_remote(true, false, &Restarts::default()));
+        assert!(remote_failure(true, None, None));
         let fresh = frames("stream-agent-restart-fresh");
         let mut restarts = Restarts::default();
         // The remote stream opens, as every open of it does.
@@ -2914,7 +2942,25 @@ mod tests {
         restarts.disconnected();
         restarts.list(&seen(1, true, listed(&fresh[1])), true);
         assert_eq!(ended(&restarts, PROCESS_EXITED, true), restarting());
-        assert!(reopens_remote(false, &restarts));
+        assert!(reopens_remote(false, true, &restarts));
+        // Any other refusal still waits for a person.
+        assert!(!reopens_remote(false, false, &restarts));
+        // It says it restarts, whether or not the roster says it stopped.
+        let shown = restarts.shown(false);
+        assert!(!remote_failure(true, None, shown.as_ref()));
+        assert_eq!(
+            drawn(
+                &restarts,
+                Some(PROCESS_EXITED),
+                true,
+                false,
+                None,
+                true,
+                false
+            )
+            .ended,
+            Some(restarting())
+        );
         // An open before the new session is up fails and changes nothing.
         restarts.attempting(false);
         restarts.attach_failed(false);
@@ -2931,7 +2977,7 @@ mod tests {
             restarts.inspected(12, Some(&fresh[4]), Some(at(2)), false),
             RestartStep::Attach
         );
-        assert!(reopens_remote(false, &restarts));
+        assert!(reopens_remote(false, true, &restarts));
         restarts.attempting(false);
         restarts.connected(false);
         assert_eq!(
@@ -2943,7 +2989,7 @@ mod tests {
             }
         );
         // Once it is over, an exited process waits for a person again.
-        assert!(!reopens_remote(false, &restarts));
+        assert!(!reopens_remote(false, true, &restarts));
         // A failed restart ends in the stopped pane with the service's reason.
         let failed = frames("stream-agent-restart-failed");
         let reason = failed[1].result.as_ref().unwrap().reason.clone();
@@ -2957,7 +3003,7 @@ mod tests {
             RestartStep::Inspect(14)
         );
         restarts.inspected(14, Some(&failed[1]), None, true);
-        assert!(!reopens_remote(false, &restarts));
+        assert!(!reopens_remote(false, true, &restarts));
         assert_eq!(ended(&restarts, PROCESS_EXITED, true), not_running(reason));
     }
 
