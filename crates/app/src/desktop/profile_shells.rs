@@ -10,12 +10,13 @@ use std::{path::Path, process::Command};
 
 use agent_interface_core::{Layout, Leaf};
 
-/// The IDs of `leaves` whose terminal is their profile's own shell: those
-/// that run a terminal with nothing attached.
+/// The IDs of `leaves` that may hold their profile's own shell: those with
+/// nothing attached and no view, including a detached pane, whose shell
+/// still runs.
 pub(super) fn own<'a>(leaves: impl IntoIterator<Item = &'a Leaf>) -> Vec<String> {
     leaves
         .into_iter()
-        .filter(|leaf| leaf.runs_terminal() && leaf.attachment.is_none())
+        .filter(|leaf| leaf.attachment.is_none() && leaf.view.is_none())
         .map(|leaf| leaf.id.clone())
         .collect()
 }
@@ -35,9 +36,9 @@ pub(super) fn released(layout: &Layout, ids: Vec<String>) -> Vec<String> {
 }
 
 /// Whether a command runs in the foreground of one of the shells `ids` on
-/// the tmux server at `socket`, so ending it could lose work. A shell that
-/// is not running has nothing to lose; one whose processes cannot be read
-/// counts as running. Runs on an I/O worker.
+/// the tmux server at `socket`, so ending it could lose work. A shell tmux
+/// says is not there has nothing to lose; one that cannot be read counts as
+/// running. Runs on an I/O worker.
 pub(super) fn running(socket: &Path, ids: &[String]) -> bool {
     let Ok(tmux) = agent_interface_tmux::connection::tmux_binary() else {
         return true;
@@ -46,17 +47,28 @@ pub(super) fn running(socket: &Path, ids: &[String]) -> bool {
         let listed = Command::new(&tmux)
             .arg("-S")
             .arg(socket)
-            .args(["list-panes", "-s", "-t", &format!("=shell-{id}"), "-F"])
+            .args(["list-panes", "-s", "-t", &format!("=shell-{id}:"), "-F"])
             .arg("#{pane_pid}")
             .output();
         match listed {
             Ok(listed) if listed.status.success() => String::from_utf8_lossy(&listed.stdout)
                 .split_whitespace()
                 .any(|pid| !shell_in_foreground(pid)),
-            // The session has ended or the server is gone.
-            _ => false,
+            Ok(listed) => !absent(&String::from_utf8_lossy(&listed.stderr)),
+            Err(_) => true,
         }
     })
+}
+
+/// Whether tmux's `error` says the session or its server is not there.
+fn absent(error: &str) -> bool {
+    [
+        "can't find session",
+        "no server running",
+        "No such file or directory",
+    ]
+    .iter()
+    .any(|absent| error.contains(absent))
 }
 
 /// Whether the terminal of the process `pid` has that process's own group
@@ -96,9 +108,19 @@ mod tests {
             remote_profile: None,
             source_socket: None,
         });
-        let mut empty = leaf("23456789abcd");
-        empty.empty = true;
-        assert_eq!(own([&shell, &attached, &empty]), ["0123456789ab"]);
+        let mut detached = leaf("23456789abcd");
+        detached.empty = true;
+        let mut view = leaf("3456789abcde");
+        view.view = Some(agent_interface_core::View {
+            kind: agent_interface_core::ViewKind::Team,
+            agent: None,
+            section: None,
+            registration_id: None,
+        });
+        assert_eq!(
+            own([&shell, &attached, &detached, &view]),
+            ["0123456789ab", "23456789abcd"]
+        );
     }
 
     #[test]
@@ -139,8 +161,12 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(!running(socket, std::slice::from_ref(&idle)));
-        assert!(running(socket, &[idle.clone(), busy]));
-        // A shell that has ended has nothing to lose.
+        assert!(running(socket, &[idle.clone(), busy.clone()]));
+        // A shell that has ended, or a server that is gone, has nothing to lose.
         assert!(!running(socket, &["23456789abcd".to_owned()]));
+        let gone = socket.with_file_name("gone");
+        assert!(!running(&gone, std::slice::from_ref(&busy)));
+        // Any other failure to read it may hide a running command.
+        assert!(!absent("protocol version mismatch (client 8, server 9)"));
     }
 }

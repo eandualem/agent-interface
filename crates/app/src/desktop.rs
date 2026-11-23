@@ -964,6 +964,7 @@ impl Browser {
             return;
         };
         let shells = self.own_shells(tab.tree.leaves());
+        let checked = shells.as_ref().map(|(_, ids)| ids.clone());
         let tab = tab.id.clone();
         self.close_checked(shells, window, cx, move |browser, window, cx| {
             if browser.saving || browser.save_failed {
@@ -971,6 +972,20 @@ impl Browser {
             }
             if let Some(update) = browser.library.as_ref().and_then(Library::take_update) {
                 browser.apply(update);
+            }
+            // A pane that arrived during the check was neither checked nor
+            // would its shell end.
+            let now = browser
+                .layout
+                .as_ref()
+                .and_then(|layout| layout.model().tab())
+                .filter(|shown| shown.id == tab)
+                .and_then(|shown| browser.own_shells(shown.tree.leaves()))
+                .map(|(_, ids)| ids);
+            if now != checked {
+                browser.save_notice = Some("The tab changed. Choose Close Tab again.".into());
+                cx.notify();
+                return false;
             }
             let Some(proposal) = browser.close_tab_for(&origin, &tab) else {
                 cx.notify();
@@ -1759,7 +1774,8 @@ impl Browser {
         cx.notify();
     }
 
-    /// Ask the profile to end the shells `ids`, whose panes are closed.
+    /// Ask the profile to end the shells `ids`, whose panes are closed, and
+    /// say so when one did not end.
     fn end_shells(
         &self,
         connection: agent_interface_roster::profiles::Connection,
@@ -1769,15 +1785,26 @@ impl Browser {
         if ids.is_empty() {
             return;
         }
-        cx.background_executor()
-            .spawn(async move {
-                for id in ids {
-                    if let Err(error) = connection.end_shell(&id) {
-                        tracing::warn!(event = "profile_shell_not_ended", pane_id = %id, ?error, "A closed pane's shell was not ended");
-                    }
+        let ended = cx.background_executor().spawn(async move {
+            let mut all = true;
+            for id in ids {
+                if let Err(error) = connection.end_shell(&id) {
+                    tracing::warn!(event = "profile_shell_not_ended", pane_id = %id, ?error, "A closed pane's shell was not ended");
+                    all = false;
                 }
-            })
-            .detach();
+            }
+            all
+        });
+        cx.spawn(async move |this, cx| {
+            if !ended.await {
+                let _ = this.update(cx, |browser, cx| {
+                    browser.save_notice =
+                        Some("The profile did not end a closed terminal's shell.".into());
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
     fn discard_save(&mut self, cx: &mut Context<Self>) {

@@ -124,15 +124,11 @@ mod tests {
     }
 
     #[test]
-    fn a_server_without_a_profile_lists_sessions_named_as_run_views() {
+    fn a_server_without_a_profile_lists_sessions_named_as_run_views_or_shells() {
         let tmux = TmuxServer::start().unwrap();
-        tmux.run(&[
-            "new-session",
-            "-d",
-            "-s",
-            "run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60",
-        ])
-        .unwrap();
+        for session in ["run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60", "shell-0123456789ab"] {
+            tmux.run(&["new-session", "-d", "-s", session]).unwrap();
+        }
         let socket: PathBuf = tmux
             .run(&["display-message", "-p", "#{socket_path}"])
             .unwrap()
@@ -151,7 +147,11 @@ mod tests {
         let observed = source.take_update().unwrap();
         assert_eq!(
             observed.sessions,
-            ["fixture", "run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60"]
+            [
+                "fixture",
+                "run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60",
+                "shell-0123456789ab"
+            ]
         );
     }
 
