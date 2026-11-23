@@ -529,7 +529,17 @@ impl Pane {
                 .flex_wrap()
                 .items_center()
                 .gap(px(t.space.s8))
-                .child(ui::text(div().flex_1().text_color(c.text_2), &t.text.body).child(text))
+                .child(
+                    ui::text(
+                        div()
+                            .flex_1()
+                            .min_w(px(t.size.empty_width / 2.0))
+                            .max_w_full()
+                            .text_color(c.text_2),
+                        &t.text.body,
+                    )
+                    .child(text),
+                )
         };
         let (label, prompt, action) = match form {
             Form::Connect => return div(),
@@ -1060,9 +1070,16 @@ impl Pane {
                             .child(self.live_form(cx)),
                     );
                 }
-                let mut body = body.child(meta(format!(
-                    "Left: {name} (external · available to main) · Right: main"
-                )));
+                // A self-reported name never hides the identity it stands for.
+                let mut body = body
+                    .children(
+                        peer.display_name
+                            .is_some()
+                            .then(|| ui::mono(id.peer_id.clone()).text_color(c.muted)),
+                    )
+                    .child(meta(format!(
+                        "Left: {name} (external · available to main) · Right: main"
+                    )));
                 let Some(history) = &snapshot.history else {
                     return column.child(body);
                 };
@@ -1578,7 +1595,12 @@ fn band(message: String) -> Div {
         .border_color(c.line)
         .child(
             ui::text(
-                div().flex_1().min_w_0().text_color(c.attention_text),
+                // A readable width before the buttons may sit beside it.
+                div()
+                    .flex_1()
+                    .min_w(px(t.size.empty_width / 2.0))
+                    .max_w_full()
+                    .text_color(c.attention_text),
                 &t.text.meta,
             )
             .child(message),
