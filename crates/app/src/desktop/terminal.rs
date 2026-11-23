@@ -1717,7 +1717,7 @@ mod tests {
     }
 
     #[test]
-    fn an_agent_tile_limits_its_size_and_releases_it_on_hide_or_direct_close() {
+    fn an_agent_tile_takes_its_own_size_and_releases_it_on_hide_or_direct_close() {
         let server = TmuxServer::start().unwrap();
         for session in ["agent", "other"] {
             server
@@ -1782,7 +1782,7 @@ mod tests {
         let panes = ready.panes.as_ref().unwrap();
         panes.set_agent_default(Some(ready.default_size));
         panes.set_size(20, 10).unwrap();
-        wait("agent", "80x10");
+        wait("agent", "20x10");
         panes.ignore_size().unwrap();
         wait("agent", "120x40");
         panes.set_size(94, 33).unwrap();
@@ -1818,7 +1818,7 @@ mod tests {
         let panes = again.panes.as_ref().unwrap();
         panes.set_agent_default(Some(again.default_size));
         panes.set_size(20, 10).unwrap();
-        wait("agent", "80x10");
+        wait("agent", "20x10");
         panes.ignore_size().unwrap();
         drop(again);
         wait("agent", "120x40");
