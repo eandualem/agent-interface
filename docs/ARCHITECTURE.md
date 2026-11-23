@@ -282,8 +282,8 @@ returns its roster; these reads change nothing. The scene waits on the icon at i
 handoff until the check has answered, and the tagline then reads "Getting
 things ready…".
 
-The agent service is started without asking and is never named on screen
-unless the person opens Details. When it doesn't answer, first run runs Agent
+The agent service is started without asking and is not named on screen
+unless the person opens Details, or no `backbone` command is installed. When it doesn't answer, first run runs Agent
 Backbone's own setup, `backbone setup --file REQUEST --jsonl` with a schema-3
 `initialize` request (`profile_name: Default`, `service: user` and the
 `core-v1` starter), which decides what the computer is: it keeps a profile the

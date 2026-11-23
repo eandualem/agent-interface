@@ -295,8 +295,9 @@ without optional agent metadata.
 Attached sessions reconnect automatically when the saved session returns on its
 source server. Attempts run at the two-second window-refresh interval and never
 start an agent or create a session on their own. A pane showing an agent on
-another machine retries after a dropped connection, at once and then at most
-every 30 seconds while shown or every two minutes while hidden. When the pane shows a stopped
+another machine retries after a dropped connection: at once, then less often
+after each failure, until it waits 30 seconds between tries while shown or two
+minutes while hidden. When the pane shows a stopped
 Agent Backbone agent, **Resume** asks Backbone to continue its saved conversation
 and **Start new** starts a new one, both with the agent's saved runtime and model;
 the pane connects once the agent's session appears. **Detach** returns the pane

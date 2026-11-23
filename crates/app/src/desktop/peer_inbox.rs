@@ -264,7 +264,8 @@ impl Inbox {
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         if !self.online.load(Ordering::Acquire) {
-            self.error = Some("Agent Backbone stream unavailable".into());
+            self.error =
+                Some("Agent Backbone isn\u{2019}t sending updates. Reconnecting\u{2026}".into());
             cx.notify();
             return;
         }
