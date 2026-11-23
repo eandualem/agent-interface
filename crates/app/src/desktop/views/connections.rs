@@ -43,7 +43,7 @@ impl Pane {
         cx: &mut Context<Self>,
     ) -> Self {
         let filter = cx.new(|cx| {
-            let mut field = NameField::filter(window, cx);
+            let mut field = NameField::bare("", window, cx);
             field.focus = field.focus.clone().tab_stop(true);
             field
         });
@@ -256,7 +256,6 @@ impl Pane {
     }
 
     fn rail(&self, cx: &mut Context<Self>) -> Div {
-        let (t, c) = (tokens(), colors());
         let mut rows = div()
             .id("connections-peers")
             .min_h_0()
@@ -268,52 +267,63 @@ impl Pane {
             let id = peer.id.clone();
             let (mark, label, color) = thread::row_status(peer);
             rows = rows.child(
-                ui::row(format!("peer-{id}"), self.selected.as_ref() == Some(&id))
-                    .focusable()
-                    .tab_stop(true)
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .w(px(t.size.icon))
-                            .flex()
-                            .justify_center()
-                            .child(
-                                div()
-                                    .text_color(color)
-                                    .when(mark == "!", |el| {
-                                        el.rounded_full()
-                                            .bg(c.attention)
-                                            .text_color(c.on_attention)
-                                            .size(px(t.size.icon))
-                                            .flex()
-                                            .justify_center()
-                                            .items_center()
-                                    })
-                                    .child(mark),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .flex_1()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .child(peer.name.clone()),
-                    )
-                    .child(ui::text(div().text_color(color), &t.text.meta).child(label))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.select(Some(id.clone()), cx);
-                        this.show_thread = true;
-                        cx.notify();
-                    })),
+                peer_row(
+                    format!("peer-{id}"),
+                    self.selected.as_ref() == Some(&id),
+                    peer.name.clone(),
+                    mark,
+                    label,
+                    color,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.select(Some(id.clone()), cx);
+                    this.show_thread = true;
+                    cx.notify();
+                })),
             );
         }
         if count == 0 {
-            rows = rows.child(
-                div()
-                    .p(px(t.space.s12))
-                    .text_color(c.muted)
-                    .child("No matching peers"),
+            rows = rows.child(no_rows("No matching peers"));
+        }
+        self.rail_frame(rows, false, cx, |this, window, cx| {
+            this.edit(Editor::Connect, window, cx)
+        })
+    }
+
+    /// The peer column: its title and ＋, the All / Needs you choice, the
+    /// search field and the rows.
+    fn rail_frame(
+        &self,
+        rows: gpui::Stateful<Div>,
+        entry: bool,
+        cx: &Context<Self>,
+        connect: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> Div {
+        let (t, c) = (tokens(), colors());
+        let plus = ui::icon_button("connect-peer", "plus")
+            .focusable()
+            .tab_stop(true)
+            .on_click(cx.listener(move |this, _, window, cx| connect(this, window, cx)));
+        let plus = if entry {
+            plus.track_focus(&self.entry)
+        } else {
+            plus
+        };
+        let mut segments = ui::segments();
+        for (needs, label) in [(false, "All"), (true, "Needs you")] {
+            segments = segments.child(
+                ui::segment(format!("filter-{needs}"), label, self.needs_you == needs)
+                    .flex_1()
+                    .justify_center()
+                    .focusable()
+                    .tab_stop(true)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.needs_you = needs;
+                        if this.preview {
+                            this.reconcile(cx);
+                        }
+                        cx.notify();
+                    })),
             );
         }
         div()
@@ -335,33 +345,106 @@ impl Pane {
                     .flex()
                     .justify_between()
                     .items_center()
-                    .child("Peers")
-                    .child(
-                        ui::button("connect-peer", "＋", ui::Button::Secondary)
-                            .focusable()
-                            .tab_stop(true)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.edit(Editor::Connect, window, cx)
-                            })),
-                    ),
+                    .pl(px(t.space.s4))
+                    .child(ui::text(div().text_color(c.muted), &t.text.label).child("PEERS"))
+                    .child(plus),
             )
-            .child(div().flex().gap(px(t.space.s4)).children(
-                [(false, "All"), (true, "Needs you")].map(|(needs, label)| {
-                    ui::row(format!("filter-{needs}"), self.needs_you == needs)
-                        .focusable()
-                        .tab_stop(true)
-                        .child(label)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.needs_you = needs;
-                            this.reconcile(cx);
-                            cx.notify();
-                        }))
-                }),
-            ))
-            .child(ui::text(div().text_color(c.muted), &t.text.meta).child("Search peers"))
-            .child(self.filter.clone())
+            .child(segments)
+            .child(ui::filter_frame().child(hinted(&self.filter, "Filter peers", cx)))
             .child(rows)
     }
+}
+
+/// A peer's row: its status mark, its name and a short trailing label.
+fn peer_row(
+    id: String,
+    selected: bool,
+    name: String,
+    mark: &'static str,
+    label: String,
+    color: gpui::Rgba,
+) -> gpui::Stateful<Div> {
+    let (t, c) = (tokens(), colors());
+    ui::row(id, selected)
+        .focusable()
+        .tab_stop(true)
+        .child(
+            div()
+                .flex_shrink_0()
+                .w(px(t.size.icon))
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .text_color(color)
+                        .when(mark == "!", |el| {
+                            el.rounded_full()
+                                .bg(c.attention)
+                                .text_color(c.on_attention)
+                                .size(px(t.size.icon))
+                                .flex()
+                                .justify_center()
+                                .items_center()
+                        })
+                        .child(mark),
+                ),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(name),
+        )
+        .child(ui::text(div().text_color(color), &t.text.meta).child(label))
+}
+
+/// The quiet line a list shows when nothing is in it.
+fn no_rows(text: &'static str) -> Div {
+    let (t, c) = (tokens(), colors());
+    ui::text(div().p(px(t.space.s10)).text_color(c.muted), &t.text.meta).child(text)
+}
+
+/// A field's frame, for a bare field or a value to select and copy.
+fn field_box(content: impl IntoElement) -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex()
+        .items_center()
+        .min_w_0()
+        .px(px(t.space.s8))
+        .py(px(t.space.s6))
+        .rounded(px(t.radius.row))
+        .bg(c.panel)
+        .border(px(t.size.hairline))
+        .border_color(c.line_strong)
+        .child(content)
+}
+
+/// A bare field with a muted hint while it is empty.
+fn hinted(field: &Entity<NameField>, hint: &'static str, cx: &gpui::App) -> Div {
+    let c = colors();
+    div()
+        .relative()
+        .flex_1()
+        .min_w_0()
+        .when(field.read(cx).value().is_empty(), |el| {
+            el.child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .text_color(c.muted)
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .child(hint),
+            )
+        })
+        .child(field.clone())
 }
 
 impl Render for Pane {
