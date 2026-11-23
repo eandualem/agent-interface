@@ -90,6 +90,10 @@ impl Sheets {
         let table = div()
             .id("sheet-grid-horizontal")
             .track_scroll(&self.columns_scroll)
+            // Every press ends an earlier drag, even one whose release never
+            // arrived (outside the window); a cell's own press starts anew.
+            .capture_any_mouse_down(cx.listener(|s, _, _, _| s.dragging = false))
+            .on_mouse_down_out(cx.listener(|s, _, _, _| s.dragging = false))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|s, _, _, _| s.dragging = false),
@@ -312,8 +316,7 @@ impl Sheets {
                             if event.click_count == 2 {
                                 s.copy_cell(row, column, cx);
                             } else {
-                                s.select(row, column, event.modifiers.shift, cx);
-                                s.dragging = true;
+                                s.dragging = s.select(row, column, event.modifiers.shift, cx);
                             }
                             window.focus(&s.focus, cx);
                         }),

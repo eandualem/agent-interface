@@ -382,15 +382,16 @@ impl Sheets {
         })
         .detach();
     }
-    fn select(&mut self, row: usize, column: usize, extend: bool, cx: &mut Context<Self>) {
+    /// Whether the cell was selected; it is refused while busy or pending.
+    fn select(&mut self, row: usize, column: usize, extend: bool, cx: &mut Context<Self>) -> bool {
         if self.busy || self.pending.is_some() {
-            return;
+            return false;
         }
         let Some(open) = &self.open else {
-            return;
+            return false;
         };
         if row >= open.grid.rows.len() || column >= open.grid.columns.len() {
-            return;
+            return false;
         }
         self.selection = Some(Selection {
             anchor: if extend {
@@ -401,6 +402,7 @@ impl Sheets {
             end: (row, column),
         });
         cx.notify();
+        true
     }
     /// Select whole columns (or rows) of the displayed cells from their
     /// headers, extending from the selection's anchor with Shift.
