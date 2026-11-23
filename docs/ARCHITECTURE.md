@@ -125,8 +125,9 @@ the pane, or a change in its agent, starts again from two seconds. Retries never
 create a session. A hidden terminal keeps its connection but does not query its
 session's window list until it is shown. A stopped
 Backbone agent's pane can ask Backbone to start or resume it (one authenticated
-local request, never retried), after which the same loop connects. A local
-agent's pane follows the agent's own restart from the roster list, and reads
+local request, never retried), after which the same loop connects. An
+agent's pane, local or on another machine of the bound profile, follows the
+agent's own restart from the roster list, and reads
 the agent's inspection once when a restart it saw leaves the list, to learn
 how it ended. An ordinary
 shell that cannot be reached is started once through the same guarded creation

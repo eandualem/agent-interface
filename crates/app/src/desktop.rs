@@ -2970,17 +2970,22 @@ impl Browser {
 }
 
 impl Browser {
-    /// The local Backbone agent a pane attaches and the roster it comes
-    /// from: none for a remote agent, a session on another tmux server,
-    /// whatever its name, or a pane whose profile has no roster.
+    /// The Backbone agent a pane attaches and the roster it comes from: a
+    /// local agent, or one on another machine of the bound profile. None for
+    /// another profile's agent, a session on another tmux server, whatever
+    /// its name, or a pane whose profile has no roster.
     fn pane_agent(&self, leaf: &Leaf) -> Option<(String, agent_status::LiveAgents)> {
         let attachment = leaf.attachment.as_ref()?;
         let connection = self.pane_connection(&leaf.id).ok()??;
-        if attachment.remote_profile.is_some()
-            || attachment
-                .source_socket
-                .as_deref()
-                .is_some_and(|path| std::path::Path::new(path) != connection.tmux_socket())
+        if attachment
+            .remote_profile
+            .as_deref()
+            .is_some_and(|profile| profile != connection.identity().profile_id)
+            || attachment.remote_profile.is_none()
+                && attachment
+                    .source_socket
+                    .as_deref()
+                    .is_some_and(|path| std::path::Path::new(path) != connection.tmux_socket())
         {
             return None;
         }
@@ -3292,7 +3297,7 @@ impl Render for Browser {
                 self.terminals.insert(leaf.id.clone(), terminal);
             }
             // A stopped Backbone agent's pane offers Resume and Start new.
-            // A remote agent of the bound profile offers them too. A local
+            // A remote agent of the bound profile offers them too. Either
             // agent's pane also says when it restarts, whatever its state.
             let status = self.pane_agent(leaf);
             let sizing = leaf.attachment.as_ref().and_then(|attachment| {

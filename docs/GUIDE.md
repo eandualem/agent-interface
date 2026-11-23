@@ -317,8 +317,8 @@ the pane connects once the agent's session appears. While Backbone restarts an
 agent that asked for a fresh session, its live terminal is marked **Restart
 pending**; once the old session ends, the pane says the agent is restarting,
 offers neither Resume nor Start new, and attaches the new session by itself. A
-restart that fails shows Backbone's reason. An agent on another machine shows
-its stopped pane during a restart. **Detach** returns the pane
+restart that fails shows Backbone's reason. This holds for an agent on another
+machine too. **Detach** returns the pane
 to its chooser. An ordinary terminal whose saved shell is no longer running, such
 as after a restart, starts a new shell in its saved directory once, automatically.
 If that fails, **Open terminal** tries again. Starting a new shell does not

@@ -307,6 +307,13 @@ fn retries_after_end(reason: &str) -> bool {
     reason == crate::view::remote::CONNECTION_LOST
 }
 
+/// Whether a remote pane opens its stream again automatically: after a
+/// transient loss, or while its agent restarts, whose old session's end
+/// ("process exited") then waits for no person.
+fn reopens_remote(transient: bool, restarts: &Restarts) -> bool {
+    transient || restarts.under_way()
+}
+
 /// How long a remote stream stays up before its loss retries at once again.
 const STABLE: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -1198,12 +1205,12 @@ impl LiveTerminal {
                             if terminal.error.is_some()
                                 && terminal.error.as_deref() != Some(RUN_VIEW_ENDED)
                                 && terminal.target.leaf.attachment.is_some()
-                                && (terminal.target.remote().is_none() || terminal.remote_retry)
+                                && (terminal.target.remote().is_none()
+                                    || reopens_remote(terminal.remote_retry, &terminal.restarts))
                                 && terminal.retry.due(terminal.shown)
                             {
                                 // Retry only the saved attachment. This never
                                 // starts an agent, server or replacement shell.
-                                // A remote pane retries only a transient loss.
                                 terminal.start(cx);
                             }
                         }
@@ -1242,6 +1249,7 @@ impl LiveTerminal {
             self.error = None;
         }
         self.connecting = true;
+        self.restarts.attempting(false);
         let target = self.target.clone();
         self.refresh_on_reopen = false;
         self.remote_retry = false;
@@ -1268,6 +1276,8 @@ impl LiveTerminal {
                 match result {
                     Ok((remote, size, access, updates)) => {
                         terminal.error = None;
+                        terminal.error_is_end = false;
+                        terminal.restarts.connected(false);
                         terminal.launched = false;
                         terminal.launch_result = None;
                         terminal.access = Some(access);
@@ -1302,6 +1312,8 @@ impl LiveTerminal {
                                     terminal.retry = Retry::default();
                                 }
                                 terminal.error = Some(error);
+                                terminal.error_is_end = true;
+                                terminal.restarts.disconnected();
                                 cx.notify();
                             },
                         ));
@@ -1323,6 +1335,8 @@ impl LiveTerminal {
                             cx.emit(RefreshProfile);
                         }
                         terminal.error = Some(error.to_string());
+                        terminal.error_is_end = false;
+                        terminal.restarts.attach_failed(false);
                     }
                 }
                 cx.notify();
@@ -2868,6 +2882,83 @@ mod tests {
                 quiet_end: false,
             }
         );
+    }
+
+    #[test]
+    fn a_remote_agent_s_restart_reads_as_restarting_and_reopens_its_stream() {
+        use crate::view::remote::PROCESS_EXITED;
+        let ended = |restarts: &Restarts, error: &str, end: bool| {
+            drawn(
+                restarts,
+                Some(error),
+                end,
+                false,
+                Some("builder"),
+                true,
+                false,
+            )
+            .ended
+            .unwrap()
+        };
+        // With no restart, an exited process waits for a person.
+        assert!(!reopens_remote(false, &Restarts::default()));
+        assert!(reopens_remote(true, &Restarts::default()));
+        let fresh = frames("stream-agent-restart-fresh");
+        let mut restarts = Restarts::default();
+        // The remote stream opens, as every open of it does.
+        restarts.attempting(false);
+        restarts.connected(false);
+        restarts.list(&seen(0, false, listed(&fresh[0])), false);
+        assert!(live(&restarts).pending);
+        // The old session ends: its stream says the process exited.
+        restarts.disconnected();
+        restarts.list(&seen(1, true, listed(&fresh[1])), true);
+        assert_eq!(ended(&restarts, PROCESS_EXITED, true), restarting());
+        assert!(reopens_remote(false, &restarts));
+        // An open before the new session is up fails and changes nothing.
+        restarts.attempting(false);
+        restarts.attach_failed(false);
+        assert_eq!(
+            ended(&restarts, "not_found: no session", false),
+            restarting()
+        );
+        // Ready: the pane opens the new session's stream.
+        assert_eq!(
+            restarts.list(&seen(2, false, listed(&fresh[4])), true),
+            RestartStep::Inspect(12)
+        );
+        assert_eq!(
+            restarts.inspected(12, Some(&fresh[4]), Some(at(2)), false),
+            RestartStep::Attach
+        );
+        assert!(reopens_remote(false, &restarts));
+        restarts.attempting(false);
+        restarts.connected(false);
+        assert_eq!(
+            live(&restarts),
+            Drawn {
+                ended: None,
+                pending: false,
+                quiet_end: false,
+            }
+        );
+        // Once it is over, an exited process waits for a person again.
+        assert!(!reopens_remote(false, &restarts));
+        // A failed restart ends in the stopped pane with the service's reason.
+        let failed = frames("stream-agent-restart-failed");
+        let reason = failed[1].result.as_ref().unwrap().reason.clone();
+        let mut restarts = Restarts::default();
+        restarts.attempting(false);
+        restarts.connected(false);
+        restarts.list(&seen(0, false, listed(&failed[0])), false);
+        restarts.disconnected();
+        assert_eq!(
+            restarts.list(&seen(1, true, None), true),
+            RestartStep::Inspect(14)
+        );
+        restarts.inspected(14, Some(&failed[1]), None, true);
+        assert!(!reopens_remote(false, &restarts));
+        assert_eq!(ended(&restarts, PROCESS_EXITED, true), not_running(reason));
     }
 
     #[test]
