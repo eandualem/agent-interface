@@ -237,6 +237,8 @@ impl Book {
             .runs
             .finished
             .iter_mut()
+            // Oldest first: views end in the order their runs ended.
+            .rev()
             .filter(|run| run.view().is_some())
             .take(LOOKUPS)
         {

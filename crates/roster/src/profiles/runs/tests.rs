@@ -517,3 +517,38 @@ fn an_ended_runs_view_is_offered_until_the_service_ends_it() {
     assert!(requests[5].starts_with(&format!("GET /api/runs/{REVIEW} HTTP/1.1\r\n")));
     assert_eq!(requests.len(), 6);
 }
+
+#[test]
+fn the_oldest_ended_views_are_read_again_first() {
+    // Nine ended runs with views, newest first; a round reads eight.
+    let runs: Vec<Run> = (0..9u8)
+        .map(|n| {
+            let mut run: Run = serde_json::from_value(fixture("run")).unwrap();
+            run.run_id = format!("{:0>32}", n);
+            run.session = Some(format!("run-{}", run.run_id));
+            run
+        })
+        .collect();
+    let replies = runs[1..]
+        .iter()
+        .rev()
+        .map(|run| {
+            let mut gone = serde_json::to_value(fixture("run")).unwrap();
+            gone["run_id"] = json!(run.run_id);
+            gone["session"] = json!(null);
+            (200, gone)
+        })
+        .collect();
+    let (connection, server) = served(replies);
+    let mut book = Book::default();
+    book.runs.finished = runs.clone();
+    book.review_views(&connection, Instant::now(), &|| true);
+    assert_eq!(book.runs.finished[0].view(), runs[0].view());
+    assert!(
+        book.runs.finished[1..]
+            .iter()
+            .all(|run| run.view().is_none())
+    );
+    let requests = server.join().unwrap();
+    assert!(requests[1].starts_with(&format!("GET /api/runs/{} ", runs[8].run_id)));
+}
