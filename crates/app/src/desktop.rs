@@ -852,8 +852,9 @@ impl Browser {
         });
     }
 
-    /// The shells the selected workspace's profile opened for `leaves`, with
-    /// its connection; none in a workspace without a reachable profile.
+    /// The shells the selected workspace's profile may have opened for
+    /// `leaves`, one named for each, with its connection; none in a workspace
+    /// without a reachable profile.
     fn own_shells<'a>(
         &self,
         leaves: impl IntoIterator<Item = &'a Leaf>,
@@ -863,7 +864,7 @@ impl Browser {
         else {
             return None;
         };
-        let ids = profile_shells::own(leaves);
+        let ids: Vec<String> = leaves.into_iter().map(|leaf| leaf.id.clone()).collect();
         (!ids.is_empty()).then(|| (connection.clone(), ids))
     }
 

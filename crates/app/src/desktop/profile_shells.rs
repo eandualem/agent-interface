@@ -2,24 +2,15 @@
 //!
 //! A pane in a profile's workspace with nothing attached runs the shell the
 //! profile opened for it, `shell-<pane id>` on the profile's tmux server
-//! (`POST /api/profile/shells`). Once the pane is gone from the saved layout
-//! the app asks the service to end it (`DELETE /api/profile/shells/{id}`);
-//! the app never kills a session itself.
+//! (`POST /api/profile/shells`). A pane detached and given another session
+//! or a view keeps its ID, and its shell runs on, so any closed pane may hold
+//! one. Once the pane is gone from the saved layout the app asks the service
+//! to end it (`DELETE /api/profile/shells/{id}`, also answered when there is
+//! none); the app never kills a session itself.
 
 use std::{path::Path, process::Command};
 
-use agent_interface_core::{Layout, Leaf};
-
-/// The IDs of `leaves` that may hold their profile's own shell: those with
-/// nothing attached and no view, including a detached pane, whose shell
-/// still runs.
-pub(super) fn own<'a>(leaves: impl IntoIterator<Item = &'a Leaf>) -> Vec<String> {
-    leaves
-        .into_iter()
-        .filter(|leaf| leaf.attachment.is_none() && leaf.view.is_none())
-        .map(|leaf| leaf.id.clone())
-        .collect()
-}
+use agent_interface_core::Layout;
 
 /// Those of `ids` no pane in `layout` holds: a pane closed here, not one
 /// that moved to another tab.
@@ -88,40 +79,6 @@ mod tests {
     use super::*;
     use agent_interface_test_support::TmuxServer;
     use std::time::{Duration, Instant};
-
-    fn leaf(id: &str) -> Leaf {
-        Leaf {
-            id: id.into(),
-            attachment: None,
-            cwd: None,
-            empty: false,
-            view: None,
-        }
-    }
-
-    #[test]
-    fn only_a_terminal_with_nothing_attached_is_the_profile_s_own_shell() {
-        let shell = leaf("0123456789ab");
-        let mut attached = leaf("123456789abc");
-        attached.attachment = Some(agent_interface_core::Attachment {
-            session: "worker".into(),
-            remote_profile: None,
-            source_socket: None,
-        });
-        let mut detached = leaf("23456789abcd");
-        detached.empty = true;
-        let mut view = leaf("3456789abcde");
-        view.view = Some(agent_interface_core::View {
-            kind: agent_interface_core::ViewKind::Team,
-            agent: None,
-            section: None,
-            registration_id: None,
-        });
-        assert_eq!(
-            own([&shell, &attached, &detached, &view]),
-            ["0123456789ab", "23456789abcd"]
-        );
-    }
 
     #[test]
     fn only_a_shell_no_pane_holds_any_longer_is_released() {
