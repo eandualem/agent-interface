@@ -314,8 +314,11 @@ mod tests {
         none["current_issue"] = serde_json::Value::Null;
         let mut older = data.clone();
         older.as_object_mut().unwrap().remove("current_issue");
+        // A value that is no issue number reads as though the frame did not say.
+        let mut malformed = data.clone();
+        malformed["current_issue"] = "42".into();
         let mut stream = String::new();
-        for data in [data, &none, &older] {
+        for data in [data, &none, &older, &malformed] {
             stream.push_str(&format!(
                 "event: {}\ndata: {data}\n\n",
                 fixture["event"].as_str().unwrap()
@@ -341,7 +344,7 @@ mod tests {
                 _ => panic!("{changes:?}"),
             })
             .collect();
-        assert_eq!(issues, [Some(Some(42)), Some(None), None]);
+        assert_eq!(issues, [Some(Some(42)), Some(None), None, None]);
     }
 
     #[test]

@@ -447,10 +447,10 @@ held and waiting deliveries) is applied to the agent with that name and
 registration and published at once, before any read; a state just reported is
 no longer stale. A `current_issue` of `null` means the agent works on no
 issue. An older service sends no `current_issue`, so its new state also asks
-for a read behind it, which corrects the row's issue number. The opening `hello`, `run.changed`,
-`agent.restart` (each step of an agent's own restart), `resync`, and a change
-for a registration the roster doesn't hold or can't be read each ask the
-roster worker for a read at once. A read that was out when a change
+for a read behind it, which corrects the row's issue number. The opening
+`hello`, `run.changed`, `agent.restart` (each step of an agent's own restart),
+`resync`, and a change for a registration the roster doesn't hold or can't be
+read each ask the roster worker for a read at once. A read that was out when a change
 arrived applies that change again to what it read, so an older read never puts
 an older state back on screen. A service that does not know a kind ignores it.
 No cursor is kept, so a stream opened again starts with a read. `agent.place`
