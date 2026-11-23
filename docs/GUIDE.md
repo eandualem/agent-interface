@@ -74,7 +74,9 @@ The window follows the Quiet Instrument design ([design language](DESIGN.md)).
 The workspace icons at the bottom scroll horizontally when they do not fit.
 The agents list shows at most nine rows at once, with working and starting agents
 first; scroll to reach the remaining agents. Each row shows the name and its
-status symbol.
+status symbol. When messages wait for an agent's terminal, its row and its view
+show how many; when Backbone holds them, they also say why, and hovering the
+row shows the whole reason. Backbone reports a change within about a minute.
 
 The navigation panel on the left shows the current workspace (click it for the
 workspace menu), a **Jump** field (Command-K) that finds tabs, panes, agents and
@@ -310,7 +312,12 @@ after each failure, until it waits 30 seconds between tries while shown or two
 minutes while hidden. When the pane shows a stopped
 Agent Backbone agent, **Resume** asks Backbone to continue its saved conversation
 and **Start new** starts a new one, both with the agent's saved runtime and model;
-the pane connects once the agent's session appears. **Detach** returns the pane
+the pane connects once the agent's session appears. While Backbone restarts an
+agent that asked for a fresh session, its live terminal is marked **Restart
+pending**; once the old session ends, the pane says the agent is restarting,
+offers neither Resume nor Start new, and attaches the new session by itself. A
+restart that fails shows Backbone's reason. An agent on another machine shows
+its stopped pane during a restart. **Detach** returns the pane
 to its chooser. An ordinary terminal whose saved shell is no longer running, such
 as after a restart, starts a new shell in its saved directory once, automatically.
 If that fails, **Open terminal** tries again. Starting a new shell does not

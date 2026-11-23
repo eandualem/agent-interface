@@ -2886,7 +2886,12 @@ mod tests {
         assert_eq!(Observation::of(&agents, "builder"), None);
         // A roster that can no longer be read says nothing of anyone.
         snapshot.unavailable();
-        snapshot.observed_at = Instant::now().checked_sub(Duration::from_secs(3600));
+        let past = || {
+            Instant::now()
+                .checked_sub(super::super::agent_status::TOLERANCE + Duration::from_secs(1))
+                .expect("the host has run longer than the tolerance")
+        };
+        snapshot.observed_at = Some(past());
         agents.update(snapshot);
         for name in ["builder", "missing"] {
             assert_eq!(Observation::of(&agents, name), None, "{name}");
@@ -2894,7 +2899,7 @@ mod tests {
         // A read that succeeded but is past its tolerance says no one left.
         let mut stale = agent_interface_roster::Snapshot::default();
         stale.update(br#"{"items":[]}"#);
-        stale.observed_at = Instant::now().checked_sub(Duration::from_secs(3600));
+        stale.observed_at = Some(past());
         agents.update(stale);
         assert!(!agents.absent("builder"));
         let mut restarts = Restarts::default();
