@@ -22,7 +22,8 @@ A **workspace** is a collection of tabs. A **tab** contains one or more
 **panes**. Each pane holds a terminal session, a native view such as Skills,
 or an experimental HTML artifact.
 A session is the running work shown inside a terminal pane; closing its pane
-does not send a session-termination command.
+does not send a session-termination command, except for the shell a profile's
+workspace opened for that pane (see Close Pane below).
 
 Use the workspace heading to choose a workspace, then choose a tab. The saved
 split layout contains actual sessions; click a terminal before typing. Command-1
