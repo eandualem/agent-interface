@@ -431,19 +431,19 @@ fn a_pushed_state_shows_before_a_read_and_outlives_a_read_it_overlaps() {
                 identity.to_string()
             } else if request.starts_with("GET /api/agents ") {
                 let read = counted.fetch_add(1, Ordering::SeqCst);
-                // The second read is held open, and then answered with what
-                // it saw before a state the stream pushed while it was out.
-                if read == 1 {
-                    let open = stream.as_mut().unwrap();
-                    open.write_all(state("waiting_for_human").as_bytes())
-                        .unwrap();
-                    released.recv_timeout(Duration::from_secs(10)).unwrap();
+                // The second read is held open, then answered with what it saw
+                // before the changes pushed while it was out.
+                let held = Instant::now();
+                while read == 1 && released.try_recv().is_err() {
+                    // Frames pushed meanwhile still reach the stream.
+                    assert!(held.elapsed() < Duration::from_secs(10), "never released");
+                    if let Ok(frame) = pushed.try_recv() {
+                        let open = stream.as_mut().unwrap();
+                        open.write_all(frame.as_bytes()).unwrap();
+                    }
+                    thread::sleep(Duration::from_millis(5));
                 }
-                let state = match read {
-                    0 => "idle",
-                    1 => "busy",
-                    _ => "waiting_for_human",
-                };
+                let state = if read == 0 { "idle" } else { "busy" };
                 json!({"items": [{"name": "worker", "registration_id": "r1", "state": state}]})
                     .to_string()
             } else {
@@ -467,41 +467,55 @@ fn a_pushed_state_shows_before_a_read_and_outlives_a_read_it_overlaps() {
         let _ = wake.send(());
     })
     .unwrap();
-    let mut shown = String::new();
-    let mut show = |until: &dyn Fn(&str) -> bool| {
-        while !until(&shown) {
+    let mut shown = None::<BoundRosterUpdate>;
+    let mut show = |until: &dyn Fn(&BoundRosterUpdate) -> bool| {
+        while !shown.as_ref().is_some_and(until) {
             woken.recv_timeout(Duration::from_secs(10)).unwrap();
-            if let Some(update) = source.take_update()
-                && let Some(state) = update.snapshot.states.get("worker")
-            {
-                shown.clone_from(state);
+            if let Some(update) = source.take_update() {
+                shown = Some(update);
             }
         }
     };
-    show(&|state| state == "idle");
-    // A pushed state shows while no read after the first has been answered,
-    // and asks for a read behind it at once, not on the two-second timer.
+    let state_is = |state: &'static str| {
+        move |update: &BoundRosterUpdate| {
+            update.snapshot.states.get("worker").map(String::as_str) == Some(state)
+        }
+    };
+    show(&state_is("idle"));
+    // A pushed state shows while no later read can answer, and asks for a
+    // read behind it at once, not on the two-second timer.
     push.send(state("busy")).unwrap();
     let asked = Instant::now();
-    show(&|state| state == "busy");
-    show(&|state| state == "waiting_for_human");
-    assert!(asked.elapsed() < Duration::from_secs(1));
-    // That read, answered with what it saw before, keeps the newer state.
+    show(&state_is("busy"));
+    while reads.load(Ordering::SeqCst) < 2 {
+        assert!(asked.elapsed() < Duration::from_secs(1));
+        thread::sleep(Duration::from_millis(5));
+    }
+    // A wait pushed while that read is out outlives its older answer.
+    let waits = json!({"agent": "worker", "registration_id": "r1",
+        "waiting": {"on": "agent", "on_agent": "reviewer"},
+        "background": {"running": 0, "queued": 0, "processes": 0}, "processes": []});
+    push.send(format!("event: agent.changed\ndata: {waits}\n\n"))
+        .unwrap();
+    let waiting = |update: &BoundRosterUpdate| update.snapshot.details["worker"].waiting.is_some();
+    show(&waiting);
     release.send(()).unwrap();
     overlap_done.recv_timeout(Duration::from_secs(10)).unwrap();
     thread::sleep(Duration::from_millis(300));
     while woken.try_recv().is_ok() {
         if let Some(update) = source.take_update() {
-            shown.clone_from(&update.snapshot.states["worker"]);
+            shown = Some(update);
         }
     }
-    assert_eq!(shown, "waiting_for_human");
+    let last = shown.unwrap();
+    assert!(waiting(&last), "{:?}", last.snapshot.details["worker"]);
+    assert_eq!(last.snapshot.states["worker"], "busy");
+    assert_eq!(reads.load(Ordering::SeqCst), 2);
     // A registration the roster doesn't hold asks for a read.
-    let before = reads.load(Ordering::SeqCst);
     push.send(state("busy").replace("\"r1\"", "\"r9\""))
         .unwrap();
     let asked = Instant::now();
-    while reads.load(Ordering::SeqCst) == before {
+    while reads.load(Ordering::SeqCst) == 2 {
         assert!(asked.elapsed() < Duration::from_secs(1));
         thread::sleep(Duration::from_millis(5));
     }
