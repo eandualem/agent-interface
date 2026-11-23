@@ -14,7 +14,7 @@ use std::{
 /// Between reads without the push stream.
 const POLL: Duration = Duration::from_secs(2);
 /// From the start of one read to the next while the push stream is open and
-/// the last roster and runs reads succeeded: the service's heartbeat, and half the 30 seconds
+/// the last roster, swarms, machines and runs reads succeeded: the service's heartbeat, and half the 30 seconds
 /// after which a roster or runs list is no longer current. The stream carries
 /// states, waits and runs, but not an agent leaving, a new issue without a new
 /// state, or swarms and machines.
@@ -128,13 +128,16 @@ impl BoundRosterSource {
                             .is_none()
                             .then(|| shown.update.snapshot.clone())
                     };
-                    let mut good = listed.is_some();
+                    // Swarms and machines are not pushed either.
+                    let mut good = listed
+                        .as_ref()
+                        .is_some_and(|snapshot| snapshot.swarms_read && snapshot.machines_read);
                     if let Some(snapshot) = listed
                         && live()
                     {
                         // The new list shows before its ended runs are read.
                         let gone = book.list(&connection, &snapshot);
-                        good = !gone.missed();
+                        good &= !gone.missed();
                         show_runs(book.runs());
                         book.settle(&connection, gone, &live);
                         show_runs(book.runs());

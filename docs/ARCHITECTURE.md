@@ -460,7 +460,8 @@ service's 15-second heartbeat, is opened again two seconds later; a 404
 stops the worker. Without the stream, the roster is polled as before. While
 the stream is open, from its first frame until it ends, the next read starts
 15 seconds after the start of the last good one instead of two seconds after
-it ends (a failed read is still tried again after two), because agents leaving the roster, a change of issue
+it ends (a pass whose roster, swarms, machines or runs list could not be read
+is still followed by a read after two), because agents leaving the roster, a change of issue
 without a change of state, `state_source` and its evidence, swarms and machines
 are not pushed. Fifteen seconds is the service's heartbeat and half the 30
 seconds after which a roster or runs list stops counting as current. When the

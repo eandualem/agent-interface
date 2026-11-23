@@ -757,13 +757,20 @@ fn an_open_stream_slows_the_poll_and_its_end_reads_at_once() {
     entry["tmux_socket"] = json!(directory.path().join("tmux.sock"));
     entry["credential_reference"] = json!({"type": "socket"});
     let profile = Profile::parse(&serde_json::to_vec(&entry).unwrap()).unwrap();
+    let runs = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../roster/src/profiles/runs/fixtures/runs.json"
+    ));
     let server = thread::spawn(move || {
         listener.set_nonblocking(true).unwrap();
         let deadline = Instant::now() + Duration::from_secs(25);
         let mut stream = None::<(std::os::unix::net::UnixStream, Instant)>;
-        // When a resync was pushed, and whether the read it asks for is to fail.
+        // When a resync was pushed, whether the roster read it asks for is to
+        // fail, then the runs list read after it, then the machines read.
         let mut pushed = None::<Instant>;
         let mut fail = false;
+        let mut fail_runs = false;
+        let mut fail_machines = false;
         let mut closed = None::<Instant>;
         let mut reads = Vec::new();
         // Until two reads follow the stream's end.
@@ -786,9 +793,9 @@ fn an_open_stream_slows_the_poll_and_its_end_reads_at_once() {
                             fail = true;
                         }
                         // Open three seconds past the retry of the failed
-                        // read, longer than a two-second poll.
+                        // machines read, longer than a two-second poll.
                         let retried = pushed.and_then(|pushed| {
-                            reads.iter().filter(|read| **read >= pushed).nth(1).copied()
+                            reads.iter().filter(|read| **read >= pushed).nth(3).copied()
                         });
                         if retried.is_some_and(|retried| retried.elapsed() > Duration::from_secs(3))
                         {
@@ -829,14 +836,30 @@ fn an_open_stream_slows_the_poll_and_its_end_reads_at_once() {
             let mut status = 200;
             let body = if request.starts_with("GET /api/profile ") {
                 identity.to_string()
-            } else {
-                if request.starts_with("GET /api/agents ") {
-                    reads.push(Instant::now());
-                    if std::mem::take(&mut fail) {
-                        status = 503;
-                    }
+            } else if request.starts_with("GET /api/swarms ") {
+                json!({"items": []}).to_string()
+            } else if request.starts_with("GET /api/status/services ") {
+                if std::mem::take(&mut fail_machines) {
+                    status = 503;
                 }
-                json!({"items": [{"name": "worker", "state": "idle"}]}).to_string()
+                json!({"machines": []}).to_string()
+            } else if request.starts_with("GET /api/runs ") {
+                if std::mem::take(&mut fail_runs) {
+                    status = 503;
+                    fail_machines = true;
+                }
+                runs.to_owned()
+            } else {
+                assert!(request.starts_with("GET /api/agents "), "{request}");
+                reads.push(Instant::now());
+                if std::mem::take(&mut fail) {
+                    status = 503;
+                    fail_runs = true;
+                }
+                // A running agent, so the runs are listed after each roster.
+                json!({"items": [{"name": "worker", "state": "working",
+                    "background": {"running": 1, "queued": 0}}]})
+                .to_string()
             };
             write!(
                 socket,
@@ -851,18 +874,21 @@ fn an_open_stream_slows_the_poll_and_its_end_reads_at_once() {
     let (pushed, closed, reads) = server.join().unwrap();
     drop(source);
     // While the stream is open the only reads after its hello are the failed
-    // one the resync asked for and its retry two seconds later.
+    // one the resync asked for, then a read two seconds after each: one whose
+    // runs list fails, one whose machines read fails, and a good one.
     let open: Vec<_> = reads
         .iter()
         .filter(|read| **read >= pushed && **read < closed)
         .collect();
-    assert_eq!(open.len(), 2, "{reads:?}");
+    assert_eq!(open.len(), 4, "{reads:?}");
     assert!(*open[0] - pushed < Duration::from_secs(1), "{reads:?}");
-    let retry = *open[1] - *open[0];
-    assert!(
-        retry > Duration::from_millis(1500) && retry < Duration::from_secs(3),
-        "{retry:?}"
-    );
+    for pair in open.windows(2) {
+        let retry = *pair[1] - *pair[0];
+        assert!(
+            retry > Duration::from_millis(1500) && retry < Duration::from_secs(3),
+            "{retry:?}"
+        );
+    }
     let after: Vec<_> = reads.iter().filter(|read| **read >= closed).collect();
     assert!(*after[0] - closed < Duration::from_secs(1), "{reads:?}");
     let gap = *after[1] - *after[0];
