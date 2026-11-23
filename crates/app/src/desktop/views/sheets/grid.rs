@@ -495,7 +495,7 @@ impl Sheets {
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         self.flash_copied(cx);
     }
-    /// A double-click copies one cell's displayed value as it is.
+    /// A double-click copies one cell's displayed value, as Cmd+C copies it.
     fn copy_cell(&mut self, row: usize, column: usize, cx: &mut Context<Self>) {
         let Some(open) = self.open.as_ref() else {
             return;
@@ -503,11 +503,11 @@ impl Sheets {
         let (Some(r), Some(c)) = (open.grid.rows.get(row), open.grid.columns.get(column)) else {
             return;
         };
-        let value = open
-            .grid
-            .cell(&r.row_id, &c.column_id)
-            .map(|cell| cell.display.clone())
-            .unwrap_or_default();
+        let cell = open.grid.cell(&r.row_id, &c.column_id);
+        let value = clipboard_value(
+            cell.map(|c| c.display.as_str()).unwrap_or_default(),
+            cell.is_some_and(|c| matches!(c.value, Value::Text(_))),
+        );
         cx.write_to_clipboard(ClipboardItem::new_string(value));
         self.flash_copied(cx);
     }
