@@ -33,6 +33,9 @@ pub enum Change {
         reason: Option<String>,
         /// Since when, in Unix seconds.
         since: Option<f64>,
+        /// The issue it works on: `Some(None)` for none, and `None` when the
+        /// frame does not say, as from an older service.
+        issue: Option<Option<u64>>,
     },
     /// What an agent waits on, its background counts and its terminal
     /// queue, from `agent.changed`.
@@ -144,6 +147,8 @@ fn change(kind: &[u8], data: &[u8]) -> Option<Change> {
         reason: Option<String>,
         #[serde(default, deserialize_with = "lenient")]
         since: Option<f64>,
+        #[serde(default, deserialize_with = "issue")]
+        current_issue: Option<Option<u64>>,
     }
     #[derive(Deserialize)]
     struct Waits {
@@ -167,6 +172,7 @@ fn change(kind: &[u8], data: &[u8]) -> Option<Change> {
                 state: state.state,
                 reason: state.reason,
                 since: state.since,
+                issue: state.current_issue,
             })
         }
         b"agent.changed" => {
@@ -180,6 +186,16 @@ fn change(kind: &[u8], data: &[u8]) -> Option<Change> {
         }
         _ => return None,
     })
+}
+
+/// A present `current_issue`: `null` is no issue, and a value that is not an
+/// issue number reads as though the frame did not say.
+fn issue<'de, D>(deserializer: D) -> Result<Option<Option<u64>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = <Box<RawValue> as Deserialize>::deserialize(deserializer)?;
+    Ok(serde_json::from_str(raw.get()).ok())
 }
 
 #[cfg(test)]
@@ -217,6 +233,7 @@ mod tests {
                     state: "waiting_for_human".into(),
                     reason: Some("permission".into()),
                     since: Some(1.5),
+                    issue: None,
                 },
                 Change::Read,
             ]
@@ -286,6 +303,45 @@ mod tests {
                 8
             ))
         );
+    }
+
+    #[test]
+    fn a_state_carries_its_issue_when_the_service_says_and_not_otherwise() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("runs/fixtures/stream-agent-state.json")).unwrap();
+        let data = &fixture["data"];
+        let mut none = data.clone();
+        none["current_issue"] = serde_json::Value::Null;
+        let mut older = data.clone();
+        older.as_object_mut().unwrap().remove("current_issue");
+        let mut stream = String::new();
+        for data in [data, &none, &older] {
+            stream.push_str(&format!(
+                "event: {}\ndata: {data}\n\n",
+                fixture["event"].as_str().unwrap()
+            ));
+        }
+        let (changes, within) = read(&[stream.as_bytes()]);
+        assert!(within);
+        assert_eq!(
+            changes[0],
+            Change::State {
+                agent: "worker".into(),
+                registration_id: "1234567890abcdef1234567890abcdef".into(),
+                state: "idle".into(),
+                reason: None,
+                since: Some(1794301260.0),
+                issue: Some(Some(42)),
+            }
+        );
+        let issues: Vec<_> = changes
+            .iter()
+            .map(|change| match change {
+                Change::State { issue, .. } => *issue,
+                _ => panic!("{changes:?}"),
+            })
+            .collect();
+        assert_eq!(issues, [Some(Some(42)), Some(None), None]);
     }
 
     #[test]

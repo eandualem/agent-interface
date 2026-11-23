@@ -520,8 +520,9 @@ fn a_pushed_state_shows_before_a_read_and_outlives_a_read_it_overlaps() {
         }
     };
     show(&state_is("idle"));
-    // A pushed state shows while no later read can answer, and asks for a
-    // read behind it at once, not on the two-second timer.
+    // A pushed state without its issue, from an older service, shows while
+    // no later read can answer, and asks for a read behind it at once, not on
+    // the two-second timer.
     push.send(state("busy")).unwrap();
     let asked = Instant::now();
     show(&state_is("busy"));
@@ -548,6 +549,30 @@ fn a_pushed_state_shows_before_a_read_and_outlives_a_read_it_overlaps() {
     let last = shown.unwrap();
     assert!(waiting(&last), "{:?}", last.snapshot.details["worker"]);
     assert_eq!(last.snapshot.states["worker"], "busy");
+    assert_eq!(reads.load(Ordering::SeqCst), 2);
+    // The service's frame with the agent's issue shows it and asks for no read.
+    let mut fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../roster/src/profiles/runs/fixtures/stream-agent-state.json"
+    )))
+    .unwrap();
+    fixture["data"]["registration_id"] = json!("r1");
+    push.send(format!(
+        "event: {}\ndata: {}\n\n",
+        fixture["event"].as_str().unwrap(),
+        fixture["data"]
+    ))
+    .unwrap();
+    loop {
+        woken.recv_timeout(Duration::from_secs(10)).unwrap();
+        if let Some(update) = source.take_update()
+            && update.snapshot.details["worker"].current_issue == Some(42)
+        {
+            assert_eq!(update.snapshot.states["worker"], "idle");
+            break;
+        }
+    }
+    thread::sleep(Duration::from_millis(300));
     assert_eq!(reads.load(Ordering::SeqCst), 2);
     // A registration the roster doesn't hold asks for a read.
     push.send(state("busy").replace("\"r1\"", "\"r9\""))

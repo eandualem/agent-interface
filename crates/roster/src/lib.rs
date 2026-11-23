@@ -378,8 +378,9 @@ impl Snapshot {
         self.error = Some(UNAVAILABLE);
     }
 
-    /// Apply a state, wait or terminal queue the push stream reported for one
-    /// agent, as the next agents read would show it. False, changing nothing, for
+    /// Apply a state (with its issue, when the frame says), wait or terminal
+    /// queue the push stream reported for one agent, as the next agents read
+    /// would show it. False, changing nothing, for
     /// [`profiles::Change::Read`] or when no agent of that name has that
     /// registration. A state just reported is no longer stale.
     pub fn apply(&mut self, change: &profiles::Change) -> bool {
@@ -409,10 +410,14 @@ impl Snapshot {
                 state,
                 reason,
                 since,
+                issue,
                 ..
             } => {
                 details.reason.clone_from(reason);
                 details.state_since = *since;
+                if let Some(issue) = issue {
+                    details.current_issue = *issue;
+                }
                 if details.state_source.as_deref() == Some("stale") {
                     details.state_source = None;
                     details.evidence.clear();
@@ -971,15 +976,18 @@ mod tests {
         let mut snapshot = Snapshot::default();
         snapshot.update(
             br#"{"items":[{"name":"worker","registration_id":"r1","state":"busy",
-                "state_source":"stale","evidence":["no report for 5 minutes"]}]}"#,
+                "current_issue":7,"state_source":"stale",
+                "evidence":["no report for 5 minutes"]}]}"#,
         );
-        let state = |registration: &str| Change::State {
+        let issued = |registration: &str, issue| Change::State {
             agent: "worker".into(),
             registration_id: registration.into(),
             state: "waiting_for_human".into(),
             reason: Some("permission".into()),
             since: Some(2.0),
+            issue,
         };
+        let state = |registration: &str| issued(registration, None);
         assert!(!snapshot.apply(&state("r0")));
         assert!(!snapshot.apply(&Change::Read));
         assert_eq!(snapshot.states["worker"], "busy");
@@ -992,6 +1000,13 @@ mod tests {
         );
         assert_eq!(details.state_source, None);
         assert!(details.evidence.is_empty());
+        // A frame that does not say leaves the issue as read; one that does
+        // sets it, `null` to none.
+        assert_eq!(details.current_issue, Some(7));
+        assert!(snapshot.apply(&issued("r1", Some(Some(9)))));
+        assert_eq!(snapshot.details["worker"].current_issue, Some(9));
+        assert!(snapshot.apply(&issued("r1", Some(None))));
+        assert_eq!(snapshot.details["worker"].current_issue, None);
         let background = Some(Background {
             running: 1,
             queued: 0,
