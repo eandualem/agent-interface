@@ -529,7 +529,7 @@ fn the_oldest_ended_views_are_read_again_first() {
             run
         })
         .collect();
-    let replies = runs[1..]
+    let mut replies: Vec<(u16, Json)> = runs[1..]
         .iter()
         .rev()
         .map(|run| {
@@ -539,6 +539,11 @@ fn the_oldest_ended_views_are_read_again_first() {
             (200, gone)
         })
         .collect();
+    // The service no longer knows the oldest run, so its view is gone too.
+    replies[0] = (
+        404,
+        json!({"detail": {"code": "not_found", "message": "No run."}}),
+    );
     let (connection, server) = served(replies);
     let mut book = Book::default();
     book.runs.finished = runs.clone();

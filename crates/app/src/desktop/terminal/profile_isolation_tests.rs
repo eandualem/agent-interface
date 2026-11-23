@@ -320,27 +320,28 @@ fn a_run_view_on_its_profile_server_is_shown_read_only() {
     assert!(!own.is_run_view());
     let ready = connect(target).unwrap();
     provider.join().unwrap();
-    let view = ReadOnly(Arc::clone(ready.panes.as_ref().unwrap()));
+    let panes = ready.panes.as_ref().unwrap();
+    let view = ReadOnly(Arc::clone(panes));
     let deadline = Instant::now() + Duration::from_secs(10);
+    // The program's screen, as the pane sees it, tracks the mouse.
+    while !panes
+        .take_update()
+        .is_some_and(|update| update.screens.iter().any(|(_, s)| s.mouse_input()))
+    {
+        assert!(Instant::now() < deadline, "no screen tracking the mouse");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // The next screen, read through the view, keeps clicks for the viewer,
+    // so a plain drag selects.
+    panes.send_input(ready.input, b"next").unwrap();
     loop {
-        let tracking = server
-            .run(&[
-                "display-message",
-                "-p",
-                "-t",
-                VIEW,
-                "#{mouse_standard_flag}",
-            ])
-            .unwrap();
-        if tracking.trim() == "1"
-            && let Some(update) = view.take_update()
+        if let Some(update) = view.take_update()
             && !update.screens.is_empty()
         {
-            // Clicks stay with the viewer, so a plain drag selects.
             assert!(update.screens.iter().all(|(_, s)| !s.mouse_input()));
             break;
         }
-        assert!(Instant::now() < deadline, "no update with tracking on");
+        assert!(Instant::now() < deadline, "no later screen");
         std::thread::sleep(Duration::from_millis(5));
     }
     let key = Input::Key(KeyPress {

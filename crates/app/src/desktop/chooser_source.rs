@@ -121,6 +121,38 @@ mod tests {
     }
 
     #[test]
+    fn a_server_without_a_profile_lists_sessions_named_as_run_views() {
+        let tmux = TmuxServer::start().unwrap();
+        tmux.run(&[
+            "new-session",
+            "-d",
+            "-s",
+            "run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60",
+        ])
+        .unwrap();
+        let socket: PathBuf = tmux
+            .run(&["display-message", "-p", "#{socket_path}"])
+            .unwrap()
+            .trim_end()
+            .into();
+        let (wake, ready) = mpsc::channel();
+        let source = Origin::Standalone {
+            socket: Some(socket),
+        }
+        .sessions(move || {
+            let _ = wake.send(());
+        })
+        .unwrap()
+        .unwrap();
+        ready.recv_timeout(Duration::from_secs(10)).unwrap();
+        let observed = source.take_update().unwrap();
+        assert_eq!(
+            observed.sessions,
+            ["fixture", "run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60"]
+        );
+    }
+
+    #[test]
     fn chooser_bound_session_discovery_uses_only_authenticated_socket() {
         let tmux = TmuxServer::start().unwrap();
         tmux.run(&["new-session", "-d", "-s", "bound-only"])
