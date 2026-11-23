@@ -367,7 +367,7 @@ fn pushed_state_and_run_changes_read_the_roster_and_runs_at_once() {
 }
 
 #[test]
-fn a_pushed_state_shows_without_a_read_and_outlives_a_read_it_overlaps() {
+fn a_pushed_state_shows_before_a_read_and_outlives_a_read_it_overlaps() {
     let directory = tempfile::tempdir().unwrap();
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let path = directory.path().join("api.sock");
@@ -394,11 +394,15 @@ fn a_pushed_state_shows_without_a_read_and_outlives_a_read_it_overlaps() {
     let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (counted, (push, pushed)) = (Arc::clone(&reads), mpsc::channel::<String>());
     let (overlapped, overlap_done) = mpsc::channel();
+    let (release, released) = mpsc::channel::<()>();
     let server = thread::spawn(move || {
         listener.set_nonblocking(true).unwrap();
         let mut stream = None::<std::os::unix::net::UnixStream>;
         loop {
-            if let (Some(open), Ok(frame)) = (&mut stream, pushed.try_recv()) {
+            // A frame waits until the stream is open.
+            if let Some(open) = &mut stream
+                && let Ok(frame) = pushed.try_recv()
+            {
                 if frame.is_empty() {
                     break;
                 }
@@ -427,15 +431,19 @@ fn a_pushed_state_shows_without_a_read_and_outlives_a_read_it_overlaps() {
                 identity.to_string()
             } else if request.starts_with("GET /api/agents ") {
                 let read = counted.fetch_add(1, Ordering::SeqCst);
-                // The second read is answered with what it saw before a state
-                // the stream pushed while it was out.
+                // The second read is held open, and then answered with what
+                // it saw before a state the stream pushed while it was out.
                 if read == 1 {
                     let open = stream.as_mut().unwrap();
                     open.write_all(state("waiting_for_human").as_bytes())
                         .unwrap();
-                    thread::sleep(Duration::from_millis(200));
+                    released.recv_timeout(Duration::from_secs(10)).unwrap();
                 }
-                let state = if read == 0 { "idle" } else { "busy" };
+                let state = match read {
+                    0 => "idle",
+                    1 => "busy",
+                    _ => "waiting_for_human",
+                };
                 json!({"items": [{"name": "worker", "registration_id": "r1", "state": state}]})
                     .to_string()
             } else {
@@ -471,15 +479,15 @@ fn a_pushed_state_shows_without_a_read_and_outlives_a_read_it_overlaps() {
         }
     };
     show(&|state| state == "idle");
-    // A pushed state shows at once, without another read.
+    // A pushed state shows while no read after the first has been answered,
+    // and asks for a read behind it at once, not on the two-second timer.
     push.send(state("busy")).unwrap();
     let asked = Instant::now();
     show(&|state| state == "busy");
+    show(&|state| state == "waiting_for_human");
     assert!(asked.elapsed() < Duration::from_secs(1));
-    assert_eq!(reads.load(Ordering::SeqCst), 1);
-    // A run change asks for a read; a state pushed while it is out stays.
-    push.send("event: run.changed\ndata: {}\n\n".into())
-        .unwrap();
+    // That read, answered with what it saw before, keeps the newer state.
+    release.send(()).unwrap();
     overlap_done.recv_timeout(Duration::from_secs(10)).unwrap();
     thread::sleep(Duration::from_millis(300));
     while woken.try_recv().is_ok() {
@@ -488,6 +496,15 @@ fn a_pushed_state_shows_without_a_read_and_outlives_a_read_it_overlaps() {
         }
     }
     assert_eq!(shown, "waiting_for_human");
+    // A registration the roster doesn't hold asks for a read.
+    let before = reads.load(Ordering::SeqCst);
+    push.send(state("busy").replace("\"r1\"", "\"r9\""))
+        .unwrap();
+    let asked = Instant::now();
+    while reads.load(Ordering::SeqCst) == before {
+        assert!(asked.elapsed() < Duration::from_secs(1));
+        thread::sleep(Duration::from_millis(5));
+    }
     drop(source);
     push.send(String::new()).unwrap();
     server.join().unwrap();

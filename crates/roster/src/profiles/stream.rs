@@ -262,6 +262,19 @@ mod tests {
     }
 
     #[test]
+    fn a_frames_data_lines_join_up_to_the_limit() {
+        let (changes, within) = read(&[
+            b"event: agent.state\ndata: {\"agent\":\"worker\",\n",
+            b"data: \"registration_id\":\"r1\",\"state\":\"idle\"}\n\n",
+        ]);
+        assert!(within);
+        assert!(matches!(&changes[..], [Change::State { state, .. }] if state == "idle"));
+        let line = [b"data: ".as_slice(), &[b'x'; 1024], b"\n"].concat();
+        let (_, within) = read(&[&line.repeat(LINE_LIMIT / 1024 + 1)]);
+        assert!(!within);
+    }
+
+    #[test]
     fn a_change_that_cannot_be_read_asks_for_a_read() {
         let (changes, _) = read(&[
             b"event: agent.state\ndata: {\"agent\":\"worker\"}\n\n",

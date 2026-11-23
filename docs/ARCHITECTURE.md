@@ -438,8 +438,10 @@ The service also pushes agent state changes on `GET /api/stream`, as
 Server-Sent Events. `Connection::watch` follows that stream on a worker of its
 own. An `agent.state` (state, reason and since) or `agent.changed` (what an
 agent waits on, and its background counts) is applied to the agent with that
-name and registration and published at once, without a read; a state just
-reported is no longer stale. The opening `hello`, `run.changed`, `resync`, and
+name and registration and published at once, before any read; a state just
+reported is no longer stale. The issue an agent works on is not pushed, so a
+new state also asks for a read behind it, which corrects the row's issue
+number. The opening `hello`, `run.changed`, `resync`, and
 a change for a registration the roster doesn't hold or can't be read each ask
 the roster worker for a read at once. A read that was out when a change
 arrived applies that change again to what it read, so an older read never puts
