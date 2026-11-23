@@ -849,8 +849,9 @@ impl Panes {
     /// `window-size` option, counting this client from now on.
     pub fn set_size(&self, cols: u16, rows: u16) -> io::Result<()> {
         let mut state = self.shared.lock();
-        let minimum = if state.agent_default.is_some() { 80 } else { 1 };
-        let size = (cols.max(minimum), rows.max(1));
+        // A shown tile reflows at its own width; only the release on hide or
+        // close keeps an agent at least as wide as its session default.
+        let size = (cols.max(1), rows.max(1));
         let command = format!("refresh-client -f '!ignore-size' -C {}x{}", size.0, size.1);
         let (line, owner) = match (state.agent_default, self.source) {
             (Some(_), Some((session, _))) => (

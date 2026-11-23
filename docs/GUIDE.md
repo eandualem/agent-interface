@@ -317,7 +317,7 @@ remove its tab, open another library, or close its native window. The source’s
 session-lifetime policy still applies to an explicit detach. Connections preserve
 the session environment. A displayed
 terminal sizes its session to the pane under tmux's `window-size` option; text
-scales to fit when the shared grid is larger. Agent tiles request at least 80 columns to keep prompts usable. Hiding or closing an agent tile releases its size and lets tmux use other attached clients or the session’s default dimensions.
+scales to fit when the shared grid is larger. An agent tile reflows at its own width like any other. Hiding or closing an agent tile releases its size and lets tmux use other attached clients or the session’s default dimensions, at least 80 columns, so its prompt stays usable in the background.
 
 ## Agents on other machines
 
