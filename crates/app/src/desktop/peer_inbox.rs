@@ -11,6 +11,33 @@ use std::{
     time::Duration,
 };
 
+const UNSUPPORTED: &str = "This Agent Backbone version doesn\u{2019}t offer Connections.";
+
+/// What the person reads when a Connections request fails.
+pub(super) fn failure(error: Error) -> String {
+    match error {
+        Error::Unavailable | Error::Refused(500..=599) => {
+            "Agent Backbone isn\u{2019}t answering. Try again.".into()
+        }
+        Error::Unsupported => UNSUPPORTED.into(),
+        Error::Refused(404) => "That request or connection no longer exists.".into(),
+        Error::BindingRequired | Error::BindingMismatch | Error::RegistrationChanged => {
+            "This workspace no longer matches its profile. Open the workspace again.".into()
+        }
+        Error::NotReady => "The profile isn\u{2019}t ready yet.".into(),
+        Error::Invalid => "The request or its reply wasn\u{2019}t valid.".into(),
+        Error::Refused(status) => format!("Agent Backbone refused the request (status {status})."),
+    }
+}
+
+/// [`failure`] for the overview: without its route, the service has no Connections.
+fn overview_failure(error: Error) -> String {
+    match error {
+        Error::Refused(404) => UNSUPPORTED.into(),
+        _ => failure(error),
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum Selection {
     Request(String),
@@ -236,7 +263,8 @@ impl Inbox {
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         if !self.online.load(Ordering::Acquire) {
-            self.error = Some("Agent Backbone stream unavailable".into());
+            self.error =
+                Some("Agent Backbone isn\u{2019}t sending updates. Reconnecting\u{2026}".into());
             cx.notify();
             return;
         }
@@ -260,9 +288,7 @@ impl Inbox {
                             inbox.error = None;
                             inbox.read_at = Some(chrono::Local::now().format("%H:%M").to_string());
                         }
-                        Err(error) => {
-                            inbox.error = Some(format!("Agent Backbone unavailable · {error:?}"))
-                        }
+                        Err(error) => inbox.error = Some(overview_failure(error)),
                     }
                 }
                 if cx.has_global::<Sources>() {
@@ -303,6 +329,13 @@ impl Sources {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_service_without_connections_says_so() {
+        assert_eq!(overview_failure(Error::Refused(404)), UNSUPPORTED);
+        assert_eq!(failure(Error::Unsupported), UNSUPPORTED);
+        assert_ne!(failure(Error::Refused(404)), UNSUPPORTED);
+    }
 
     #[test]
     fn summary_label_reports_declined_outgoing_invitation() {

@@ -196,7 +196,7 @@ setup appears until you finish it. You can also launch it inside
 WSL with `"$HOME/.local/bin/agent-interface"`.
 Use **Interface size** at the bottom of the welcome window if the text is too
 small. Run agent-tool installation commands inside WSL as well. After installing
-a tool, choose **Check again** or **Check tools again** in setup; you do not need
+a tool, choose **Check again** in setup; you do not need
 to restart the app.
 
 After setup, add a tab with Ctrl+Shift+T, choose **Open terminal**, and run
@@ -217,8 +217,10 @@ service installed, open Agent Interface to continue onboarding. Onboarding
 creates your first profile, and offers to install Git, tmux or an agent tool
 when one is missing; each agent tool signs in inside its own terminal. Without
 Agent Backbone, Agent Interface works as a native workspace for tmux: first run
-stops at **Agents can't start yet**, and **Continue with terminals** opens the
-workspace. **Details** says when Agent Backbone isn't installed.
+says **Agent Backbone isn't installed**, **Continue with terminals** opens the
+workspace, and **Check again** continues setup once it is installed. When Agent
+Backbone is installed but its service doesn't start, first run says **Agents
+can't start yet**, with **Try again** and the reason under **Details**.
 
 The app finds the profiles Agent Backbone serves through its `backbone` command
 and connects to each over the private Unix socket the service reports. The

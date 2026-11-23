@@ -112,7 +112,7 @@ const VIEWS: [ViewChoice; 8] = [
     ViewChoice {
         glyph: "⇄",
         label: "Connections",
-        description: "Profile requests and conversations are unavailable in this version",
+        description: "Requests and reviews with other profiles",
         scope: "this profile",
         kind: ViewKind::Connections,
     },

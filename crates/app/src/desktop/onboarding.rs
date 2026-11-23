@@ -592,6 +592,36 @@ impl Onboarding {
             return None;
         };
         let reason = reason.clone();
+        // Nothing failed without Agent Backbone: terminals are the way on,
+        // and checking again finds it once it is installed.
+        if probe.path("backbone").is_none() {
+            let body = div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .child(
+                    ui::setup_button("terminals-only", "Continue with terminals", true, false)
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            cx.emit(Event::Terminal);
+                            view.leave(cx);
+                        })),
+                )
+                .child(div().pt(px(t.space.s12)).flex().justify_center().child(
+                    ui::text_action("service-again", "Check again").on_click(cx.listener(
+                        |view, _, _, cx| {
+                            view.service = Service::Checking;
+                            view.repaired = false;
+                            view.check(cx);
+                        },
+                    )),
+                ))
+                .into_any_element();
+            return Some((
+                "Agent Backbone isn\u{2019}t installed".into(),
+                "Agent Backbone runs your agents. Your terminals work without it. Once it is installed, choose Check again, or add a profile later in Settings \u{2192} Profiles.".into(),
+                body,
+            ));
+        }
         let body = div()
             .w_full()
             .flex()

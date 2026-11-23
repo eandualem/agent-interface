@@ -1,6 +1,6 @@
 //! Owner-scoped data for the native Connections pane. Stream frames only invalidate reads.
 use super::*;
-use crate::desktop::peer_inbox::{Inbox, Selection, Summary};
+use crate::desktop::peer_inbox::{Inbox, Selection, Summary, failure};
 use agent_interface_roster::profiles::{Connection, Error, peers as api};
 use api::{Direction, Policy};
 use std::{collections::HashSet, sync::Arc};
@@ -343,7 +343,7 @@ impl Pane {
                             live.read_at = Some(chrono::Local::now().format("%H:%M").to_string());
                             live.status = None;
                         }
-                        Err(e) => live.status = Some(format!("Agent Backbone unavailable · {e:?}")),
+                        Err(e) => live.status = Some(failure(e)),
                     }
                 }
                 if std::mem::take(&mut live.dirty) {
@@ -424,12 +424,12 @@ impl Pane {
                             Error::Invalid | Error::Unavailable | Error::Refused(500..=599)
                         ) {
                             if let Some(pending) = &mut pane.live.retry {
-                                pending.error = Some(format!("{description} · {error:?}"));
+                                pending.error = Some(format!("{description}: {}", failure(error)));
                             }
                             pane.live.inbox.update(cx, |inbox, cx| inbox.refresh(cx));
                         } else {
                             pane.live.retry = None;
-                            pane.live.status = Some(format!("{description} · {error:?}"));
+                            pane.live.status = Some(format!("{description}: {}", failure(error)));
                         }
                     }
                 }
@@ -909,7 +909,7 @@ impl Pane {
                 .child(ui::empty_state(
                     ui::empty_tile("unplug", c.selected, c.muted),
                     if self.live.status.is_some() {
-                        "Agent Backbone unavailable"
+                        "Connections unavailable"
                     } else {
                         "Reading profile connections…"
                     },
@@ -1068,7 +1068,10 @@ impl Pane {
             content = content.child(self.live_thread(s, actions, cx));
         }
         if s.summary.overview.connections.is_empty() && s.summary.overview.invitations.is_empty() {
-            view = view.child("No profile connections yet");
+            view = view.child(
+                ui::text(div().px(px(t.space.s6)).text_color(c.muted), &t.text.meta)
+                    .child("No profile connections yet."),
+            );
         }
         view = view.child(content);
         if let Some(error) = &self.live.status {
