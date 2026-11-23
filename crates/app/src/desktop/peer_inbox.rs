@@ -11,6 +11,23 @@ use std::{
     time::Duration,
 };
 
+/// What the person reads when a Connections request fails.
+pub(super) fn failure(error: Error) -> &'static str {
+    match error {
+        Error::Unavailable => "Agent Backbone isn\u{2019}t answering.",
+        Error::Unsupported | Error::Refused(404) => {
+            "This Agent Backbone version doesn\u{2019}t offer Connections."
+        }
+        Error::Refused(403) => "Only the profile\u{2019}s owner can manage its Connections.",
+        Error::BindingRequired | Error::BindingMismatch | Error::RegistrationChanged => {
+            "This workspace\u{2019}s profile changed. Open the workspace again."
+        }
+        Error::NotReady => "The profile isn\u{2019}t ready yet.",
+        Error::Invalid => "Agent Backbone sent a reply this app couldn\u{2019}t read.",
+        Error::Refused(_) => "Agent Backbone refused the request.",
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum Selection {
     Request(String),
@@ -260,9 +277,7 @@ impl Inbox {
                             inbox.error = None;
                             inbox.read_at = Some(chrono::Local::now().format("%H:%M").to_string());
                         }
-                        Err(error) => {
-                            inbox.error = Some(format!("Agent Backbone unavailable · {error:?}"))
-                        }
+                        Err(error) => inbox.error = Some(failure(error).to_owned()),
                     }
                 }
                 if cx.has_global::<Sources>() {
@@ -303,6 +318,16 @@ impl Sources {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_service_without_connections_says_so() {
+        for error in [Error::Unsupported, Error::Refused(404)] {
+            assert_eq!(
+                failure(error),
+                "This Agent Backbone version doesn\u{2019}t offer Connections."
+            );
+        }
+    }
 
     #[test]
     fn summary_label_reports_declined_outgoing_invitation() {

@@ -8,12 +8,13 @@ Backbone; a workspace without a profile holds terminals and existing
 
 If no library exists, the first launch creates one empty workspace. Add a tab
 with **+**, Command-T on macOS, or Ctrl+Shift+T on Linux, then choose **Open
-terminal** or **Attach a session**. Opening an empty workspace does not start a
+terminal** or pick a tmux session from its list. Opening an empty workspace does not start a
 shell. To open another saved library, open Settings, choose **Open another**,
 and select its folder. The shortcut is Command-O on macOS or Ctrl+Shift+O on Linux.
 
-Sessions run on the same computer as the app. Connecting to another host or
-synchronizing live sessions between computers is not supported.
+Ordinary terminals and attached tmux sessions run on the same computer as the
+app. In a workspace with a profile, agents on the profile's other machines open
+in native panes too; see [Agents on other machines](#agents-on-other-machines).
 
 ## Navigate and use terminals
 
@@ -78,7 +79,9 @@ The navigation panel on the left shows the current workspace (click it for the
 workspace menu), a **Jump** field (Command-K) that finds tabs, panes, agents and
 commands across every workspace, the tabs with a thumbnail of each layout, and,
 in a workspace with a profile, the **AGENTS** section: agents needing you first,
-each with a state symbol. Click an agent to show the tab holding its session.
+each with a state symbol. Click an agent to show the tab holding its session;
+an agent on another machine without a pane opens in a new tab named after it,
+and clicking an offline agent opens its menu with **Resume** and **Start new**.
 An agent running swarms shows the number of swarm members beside its name
 instead of listing them separately. Click the arrow to list each swarm with its
 members under the agent. Click a swarm to show it in a tab named after it: the
@@ -97,7 +100,8 @@ Double-click a pane header to expand it, then double-click again or press Escape
 to restore the split layout. Expansion belongs to that tab: switching tabs leaves
 their own layouts unchanged, and returning restores the tab's previous view.
 
-Settings (Command-comma) offers a theme, the interface size,
+Settings (Command-comma) has General, Appearance, Shortcuts, Agents and
+Profiles pages. It offers a theme, the interface size,
 the terminal text size, whether panes show headers (always, on hover or never) and editable shortcuts;
 changes apply to every window at once and are saved in
 `$XDG_CONFIG_HOME/agent-interface/settings.toml`, or
@@ -192,7 +196,7 @@ polled observations, so changes appear after the next successful response.
 Open the workspace menu by clicking or right-clicking the workspace block.
 Choose **New workspace**, or press Command-Shift-N, and enter a name. Enter
 saves it; Escape cancels. New workspaces have no tabs or shells.
-Choose **Delete workspace** to remove an empty workspace; the last workspace and
+Choose **Delete** to remove an empty workspace; the last workspace and
 workspaces with tabs cannot be deleted. Deleting selects the first remaining
 workspace and leaves its tabs and sessions intact.
 
@@ -215,7 +219,7 @@ right; Command-Shift-D splits below. Both split actions are also in tab options.
 Drag a tab onto another tab in the sidebar to move it to that position;
 the order is saved while the selected tab stays selected.
 The existing pane remains intact and the new pane asks what it should run: Open
-terminal, or Attach a session. New tabs
+terminal, or pick a tmux session from its list. New tabs
 use the launch directory, or your home folder when the app was opened from the
 Dock or Finder; splits inherit the ordinary shell’s remembered directory.
 The new arrangement appears after saving. Navigation made while saving stays local;
@@ -250,12 +254,14 @@ and environment. Navigating away before saving finishes cancels pending startup;
 choose Open terminal again when returning. Exited shells retain their output and
 are not restarted by this action.
 
-In a zsh, bash or fish terminal, typing `claude`, `codex` or `agy` first asks
+In a zsh, bash or fish terminal of a workspace without a profile, typing
+`claude`, `codex` or `agy` first asks
 whether to start a Backbone agent instead, since a session started by hand has
 no Backbone skills, policies or messaging. Press Enter (or Y) and give the
 agent a name, by default the folder's, to start it with `backbone agent start`
-in that folder; it then appears among the agents. Answer n to run the program
-as typed. Agent sessions, scripts, pipes and computers without Backbone are
+in that folder; it starts in the background, without the arguments you typed,
+and appears among the agents. Answer n to run the program as typed. Shells
+started before this check existed are not asked. Agent sessions, scripts, pipes and computers without Backbone are
 never asked, and a `claude`, `codex` or `agy` function of your own is kept.
 
 Ordinary shells use the library's persistent tmux shell server; attachments use
@@ -273,7 +279,7 @@ Reopen the destination library to reach its existing sessions. Choose
 separate shells in the destination, exit them before recovering the original
 server.
 
-Use **Attach a session** in an empty pane, **Attach session** in tab options, or
+Pick a session from the list in an empty pane, or use **Attach session** in tab options or
 Command-Shift-A, to
 choose an existing source session. Type to filter names, use Up/Down and Enter,
 or click a row. Escape or Cancel closes the chooser. It retains its destination
@@ -288,7 +294,9 @@ without optional agent metadata.
 
 Attached sessions reconnect automatically when the saved session returns on its
 source server. Attempts run at the two-second window-refresh interval and never
-start an agent or create a session on their own. When the pane shows a stopped
+start an agent or create a session on their own. A pane showing an agent on
+another machine retries after a dropped connection, at once and then at most
+every 30 seconds while shown or every two minutes while hidden. When the pane shows a stopped
 Agent Backbone agent, **Resume** asks Backbone to continue its saved conversation
 and **Start new** starts a new one, both with the agent's saved runtime and model;
 the pane connects once the agent's session appears. **Detach** returns the pane
@@ -310,6 +318,33 @@ the session environment. A displayed
 terminal sizes its session to the pane under tmux's `window-size` option; text
 scales to fit when the shared grid is larger. Agent tiles request at least 80 columns to keep prompts usable. Hiding or closing an agent tile releases its size and lets tmux use other attached clients or the session’s default dimensions.
 
+## Agents on other machines
+
+A profile can run agents on more than one machine. In the sidebar's **AGENTS**
+section, agents on another machine are grouped under that machine's name and
+status: online, offline with when it was last seen, not in profile, or status
+unknown. Offline agents fold into a count you can expand. Right-click an agent,
+or use its **⋯** button, for **Open remote terminal**, **Restart**,
+**Restart (resume)** and **Stop**, or **Resume** and **Start new** when it is
+offline. The Team view can group agents by **Machine**, and Jump shows each
+agent's state and machine.
+
+A remote agent's pane is drawn natively like any other terminal. It shows
+**Remote terminal · Watch only** or **Remote terminal · Can type**, depending on
+what the profile allows. While it connects the pane shows **Connecting…**; after
+a failure it shows the reason with **Open again** and **Detach**.
+
+## Connections
+
+**Connections** shows a profile's links with other Agent Backbone profiles. Open
+it from the sidebar's **CONNECTIONS** section, from Jump, or in an empty pane
+under **Skills, usage, team…**; a workspace has one Connections pane. It shows
+this profile's connection ID with **Copy ID**, **Connect a profile** to send a
+request, incoming and outgoing requests to accept or decline, and a review gate
+for each direction of a connection. **Preview with sample data** shows the pane
+with example records that change nothing. Delivering messages between profiles
+needs a later Agent Backbone release.
+
 ## Rename and save changes
 
 Changes saved to the library elsewhere refresh automatically. Double-click the workspace
@@ -317,7 +352,7 @@ name or the active tab's name to rename it. An inactive tab must first be select
 Command-R renames the active tab; Command-Shift-R renames the workspace. The tab's
 **⋯**, or right-clicking any tab, opens options to rename it, move it up/down or
 move its complete layout to another workspace. Workspace options also offer
-**Rename workspace**. A tab changed by another window must have its options
+**Rename**. A tab changed by another window must have its options
 opened again before editing it.
 
 The original name starts selected; Enter saves it, Escape or
@@ -464,7 +499,7 @@ important colour overrides. Keep text selectable. For example:
 Omit `--data-dir` to use `AGENT_INTERFACE_DATA_DIR`, then
 `$XDG_DATA_HOME/agent-interface`, or `~/.local/share/agent-interface` by default.
 On first launch, an absent library is created with one empty workspace. Add a
-tab and choose **Open terminal** or **Attach a session** to start working; no other
+tab and choose **Open terminal** or pick a tmux session to start working; no other
 setup is required. Existing libraries are opened without
 initialization or repair. An unreadable or invalid library shows an error and
 can be replaced through **Open Library…**. Keep its database and journal files
