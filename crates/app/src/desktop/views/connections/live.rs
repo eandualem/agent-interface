@@ -328,10 +328,20 @@ impl Pane {
                 if live.selected == expected && live.stream_ok {
                     match result {
                         Ok(snapshot) => {
-                            if matches!(&live.form,Some(Form::Gate(id,original,_)) if !snapshot.summary.overview.connections.iter().any(|p| &p.connection.generation==id && &p.gates==original)) {
-                                live.form=None;
+                            let connected = |id: &str| {
+                                snapshot.summary.overview.connections.iter().any(|p| {
+                                    p.connection.generation == id && p.state == "connected"
+                                })
+                            };
+                            if matches!(&live.form,Some(Form::Gate(id,original,_)) if !snapshot.summary.overview.connections.iter().any(|p| &p.connection.generation==id && &p.gates==original))
+                                || matches!(&live.form, Some(Form::Gate(id, ..) | Form::Disconnect(id)) if !connected(id))
+                            {
+                                live.form = None;
                             }
-                            if live.selected != snapshot.selection {
+                            // The Connect panel belongs to no selection.
+                            if live.selected != snapshot.selection
+                                && !matches!(live.form, Some(Form::Connect))
+                            {
                                 live.form = None;
                             }
                             if live
@@ -878,11 +888,11 @@ impl Pane {
                 .flex()
                 .flex_col()
                 .children(self.back_bar(cx))
-                .child(ui::empty_state(
+                .child(div().flex_1().min_h_0().child(ui::empty_state(
                     ui::empty_tile("link-2", c.selected, c.muted),
                     title,
                     body,
-                ))
+                )))
         };
         if self.live.selected != snapshot.selection {
             return empty("Reading conversation…", "");
@@ -1029,7 +1039,10 @@ impl Pane {
                 }
                 let mut column =
                     column.child(self.live_header(name, Some(state), cx).child(controls));
-                if matches!(self.live.form, Some(Form::Gate(..) | Form::Disconnect(_))) {
+                if actions
+                    && connected
+                    && matches!(self.live.form, Some(Form::Gate(..) | Form::Disconnect(_)))
+                {
                     column = column.child(
                         div()
                             .px(px(t.space.s12))
@@ -1168,15 +1181,16 @@ impl Pane {
         if let Some(f) = &m.upload_failure {
             card = card.child(ui::mono(f.code.clone()).text_color(c.attention_text));
         }
-        if !(waiting && actions) {
-            return card;
-        }
         let ours = matches!(
             &self.live.form,
             Some(Form::Decline(x) | Form::Revise(x)) if x.message_id == m.message_id
         );
-        if ours {
+        // A note being written stays mounted while a read is in flight.
+        if waiting && ours && (actions || self.live.reading) {
             return card.child(self.live_form(cx));
+        }
+        if !(waiting && actions) {
+            return card;
         }
         let pass = m.clone();
         let decline = m.clone();
@@ -1393,12 +1407,17 @@ impl Pane {
             && self.live.retry.is_none();
         let local = s.summary.overview.local_id.clone();
         let overview = &s.summary.overview;
+        // An invitation waits only for the service, not for a read in flight.
+        let can_send = self.live.stream_ok
+            && !self.live.sending
+            && self.live.status.is_none()
+            && self.live.retry.is_none();
         let listed = !overview.connections.is_empty()
             || overview.invitations.iter().any(|r| r.state != "accepted");
         let mut main = div().relative().flex_1().min_h_0().min_w_0().flex();
         if !listed {
             let mut choices = buttons();
-            if actions {
+            if can_send {
                 choices = choices.child(self.live_button(
                     "invite-peer",
                     "Connect a profile",
@@ -1435,11 +1454,6 @@ impl Pane {
             }
         }
         if matches!(self.live.form, Some(Form::Connect)) {
-            // An invitation waits only for the service, not for a read in flight.
-            let can_send = self.live.stream_ok
-                && !self.live.sending
-                && self.live.status.is_none()
-                && self.live.retry.is_none();
             main = main.child(self.connect_panel(&local, can_send, cx));
         }
         view = view.child(main);
