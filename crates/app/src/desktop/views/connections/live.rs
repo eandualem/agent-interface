@@ -335,6 +335,7 @@ impl Pane {
                             };
                             if matches!(&live.form,Some(Form::Gate(id,original,_)) if !snapshot.summary.overview.connections.iter().any(|p| &p.connection.generation==id && &p.gates==original))
                                 || matches!(&live.form, Some(Form::Gate(id, ..) | Form::Disconnect(id)) if !connected(id))
+                                || matches!(&live.form, Some(Form::Decline(m) | Form::Revise(m)) if !connected(&m.connection.generation))
                             {
                                 live.form = None;
                             }
@@ -1079,8 +1080,15 @@ impl Pane {
                     .bytes()
                     .fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize))
                     % 4];
+                // A note being written stays mounted while only a read is in flight.
+                let held = connected
+                    && self.live.stream_ok
+                    && !self.live.sending
+                    && self.live.status.is_none()
+                    && self.live.retry.is_none();
                 for m in &history.items {
-                    body = body.child(self.live_card(name, tint, m, actions && connected, cx));
+                    body =
+                        body.child(self.live_card(name, tint, m, actions && connected, held, cx));
                 }
                 column.child(body)
             }
@@ -1095,6 +1103,7 @@ impl Pane {
         tint: gpui::Rgba,
         m: &api::Message,
         actions: bool,
+        held: bool,
         cx: &Context<Self>,
     ) -> Div {
         let (t, c) = (tokens(), colors());
@@ -1188,8 +1197,7 @@ impl Pane {
             &self.live.form,
             Some(Form::Decline(x) | Form::Revise(x)) if x.message_id == m.message_id
         );
-        // A note being written stays mounted while a read is in flight.
-        if waiting && ours && (actions || self.live.reading) {
+        if waiting && ours && held {
             return card.child(self.live_form(cx));
         }
         if !(waiting && actions) {

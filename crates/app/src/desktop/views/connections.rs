@@ -429,21 +429,24 @@ fn hinted(field: &Entity<NameField>, hint: &'static str, cx: &gpui::App) -> Div 
         .relative()
         .flex_1()
         .min_w_0()
-        .when(field.read(cx).value().is_empty(), |el| {
-            el.child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .text_color(c.muted)
-                    .whitespace_nowrap()
-                    .overflow_hidden()
-                    .child(hint),
-            )
-        })
+        .when(
+            field.read(cx).value().is_empty() && !field.read(cx).composing(),
+            |el| {
+                el.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .text_color(c.muted)
+                        .whitespace_nowrap()
+                        .overflow_hidden()
+                        .child(hint),
+                )
+            },
+        )
         .child(field.clone())
 }
 
