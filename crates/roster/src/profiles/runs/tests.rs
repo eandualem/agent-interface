@@ -453,3 +453,107 @@ fn the_30_seconds_run_from_the_roster_read_and_hold_from_the_start_of_a_pass() {
     assert_eq!(ids(&book.runs().finished), [REVIEW]);
     assert_eq!(server.join().unwrap().len(), 4);
 }
+
+#[test]
+fn a_run_shows_only_its_own_view_and_views_are_named_by_run() {
+    let mut run: Run = serde_json::from_value(fixture("run")).unwrap();
+    assert_eq!(run.view(), None);
+    run.session = Some(format!("run-{REVIEW}"));
+    assert_eq!(run.view(), Some(format!("run-{REVIEW}").as_str()));
+    // Another run's view, or any other session, is not this run's.
+    for other in [format!("run-{BUILD}"), "worker".into(), REVIEW.into()] {
+        run.session = Some(other);
+        assert_eq!(run.view(), None);
+    }
+    // An ID not named as views are is never offered as one.
+    run.run_id = REVIEW.to_uppercase();
+    run.session = Some(format!("run-{}", run.run_id));
+    assert_eq!(run.view(), None);
+    assert!(is_view(&format!("run-{REVIEW}")));
+    for loose in [
+        "run-".to_owned(),
+        "run-tests".into(),
+        format!("run-{}", REVIEW.to_uppercase()),
+        format!("run-{REVIEW}0"),
+        format!("shell-{REVIEW}"),
+    ] {
+        assert!(!is_view(&loose), "{loose}");
+    }
+}
+
+#[test]
+fn an_ended_runs_view_is_offered_until_the_service_ends_it() {
+    let mut ended = fixture("run");
+    ended["state"] = json!("finished");
+    ended["session"] = json!(format!("run-{REVIEW}"));
+    let mut gone = ended.clone();
+    gone["session"] = json!(null);
+    let build = json!({"items": [fixture("runs")["items"][1].clone()]});
+    let (connection, server) = served(vec![
+        (200, fixture("runs")),
+        (200, build.clone()),
+        (200, ended),
+        (200, build),
+        // 30 seconds on, the view is read again.
+        (200, gone),
+    ]);
+    let busy = roster(include_bytes!("fixtures/agents.json"));
+    let mut book = Book::default();
+    let start = Instant::now();
+    for seconds in [0, 1, 2] {
+        let at = start + Duration::from_secs(seconds);
+        let left = book.list_at(&connection, &busy, at);
+        book.settle(&connection, left, &|| true);
+    }
+    assert!(book.runs().finished[0].view().is_some());
+    // A pass that is closing reads nothing.
+    book.review_views(&connection, start + Duration::from_secs(31), &|| false);
+    assert!(book.runs().finished[0].view().is_some());
+    book.viewed_at = None;
+    book.review_views(&connection, start + Duration::from_secs(31), &|| true);
+    assert_eq!(ids(&book.runs().finished), [REVIEW]);
+    assert_eq!(book.runs().finished[0].view(), None);
+    let requests = server.join().unwrap();
+    assert!(requests[5].starts_with(&format!("GET /api/runs/{REVIEW} HTTP/1.1\r\n")));
+    assert_eq!(requests.len(), 6);
+}
+
+#[test]
+fn the_oldest_ended_views_are_read_again_first() {
+    // Nine ended runs with views, newest first; a round reads eight.
+    let runs: Vec<Run> = (0..9u8)
+        .map(|n| {
+            let mut run: Run = serde_json::from_value(fixture("run")).unwrap();
+            run.run_id = format!("{:0>32}", n);
+            run.session = Some(format!("run-{}", run.run_id));
+            run
+        })
+        .collect();
+    let mut replies: Vec<(u16, Json)> = runs[1..]
+        .iter()
+        .rev()
+        .map(|run| {
+            let mut gone = serde_json::to_value(fixture("run")).unwrap();
+            gone["run_id"] = json!(run.run_id);
+            gone["session"] = json!(null);
+            (200, gone)
+        })
+        .collect();
+    // The service no longer knows the oldest run, so its view is gone too.
+    replies[0] = (
+        404,
+        json!({"detail": {"code": "not_found", "message": "No run."}}),
+    );
+    let (connection, server) = served(replies);
+    let mut book = Book::default();
+    book.runs.finished = runs.clone();
+    book.review_views(&connection, Instant::now(), &|| true);
+    assert_eq!(book.runs.finished[0].view(), runs[0].view());
+    assert!(
+        book.runs.finished[1..]
+            .iter()
+            .all(|run| run.view().is_none())
+    );
+    let requests = server.join().unwrap();
+    assert!(requests[1].starts_with(&format!("GET /api/runs/{} ", runs[8].run_id)));
+}

@@ -90,6 +90,9 @@ pub(super) struct Opened {
     pub section: AgentSection,
 }
 
+/// The session of a run's view the person chose, to open beside the card.
+pub(super) struct RunView(pub String);
+
 /// The agent's state as the card last read it.
 fn state(agent: &Agent) -> AgentState {
     AgentState::from_runtime(&agent.state)
@@ -222,6 +225,10 @@ impl Card {
                 section: self.section,
             });
         }
+    }
+
+    fn open_view(&mut self, session: String, cx: &mut Context<Self>) {
+        cx.emit(RunView(session));
     }
 
     /// Runs only after the person confirmed it. A closed pane still finishes the
@@ -359,6 +366,7 @@ impl Card {
 }
 
 impl gpui::EventEmitter<Opened> for Card {}
+impl gpui::EventEmitter<RunView> for Card {}
 
 impl Render for Card {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -457,11 +465,19 @@ impl Render for Card {
                 }
                 None => "Never started".into(),
             });
+            // A run's view is on the tmux server of its agent's machine.
+            let here = snapshot
+                .agent
+                .machine
+                .as_ref()
+                .is_none_or(|machine| machine.id == local_id);
             body = body.child(agent::overview(
                 &snapshot.agent,
                 state(&snapshot.agent),
                 &runs,
                 machine_label,
+                cx,
+                here.then_some(Self::open_view),
             ));
         } else if self.snapshot.is_some() {
             // The service reports no permissions of an agent's runtime.

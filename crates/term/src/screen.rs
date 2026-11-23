@@ -183,6 +183,12 @@ impl Screen {
         self.mouse_input
     }
 
+    /// Leaves clicks to the viewer even when the program tracks the mouse,
+    /// as for a screen shown read-only.
+    pub fn keep_mouse_local(&mut self) {
+        self.mouse_input = false;
+    }
+
     /// Returns the text and the cell at `row` and `col`, counted from zero at
     /// the top left, or `None` outside the screen. The text is a whole
     /// grapheme cluster, and empty when the cell has none.

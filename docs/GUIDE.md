@@ -185,7 +185,12 @@ each read, Usage after 15 seconds, and Skills, Policies and Tags after 30; an
 open Document is read again only when you refresh it. Current plans and
 Interactions are read every 20 seconds while shown, and Sheets when opened or refreshed.
 An agent's card rereads its overview and connections every three
-seconds, its usage every 15 and its skills and policies every 30. A rotating
+seconds, its usage every 15 and its skills and policies every 30. Its
+Background section lists the agent's runs, such as reviews and builds. A run
+that Agent Backbone keeps a view of shows **View** when the agent runs on this
+machine. It opens the run's output read-only in a pane beside the card. A view
+lasts about 30 minutes after the run's output ends; then the pane says it has
+ended and does not reconnect. A rotating
 ring marks working or starting agents; labels distinguish starting, working,
 blocked, needs you, idle and unknown. Failed requests show unavailable or stale
 data, rather than treating the last successful state as current. These are
@@ -290,7 +295,8 @@ leaves its shell on the library server. Saves refresh the current tab’s nonemp
 ordinary-shell directories, including parked shells, without copying external
 session directories. Failed reads retain saved paths. Return to shell in tab options restores the existing ordinary shell
 after saving; choose Open terminal if that shell is absent. The chooser lists tmux sessions
-without optional agent metadata.
+without optional agent metadata. In a profile's workspace it leaves out run views,
+which open from their agent's card.
 
 Attached sessions reconnect automatically when the saved session returns on its
 source server. Attempts run at the two-second window-refresh interval and never
