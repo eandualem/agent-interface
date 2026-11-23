@@ -468,7 +468,10 @@ impl Pane {
             return;
         }
         match &self.live.form {
-            Some(Form::Connect) => self.change(Change::Invite(value), cx),
+            // An ID never contains spaces; a paste can carry a line break.
+            Some(Form::Connect) => {
+                self.change(Change::Invite(value.split_whitespace().collect()), cx)
+            }
             Some(Form::Revise(m)) => self.change(
                 Change::Review(Box::new(m.clone()), DecisionKind::Revise(value)),
                 cx,
@@ -721,7 +724,7 @@ impl Pane {
                 move |pane, _, cx| close(pane, cx),
             )))
             .child(note(if actions {
-                "Both directions start on Review once they accept."
+                "⌘↵ sends. Both directions start on Review once they accept."
             } else {
                 "Sending is paused until Agent Backbone answers."
             }))

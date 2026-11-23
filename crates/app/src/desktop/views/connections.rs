@@ -43,7 +43,7 @@ impl Pane {
         cx: &mut Context<Self>,
     ) -> Self {
         let filter = cx.new(|cx| {
-            let mut field = NameField::bare("", window, cx);
+            let mut field = NameField::bare_filter(window, cx);
             field.focus = field.focus.clone().tab_stop(true);
             field
         });

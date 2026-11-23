@@ -235,6 +235,13 @@ impl NameField {
         field
     }
 
+    /// A filter drawn without a frame, for a caller's own search frame.
+    pub fn bare_filter(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut field = Self::filter(window, cx);
+        field.bare = true;
+        field
+    }
+
     /// Select the whole text, so typing replaces it.
     pub fn select_all(&mut self, cx: &mut Context<Self>) {
         self.text.anchor = 0;
