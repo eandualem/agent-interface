@@ -2969,6 +2969,27 @@ impl Browser {
     }
 }
 
+impl Browser {
+    /// The local Backbone agent a pane attaches and the roster it comes
+    /// from: none for a remote agent, a session on another tmux server,
+    /// whatever its name, or a pane whose profile has no roster.
+    fn pane_agent(&self, leaf: &Leaf) -> Option<(String, agent_status::LiveAgents)> {
+        let attachment = leaf.attachment.as_ref()?;
+        let connection = self.pane_connection(&leaf.id).ok()??;
+        if attachment.remote_profile.is_some()
+            || attachment
+                .source_socket
+                .as_deref()
+                .is_some_and(|path| std::path::Path::new(path) != connection.tmux_socket())
+        {
+            return None;
+        }
+        let space = self.layout.as_ref()?.model().workspace_for_pane(&leaf.id)?;
+        let agents = self.workspace_agents(space)?.clone();
+        Some((attachment.session.clone(), agents))
+    }
+}
+
 impl Render for Browser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.refresh_profiles(cx);
@@ -3096,7 +3117,30 @@ impl Render for Browser {
                 .flat_map(|tab| tab.tree.leaves())
             {
                 if let Some(terminal) = self.terminals.get(&leaf.id) {
-                    terminal.update(cx, |terminal, _| terminal.set_cwd(leaf));
+                    // A hidden pane follows its agent's restart too, so it
+                    // does not miss the restart leaving the list, while it
+                    // still holds the connection that roster comes from.
+                    let hidden = !leaves.iter().any(|drawn| drawn.id == leaf.id);
+                    let current = self
+                        .pane_connection(&leaf.id)
+                        .ok()
+                        .flatten()
+                        .map(|connection| connection.connection_key());
+                    let held = terminal
+                        .read(cx)
+                        .target
+                        .connection
+                        .as_ref()
+                        .map(|connection| connection.connection_key());
+                    let status = (hidden && current.is_some() && held == current)
+                        .then(|| self.pane_agent(leaf))
+                        .flatten();
+                    terminal.update(cx, |terminal, cx| {
+                        terminal.set_cwd(leaf);
+                        if let Some(status) = status {
+                            terminal.set_restart(Some(status), cx);
+                        }
+                    });
                 }
             }
         }
@@ -3248,7 +3292,9 @@ impl Render for Browser {
                 self.terminals.insert(leaf.id.clone(), terminal);
             }
             // A stopped Backbone agent's pane offers Resume and Start new.
-            // A remote agent of the bound profile offers them too.
+            // A remote agent of the bound profile offers them too. A local
+            // agent's pane also says when it restarts, whatever its state.
+            let status = self.pane_agent(leaf);
             let sizing = leaf.attachment.as_ref().and_then(|attachment| {
                 let connection = self.pane_connection(&leaf.id).ok()??;
                 let remote = attachment.remote_profile.as_deref();
@@ -3280,7 +3326,8 @@ impl Render for Browser {
             if let Some(terminal) = self.terminals.get(&leaf.id) {
                 let (stopped, protect_size) = sizing.unwrap_or((None, Some(false)));
                 terminal.update(cx, |terminal, cx| {
-                    terminal.set_agent(stopped, protect_size, cx)
+                    terminal.set_agent(stopped, protect_size, cx);
+                    terminal.set_restart(status, cx);
                 });
             }
         }

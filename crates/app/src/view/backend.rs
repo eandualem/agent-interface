@@ -23,6 +23,11 @@ pub(crate) trait Backend: Send + Sync {
     fn ignore_size(&self) -> io::Result<()>;
     fn failure(&self) -> Option<String>;
     fn is_finished(&self) -> bool;
+    /// Whether the client has exited, whether or not its last update has
+    /// been taken.
+    fn closed(&self) -> bool {
+        self.is_finished()
+    }
     fn take_windows_changed(&self) -> bool;
     fn shutdown(&self);
 }
@@ -62,6 +67,9 @@ impl Backend for Panes {
     }
     fn is_finished(&self) -> bool {
         self.is_finished()
+    }
+    fn closed(&self) -> bool {
+        self.closed()
     }
     fn take_windows_changed(&self) -> bool {
         self.take_windows_changed()
@@ -122,6 +130,9 @@ impl Backend for ReadOnly {
     }
     fn is_finished(&self) -> bool {
         self.0.is_finished()
+    }
+    fn closed(&self) -> bool {
+        self.0.closed()
     }
     fn take_windows_changed(&self) -> bool {
         self.0.take_windows_changed()

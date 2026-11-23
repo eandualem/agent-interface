@@ -113,6 +113,9 @@ pub struct TerminalView {
     input_queue: InputQueue,
     input_error: Option<String>,
     input_rejection: Option<String>,
+    /// Whether an ended session's message is left unpainted, while its
+    /// agent restarts into a new one.
+    quiet_end: bool,
     closed_reported: bool,
     wheel: Option<(PaneId, f32)>,
     program_press: Option<(PaneId, Button, Pointer)>,
@@ -283,6 +286,7 @@ impl TerminalView {
             input_queue,
             input_error: None,
             input_rejection: None,
+            quiet_end: false,
             closed_reported: false,
             wheel: None,
             program_press: None,
@@ -290,6 +294,19 @@ impl TerminalView {
             wheel_gesture: WheelGesture::default(),
             drag: None,
             autoscrolling: false,
+        }
+    }
+
+    /// Whether its session has ended, even before its last output is drawn.
+    pub(crate) fn ended(&self) -> bool {
+        self.panes().closed()
+    }
+
+    /// Leave an ended session's message unpainted while `quiet`.
+    pub(crate) fn quiet_end(&mut self, quiet: bool, cx: &mut Context<Self>) {
+        if self.quiet_end != quiet {
+            self.quiet_end = quiet;
+            cx.notify();
         }
     }
 
@@ -965,17 +982,14 @@ impl Render for TerminalView {
         };
         let embedded = self.embedded;
         let panes = self.panes.clone();
-        let message = self
-            .input_rejection
-            .clone()
-            .or(self.input_error.clone())
-            .or_else(|| {
-                self.panes().is_finished().then(|| {
-                    self.panes()
-                        .failure()
-                        .unwrap_or_else(|| "Session disconnected.".into())
-                })
-            });
+        let message = painted(
+            self.input_rejection.as_deref(),
+            self.input_error.as_deref(),
+            self.quiet_end,
+            || self.panes().is_finished(),
+            || self.panes().closed(),
+            || self.panes().failure(),
+        );
         div()
             .id(("terminal-input", cx.entity_id()))
             .size_full()
@@ -1165,6 +1179,32 @@ impl Render for TerminalView {
                 )
             })
     }
+}
+
+/// The message painted over a terminal, if any. `finished` is whether its
+/// session has ended and its last output was drawn, `closed` whether its
+/// client has exited, and `failure` why; each is read only when needed,
+/// so a live terminal's frame reads the session's state once. While
+/// `quiet`, as when its agent restarts, an ended session's failure is no
+/// error, nor is input that failed because of it; a rejection of input is
+/// still shown.
+fn painted(
+    rejection: Option<&str>,
+    input_error: Option<&str>,
+    quiet: bool,
+    finished: impl Fn() -> bool,
+    closed: impl Fn() -> bool,
+    failure: impl Fn() -> Option<String>,
+) -> Option<String> {
+    if let Some(rejection) = rejection {
+        return Some(rejection.into());
+    }
+    if let Some(error) = input_error
+        && !(quiet && (finished() || closed() || failure().is_some()))
+    {
+        return Some(error.into());
+    }
+    (finished() && !quiet).then(|| failure().unwrap_or_else(|| "Session disconnected.".into()))
 }
 
 pub(crate) struct InputQueue {
@@ -1754,6 +1794,70 @@ fn input_key(key: &Keystroke, repeat: bool) -> Option<Input> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_restart_keeps_its_ended_sessions_failure_quiet_but_not_a_rejection() {
+        let pipe = "writing to control client: Broken pipe (os error 32)";
+        // The session's state as (finished, closed, failure).
+        let paint =
+            |rejection, input, quiet, (finished, closed, failure): (bool, bool, Option<&str>)| {
+                painted(
+                    rejection,
+                    input,
+                    quiet,
+                    || finished,
+                    || closed,
+                    || failure.map(Into::into),
+                )
+            };
+        let ended = (true, true, Some(pipe));
+        // Its session ended: its failure, and input that failed for it.
+        assert_eq!(paint(None, None, false, ended).as_deref(), Some(pipe));
+        assert_eq!(paint(None, None, true, ended), None);
+        assert_eq!(
+            paint(None, Some(pipe), true, (false, false, Some(pipe))),
+            None
+        );
+        assert_eq!(paint(None, Some(pipe), true, (true, true, None)), None);
+        // A clean exit: closed, no failure, its last output not yet drawn.
+        let exited = "the control client has exited";
+        assert_eq!(paint(None, Some(exited), true, (false, true, None)), None);
+        assert_eq!(
+            paint(None, Some(exited), false, (false, true, None)).as_deref(),
+            Some(exited)
+        );
+        // A live session: its input error and a rejection still show.
+        assert_eq!(
+            paint(None, Some("busy"), true, (false, false, None)).as_deref(),
+            Some("busy")
+        );
+        let rejected = "Input was not sent: terminal queue is busy or disconnected.";
+        assert_eq!(
+            paint(Some(rejected), Some(pipe), true, ended).as_deref(),
+            Some(rejected)
+        );
+        // A live terminal's frame reads only whether its session finished.
+        let reads = std::cell::Cell::new(0);
+        let count = || reads.set(reads.get() + 1);
+        let message = painted(
+            None,
+            None,
+            false,
+            || {
+                count();
+                false
+            },
+            || {
+                count();
+                false
+            },
+            || {
+                count();
+                None
+            },
+        );
+        assert_eq!((message, reads.get()), (None, 1));
+    }
 
     #[test]
     fn closing_input_queue_delivers_mouse_release_before_shutdown() {

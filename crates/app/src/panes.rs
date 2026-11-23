@@ -922,6 +922,13 @@ impl Panes {
         state.finished && state.update.is_none()
     }
 
+    /// Returns whether the client has exited, whether or not its last
+    /// update has been taken.
+    pub(crate) fn closed(&self) -> bool {
+        let state = self.shared.lock();
+        state.closed || state.finished
+    }
+
     /// Returns whether the session's windows changed since the last call.
     /// Only a client started in its session reports this.
     pub fn take_windows_changed(&self) -> bool {
@@ -3110,6 +3117,8 @@ mod tests {
             assert!(Instant::now() < deadline, "the reader did not close");
             thread::sleep(Duration::from_millis(10));
         }
+        // Closed already, though its last update is still to be taken.
+        assert!(panes.closed() && !panes.is_finished());
         assert!(panes.send_input(pane, b"too late").is_err());
         assert!(panes.take_update().is_some());
         wait_for_row(&panes, &woken, pane, "first second");

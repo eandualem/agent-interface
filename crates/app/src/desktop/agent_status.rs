@@ -87,6 +87,10 @@ pub(super) struct Status {
     pub reason: Option<String>,
     /// What it waits on and how many runs it has, when the service says.
     pub line: Option<String>,
+    /// Its held or waiting deliveries, when the service says any wait.
+    pub deliveries: Option<(String, Option<&'static str>)>,
+    /// Its own restart while it is under way.
+    pub restart: Option<agent_interface_roster::Restart>,
 }
 
 impl Status {
@@ -100,6 +104,8 @@ impl Status {
             since: None,
             reason: None,
             line: None,
+            deliveries: None,
+            restart: None,
         }
     }
 
@@ -223,6 +229,62 @@ fn waits_and_runs(details: &agent_interface_roster::AgentDetails) -> Option<Stri
     }
 }
 
+/// What holds an agent's terminal deliveries and how many wait, or `None`
+/// when nothing waits. `delivery` is whether a delivery could go to it now,
+/// as a code, which only an agent's inspection carries. The service sends changes within one of
+/// its agent-monitor passes, so this can trail the queue by about a minute.
+pub(super) fn deliveries(
+    held: Option<&agent_interface_roster::HeldQueue>,
+    queued: u64,
+    delivery: Option<&str>,
+) -> Option<String> {
+    let waiting = (queued > 0).then(|| format!("{queued} waiting"));
+    let Some(held) = held else {
+        // Only codes are matched, never the service's sentences; an
+        // unknown one gives no reason.
+        let why = match delivery {
+            Some("settling") => " · it has just gone idle",
+            Some("human_typing") => " · someone is typing",
+            Some("human_reading") => " · someone is reading its terminal",
+            Some("unattended_copy_mode") => " · its terminal is in copy mode",
+            Some("agent_working") => " · it is working",
+            Some("waiting_for_human") => " · it is waiting for a person",
+            Some("offline") => " · it is offline",
+            _ => "",
+        };
+        return waiting.map(|waiting| format!("{waiting}{why}"));
+    };
+    // The held one waits too.
+    let waiting = queued.max(1);
+    Some(match held.reason.as_deref() {
+        Some("uncertain_delivery") => {
+            format!(
+                "Deliveries held: a message may still be in the original terminal · {waiting} waiting"
+            )
+        }
+        _ => format!("Deliveries are held · {waiting} waiting"),
+    })
+}
+
+/// As [`deliveries`], for a navigation row: the count, and apart from it
+/// why they are held, so a narrow row can cut the reason, never the count.
+pub(super) fn row_deliveries(
+    held: Option<&agent_interface_roster::HeldQueue>,
+    queued: u64,
+) -> Option<(String, Option<&'static str>)> {
+    let Some(held) = held else {
+        return (queued > 0).then(|| (format!("{queued} waiting"), None));
+    };
+    let why = match held.reason.as_deref() {
+        Some("uncertain_delivery") => {
+            "deliveries held: a message may still be in the original terminal"
+        }
+        _ => "deliveries are held",
+    };
+    // The held one waits too.
+    Some((format!("{} waiting", queued.max(1)), Some(why)))
+}
+
 /// Who a review asked: its model, else its CLI, else the run's label, then
 /// its effort when named.
 fn reviewer(run: &Run) -> String {
@@ -298,6 +360,21 @@ impl LiveAgents {
             .get(name)
             .cloned()
             .unwrap_or_else(|| current.unknown.clone())
+    }
+
+    /// Whether `name` is missing from a roster that was read: its newest
+    /// read succeeded, is still fresh, and does not list it. Not so before
+    /// any read, while the roster cannot be read, or from a cached read
+    /// past its tolerance.
+    pub fn absent(&self, name: &str) -> bool {
+        let current = self.0.current.borrow();
+        current.snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot.error.is_none()
+                && snapshot
+                    .observed_at
+                    .is_some_and(|read| read.elapsed() < TOLERANCE)
+                && !snapshot.states.contains_key(name)
+        })
     }
 
     /// The hosting machine from the current profile observation.
@@ -448,6 +525,16 @@ impl LiveAgents {
         self.0.current.borrow().snapshot.is_some()
     }
 
+    /// When the roster shown was read, if it has been.
+    pub fn observed_at(&self) -> Option<std::time::Instant> {
+        self.0
+            .current
+            .borrow()
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.observed_at)
+    }
+
     /// The background runs of the agent with this registration. While the
     /// roster is reported unavailable, its active runs are not shown as
     /// current; those that ended stay.
@@ -580,6 +667,9 @@ impl LiveAgents {
                             (None, Some(stale)) => Some(stale.clone()),
                             (None, None) => None,
                         };
+                        status.deliveries =
+                            row_deliveries(details.held_queue.as_ref(), details.queued);
+                        status.restart = details.restart.clone();
                     }
                     (name.clone(), Rc::new(status))
                 })
@@ -932,6 +1022,79 @@ mod tests {
         snapshot.observed_at = std::time::Instant::now().checked_sub(TOLERANCE);
         agents.update(snapshot);
         assert_eq!(agents.background(), None);
+    }
+
+    #[test]
+    fn held_and_waiting_deliveries_show_with_their_count_until_none_wait() {
+        let read = |body: &[u8]| {
+            let agents = LiveAgents::default();
+            let mut snapshot = Snapshot::default();
+            snapshot.update(body);
+            agents.update(snapshot);
+            // The row's count, then its reason, as one line.
+            agents
+                .get("worker")
+                .deliveries
+                .clone()
+                .map(|(count, why)| match why {
+                    Some(why) => format!("{count} · {why}"),
+                    None => count,
+                })
+        };
+        let fixture = |name: &str| {
+            std::fs::read(format!(
+                "{}/../roster/src/profiles/runs/fixtures/{name}.json",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .unwrap()
+        };
+        assert_eq!(
+            read(&fixture("agents-held-queue")).as_deref(),
+            Some("8 waiting · deliveries held: a message may still be in the original terminal")
+        );
+        // The list does not say why a plain wait waits.
+        assert_eq!(
+            read(&fixture("agents-queued")).as_deref(),
+            Some("3 waiting")
+        );
+        assert_eq!(read(&fixture("agents")), None);
+        // One held with none behind it is still one waiting.
+        assert_eq!(
+            read(br#"{"items":[{"name":"worker","held_queue":{"reason":"later"},"queued":1}]}"#)
+                .as_deref(),
+            Some("1 waiting · deliveries are held")
+        );
+        // A held queue always waits for at least the held one.
+        assert_eq!(
+            read(br#"{"items":[{"name":"worker","held_queue":{},"queued":0}]}"#).as_deref(),
+            Some("1 waiting · deliveries are held")
+        );
+        // Cleared only once nothing holds them and none wait.
+        assert_eq!(
+            read(br#"{"items":[{"name":"worker","held_queue":null,"queued":0}]}"#),
+            None
+        );
+        // The agent's view adds why from its inspection's delivery code.
+        assert_eq!(
+            deliveries(None, 2, Some("human_typing")).as_deref(),
+            Some("2 waiting · someone is typing")
+        );
+        for code in [Some("ready"), Some("later"), None] {
+            assert_eq!(deliveries(None, 2, code).as_deref(), Some("2 waiting"));
+        }
+        assert_eq!(deliveries(None, 0, Some("human_typing")), None);
+        // A held queue gives its own reason, never the delivery's.
+        let held = agent_interface_roster::HeldQueue {
+            reason: Some("uncertain_delivery".into()),
+        };
+        assert_eq!(
+            deliveries(Some(&held), 8, Some("human_typing")).as_deref(),
+            Some("Deliveries held: a message may still be in the original terminal · 8 waiting")
+        );
+        assert_eq!(
+            deliveries(Some(&Default::default()), 0, None).as_deref(),
+            Some("Deliveries are held · 1 waiting")
+        );
     }
 
     #[test]

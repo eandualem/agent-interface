@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::value::RawValue;
 
 use super::{Connection, Error};
-use crate::{Background, Waiting, lenient, lenient_object, transport::local};
+use crate::{Background, HeldQueue, Waiting, lenient, lenient_object, transport::local};
 
 /// The service writes a comment every 15 seconds while nothing else happens,
 /// so three missed ones mean a broken stream.
@@ -18,8 +18,8 @@ const LINE_LIMIT: usize = 64 * 1024;
 /// What one frame of the push stream changes in the roster.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Change {
-    /// Read the roster again: the stream opened, a run changed, events were
-    /// missed, or a change could not be read.
+    /// Read the roster again: the stream opened, a run or an agent's own
+    /// restart changed, events were missed, or a change could not be read.
     Read,
     /// An agent's new state, from `agent.state`.
     State {
@@ -34,7 +34,8 @@ pub enum Change {
         /// Since when, in Unix seconds.
         since: Option<f64>,
     },
-    /// What an agent waits on and its background counts, from `agent.changed`.
+    /// What an agent waits on, its background counts and its terminal
+    /// queue, from `agent.changed`.
     Waits {
         /// The agent's name.
         agent: String,
@@ -44,14 +45,17 @@ pub enum Change {
         waiting: Option<Waiting>,
         /// Its background counts.
         background: Option<Background>,
+        /// What holds its terminal deliveries and how many wait, the held
+        /// one included; none from a service that does not send `queued`.
+        queue: Option<(Option<HeldQueue>, u64)>,
     },
 }
 
 impl Connection {
     /// Follow this profile's push stream until `live` is false, calling
     /// `changed` with each frame that changes the roster: a state or wait to
-    /// apply to an agent, or [`Change::Read`] when the stream opens, a run
-    /// changes or the service says events were missed. A service that doesn't
+    /// apply to an agent, or [`Change::Read`] when the stream opens, a run or
+    /// an agent's own restart changes or the service says events were missed. A service that doesn't
     /// know a kind ignores it. No cursor is kept: a stream that is opened
     /// again starts with a read.
     ///
@@ -65,7 +69,7 @@ impl Connection {
         let mut frames = Frames::default();
         local::stream(
             self.socket.to_str().ok_or(Error::Invalid)?,
-            "/api/stream?kinds=agent.state,agent.changed,run.changed,resync",
+            "/api/stream?kinds=agent.state,agent.changed,agent.restart,run.changed,resync",
             &self.identity.profile_id,
             None,
             QUIET,
@@ -149,9 +153,13 @@ fn change(kind: &[u8], data: &[u8]) -> Option<Change> {
         waiting: Option<Waiting>,
         #[serde(default)]
         background: Option<Box<RawValue>>,
+        #[serde(default, deserialize_with = "lenient_object")]
+        held_queue: Option<HeldQueue>,
+        #[serde(default, deserialize_with = "lenient")]
+        queued: Option<u64>,
     }
     Some(match kind {
-        b"hello" | b"run.changed" | b"resync" => Change::Read,
+        b"hello" | b"run.changed" | b"agent.restart" | b"resync" => Change::Read,
         b"agent.state" => {
             serde_json::from_slice::<State>(data).map_or(Change::Read, |state| Change::State {
                 agent: state.agent,
@@ -167,6 +175,7 @@ fn change(kind: &[u8], data: &[u8]) -> Option<Change> {
                 registration_id: waits.registration_id,
                 waiting: waits.waiting,
                 background: waits.background.and_then(|raw| Background::read(raw.get())),
+                queue: waits.queued.map(|queued| (waits.held_queue, queued)),
             })
         }
         _ => return None,
@@ -215,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn the_services_fixtures_give_their_waits_and_a_read_for_a_run() {
+    fn the_services_fixtures_give_their_waits_and_queues_and_a_read_for_a_run() {
         let mut stream = String::new();
         for (kind, data) in [
             (
@@ -225,6 +234,10 @@ mod tests {
             (
                 "agent.changed",
                 include_str!("runs/fixtures/agent-changed.json"),
+            ),
+            (
+                "agent.changed",
+                include_str!("runs/fixtures/agent-changed-held-queue.json"),
             ),
         ] {
             // One frame's data is one line of JSON.
@@ -239,6 +252,7 @@ mod tests {
             registration_id,
             waiting,
             background,
+            queue,
         } = &changes[1]
         else {
             panic!("{changes:?}");
@@ -258,6 +272,19 @@ mod tests {
                 queued: 1,
                 processes: 1
             })
+        );
+        assert_eq!(*queue, Some((None, 0)));
+        let Change::Waits { queue, .. } = &changes[2] else {
+            panic!("{changes:?}");
+        };
+        assert_eq!(
+            *queue,
+            Some((
+                Some(HeldQueue {
+                    reason: Some("uncertain_delivery".into())
+                }),
+                8
+            ))
         );
     }
 
@@ -281,5 +308,24 @@ mod tests {
             b"event: agent.changed\ndata: [1]\n\n",
         ]);
         assert_eq!(changes, [Change::Read, Change::Read]);
+    }
+
+    #[test]
+    fn each_step_of_an_agents_restart_signals_a_read() {
+        let mut frames = Frames::default();
+        let mut count = 0;
+        let steps: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "runs/fixtures/stream-agent-restart-fresh.json"
+        ))
+        .unwrap();
+        for step in &steps {
+            let kind = step["event"].as_str().unwrap();
+            let frame = format!("event: {kind}\ndata: {}\n\n", step["data"]);
+            assert!(frames.push(frame.as_bytes(), &mut |change| {
+                assert_eq!(change, Change::Read);
+                count += 1;
+            }));
+        }
+        assert_eq!(count, steps.len());
     }
 }

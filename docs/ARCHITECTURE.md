@@ -125,7 +125,10 @@ the pane, or a change in its agent, starts again from two seconds. Retries never
 create a session. A hidden terminal keeps its connection but does not query its
 session's window list until it is shown. A stopped
 Backbone agent's pane can ask Backbone to start or resume it (one authenticated
-local request, never retried), after which the same loop connects. An ordinary
+local request, never retried), after which the same loop connects. A local
+agent's pane follows the agent's own restart from the roster list, and reads
+the agent's inspection once when a restart it saw leaves the list, to learn
+how it ended. An ordinary
 shell that cannot be reached is started once through the same guarded creation
 path as Open terminal, which refuses when the owning server cannot be verified.
 
@@ -439,13 +442,14 @@ the team-wide Usage view. Skill previews keep their 256 KiB limit.
 The service also pushes agent state changes on `GET /api/stream`, as
 Server-Sent Events. `Connection::watch` follows that stream on a worker of its
 own. An `agent.state` (state, reason and since) or `agent.changed` (what an
-agent waits on, and its background counts) is applied to the agent with that
-name and registration and published at once, before any read; a state just
-reported is no longer stale. The issue an agent works on is not pushed, so a
-new state also asks for a read behind it, which corrects the row's issue
-number. The opening `hello`, `run.changed`, `resync`, and
-a change for a registration the roster doesn't hold or can't be read each ask
-the roster worker for a read at once. A read that was out when a change
+agent waits on, its background counts and its held and waiting deliveries) is
+applied to the agent with that name and registration and published at once,
+before any read; a state just reported is no longer stale. The issue an agent
+works on is not pushed, so a new state also asks for a read behind it, which
+corrects the row's issue number. The opening `hello`, `run.changed`,
+`agent.restart` (each step of an agent's own restart), `resync`, and a change
+for a registration the roster doesn't hold or can't be read each ask the
+roster worker for a read at once. A read that was out when a change
 arrived applies that change again to what it read, so an older read never puts
 an older state back on screen. A service that does not know a kind ignores it.
 No cursor is kept, so a stream opened again starts with a read. `agent.place`

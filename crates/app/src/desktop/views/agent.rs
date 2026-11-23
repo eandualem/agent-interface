@@ -18,7 +18,7 @@ use super::{
     Target, ViewPane, ago, count, home, line, list, mono, policies, reader, since, skills, usage,
 };
 use crate::desktop::{
-    agent_status::counted,
+    agent_status::{counted, deliveries},
     components::{self as ui, AgentState, Tone},
     design::{colors, tokens},
 };
@@ -630,6 +630,12 @@ pub(super) fn overview<V: 'static>(
         .waiting
         .as_ref()
         .map(|waiting| ui::fact("Waiting on", div().child(waits(waiting, now() as f64))));
+    let queue = deliveries(
+        agent.held_queue.as_ref(),
+        agent.queued,
+        agent.delivery.as_deref(),
+    )
+    .map(|text| ui::fact("Deliveries", div().child(text)));
     body = body.child(
         div()
             .flex_shrink_0()
@@ -659,6 +665,7 @@ pub(super) fn overview<V: 'static>(
             .child(ui::fact("Tags", tags))
             .child(ui::fact("Working on", mono(working)))
             .children(waiting)
+            .children(queue)
             .child(ui::fact(
                 "In this state",
                 div().child(

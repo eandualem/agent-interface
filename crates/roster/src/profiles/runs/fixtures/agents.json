@@ -53,7 +53,10 @@
         },
         {"kind": "repository", "repo": "example/library", "access": "write"}
       ],
-      "ceiling": []
+      "ceiling": [],
+      "takes_issues": true,
+      "held_queue": null,
+      "queued": 0
     },
     {
       "name": "reviewer",
@@ -91,7 +94,10 @@
       "superior": null,
       "mode": "sandboxed",
       "grants": [],
-      "ceiling": []
+      "ceiling": [],
+      "takes_issues": false,
+      "held_queue": null,
+      "queued": 0
     }
   ],
   "total": 2

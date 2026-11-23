@@ -1,0 +1,30 @@
+{
+  "agent": "worker",
+  "registration_id": "1234567890abcdef1234567890abcdef",
+  "waiting": {
+    "on": "agent",
+    "on_agent": "reviewer",
+    "reason": "Waiting for the review of the protocol change.",
+    "since": "2026-11-10T10:20:00Z"
+  },
+  "background": {
+    "running": 0,
+    "queued": 1,
+    "processes": 1
+  },
+  "processes": [
+    {
+      "pid": 51877,
+      "command": "node mcp-server.js",
+      "started_at": "2026-11-10T09:00:04Z"
+    }
+  ],
+  "held_queue": {
+    "reason": "uncertain_delivery",
+    "since": "2026-01-01T10:04:25Z",
+    "count": 7,
+    "message": "8122:019a7b2c812270008000000000008122"
+  },
+  "queued": 8,
+  "queued_since": "2026-01-01T10:00:02Z"
+}
