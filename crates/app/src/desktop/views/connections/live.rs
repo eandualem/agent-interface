@@ -374,7 +374,7 @@ impl Pane {
             || !action.belongs_to(self.live.selected.as_ref())
             || self.live.sending
             || self.live.retry.is_some()
-            || self.live.reading
+            || (self.live.reading && !matches!(action, Change::Invite(_)))
             || self.live.status.is_some()
             || !self.live.stream_ok
         {
@@ -650,7 +650,7 @@ impl Pane {
     }
 
     /// ＋'s panel: paste another profile's ID, or copy this one's.
-    fn connect_panel(&self, local: &str, actions: bool, cx: &Context<Self>) -> Div {
+    fn connect_panel(&self, local: &str, actions: bool, cx: &Context<Self>) -> gpui::Stateful<Div> {
         let (t, c) = (tokens(), colors());
         let label = |text: &'static str| {
             ui::text(div().text_color(c.text_2), &t.text.meta)
@@ -675,9 +675,12 @@ impl Pane {
         }
         let local = local.to_owned();
         ui::menu()
+            .id("connect-panel")
             .absolute()
             .top(px(t.space.s8))
             .left(px(t.space.s8))
+            .max_h(gpui::relative(0.94))
+            .overflow_y_scroll()
             .w(px(t.size.connections_rail * 2.0))
             .max_w(gpui::relative(0.92))
             .gap(px(t.space.s8))
@@ -801,6 +804,29 @@ impl Pane {
         .detach();
     }
 
+    /// On a narrow tile, a thread without its header still offers the way back.
+    fn back_bar(&self, cx: &Context<Self>) -> Option<Div> {
+        let (t, c) = (tokens(), colors());
+        self.compact.then(|| {
+            div()
+                .flex()
+                .flex_shrink_0()
+                .px(px(t.space.s12))
+                .py(px(t.space.s8))
+                .border_b(px(t.size.hairline))
+                .border_color(c.line)
+                .child(self.back_button(cx))
+        })
+    }
+
+    fn back_button(&self, cx: &Context<Self>) -> gpui::Stateful<Div> {
+        ui::back_button("peer-back", "All")
+            .focusable()
+            .tab_stop(true)
+            .track_focus(&self.entry)
+            .on_click(cx.listener(|p, _, _, cx| p.pick(None, cx)))
+    }
+
     /// The thread's top line: a way back on a narrow tile, the peer's mark
     /// and name, its state, and any controls.
     fn live_header(&self, name: &str, state: Option<Div>, cx: &Context<Self>) -> Div {
@@ -815,15 +841,7 @@ impl Pane {
             .py(px(t.space.s8))
             .border_b(px(t.size.hairline))
             .border_color(c.line)
-            .when(self.compact, |el| {
-                el.child(
-                    ui::back_button("peer-back", "All")
-                        .focusable()
-                        .tab_stop(true)
-                        .track_focus(&self.entry)
-                        .on_click(cx.listener(|p, _, _, cx| p.pick(None, cx))),
-                )
-            })
+            .when(self.compact, |el| el.child(self.back_button(cx)))
             .child(ui::profile_mark(name, t.size.view_tile))
             .child(
                 div()
@@ -851,19 +869,26 @@ impl Pane {
             .flex_col()
             .gap(px(t.space.s10));
         let meta = |text: String| ui::text(div().text_color(c.muted), &t.text.meta).child(text);
+        // Without a peer header, a narrow tile still needs its way back.
+        let empty = |title: &'static str, body: &'static str| {
+            div()
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .children(self.back_bar(cx))
+                .child(ui::empty_state(
+                    ui::empty_tile("link-2", c.selected, c.muted),
+                    title,
+                    body,
+                ))
+        };
         if self.live.selected != snapshot.selection {
-            return column.child(ui::empty_state(
-                ui::empty_tile("link-2", c.selected, c.muted),
-                "Reading conversation…",
-                "",
-            ));
+            return empty("Reading conversation…", "");
         }
         match &snapshot.selection {
-            None => column.child(ui::empty_state(
-                ui::empty_tile("link-2", c.selected, c.muted),
-                "No peer selected",
-                "Choose a peer to see its conversation.",
-            )),
+            None => empty("No peer selected", "Choose a peer to see its conversation."),
             Some(Selection::Request(id)) => {
                 let Some(r) = snapshot
                     .summary
@@ -872,7 +897,7 @@ impl Pane {
                     .iter()
                     .find(|r| &r.request_id == id)
                 else {
-                    return column;
+                    return empty("No longer listed", "Choose another peer.");
                 };
                 let name = r.display_name.clone().unwrap_or_else(|| r.peer_id.clone());
                 let incoming = r.direction == Direction::Incoming;
@@ -944,7 +969,7 @@ impl Pane {
                             el.child(buttons)
                         }),
                 );
-                card = card.items_center().justify_center();
+                card = card.items_center();
                 column
                     .child(self.live_header(&name, Some(state), cx))
                     .child(card)
@@ -957,7 +982,7 @@ impl Pane {
                     .iter()
                     .find(|p| &p.connection == id)
                 else {
-                    return column;
+                    return empty("No longer listed", "Choose another peer.");
                 };
                 let name = peer.display_name.as_deref().unwrap_or(&id.peer_id);
                 let gates = peer.gates;
@@ -1410,7 +1435,12 @@ impl Pane {
             }
         }
         if matches!(self.live.form, Some(Form::Connect)) {
-            main = main.child(self.connect_panel(&local, actions, cx));
+            // An invitation waits only for the service, not for a read in flight.
+            let can_send = self.live.stream_ok
+                && !self.live.sending
+                && self.live.status.is_none()
+                && self.live.retry.is_none();
+            main = main.child(self.connect_panel(&local, can_send, cx));
         }
         view = view.child(main);
         if let Some(error) = &self.live.status {
