@@ -718,8 +718,7 @@ impl Pane {
                             .child("Connect a profile"),
                     )
                     .child(
-                        ui::icon_button("close-connect", "x")
-                            .focusable()
+                        ui::interaction_icon_button("close-connect", "x", "Close")
                             .tab_stop(true)
                             .on_click(cx.listener(move |pane, _, _, cx| close(pane, cx))),
                     ),
@@ -733,8 +732,10 @@ impl Pane {
                 cx,
                 move |pane, _, cx| close(pane, cx),
             )))
-            .child(note(if actions {
+            .child(note(if actions && cfg!(target_os = "macos") {
                 "⌘↵ sends. Both directions start on Review once they accept."
+            } else if actions {
+                "Ctrl+↵ sends. Both directions start on Review once they accept."
             } else {
                 "Sending is paused until Agent Backbone answers."
             }))

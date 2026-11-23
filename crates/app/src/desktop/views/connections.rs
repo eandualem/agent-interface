@@ -300,8 +300,7 @@ impl Pane {
         connect: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> Div {
         let (t, c) = (tokens(), colors());
-        let plus = ui::icon_button("connect-peer", "plus")
-            .focusable()
+        let plus = ui::interaction_icon_button("connect-peer", "plus", "Connect a profile")
             .tab_stop(true)
             .on_click(cx.listener(move |this, _, window, cx| connect(this, window, cx)));
         let plus = if entry {
