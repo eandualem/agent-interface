@@ -457,9 +457,14 @@ No cursor is kept, so a stream opened again starts with a read. `agent.place`
 is not followed, because the app shows no role or superior. A stream that
 breaks, or stays silent for 45 seconds against the
 service's 15-second heartbeat, is opened again two seconds later; a 404
-stops the worker. Without the stream, the roster is polled as before. The
-two-second poll continues, because agents joining or leaving the roster, and
-a change of issue without a change of state, are not pushed.
+stops the worker. Without the stream, the roster is polled as before. While
+the stream is open, from its first frame until it ends, the poll waits 15
+seconds instead of two, because agents leaving the roster, a change of issue
+without a change of state, `state_source` and its evidence, swarms and machines
+are not pushed. Fifteen seconds is the service's heartbeat and half the 30
+seconds after which a roster or runs list stops counting as current. When the
+stream ends, the worker reads at once and polls every two seconds until it is
+open again.
 
 Each agent in the service's list may say what it waits on outside itself and
 how many runs (reviews, builds, tests) and processes it has in the
@@ -569,7 +574,8 @@ Agent views cache unchanged render trees; data, size, focus and appearance
 changes invalidate them. Visible working and starting indicators animate using GPUI; other states are
 static. State labels retain the distinction between starting and busy, and
 between blocked and waiting for a person. Each connection-owned roster worker reads
-immediately and then two seconds after each completed request. After a good
+immediately and then two seconds after each completed request, or 15 while the
+push stream is open. After a good
 roster it also reads the running swarms and the profile's machines (`GET /api/status/services`), which only group agents in the
 navigation panel and Team view: a failed swarm read clears swarm folding and a failed machine-status read clears machine reachability (`status unknown`) without marking agent
 states stale; remote agents still carrying `machine` from `/api/agents` remain grouped under their machine IDs. Machine IDs are compared in full against the connected profile's local machine ID; names are display-only. One-machine profiles keep the flat layout; multi-machine profiles group remote agents under their machine's name and live reachability (online, offline with last-seen age, or not in profile), surface stale `state_source` observations with their evidence, and offer Start, Stop and Restart directly through the profile service, reporting the service's refusal reason when a machine cannot be reached. Each window remembers the swarms it has seen running; when a

@@ -738,3 +738,108 @@ fn machine_offline_and_recovery_updates_roster_live_without_restart() {
     drop(source);
     server.join().unwrap();
 }
+
+#[test]
+fn an_open_stream_slows_the_poll_and_its_end_reads_at_once() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let path = directory.path().join("api.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let identity = json!({
+        "protocol_version": 1, "profile_id": "0a1b2c3d4e5f", "display_name": "Work",
+        "instance_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d",
+        "machine": {"id": "5f2c9e0d1b7a4e38", "name": "laptop"}, "home": true
+    });
+    let mut entry = identity.clone();
+    entry["state"] = json!("serving");
+    entry["socket"] = json!(path);
+    entry["tmux_socket"] = json!(directory.path().join("tmux.sock"));
+    entry["credential_reference"] = json!({"type": "socket"});
+    let profile = Profile::parse(&serde_json::to_vec(&entry).unwrap()).unwrap();
+    let server = thread::spawn(move || {
+        listener.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut stream = None::<(std::os::unix::net::UnixStream, Instant)>;
+        let mut closed = None::<Instant>;
+        let mut reads = Vec::new();
+        // Until two reads follow the stream's end.
+        while closed.is_none_or(|closed| reads.iter().filter(|read| **read > closed).count() < 2) {
+            assert!(Instant::now() < deadline, "{reads:?}");
+            let mut socket = match listener.accept() {
+                Ok((socket, _)) => socket,
+                Err(_) => {
+                    // The stream stays open three seconds, past a two-second poll.
+                    if stream
+                        .as_ref()
+                        .is_some_and(|(_, opened)| opened.elapsed() > Duration::from_secs(3))
+                    {
+                        stream = None;
+                        closed = Some(Instant::now());
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+            };
+            socket.set_nonblocking(false).unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                socket.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            let request = String::from_utf8(request).unwrap();
+            if request.starts_with("GET /api/stream") {
+                // Opened once; asked again after its end, the service has none.
+                if closed.is_none() {
+                    write!(
+                        socket,
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\nevent: hello\ndata: {{}}\n\n"
+                    )
+                    .unwrap();
+                    stream = Some((socket, Instant::now()));
+                } else {
+                    write!(
+                        socket,
+                        "HTTP/1.1 404 Fixture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                    .unwrap();
+                }
+                continue;
+            }
+            let body = if request.starts_with("GET /api/profile ") {
+                identity.to_string()
+            } else {
+                if request.starts_with("GET /api/agents ") {
+                    reads.push(Instant::now());
+                }
+                json!({"items": [{"name": "worker", "state": "idle"}]}).to_string()
+            };
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+        (closed.unwrap(), reads)
+    });
+    let source = BoundRosterSource::start(profile.connect().unwrap(), || {}).unwrap();
+    let (closed, reads) = server.join().unwrap();
+    drop(source);
+    let opened = closed - Duration::from_secs(3);
+    // The stream's hello asks for a read; then none while it is open.
+    assert!(
+        reads
+            .iter()
+            .all(|read| *read < opened + Duration::from_secs(1) || *read >= closed),
+        "{reads:?}"
+    );
+    let after: Vec<_> = reads.iter().filter(|read| **read >= closed).collect();
+    assert!(*after[0] - closed < Duration::from_secs(1), "{reads:?}");
+    let gap = *after[1] - *after[0];
+    assert!(
+        gap > Duration::from_millis(1500) && gap < Duration::from_secs(3),
+        "{gap:?}"
+    );
+}

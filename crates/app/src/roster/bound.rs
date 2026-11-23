@@ -11,6 +11,14 @@ use std::{
     time::Duration,
 };
 
+/// Between reads without the push stream.
+const POLL: Duration = Duration::from_secs(2);
+/// Between reads while the push stream is open: the service's heartbeat, and
+/// half the 30 seconds after which a roster or runs list is no longer current.
+/// The stream carries states, waits and runs, but not an agent leaving, a new
+/// issue without a new state, or swarms and machines.
+const STREAMED: Duration = Duration::from_secs(15);
+
 use agent_interface_roster::Snapshot;
 use agent_interface_roster::profiles::{
     Change, Connection, Error, Identity,
@@ -44,10 +52,10 @@ pub struct BoundRosterSource {
 }
 
 impl BoundRosterSource {
-    /// Read immediately, then two seconds after each completed attempt. The
-    /// Rust service's push stream, when the connection has one, changes an
-    /// agent's state or wait at once, and asks for a read at once for
-    /// anything else. Runs are read after each roster is published, so states
+    /// Read immediately, then two seconds after each completed attempt, or 15
+    /// while the Rust service's push stream is open. The stream, when the
+    /// connection has one, changes an agent's state or wait at once, and asks
+    /// for a read at once for anything else and when it ends. Runs are read after each roster is published, so states
     /// never wait on them. The connection retains its verified identity and
     /// socket for this worker's lifetime. `wake` runs after publishing a
     /// complete update.
@@ -68,6 +76,8 @@ impl BoundRosterSource {
         let (watched, refresh, streamed) = (connection.clone(), stop.clone(), Arc::clone(&shown));
         let polling = Arc::new(AtomicBool::new(true));
         let wanted = Arc::clone(&polling);
+        let streaming = Arc::new(AtomicBool::new(false));
+        let open = Arc::clone(&streaming);
         let worker = thread::Builder::new()
             .name("bound roster polling".into())
             .spawn(move || {
@@ -124,7 +134,12 @@ impl BoundRosterSource {
                         book.settle(&connection, gone, &live);
                         show_runs(book.runs());
                     }
-                    match stopped.recv_timeout(Duration::from_secs(2)) {
+                    let wait = if streaming.load(Ordering::Relaxed) {
+                        STREAMED
+                    } else {
+                        POLL
+                    };
+                    match stopped.recv_timeout(wait) {
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
                         // Several changes at once need one read; a stop among
                         // them still stops.
@@ -145,7 +160,7 @@ impl BoundRosterSource {
             stream: None,
         };
         // Without a stream worker the roster is still polled.
-        source.stream = watch(watched, refresh, streamed)
+        source.stream = watch(watched, refresh, streamed, open)
             .map(Some)
             .unwrap_or_else(|error| {
                 tracing::warn!(event = "roster_stream_not_started", %error, "Agent state stream not followed");
@@ -172,12 +187,15 @@ fn standing(reported: Option<Error>, error: Error) -> Error {
 
 /// Follow the connection's push stream on a worker of its own, applying each
 /// agent's state and wait to `shown` and asking the polling worker for a read
-/// for any other change, or one `shown` can't take. The stream is opened again
-/// two seconds after it breaks, and not again once the service says it has none.
+/// for any other change, or one `shown` can't take. `open` is true from the
+/// stream's first frame until it ends, when a read is asked for at once. The
+/// stream is opened again two seconds after it breaks, and not again once the
+/// service says it has none.
 fn watch(
     connection: Connection,
     refresh: mpsc::Sender<bool>,
     shown: Arc<Mutex<Shown>>,
+    open: Arc<AtomicBool>,
 ) -> io::Result<(Arc<AtomicBool>, JoinHandle<()>)> {
     let live = Arc::new(AtomicBool::new(true));
     let wanted = Arc::clone(&live);
@@ -187,6 +205,7 @@ fn watch(
             let live = || wanted.load(Ordering::Relaxed);
             while live() {
                 let ended = connection.watch(&live, &mut |change| {
+                    open.store(true, Ordering::Relaxed);
                     let mut shown = lock(&shown);
                     // A failed read's stale roster waits for a good one.
                     if shown.update.error.is_none() && shown.update.snapshot.apply(&change) {
@@ -205,6 +224,10 @@ fn watch(
                         let _ = refresh.send(false);
                     }
                 });
+                // What the stream would have pushed while it is down is read.
+                if open.swap(false, Ordering::Relaxed) {
+                    let _ = refresh.send(false);
+                }
                 if ended == Err(Error::Unsupported) {
                     break;
                 }
