@@ -264,3 +264,76 @@ fn bound_shell_attaches_to_the_provider_session_and_never_creates_one() {
     );
     provider.join().unwrap();
 }
+
+#[test]
+fn a_run_view_on_its_profile_server_is_shown_read_only() {
+    use crate::view::backend::{Backend, READ_ONLY, ReadOnly};
+    use agent_interface_term::input::{Input, KeyPress, Scroll};
+    const VIEW: &str = "run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60";
+    let server = TmuxServer::start().unwrap();
+    server
+        .run(&[
+            "new-session",
+            "-d",
+            "-s",
+            VIEW,
+            "sh",
+            "-c",
+            "printf 'run-output\\n'; exec cat",
+        ])
+        .unwrap();
+    let socket: PathBuf = server
+        .run(&["display-message", "-p", "#{socket_path}"])
+        .unwrap()
+        .trim()
+        .into();
+    let identity = json!({"protocol_version":1,"profile_id":"profile-a",
+        "instance_id":"instance-a","machine":{"id":"machine-a"}});
+    let (_directory, connection, provider) = provider_with_tmux(
+        "a",
+        (0..2)
+            .map(|_| Reply::ok("/api/profile", identity.clone()))
+            .collect(),
+        Some(socket),
+    );
+    let target = Target {
+        connection: Some(connection),
+        leaf: Leaf {
+            id: "123456abcdef".into(),
+            cwd: None,
+            empty: false,
+            view: None,
+            attachment: Some(Attachment {
+                remote_profile: None,
+                session: VIEW.into(),
+                source_socket: None,
+            }),
+        },
+        directory: None,
+        source: Err("bound".into()),
+    };
+    assert!(target.is_run_view());
+    // The same name on a server without a profile is a person's own session.
+    let mut own = target.clone();
+    own.connection = None;
+    assert!(!own.is_run_view());
+    let ready = connect(target).unwrap();
+    provider.join().unwrap();
+    wait_for_text(&ready, "run-output", "typed");
+    let view = ReadOnly(Arc::clone(ready.panes.as_ref().unwrap()));
+    let key = Input::Key(KeyPress {
+        key: "t".into(),
+        text: Some("typed".into()),
+        ..KeyPress::default()
+    });
+    for refused in [key, Input::Paste("typed\r".into())] {
+        let error = view.send_reserved_input(ready.input, refused, None);
+        assert_eq!(error.unwrap_err().to_string(), READ_ONLY);
+    }
+    view.send_reserved_input(ready.input, Input::Scroll(Scroll::Lines(-1)), None)
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    take_text(&ready, "typed");
+    let shown = server.run(&["capture-pane", "-p", "-t", VIEW]).unwrap();
+    assert!(!shown.contains("typed"), "{shown}");
+}

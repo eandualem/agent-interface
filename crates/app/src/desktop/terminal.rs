@@ -59,6 +59,21 @@ impl Target {
         })
     }
 
+    /// A run's view on its profile's server: shown read-only, and gone for
+    /// good once it ends.
+    pub fn is_run_view(&self) -> bool {
+        self.connection.as_ref().is_some_and(|connection| {
+            self.leaf.attachment.as_ref().is_some_and(|attachment| {
+                attachment.remote_profile.is_none()
+                    && agent_interface_roster::profiles::runs::is_view(&attachment.session)
+                    && attachment
+                        .source_socket
+                        .as_deref()
+                        .is_none_or(|path| std::path::Path::new(path) == connection.tmux_socket())
+            })
+        })
+    }
+
     /// Remove this pane from whichever workspace of its profile holds it,
     /// keeping the workspace and tab in view.
     pub fn close_from(&self, layout: &mut agent_interface_core::Layout) -> bool {
@@ -181,6 +196,8 @@ fn bound_shell_folder(leaf: &Leaf) -> Option<&str> {
 
 const PROFILE_UNAVAILABLE: &str = "The workspace profile connection is unavailable.";
 const PROFILE_CHANGED: &str = "The workspace profile connection changed while attaching.";
+/// A run's view lasts about 30 minutes after the run's output ends.
+const RUN_VIEW_ENDED: &str = "This run's view has ended.";
 
 fn connect(target: Target) -> Result<Ready, String> {
     connect_selected(target, None, false)
@@ -849,9 +866,16 @@ impl LiveTerminal {
                             .iter()
                             .find(|window| window.id == ready.window)
                             .cloned();
+                        let panes = ready.panes.take().unwrap();
+                        let panes: Arc<dyn crate::view::backend::Backend> =
+                            if terminal.target.is_run_view() {
+                                Arc::new(crate::view::backend::ReadOnly(panes))
+                            } else {
+                                panes
+                            };
                         let view = cx.new(|cx| {
                             TerminalView::embedded(
-                                ready.panes.take().unwrap(),
+                                panes,
                                 ready.layout.take().unwrap().panes,
                                 ready.input,
                                 appearance(),
@@ -870,12 +894,14 @@ impl LiveTerminal {
                             &view,
                             |terminal, _, event: &crate::view::Disconnected, cx| {
                                 tracing::warn!(event = "terminal_disconnected", pane_id = %terminal.target.leaf.id, attached = terminal.target.leaf.attachment.is_some(), has_failure = event.0.is_some(), "Terminal connection ended");
-                                terminal.error = Some(
+                                terminal.error = Some(if terminal.target.is_run_view() {
+                                    RUN_VIEW_ENDED.into()
+                                } else {
                                     event
                                         .0
                                         .clone()
-                                        .unwrap_or_else(|| "Session disconnected".into()),
-                                );
+                                        .unwrap_or_else(|| "Session disconnected".into())
+                                });
                                 // A shell lost while shown, such as when its server
                                 // stops, gets the same one automatic restart.
                                 if terminal.target.leaf.attachment.is_none() {
@@ -915,7 +941,11 @@ impl LiveTerminal {
                             // connection that failed to verify may come back.
                             let session_gone =
                                 error != PROFILE_UNAVAILABLE && error != PROFILE_CHANGED;
-                            terminal.error = Some(error);
+                            terminal.error = Some(if session_gone && terminal.target.is_run_view() {
+                                RUN_VIEW_ENDED.into()
+                            } else {
+                                error
+                            });
                             if session_gone && terminal.target.is_sign_in() {
                                 cx.emit(SignInEnded);
                             }

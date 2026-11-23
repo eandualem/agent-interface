@@ -4,7 +4,7 @@ use std::{io, path::PathBuf, time::Duration};
 
 use agent_interface_core::View;
 use agent_interface_roster::{
-    profiles::Connection,
+    profiles::{Connection, runs},
     views::{Member, Request},
 };
 
@@ -78,9 +78,14 @@ impl Sessions {
         self.source.set_active(active);
     }
 
+    /// The latest sessions, without a profile's run views: those open
+    /// under their agent's runs, read-only.
     pub fn take_update(&self) -> Option<Observation> {
-        let update = self.source.take_update()?;
+        let mut update = self.source.take_update()?;
         let expected = self.origin.connection().map(Connection::identity);
+        if expected.is_some() {
+            update.sessions.retain(|session| !runs::is_view(session));
+        }
         (update.identity.as_ref() == expected).then_some(update)
     }
 }
@@ -120,6 +125,14 @@ mod tests {
         let tmux = TmuxServer::start().unwrap();
         tmux.run(&["new-session", "-d", "-s", "bound-only"])
             .unwrap();
+        // A run's view opens under its agent, never as a loose session.
+        tmux.run(&[
+            "new-session",
+            "-d",
+            "-s",
+            "run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60",
+        ])
+        .unwrap();
         let socket: PathBuf = tmux
             .run(&["display-message", "-p", "#{socket_path}"])
             .unwrap()

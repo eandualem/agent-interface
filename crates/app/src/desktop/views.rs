@@ -88,6 +88,9 @@ pub(super) fn about(kind: ViewKind) -> About {
 pub(super) enum ViewEvent {
     /// Open this view in a new pane beside this one.
     OpenBeside(View),
+    /// Open this run's view, a session on the profile's tmux server, read-only
+    /// in a new pane beside this one.
+    RunView(String),
     /// An embedded document received a pointer press; select its owning pane.
     Focus,
 }
@@ -425,6 +428,11 @@ impl ViewPane {
                     pane.section = opened.section;
                     pane.data = Some(Data::Agent(Box::new(opened.agent.clone())));
                     pane.open(opened.target.clone(), cx);
+                }),
+            );
+            pane._search.push(
+                cx.subscribe(&card, |_, _, view: &bound_agent::RunView, cx| {
+                    cx.emit(ViewEvent::RunView(view.0.clone()))
                 }),
             );
             pane.bound_agent = Some(card);

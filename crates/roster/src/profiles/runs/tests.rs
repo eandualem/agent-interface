@@ -453,3 +453,26 @@ fn the_30_seconds_run_from_the_roster_read_and_hold_from_the_start_of_a_pass() {
     assert_eq!(ids(&book.runs().finished), [REVIEW]);
     assert_eq!(server.join().unwrap().len(), 4);
 }
+
+#[test]
+fn a_run_shows_only_its_own_view_and_views_are_named_by_run() {
+    let mut run: Run = serde_json::from_value(fixture("run")).unwrap();
+    assert_eq!(run.view(), None);
+    run.session = Some(format!("run-{REVIEW}"));
+    assert_eq!(run.view(), Some(format!("run-{REVIEW}").as_str()));
+    // Another run's view, or any other session, is not this run's.
+    for other in [format!("run-{BUILD}"), "worker".into(), REVIEW.into()] {
+        run.session = Some(other);
+        assert_eq!(run.view(), None);
+    }
+    assert!(is_view(&format!("run-{REVIEW}")));
+    for loose in [
+        "run-".to_owned(),
+        "run-tests".into(),
+        format!("run-{}", REVIEW.to_uppercase()),
+        format!("run-{REVIEW}0"),
+        format!("shell-{REVIEW}"),
+    ] {
+        assert!(!is_view(&loose), "{loose}");
+    }
+}

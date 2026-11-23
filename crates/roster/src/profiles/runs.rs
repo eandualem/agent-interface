@@ -64,9 +64,34 @@ pub struct Run {
     /// Its last progress line.
     #[serde(default, deserialize_with = "crate::lenient")]
     pub progress: Option<String>,
+    /// The session on the profile's tmux server of the agent's machine that
+    /// shows a copy of what it prints, while that session lasts.
+    #[serde(default, deserialize_with = "crate::lenient")]
+    pub session: Option<String>,
     /// Who reviews, for a review.
     #[serde(default, deserialize_with = "crate::lenient_object")]
     pub review: Option<Review>,
+}
+
+impl Run {
+    /// The session showing its output, only when the service named this
+    /// run's own view.
+    pub fn view(&self) -> Option<&str> {
+        self.session
+            .as_deref()
+            .filter(|session| session.strip_prefix(VIEW) == Some(self.run_id.as_str()))
+    }
+}
+
+/// What the name of a run's view starts with, before the run's ID.
+const VIEW: &str = "run-";
+
+/// Whether `session` is named as a run's view is: `run-` and a run's ID. The
+/// service keeps these on a profile's tmux server; they are not shells.
+pub fn is_view(session: &str) -> bool {
+    session.strip_prefix(VIEW).is_some_and(|id| {
+        id.len() == 32 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    })
 }
 
 /// Who a review run asked, as the service wrote it.

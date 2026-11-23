@@ -445,6 +445,12 @@ fn open_browser_with_status(
     .map_err(|error| error.to_string())
 }
 
+/// What a pane opened beside another shows.
+enum Beside {
+    View(View),
+    Session(Attachment),
+}
+
 struct EditingName {
     origin: Option<navigation_origin::Origin>,
     target: Option<NameEdit>,
@@ -2252,9 +2258,15 @@ impl Browser {
         true
     }
 
-    /// Split `pane` and show `view` in the new pane to its right, saved like
-    /// any split before it appears.
-    fn open_beside(&mut self, pane: &str, view: View, window: &mut Window, cx: &mut Context<Self>) {
+    /// Split `pane` and show `content` in the new pane to its right, saved
+    /// like any split before it appears.
+    fn open_beside(
+        &mut self,
+        pane: &str,
+        content: Beside,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.saving || self.save_failed {
             return;
         }
@@ -2293,7 +2305,11 @@ impl Browser {
         ) else {
             return;
         };
-        if !proposed.show_view(&tab, &added, view) {
+        let shown = match content {
+            Beside::View(view) => proposed.show_view(&tab, &added, view),
+            Beside::Session(attachment) => proposed.attach(Some(attachment)),
+        };
+        if !shown {
             return;
         }
         // The new pane is not in the displayed tree yet; select it once saved.
@@ -3223,7 +3239,22 @@ impl Render for Browser {
                         }
                         match event {
                             views::ViewEvent::OpenBeside(view) => {
-                                browser.open_beside(&leaf, view.clone(), window, cx)
+                                browser.open_beside(&leaf, Beside::View(view.clone()), window, cx)
+                            }
+                            views::ViewEvent::RunView(session) => {
+                                // Run views are kept on the profile's own server.
+                                let Ok(Some(connection)) = browser.pane_connection(&leaf) else {
+                                    return;
+                                };
+                                let attachment = Attachment {
+                                    remote_profile: None,
+                                    session: session.clone(),
+                                    source_socket: connection
+                                        .tmux_socket()
+                                        .to_str()
+                                        .map(str::to_owned),
+                                };
+                                browser.open_beside(&leaf, Beside::Session(attachment), window, cx)
                             }
                             views::ViewEvent::Focus => {
                                 // Page IPC is asynchronous: a click notification can
