@@ -532,9 +532,9 @@ impl Pane {
                 .child(
                     ui::text(
                         div()
-                            .flex_1()
-                            .min_w(px(t.size.empty_width / 2.0))
-                            .max_w_full()
+                            .flex_grow(1.0)
+                            .flex_basis(px(t.size.empty_width / 2.0))
+                            .min_w_0()
                             .text_color(c.text_2),
                         &t.text.body,
                     )
@@ -1598,9 +1598,9 @@ fn band(message: String) -> Div {
             ui::text(
                 // A readable width before the buttons may sit beside it.
                 div()
-                    .flex_1()
-                    .min_w(px(t.size.empty_width / 2.0))
-                    .max_w_full()
+                    .flex_grow(1.0)
+                    .flex_basis(px(t.size.empty_width / 2.0))
+                    .min_w_0()
                     .text_color(c.attention_text),
                 &t.text.meta,
             )
