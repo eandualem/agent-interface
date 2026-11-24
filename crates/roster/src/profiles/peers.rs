@@ -1,5 +1,5 @@
 //! Peer invitations, review and delivery history on the owner's profile socket.
-use super::{Connection, Error, successful, valid_id};
+use super::{AddError, Connection, Error, added, successful, valid_id};
 use crate::{RESPONSE_LIMIT, views::encode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -207,13 +207,39 @@ impl Connection {
         body: Value,
         key: &str,
     ) -> Result<T, Error> {
+        let response = self.send_peer(method, &path, &body, key)?;
+        successful(&response)?;
+        serde_json::from_slice(&response.body).map_err(|_| Error::Invalid)
+    }
+
+    fn send_peer(
+        &self,
+        method: &'static str,
+        path: &str,
+        body: &Value,
+        key: &str,
+    ) -> Result<crate::transport::local::Response, Error> {
         if !valid_id(key) || key.len() > 1024 {
             return Err(Error::Invalid);
         }
-        let body = serde_json::to_vec(&body).map_err(|_| Error::Invalid)?;
-        let response = self.write(method, &path, Some(body), Some(key))?;
+        let body = serde_json::to_vec(body).map_err(|_| Error::Invalid)?;
+        self.write(method, path, Some(body), Some(key))
+    }
+
+    /// [`Self::change_peer`] for a connection request, whose conflict or
+    /// invalid-request refusal keeps the service's reason.
+    fn request_peer<T: DeserializeOwned>(
+        &self,
+        path: String,
+        body: Value,
+        key: &str,
+    ) -> Result<T, AddError> {
+        let response = self.send_peer("POST", &path, &body, key)?;
+        if matches!(response.status, 409 | 422) {
+            added(&response)?;
+        }
         successful(&response)?;
-        serde_json::from_slice(&response.body).map_err(|_| Error::Invalid)
+        Ok(serde_json::from_slice(&response.body).map_err(|_| Error::Invalid)?)
     }
 
     /// Read the owner’s identity, invitations, generations and review badge.
@@ -251,20 +277,14 @@ impl Connection {
     }
 
     /// Send an invitation under an idempotency key retained by the caller.
-    pub fn invite_peer(&self, id: &str, key: &str) -> Result<Invitation, Error> {
-        self.change_peer(
-            "POST",
-            format!("{ROOT}/requests"),
-            json!({"peer_id":id}),
-            key,
-        )
+    pub fn invite_peer(&self, id: &str, key: &str) -> Result<Invitation, AddError> {
+        self.request_peer(format!("{ROOT}/requests"), json!({"peer_id":id}), key)
     }
 
     /// Accept or decline an invitation under its request ID.
-    pub fn answer_peer(&self, id: &str, accept: bool, key: &str) -> Result<Answer, Error> {
+    pub fn answer_peer(&self, id: &str, accept: bool, key: &str) -> Result<Answer, AddError> {
         let path = format!("{ROOT}/requests/{}/answer", segment(id)?);
-        self.change_peer(
-            "POST",
+        self.request_peer(
             path,
             json!({"action":if accept {"accept"} else {"decline"}}),
             key,

@@ -1,7 +1,7 @@
 //! Owner-scoped data for the native Connections pane. Stream frames only invalidate reads.
 use super::*;
 use crate::desktop::peer_inbox::{Inbox, Selection, Summary, failure};
-use agent_interface_roster::profiles::{Connection, Error, peers as api};
+use agent_interface_roster::profiles::{AddError, Connection, Error, peers as api};
 use api::{Direction, Policy};
 use std::{collections::HashSet, sync::Arc};
 
@@ -111,7 +111,7 @@ impl Change {
         }
     }
 
-    fn send(&self, connection: &Connection, key: &str) -> Result<(), Error> {
+    fn send(&self, connection: &Connection, key: &str) -> Result<(), AddError> {
         match self {
             Self::Invite(id) => connection.invite_peer(id, key).map(drop),
             Self::Answer(id, accept) => connection.answer_peer(id, *accept, key).map(drop),
@@ -121,16 +121,18 @@ impl Change {
                 }
                 Ok(())
             }
-            Self::Disconnect(generation) => connection.disconnect_peer(generation, key).map(drop),
+            Self::Disconnect(generation) => {
+                Ok(connection.disconnect_peer(generation, key).map(drop)?)
+            }
             Self::Review(message, decision) => {
                 let action = match decision {
                     DecisionKind::Pass => api::Decision::Pass,
                     DecisionKind::Decline => api::Decision::Decline,
                     DecisionKind::Revise(note) => api::Decision::Revise(note),
                 };
-                connection
+                Ok(connection
                     .review_peer_message(message, action, key)
-                    .map(drop)
+                    .map(drop)?)
             }
         }
     }
@@ -432,7 +434,13 @@ impl Pane {
                         pane.live.status = None;
                         pane.live.inbox.update(cx, |inbox, cx| inbox.refresh(cx));
                     }
-                    Err(error) => {
+                    // The service said why it refused; nothing was changed.
+                    Err(AddError::Refused(reason)) => {
+                        pane.live.retry = None;
+                        pane.live.notice = Some(format!("{description}: {reason}"));
+                        pane.live.inbox.update(cx, |inbox, cx| inbox.refresh(cx));
+                    }
+                    Err(AddError::Connection(error)) => {
                         // A lost reply may already have committed. Retry the same bytes and key.
                         if matches!(
                             error,
