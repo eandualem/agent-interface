@@ -33,6 +33,8 @@ pub(super) struct BrowserView {
     retired: Vec<Frame>,
     /// Whether the browser has a window to bring forward; none while unknown.
     window: Option<agent_browser::Window>,
+    /// Whether the stream has been live since its last connection began.
+    live: bool,
     /// Set while a wake from the stream waits to be taken.
     woken: Arc<AtomicBool>,
     wake: mpsc::UnboundedSender<()>,
@@ -47,7 +49,7 @@ impl BrowserView {
         let task = cx.spawn(async move |this, cx| {
             while wakes.next().await.is_some() {
                 taken.store(false, Ordering::Relaxed);
-                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                if this.update(cx, |view, cx| view.woke(cx)).is_err() {
                     break;
                 }
             }
@@ -59,6 +61,7 @@ impl BrowserView {
             frame: None,
             retired: Vec::new(),
             window: None,
+            live: false,
             woken,
             wake,
             _woken: task,
@@ -89,6 +92,7 @@ impl BrowserView {
                     })
                 });
             self.window = None;
+            self.live = false;
             if let Some(pid) = session.as_ref().map(|session| session.pid) {
                 self.check_window(pid, false, cx);
             }
@@ -100,6 +104,23 @@ impl BrowserView {
             self.check_window(pid, false, cx);
         }
         self.session = session;
+        cx.notify();
+    }
+
+    /// Something new came from the stream. Its first frames after a
+    /// connection mean the daemon's Chrome is running, so look for its
+    /// window again if none was found.
+    fn woke(&mut self, cx: &mut Context<Self>) {
+        let live = self.stream.as_ref().map(Stream::state) == Some(State::Live);
+        if live
+            && !self.live
+            && cfg!(target_os = "macos")
+            && !matches!(self.window, Some(agent_browser::Window::Shown(_)))
+            && let Some(pid) = self.session.as_ref().map(|session| session.pid)
+        {
+            self.check_window(pid, false, cx);
+        }
+        self.live = live;
         cx.notify();
     }
 
