@@ -251,13 +251,24 @@ fn chrome(address: &str) -> [&str; 5] {
 /// app started from the Finder.
 const INSTALLED: [&str; 2] = ["/opt/homebrew/bin", "/usr/local/bin"];
 
+/// How long agent-browser has to answer before it is stopped.
+const ANSWER: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// The agent-browser command: on `PATH`, else where Homebrew installs it.
 fn command() -> Option<PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     std::env::split_paths(&path)
+        // An empty entry would mean the app's working folder.
+        .filter(|folder| !folder.as_os_str().is_empty())
         .chain(INSTALLED.iter().map(PathBuf::from))
         .map(|folder| folder.join("agent-browser"))
-        .find(|file| file.is_file())
+        .find(|file| runnable(file))
+}
+
+/// Whether `file` is a file that may be run.
+fn runnable(file: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(file).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
 /// A browser's viewport: its size in CSS pixels and its scale.
@@ -269,7 +280,8 @@ pub struct Viewport {
 }
 
 /// Give `session`'s browser `viewport`, through agent-browser itself, so its
-/// own record of the page stays right. Blocks until agent-browser answers.
+/// own record of the page stays right. Blocks until agent-browser answers,
+/// for at most `ANSWER`. A session that has ended gives `NotConnected`.
 pub fn set_viewport(session: &Session, viewport: Viewport) -> std::io::Result<()> {
     use std::process::{Command, Stdio};
     let error = |kind, text| Err(std::io::Error::new(kind, text));
@@ -283,7 +295,7 @@ pub fn set_viewport(session: &Session, viewport: Viewport) -> std::io::Result<()
         .iter()
         .any(|running| running.name == session.name && running.pid == session.pid)
     {
-        return error(std::io::ErrorKind::NotFound, "the session ended");
+        return error(std::io::ErrorKind::NotConnected, "the session ended");
     }
     let Some(program) = command() else {
         return error(std::io::ErrorKind::NotFound, "agent-browser not found");
@@ -294,7 +306,20 @@ pub fn set_viewport(session: &Session, viewport: Viewport) -> std::io::Result<()
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let status = run.status()?;
+    let mut child = run.spawn()?;
+    let deadline = std::time::Instant::now() + ANSWER;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        // A daemon that never answers must not hold a thread for good.
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return error(std::io::ErrorKind::TimedOut, "agent-browser did not answer");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
     if status.success() {
         Ok(())
     } else {
@@ -355,6 +380,18 @@ mod tests {
         let rows = by_agent(&found, ["coder", "reviewer", "Coder-2"]);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows["coder"], found[0]);
+    }
+
+    #[test]
+    fn only_a_runnable_file_is_taken_for_agent_browser() {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("agent-browser");
+        fs::write(&file, "").unwrap();
+        assert!(!runnable(&file));
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(runnable(&file));
+        assert!(!runnable(folder.path()));
     }
 
     #[test]
