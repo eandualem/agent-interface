@@ -85,15 +85,23 @@ impl Source {
                 content::Data::Reports(page) => views::Data::Reports(page),
                 content::Data::Document(document) => views::Data::Document(document),
             })
-            .map_err(|error| match error {
-                content::Error::Content(message) => message,
-                content::Error::Connection(
-                    agent_interface_roster::profiles::Error::BindingRequired
-                    | agent_interface_roster::profiles::Error::BindingMismatch,
-                ) => "The original profile binding was refused. Reconnect to that profile.",
-                _ => views::UNAVAILABLE,
-            });
+            .map_err(message);
         Some((wanted, result))
+    }
+}
+
+/// What a pane says for a read that failed with `error`.
+fn message(error: content::Error) -> &'static str {
+    match error {
+        content::Error::Content(message) => message,
+        content::Error::Connection(
+            agent_interface_roster::profiles::Error::BindingRequired
+            | agent_interface_roster::profiles::Error::BindingMismatch,
+        ) => "The original profile binding was refused. Reconnect to that profile.",
+        content::Error::Connection(agent_interface_roster::profiles::Error::Unavailable) => {
+            super::NOT_ANSWERING
+        }
+        _ => views::UNAVAILABLE,
     }
 }
 
@@ -108,6 +116,23 @@ fn accepts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_read_that_could_not_be_made_is_not_answering_and_a_refusal_is_unavailable() {
+        use agent_interface_roster::profiles::Error;
+        assert_eq!(
+            message(content::Error::Connection(Error::Unavailable)),
+            super::super::NOT_ANSWERING
+        );
+        assert_eq!(
+            message(content::Error::Connection(Error::Refused(503))),
+            views::UNAVAILABLE
+        );
+        assert_eq!(
+            message(content::Error::Content(views::UNAVAILABLE)),
+            views::UNAVAILABLE
+        );
+    }
     #[test]
     fn deferred_updates_require_original_identity_and_generation() {
         let origin = Identity {

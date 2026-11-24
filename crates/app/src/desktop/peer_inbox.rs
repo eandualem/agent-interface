@@ -12,13 +12,12 @@ use std::{
 };
 
 const UNSUPPORTED: &str = "This Agent Backbone version doesn\u{2019}t offer Connections.";
+const NOT_ANSWERING: &str = "Agent Backbone isn\u{2019}t answering. Try again.";
 
 /// What the person reads when a Connections request fails.
 pub(super) fn failure(error: Error) -> String {
     match error {
-        Error::Unavailable | Error::Refused(500..=599) => {
-            "Agent Backbone isn\u{2019}t answering. Try again.".into()
-        }
+        Error::Unavailable | Error::Refused(500..=599) => NOT_ANSWERING.into(),
         Error::Unsupported => UNSUPPORTED.into(),
         Error::Refused(404) => "That request or connection no longer exists.".into(),
         Error::BindingRequired | Error::BindingMismatch | Error::RegistrationChanged => {
@@ -28,6 +27,12 @@ pub(super) fn failure(error: Error) -> String {
         Error::Invalid => "The request or its reply wasn\u{2019}t valid.".into(),
         Error::Refused(status) => format!("Agent Backbone refused the request (status {status})."),
     }
+}
+
+/// Whether `error` is Backbone that could not be reached or did not answer
+/// in time, rather than a refusal.
+fn lost(error: Error) -> bool {
+    error == Error::Unavailable
 }
 
 /// [`failure`] for the overview: without its route, the service has no Connections.
@@ -173,9 +178,14 @@ pub(super) struct Inbox {
     pub summary: Option<Arc<Summary>>,
     pub error: Option<String>,
     pub read_at: Option<String>,
+    /// Whether `error` is a read or stream that could not be made, not a
+    /// refusal.
+    lost: bool,
     service: Connection,
     alive: Arc<AtomicBool>,
     online: Arc<AtomicBool>,
+    /// Whether the update stream last ended refused.
+    refused: Arc<AtomicBool>,
     reading: bool,
     dirty: bool,
     _events: Task<()>,
@@ -188,6 +198,12 @@ impl Drop for Inbox {
 }
 
 impl Inbox {
+    /// Whether the overview is missing because Backbone did not answer or
+    /// its updates stopped, rather than because it refused.
+    pub fn not_answering(&self) -> bool {
+        self.lost && self.error.is_some()
+    }
+
     pub fn profile_id(&self) -> &str {
         &self.service.identity().profile_id
     }
@@ -215,6 +231,8 @@ impl Inbox {
         let alive = Arc::new(AtomicBool::new(true));
         let online = Arc::new(AtomicBool::new(false));
         let opened = online.clone();
+        let refused = Arc::new(AtomicBool::new(false));
+        let ended = refused.clone();
         let running = alive.clone();
         let c = service.clone();
         let (mut tx, mut rx) = mpsc::channel(1);
@@ -224,12 +242,17 @@ impl Inbox {
                 let mut cursor = None;
                 let live = || running.load(Ordering::Acquire);
                 while live() {
-                    let _ = c.watch_peers(&mut cursor, &live, &mut || {
+                    let watched = c.watch_peers(&mut cursor, &live, &mut || {
+                        // A refusal stands until the stream opens again.
+                        ended.store(false, Ordering::Release);
                         opened.store(true, Ordering::Release);
                         let _ = tx.try_send(());
                     });
                     if !live() {
                         break;
+                    }
+                    if watched.is_err_and(|e| !lost(e)) {
+                        ended.store(true, Ordering::Release);
                     }
                     opened.store(false, Ordering::Release);
                     let _ = tx.try_send(());
@@ -252,9 +275,11 @@ impl Inbox {
             summary: None,
             error: worker.err().map(|e| e.to_string()),
             read_at: None,
+            lost: false,
             service,
             alive,
             online,
+            refused,
             reading: false,
             dirty: false,
             _events: events,
@@ -265,6 +290,7 @@ impl Inbox {
         if !self.online.load(Ordering::Acquire) {
             self.error =
                 Some("Agent Backbone isn\u{2019}t sending updates. Reconnecting\u{2026}".into());
+            self.lost = !self.refused.load(Ordering::Acquire);
             cx.notify();
             return;
         }
@@ -286,9 +312,13 @@ impl Inbox {
                         Ok(summary) => {
                             inbox.summary = Some(Arc::new(summary));
                             inbox.error = None;
+                            inbox.lost = false;
                             inbox.read_at = Some(chrono::Local::now().format("%H:%M").to_string());
                         }
-                        Err(error) => inbox.error = Some(overview_failure(error)),
+                        Err(error) => {
+                            inbox.lost = lost(error);
+                            inbox.error = Some(overview_failure(error));
+                        }
                     }
                 }
                 if cx.has_global::<Sources>() {
@@ -329,6 +359,19 @@ impl Sources {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_backbone_out_of_reach_is_not_answering() {
+        assert!(lost(Error::Unavailable));
+        for refusal in [
+            Error::Refused(503),
+            Error::Refused(404),
+            Error::BindingMismatch,
+            Error::Unsupported,
+        ] {
+            assert!(!lost(refusal));
+        }
+    }
 
     #[test]
     fn a_service_without_connections_says_so() {
