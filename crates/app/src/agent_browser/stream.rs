@@ -47,6 +47,8 @@ const RETRY: Duration = Duration::from_secs(2);
 const PAGE: Duration = Duration::from_secs(2);
 /// How long the client waits for Chrome's target list.
 const LISTING: Duration = Duration::from_millis(500);
+/// The largest target list the client reads. Chrome's is a few kilobytes.
+const LISTING_BYTES: usize = 1 << 20;
 
 /// Whether frames are arriving.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -81,6 +83,8 @@ struct Latest {
     /// Frames replaced before they were drawn, acknowledged when the view
     /// next takes one.
     replaced: Vec<i64>,
+    /// Whether the view took a frame since the client last looked.
+    taken: bool,
     address: Option<String>,
     title: Option<String>,
 }
@@ -166,6 +170,7 @@ impl Stream {
         let replaced = std::mem::take(&mut latest.replaced);
         latest.acks.extend(replaced);
         latest.acks.push(frame.id);
+        latest.taken = true;
         Some(frame)
     }
 
@@ -281,15 +286,15 @@ fn watch(
                 }
             }
         }
-        let (acks, waiting) = {
+        let (acks, waiting, taken) = {
             let mut latest = lock(shared);
-            (std::mem::take(&mut latest.acks), latest.frame.is_some())
+            (
+                std::mem::take(&mut latest.acks),
+                latest.frame.is_some(),
+                std::mem::take(&mut latest.taken),
+            )
         };
-        // Look often only while a frame has just begun to wait for the view,
-        // so its acknowledgement leaves soon after it is drawn.
-        let since = waiting.then(|| *waiting_since.get_or_insert_with(Instant::now));
-        waiting_since = since;
-        let wanted = if since.is_some_and(|since| since.elapsed() < EAGER) {
+        let wanted = if eager(&mut waiting_since, waiting, taken, Instant::now()) {
             POLL
         } else {
             IDLE
@@ -326,6 +331,17 @@ fn watch(
             Err(_) => return,
         }
     }
+}
+
+/// Whether reads should be short: while a frame has waited for the view less
+/// than `EAGER`, so its acknowledgement leaves soon after it is drawn. A view
+/// that takes a frame is painting, so the wait starts again even when a newer
+/// frame already waits.
+fn eager(since: &mut Option<Instant>, waiting: bool, taken: bool, now: Instant) -> bool {
+    if taken || !waiting {
+        *since = None;
+    }
+    waiting && now.duration_since(*since.get_or_insert(now)) < EAGER
 }
 
 /// What one message from Chrome did.
@@ -421,6 +437,9 @@ fn page(port: u16, target: &str) -> Option<(Option<String>, Option<String>)> {
     loop {
         let read = stream.read(&mut chunk).ok().filter(|read| *read > 0)?;
         response.extend_from_slice(&chunk[..read]);
+        if response.len() > 2 * LISTING_BYTES {
+            return None;
+        }
         if let Some(listing) = listing(&response, target) {
             return listing;
         }
@@ -429,7 +448,8 @@ fn page(port: u16, target: &str) -> Option<(Option<String>, Option<String>)> {
 
 /// Read the page `target` from a response to `GET /json/list`, or `None`
 /// while the response is still incomplete. A page Chrome does not list, or a
-/// response that is not a target list, gives `Some(None)`.
+/// response that is not a target list or is larger than `LISTING_BYTES`,
+/// gives `Some(None)`.
 fn listing(response: &[u8], target: &str) -> Option<Option<(Option<String>, Option<String>)>> {
     let end = response.windows(4).position(|bytes| bytes == b"\r\n\r\n")?;
     let head = String::from_utf8_lossy(&response[..end]);
@@ -440,7 +460,13 @@ fn listing(response: &[u8], target: &str) -> Option<Option<(Option<String>, Opti
     }) else {
         return Some(None);
     };
-    let body = response.get(end + 4..end + 4 + length)?;
+    let Some(stop) = (end + 4)
+        .checked_add(length)
+        .filter(|_| length <= LISTING_BYTES)
+    else {
+        return Some(None);
+    };
+    let body = response.get(end + 4..stop)?;
     let Ok(targets) = serde_json::from_slice::<Vec<Value>>(body) else {
         return Some(None);
     };
@@ -537,6 +563,25 @@ mod tests {
         );
         // A tab Chrome no longer lists leaves the address to agent-browser's.
         assert_eq!(listing(response, "GONE"), Some(None));
+        // A stated length that overflows, or is far beyond any target list,
+        // is refused rather than waited for.
+        for length in [usize::MAX, LISTING_BYTES + 1] {
+            let response = format!("HTTP/1.1 200 OK\r\nContent-Length: {length}\r\n\r\n[]");
+            assert_eq!(listing(response.as_bytes(), "PAGE"), Some(None));
+        }
+    }
+
+    #[test]
+    fn taking_a_frame_keeps_reads_short_while_newer_frames_wait() {
+        let start = Instant::now();
+        let mut since = None;
+        assert!(eager(&mut since, true, false, start));
+        // A frame left waiting past `EAGER`: the view is not painting.
+        assert!(!eager(&mut since, true, false, start + EAGER));
+        // The view took one and a newer frame waits already.
+        assert!(eager(&mut since, true, true, start + EAGER));
+        assert!(eager(&mut since, true, false, start + EAGER + POLL));
+        assert!(!eager(&mut since, false, false, start + 2 * EAGER));
     }
 
     #[test]
