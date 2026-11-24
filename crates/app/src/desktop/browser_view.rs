@@ -337,6 +337,12 @@ fn refusal(
     }
 }
 
+impl Drop for BrowserView {
+    fn drop(&mut self) {
+        self.shapes.release(self.id);
+    }
+}
+
 impl Render for BrowserView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (t, c) = (tokens(), colors());
@@ -507,6 +513,11 @@ impl Shapes {
     /// `view` was chosen: it sizes the browser of `daemon` from now on.
     fn choose(&self, daemon: u32, view: u64) {
         self.0.borrow_mut().owners.insert(daemon, view);
+    }
+
+    /// `view` has gone: the browsers it sized go to the next view to ask.
+    fn release(&self, view: u64) {
+        self.0.borrow_mut().owners.retain(|_, owner| *owner != view);
     }
 
     /// Whether `view` sizes the browser of `daemon`: the view chosen last,
@@ -1003,6 +1014,9 @@ mod tests {
         assert!(shapes.may(10, second));
         // Another browser has its own.
         assert!(shapes.may(20, first));
+        // The chosen view goes: the next view to ask sizes its browsers.
+        shapes.release(second);
+        assert!(shapes.may(10, first));
     }
 
     #[test]
