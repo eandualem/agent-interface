@@ -1478,9 +1478,11 @@ page's address, HTTP or HTTPS only, in the person's Chrome by running
 `open <address>` when that fails. Each agent's headless Chrome registers as
 a running Google Chrome too, so plain `open -a` could hand the address to
 one of them; `-n` starts Chrome with the default profile, and Chrome's own
-single-instance check passes the address to the person's Chrome. A browser
-the daemon did not start, a headless page with no web address, and Linux
-leave the button disabled, with the reason in its tooltip.
+single-instance check passes the address to the person's Chrome. That
+needs the agent's Chrome to have its own `--user-data-dir`; a headless
+Chrome without one, a browser the daemon did not start, a headless page with
+no web address, and Linux leave the button disabled, with the reason in its
+tooltip.
 
 ### Bound native Policies
 

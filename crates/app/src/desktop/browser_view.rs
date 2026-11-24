@@ -171,15 +171,17 @@ impl BrowserView {
                         agent_browser::Window::Shown(chrome) => {
                             agent_browser::bring_forward(chrome);
                         }
-                        // Without a window, the person's own Chrome shows the page.
-                        agent_browser::Window::Headless => {
+                        // Without a window, the person's own Chrome shows the
+                        // page, unless the agent's Chrome may be using its profile.
+                        agent_browser::Window::Headless { own_profile: true } => {
                             if let Some(address) = view.address() {
                                 cx.background_executor()
                                     .spawn(async move { agent_browser::open_in_chrome(&address) })
                                     .detach();
                             }
                         }
-                        agent_browser::Window::NotStarted => {}
+                        agent_browser::Window::Headless { own_profile: false }
+                        | agent_browser::Window::NotStarted => {}
                     }
                 }
                 #[cfg(not(target_os = "macos"))]
@@ -193,22 +195,34 @@ impl BrowserView {
     /// Why Open in Chrome cannot be used now, if it cannot. `address` is the
     /// page's current address.
     fn open_refused(&self, address: Option<&str>) -> Option<&'static str> {
-        if cfg!(not(target_os = "macos")) {
-            return Some("Not available on Linux yet");
+        refusal(self.session.is_none(), self.window, address)
+    }
+}
+
+/// Why Open in Chrome cannot be used, if it cannot: `ended` once the browser
+/// has ended, `window` once known, and `address` the page's current address.
+fn refusal(
+    ended: bool,
+    window: Option<agent_browser::Window>,
+    address: Option<&str>,
+) -> Option<&'static str> {
+    use agent_browser::Window;
+    if cfg!(not(target_os = "macos")) {
+        return Some("Not available on Linux yet");
+    }
+    match window {
+        _ if ended => Some("The browser ended"),
+        None => Some("Looking for its window…"),
+        // Opening it could reach the agent's Chrome instead of the person's.
+        Some(Window::Headless { own_profile: false }) => {
+            Some("This browser has no profile of its own")
         }
-        match (&self.session, self.window) {
-            (None, _) => Some("The browser ended"),
-            (_, None) => Some("Looking for its window…"),
-            (_, Some(agent_browser::Window::Headless))
-                if address.and_then(agent_browser::web_address).is_none() =>
-            {
-                Some("This page has no web address to open")
-            }
-            (_, Some(agent_browser::Window::Headless)) => None,
-            (_, Some(agent_browser::Window::NotStarted)) => {
-                Some("agent-browser did not open this browser, so its window can't be found")
-            }
-            (_, Some(agent_browser::Window::Shown(_))) => None,
+        Some(Window::Headless { .. }) if address.and_then(agent_browser::web_address).is_none() => {
+            Some("This page has no web address to open")
+        }
+        Some(Window::Headless { .. } | Window::Shown(_)) => None,
+        Some(Window::NotStarted) => {
+            Some("agent-browser did not open this browser, so its window can't be found")
         }
     }
 }
@@ -591,6 +605,28 @@ mod tests {
         assert_eq!(tall.size, size(px(300.), px(600.)));
         // Smaller than the pane: made larger to fill it.
         assert_eq!(fit((64., 60.), area).size, area.size);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_headless_page_opens_only_with_a_web_address_and_a_profile_of_its_own() {
+        use agent_browser::Window;
+        let own = Some(Window::Headless { own_profile: true });
+        assert_eq!(refusal(false, own, Some("https://example.com/")), None);
+        for address in [Some("chrome://newtab/"), Some("about:blank"), None] {
+            assert_eq!(
+                refusal(false, own, address),
+                Some("This page has no web address to open")
+            );
+        }
+        assert_eq!(
+            refusal(
+                false,
+                Some(Window::Headless { own_profile: false }),
+                Some("https://example.com/")
+            ),
+            Some("This browser has no profile of its own")
+        );
     }
 
     #[test]

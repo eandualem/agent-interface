@@ -93,8 +93,9 @@ fn running(pid: u32) -> bool {
 pub enum Window {
     /// The Chrome process with the window.
     Shown(u32),
-    /// The daemon's Chrome runs headless.
-    Headless,
+    /// The daemon's Chrome runs headless, with a profile folder of its own
+    /// or, as far as can be told, the person's.
+    Headless { own_profile: bool },
     /// The daemon started no Chrome, as when it attached to a running
     /// browser or a provider's, so its window cannot be found.
     NotStarted,
@@ -132,7 +133,9 @@ fn chrome_in(processes: &str, daemon: u32) -> Option<(u32, &str)> {
 
 fn window_in(processes: &str, daemon: u32) -> Window {
     match chrome_in(processes, daemon) {
-        Some((_, command)) if command.contains(" --headless") => Window::Headless,
+        Some((_, command)) if command.contains(" --headless") => Window::Headless {
+            own_profile: profile_in(processes, daemon).is_some(),
+        },
         Some((pid, _)) => Window::Shown(pid),
         None => Window::NotStarted,
     }
@@ -303,10 +306,19 @@ mod tests {
   20     1 /usr/local/bin/agent-browser daemon
   21    20 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=0 --headless=new
   30     1 /usr/local/bin/agent-browser daemon
+  40     1 /usr/local/bin/agent-browser daemon
+  41    40 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=0 --headless=new --user-data-dir=/tmp/b
 ";
         assert_eq!(window_in(processes, 10), Window::Shown(11));
-        assert_eq!(window_in(processes, 20), Window::Headless);
+        assert_eq!(
+            window_in(processes, 20),
+            Window::Headless { own_profile: false }
+        );
         assert_eq!(window_in(processes, 30), Window::NotStarted);
+        assert_eq!(
+            window_in(processes, 40),
+            Window::Headless { own_profile: true }
+        );
     }
 
     #[test]
