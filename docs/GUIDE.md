@@ -378,8 +378,9 @@ be clicked or typed into. To act in the page, click **Open in Chrome**: it
 brings the agent's own Chrome window to the front, or, when the session runs
 without a window (headless), opens the page's address in your Chrome. When
 agent-browser attached to a browser it did not open, when a headless page
-has no web address, or on Linux, the button is disabled and says why when
-you point at it. When the browser closes the view says **The browser ended.**;
+has no web address, when the agent's browser has no profile of its own (it
+may be using your Chrome's), or on Linux, the button is disabled and says
+why when you point at it. When the browser closes the view says **The browser ended.**;
 if the page can't be reached the view says so and keeps trying. Only a
 browser that agent-browser opened itself can be watched; one it attached to
 can't be reached.
