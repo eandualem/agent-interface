@@ -322,6 +322,13 @@ fn follows_restart(remote: bool, error: bool, transient: bool, restarting: bool)
     !remote || !error || transient || restarting
 }
 
+/// The stopped agent a pane offers to start: none while a refusal the pane
+/// shows as it is interrupts its agent's restart, so the pane says what
+/// went wrong instead of inviting a second start.
+fn startable<'a>(agent: Option<&'a str>, followed: bool, restarts: &Restarts) -> Option<&'a str> {
+    agent.filter(|_| followed || !restarts.under_way())
+}
+
 /// Whether a remote pane says what went wrong instead of its pane's message:
 /// a pane that shows no stopped agent and no restart.
 fn remote_failure(remote: bool, agent: Option<&str>, restart: Option<&RestartShown>) -> bool {
@@ -1609,12 +1616,13 @@ impl Render for LiveTerminal {
         let none = Restarts::default();
         let restarts = if followed { &self.restarts } else { &none };
         let restart = restarts.shown(attached);
+        let agent = startable(self.agent.as_deref(), followed, &self.restarts);
         let drawn = drawn(
             restarts,
             self.error.as_deref(),
             self.error_is_end,
             attached,
-            self.agent.as_deref(),
+            agent,
             self.target.leaf.attachment.is_some(),
             self.target.is_sign_in(),
         );
@@ -1660,11 +1668,8 @@ impl Render for LiveTerminal {
                 let launching = self.launching;
                 // A remote pane that is no stopped agent and does not restart
                 // says what went wrong and offers to open it again.
-                let remote = remote_failure(
-                    self.target.remote().is_some(),
-                    self.agent.as_deref(),
-                    restart.as_ref(),
-                );
+                let remote =
+                    remote_failure(self.target.remote().is_some(), agent, restart.as_ref());
                 // In a short pane the text scrolls and the buttons stay.
                 el.child(
                     div()
@@ -2977,6 +2982,15 @@ mod tests {
         assert!(reopens_remote(false, true, &restarts));
         // Any other refusal still waits for a person.
         assert!(!reopens_remote(false, false, &restarts));
+        // It is shown as it is, with no start while the restart goes on;
+        // a stopped agent that does not restart still offers its start.
+        assert_eq!(startable(Some("builder"), false, &restarts), None);
+        assert!(remote_failure(true, None, None));
+        assert_eq!(startable(Some("builder"), true, &restarts), Some("builder"));
+        assert_eq!(
+            startable(Some("builder"), false, &Restarts::default()),
+            Some("builder")
+        );
         // It says it restarts, whether or not the roster says it stopped.
         let shown = restarts.shown(false);
         assert!(!remote_failure(true, None, shown.as_ref()));
