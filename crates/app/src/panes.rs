@@ -2601,15 +2601,16 @@ mod tests {
         let writing = Arc::clone(&panes);
         let input: Vec<u8> = (0..524288).map(|i| b'a' + (i % 26) as u8).collect();
         let expected = input.clone();
+        // Moving 6 MiB out and 512 KiB in takes about 3 s, but over a minute
+        // on a starved machine. A regression deadlocks instead, which a long
+        // wait still catches.
+        let patience = Duration::from_secs(120);
         let writer = thread::spawn(move || {
             let _ = sent.send(writing.send_input(pane, &input));
         });
-        received
-            .recv_timeout(Duration::from_secs(10))
-            .unwrap()
-            .unwrap();
+        received.recv_timeout(patience).unwrap().unwrap();
         writer.join().unwrap();
-        wait_for_row_with_diagnostics(&panes, &woken, pane, "DONE", || {
+        wait_for_row_with_diagnostics(&panes, &woken, pane, "DONE", patience, || {
             let actual = std::fs::read(&received_input);
             let received = actual.as_ref().map(|bytes| bytes.len());
             let mismatch = actual
@@ -3040,7 +3041,14 @@ mod tests {
 
     /// Waits until the pane's screen shows `text` on its first row.
     fn wait_for_row(panes: &Panes, woken: &mpsc::Receiver<()>, pane: PaneId, text: &str) {
-        wait_for_row_with_diagnostics(panes, woken, pane, text, String::new);
+        wait_for_row_with_diagnostics(
+            panes,
+            woken,
+            pane,
+            text,
+            Duration::from_secs(10),
+            String::new,
+        );
     }
 
     fn wait_for_row_with_diagnostics(
@@ -3048,9 +3056,10 @@ mod tests {
         woken: &mpsc::Receiver<()>,
         pane: PaneId,
         text: &str,
+        wait: Duration,
         diagnostics: impl Fn() -> String,
     ) {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + wait;
         let mut last_row = None;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
