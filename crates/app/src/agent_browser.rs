@@ -188,13 +188,18 @@ pub fn bring_forward(pid: u32) -> bool {
     chrome.activateWithOptions(options)
 }
 
-/// `address` if it is a web page's: Open in Chrome opens nothing else.
+/// `address` if it is a web page's, with a host: Open in Chrome opens
+/// nothing else.
 pub fn web_address(address: &str) -> Option<&str> {
-    let (scheme, _) = address.split_once("://")?;
-    ["http", "https"]
+    let (scheme, rest) = address.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    let web = ["http", "https"]
         .iter()
-        .any(|web| scheme.eq_ignore_ascii_case(web))
-        .then_some(address)
+        .any(|web| scheme.eq_ignore_ascii_case(web));
+    (web && !host.is_empty() && !host.starts_with(':')).then_some(address)
 }
 
 /// Open the web page `address` in the person's Chrome, or in their default
@@ -278,6 +283,12 @@ mod tests {
             "javascript:alert(1)",
             "chrome://newtab/",
             "-a",
+            "http://",
+            "https://?q",
+            "http:///x",
+            "https://#top",
+            "http://user@/x",
+            "http://:8080/",
         ] {
             assert_eq!(web_address(address), None, "{address}");
         }
