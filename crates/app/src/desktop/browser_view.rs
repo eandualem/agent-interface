@@ -302,6 +302,14 @@ impl BrowserView {
         }));
     }
 
+    /// This view is the one chosen: it sizes its browser, also one started
+    /// anew under another daemon.
+    pub fn chosen(&mut self) {
+        if let Some(session) = &self.session {
+            self.shapes.choose(session.pid, self.id);
+        }
+    }
+
     /// Why Open in Chrome cannot be used now, if it cannot. `address` is the
     /// page's current address.
     fn open_refused(&self, address: Option<&str>) -> Option<&'static str> {
@@ -674,10 +682,14 @@ impl super::Browser {
         if self.agent_browsers == found {
             return;
         }
-        for view in self.browser_views.values() {
+        for (id, view) in &self.browser_views {
+            let chosen = self.browser_chosen.as_ref() == Some(id);
             view.update(cx, |view, cx| {
                 let session = found.iter().find(|session| session.name == view.agent);
                 view.set_session(session.cloned(), cx);
+                if chosen {
+                    view.chosen();
+                }
             });
         }
         self.agent_browsers = found;
@@ -773,12 +785,14 @@ impl super::Browser {
                 }
             }
         }
+        let mut created = Vec::new();
         for (id, agent) in shown {
             if !self.browser_views.contains_key(&id) {
                 let session = self.agent_browser(&agent).cloned();
                 let shapes = self.browser_shapes.clone();
                 let view = cx.new(|cx| BrowserView::new(agent, session, shapes, cx));
-                self.browser_views.insert(id, view);
+                self.browser_views.insert(id.clone(), view);
+                created.push(id);
             }
         }
         // The view chosen last gives its browser its size, as tmux sizes a
@@ -788,7 +802,8 @@ impl super::Browser {
             .as_ref()
             .and_then(|layout| layout.model().pane().map(|leaf| leaf.id.clone()))
             .filter(|id| self.browser_views.contains_key(id));
-        if chosen != self.browser_chosen {
+        // A view made anew for the chosen pane claims too.
+        if chosen != self.browser_chosen || chosen.as_ref().is_some_and(|id| created.contains(id)) {
             if let Some(view) = chosen.as_ref().and_then(|id| self.browser_views.get(id)) {
                 view.update(cx, |view, cx| view.claim(true, cx));
             }
