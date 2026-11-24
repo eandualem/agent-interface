@@ -63,6 +63,8 @@ pub(super) struct BrowserView {
     attached: bool,
     /// Whether a failed resize has been logged.
     fit_failed: bool,
+    /// Tells this view from others in `shapes`.
+    id: u64,
 }
 
 impl BrowserView {
@@ -101,6 +103,10 @@ impl BrowserView {
             fitting: None,
             attached: false,
             fit_failed: false,
+            id: {
+                static VIEWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                VIEWS.fetch_add(1, Ordering::Relaxed)
+            },
         };
         view.set_session(session, cx);
         view
@@ -130,14 +136,12 @@ impl BrowserView {
             self.window = None;
             self.live = false;
             self.attached = false;
-            if cfg!(target_os = "macos")
-                && let Some(pid) = session.as_ref().map(|session| session.pid)
-            {
+            if let Some(pid) = session.as_ref().map(|session| session.pid) {
                 self.check_window(pid, false, None, cx);
             }
-        } else if cfg!(target_os = "macos")
-            // Only a missing window can change for the same daemon.
-            && matches!(self.window, None | Some(agent_browser::Window::NotStarted))
+        } else if
+        // Only a missing window can change for the same daemon.
+        matches!(self.window, None | Some(agent_browser::Window::NotStarted))
             && let Some(pid) = session.as_ref().map(|session| session.pid)
         {
             // The daemon may have started its Chrome since the last look.
@@ -154,7 +158,6 @@ impl BrowserView {
         let live = self.stream.as_ref().map(Stream::state) == Some(State::Live);
         if live
             && !self.live
-            && cfg!(target_os = "macos")
             // Only a missing window can change for the same daemon.
             && matches!(self.window, None | Some(agent_browser::Window::NotStarted))
             && let Some(pid) = self.session.as_ref().map(|session| session.pid)
@@ -178,8 +181,12 @@ impl BrowserView {
     }
 
     /// Give the agent's browser this pane's size once the pane holds still:
-    /// the view was resized, chosen, or shows a page for the first time.
-    pub fn claim(&mut self, cx: &mut Context<Self>) {
+    /// the view shows a page for the first time, was resized, or, with
+    /// `chosen`, was chosen, which makes it the view that sizes the browser.
+    pub fn claim(&mut self, chosen: bool, cx: &mut Context<Self>) {
+        if chosen && let Some(session) = &self.session {
+            self.shapes.choose(session.pid, self.id);
+        }
         self.settle.moved(Instant::now());
         self.fitting = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SETTLE).await;
@@ -190,7 +197,7 @@ impl BrowserView {
     /// Set the agent's viewport to the pane's size in points, at the window's
     /// scale, unless the page has it already.
     fn fit(&mut self, cx: &mut Context<Self>) {
-        if !self.settle.due(Instant::now()) {
+        if !self.settle.due(Instant::now()) || !sizable(self.window) {
             return;
         }
         let (Some((across, down, scale)), Some(session)) = (self.area.get(), &self.session) else {
@@ -199,22 +206,41 @@ impl BrowserView {
         let Some(target) = session.target.clone() else {
             return;
         };
-        let viewport = viewport((across, down), scale);
-        let shown = self.frame.as_ref().map(|frame| (frame.width, frame.height));
-        if !self.shapes.wanted((session.pid, target), viewport, shown) {
+        if !self.shapes.may(session.pid, self.id) {
             return;
         }
-        let session = session.clone();
-        let set = cx
-            .background_executor()
-            .spawn(async move { agent_browser::set_viewport(&session, viewport) });
+        let (page, viewport) = ((session.pid, target), viewport((across, down), scale));
+        let shown = self.frame.as_ref().map(|frame| (frame.width, frame.height));
+        if !self.shapes.needed(&page, viewport, shown) || !self.shapes.start(&page, viewport) {
+            return;
+        }
+        let (session, shapes) = (session.clone(), self.shapes.clone());
         cx.spawn(async move |this, cx| {
-            if let Err(error) = set.await {
-                let _ = this.update(cx, |view, _| {
-                    if !std::mem::replace(&mut view.fit_failed, true) {
-                        tracing::warn!(event = "browser_viewport_failed", %error, "Agent browser not resized");
+            let mut viewport = viewport;
+            loop {
+                let (asked, size) = (session.clone(), viewport);
+                let set = cx
+                    .background_executor()
+                    .spawn(async move { agent_browser::set_viewport(&asked, size) })
+                    .await;
+                match &set {
+                    // The session ended since discovery last looked.
+                    Err(error) if error.kind() == std::io::ErrorKind::NotConnected => {
+                        tracing::debug!(event = "browser_viewport_ended", %error, "Agent browser ended before its resize");
                     }
-                });
+                    Err(error) => {
+                        let _ = this.update(cx, |view, _| {
+                            if !std::mem::replace(&mut view.fit_failed, true) {
+                                tracing::warn!(event = "browser_viewport_failed", %error, "Agent browser not resized");
+                            }
+                        });
+                    }
+                    Ok(()) => {}
+                }
+                match shapes.ended(&page, viewport, set.is_ok()) {
+                    Some(next) => viewport = next,
+                    None => break,
+                }
             }
         })
         .detach();
@@ -265,6 +291,11 @@ impl BrowserView {
                 }
                 #[cfg(not(target_os = "macos"))]
                 let _ = (open, address);
+                // A browser the daemon started may now be given the pane's
+                // size, which its page's first frame may have asked for.
+                if !sizable(view.window) && sizable(Some(window)) {
+                    view.claim(false, cx);
+                }
                 view.window = Some(window);
                 cx.notify();
             });
@@ -319,7 +350,7 @@ impl Render for BrowserView {
         }
         if !self.attached && self.frame.is_some() {
             self.attached = true;
-            self.claim(cx);
+            self.claim(false, cx);
         }
         let address = self.address();
         let site = site_name(self.title().as_deref(), address.as_deref());
@@ -399,7 +430,7 @@ impl Render for BrowserView {
                         );
                         if drawn.replace(Some(size)) != Some(size) {
                             cx.defer(move |cx| {
-                                let _ = view.update(cx, |view, cx| view.claim(cx));
+                                let _ = view.update(cx, |view, cx| view.claim(false, cx));
                             });
                         }
                         let shown = fit(shape, area);
@@ -440,21 +471,83 @@ fn viewport(area: (f32, f32), scale: f32) -> Viewport {
     }
 }
 
-/// The viewport last set for each page, by its browser's daemon and its tab.
-/// Every view shares it, so the view resized or chosen last sets the size,
-/// as tmux sizes a window for its latest client.
+/// Whether the agent's browser may be given the pane's size: only one its
+/// daemon started. One agent-browser attached to may be the person's own.
+fn sizable(window: Option<agent_browser::Window>) -> bool {
+    matches!(
+        window,
+        Some(agent_browser::Window::Headless { .. } | agent_browser::Window::Shown(_))
+    )
+}
+
+/// Which view sizes each agent's browser, and the viewport set for each of
+/// its pages, shared by every view.
 #[derive(Clone, Default)]
-pub(super) struct Shapes(Rc<RefCell<HashMap<(u32, String), Viewport>>>);
+pub(super) struct Shapes(Rc<RefCell<Record>>);
+
+#[derive(Default)]
+struct Record {
+    /// The view that sizes each browser, by its daemon: the view chosen
+    /// last, as tmux sizes a window for its latest client.
+    owners: HashMap<u32, u64>,
+    /// Each page, by its browser's daemon and its tab.
+    pages: HashMap<(u32, String), Page>,
+}
+
+#[derive(Default)]
+struct Page {
+    /// The viewport last set.
+    set: Option<Viewport>,
+    /// Whether a command is running, and the viewport to send after it.
+    sending: bool,
+    next: Option<Viewport>,
+}
 
 impl Shapes {
+    /// `view` was chosen: it sizes the browser of `daemon` from now on.
+    fn choose(&self, daemon: u32, view: u64) {
+        self.0.borrow_mut().owners.insert(daemon, view);
+    }
+
+    /// Whether `view` sizes the browser of `daemon`: the view chosen last,
+    /// or the first to ask while none has been chosen.
+    fn may(&self, daemon: u32, view: u64) -> bool {
+        *self.0.borrow_mut().owners.entry(daemon).or_insert(view) == view
+    }
+
     /// Whether `page`, showing a page of `shown` CSS pixels, needs
-    /// `viewport` set, which is recorded as set. It does when the last one
-    /// set differs, or when the page shows another size, as after the agent
-    /// set a viewport of its own.
-    fn wanted(&self, page: (u32, String), viewport: Viewport, shown: Option<(f32, f32)>) -> bool {
-        let changed = self.0.borrow_mut().insert(page, viewport) != Some(viewport);
+    /// `viewport`: the last one set differs, or the page shows another size.
+    fn needed(&self, page: &(u32, String), viewport: Viewport, shown: Option<(f32, f32)>) -> bool {
+        let set = self.0.borrow().pages.get(page).and_then(|page| page.set);
         let size = shown.map(|(width, height)| (width.round() as u32, height.round() as u32));
-        changed || size != Some((viewport.width, viewport.height))
+        set != Some(viewport) || size != Some((viewport.width, viewport.height))
+    }
+
+    /// Whether to send `viewport` for `page` now; while a command runs, it is
+    /// sent after that one instead.
+    fn start(&self, page: &(u32, String), viewport: Viewport) -> bool {
+        let mut record = self.0.borrow_mut();
+        let page = record.pages.entry(page.clone()).or_default();
+        if page.sending {
+            page.next = Some(viewport);
+            return false;
+        }
+        page.sending = true;
+        true
+    }
+
+    /// The command that sent `viewport` for `page` ended, having `set` it or
+    /// not. Returns the viewport to send next, if another is waiting.
+    fn ended(&self, page: &(u32, String), viewport: Viewport, set: bool) -> Option<Viewport> {
+        let mut record = self.0.borrow_mut();
+        let page = record.pages.entry(page.clone()).or_default();
+        if set {
+            page.set = Some(viewport);
+        }
+        page.sending = false;
+        let next = page.next.take().filter(|next| page.set != Some(*next))?;
+        page.sending = true;
+        Some(next)
     }
 }
 
@@ -678,7 +771,7 @@ impl super::Browser {
             .filter(|id| self.browser_views.contains_key(id));
         if chosen != self.browser_chosen {
             if let Some(view) = chosen.as_ref().and_then(|id| self.browser_views.get(id)) {
-                view.update(cx, |view, cx| view.claim(cx));
+                view.update(cx, |view, cx| view.claim(true, cx));
             }
             self.browser_chosen = chosen;
         }
@@ -816,39 +909,71 @@ mod tests {
         assert_eq!(viewport((900., 1300.), 2.).scale, 2.);
     }
 
-    #[test]
-    fn a_viewport_is_set_only_when_it_changes() {
-        let shapes = Shapes::default();
-        let page = || (10, "PAGE".to_owned());
-        let at = |width, scale| Viewport {
+    fn page() -> (u32, String) {
+        (10, "PAGE".into())
+    }
+
+    fn at(width: u32, scale: f32) -> Viewport {
+        Viewport {
             width,
             height: 600,
             scale,
-        };
-        let shown = |width: u32| Some((width as f32, 600.));
-        assert!(shapes.wanted(page(), at(800, 2.), None));
-        assert!(!shapes.wanted(page(), at(800, 2.), shown(800)));
-        assert!(shapes.wanted(page(), at(801, 2.), shown(800)));
-        assert!(shapes.wanted(page(), at(801, 1.), shown(801)));
+        }
+    }
+
+    fn shown(width: u32) -> Option<(f32, f32)> {
+        Some((width as f32, 600.))
+    }
+
+    /// Send `viewport` for the page as a view does, with the command ending
+    /// at once, and say whether it was sent.
+    fn send(shapes: &Shapes, viewport: Viewport, showing: Option<(f32, f32)>) -> bool {
+        let sent = shapes.needed(&page(), viewport, showing) && shapes.start(&page(), viewport);
+        if sent {
+            assert_eq!(shapes.ended(&page(), viewport, true), None);
+        }
+        sent
+    }
+
+    #[test]
+    fn a_viewport_is_set_only_when_it_changes() {
+        let shapes = Shapes::default();
+        assert!(send(&shapes, at(800, 2.), None));
+        assert!(!send(&shapes, at(800, 2.), shown(800)));
+        assert!(send(&shapes, at(801, 2.), shown(800)));
+        assert!(send(&shapes, at(801, 1.), shown(801)));
         // Another tab of the same browser has its own.
-        assert!(shapes.wanted((10, "TAB".into()), at(801, 1.), shown(801)));
-        // The agent set another size itself: the pane's is set again.
-        assert!(shapes.wanted(page(), at(801, 1.), shown(1280)));
+        let tab = (10, "TAB".to_owned());
+        assert!(shapes.needed(&tab, at(801, 1.), shown(801)));
+        // The agent set another size itself: the next trigger sets the pane's.
+        assert!(send(&shapes, at(801, 1.), shown(1280)));
     }
 
     #[test]
     fn the_frame_our_own_size_brings_is_not_the_agents() {
         let shapes = Shapes::default();
-        let page = || (10, "PAGE".to_owned());
-        let pane = Viewport {
-            width: 900,
-            height: 1300,
-            scale: 2.,
-        };
-        // Sent while the page still shows the agent's 1280 by 633.
-        assert!(shapes.wanted(page(), pane, Some((1280., 633.))));
+        // Sent while the page still shows the agent's 1280 by 600.
+        assert!(send(&shapes, at(900, 2.), shown(1280)));
         // The page then shows the size sent: the next trigger sends nothing.
-        assert!(!shapes.wanted(page(), pane, Some((900., 1300.))));
+        assert!(!send(&shapes, at(900, 2.), shown(900)));
+    }
+
+    #[test]
+    fn a_viewport_is_recorded_once_set_and_sent_one_at_a_time() {
+        let shapes = Shapes::default();
+        assert!(shapes.start(&page(), at(800, 2.)));
+        // A newer size waits for the command running, and the last one wins.
+        assert!(!shapes.start(&page(), at(700, 2.)));
+        assert!(!shapes.start(&page(), at(600, 2.)));
+        // The first failed: nothing is recorded, and the newest follows.
+        assert_eq!(shapes.ended(&page(), at(800, 2.), false), Some(at(600, 2.)));
+        assert!(shapes.needed(&page(), at(800, 2.), shown(800)));
+        assert_eq!(shapes.ended(&page(), at(600, 2.), true), None);
+        assert!(!shapes.needed(&page(), at(600, 2.), shown(600)));
+        // A size already set is not sent again after the command running.
+        assert!(shapes.start(&page(), at(500, 2.)));
+        assert!(!shapes.start(&page(), at(600, 2.)));
+        assert_eq!(shapes.ended(&page(), at(500, 2.), false), None);
     }
 
     #[test]
@@ -865,21 +990,28 @@ mod tests {
     }
 
     #[test]
-    fn the_view_moved_or_chosen_last_gives_the_browser_its_size() {
-        let shapes = Shapes::default();
-        let page = || (10, "PAGE".to_owned());
-        let at = |width| Viewport {
-            width,
-            height: 600,
-            scale: 2.,
-        };
-        let shown = |width: u32| Some((width as f32, 600.));
-        // Two views of one browser, each resized in turn.
-        assert!(shapes.wanted(page(), at(800), shown(800)));
-        assert!(shapes.wanted(page(), at(400), shown(800)));
-        // The first is chosen again: its size is set again.
-        assert!(shapes.wanted(page(), at(800), shown(400)));
-        assert!(!shapes.wanted(page(), at(800), shown(800)));
+    fn the_view_chosen_last_sizes_the_browser() {
+        let (shapes, first, second) = (Shapes::default(), 1, 2);
+        // Before any choice, the first view to ask sizes it.
+        assert!(shapes.may(10, second));
+        shapes.choose(10, first);
+        // A window resize moves both views: only the chosen one counts.
+        assert!(shapes.may(10, first));
+        assert!(!shapes.may(10, second));
+        shapes.choose(10, second);
+        assert!(!shapes.may(10, first));
+        assert!(shapes.may(10, second));
+        // Another browser has its own.
+        assert!(shapes.may(20, first));
+    }
+
+    #[test]
+    fn only_a_browser_the_daemon_started_is_resized() {
+        use agent_browser::Window;
+        assert!(sizable(Some(Window::Headless { own_profile: true })));
+        assert!(sizable(Some(Window::Shown(11))));
+        assert!(!sizable(Some(Window::NotStarted)));
+        assert!(!sizable(None));
     }
 
     #[test]
