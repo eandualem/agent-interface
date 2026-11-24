@@ -272,6 +272,7 @@ impl Render for BrowserView {
             div()
                 .min_w_0()
                 .overflow_hidden()
+                .whitespace_nowrap()
                 .text_ellipsis()
                 .child(name)
         };
