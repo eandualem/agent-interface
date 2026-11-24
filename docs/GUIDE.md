@@ -199,7 +199,9 @@ lasts about 30 minutes after the run's output ends; then the pane says it has
 ended and does not reconnect. A rotating
 ring marks working or starting agents; labels distinguish starting, working,
 blocked, needs you, idle and unknown. Failed requests show unavailable or stale
-data, rather than treating the last successful state as current. These are
+data, rather than treating the last successful state as current. When Agent
+Backbone does not answer in time, the sidebar says "not answering" and how long
+ago it last read the agents. These are
 polled observations, so changes appear after the next successful response.
 
 ## Organize workspaces and tabs

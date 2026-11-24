@@ -1171,8 +1171,11 @@ mod tests {
         let good = observation(&profile, "busy");
         agents.update_bound(good.clone());
         assert!(!agents.not_answering());
+        // A missed read inside the tolerance shows the last roster as current.
         let mut timed_out = good.clone();
         timed_out.error = Some(Error::Unavailable);
+        agents.update_bound(timed_out.clone());
+        assert!(!agents.not_answering());
         timed_out.snapshot.observed_at = std::time::Instant::now().checked_sub(TOLERANCE);
         agents.update_bound(timed_out.clone());
         assert!(agents.not_answering());
