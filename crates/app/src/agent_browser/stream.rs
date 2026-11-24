@@ -13,7 +13,10 @@
 //! The client sends three methods only: `Page.startScreencast`,
 //! `Page.screencastFrameAck` and `Page.stopScreencast`. No input, script or
 //! emulation reaches the page. The page's address and title are read from
-//! Chrome's target list. Dropping the [`Stream`] stops the screencast.
+//! Chrome's target list. After some navigations Chrome sends no frame of the
+//! new page until it changes again, so when the address changes and no frame
+//! follows, the client restarts the screencast once, which sends the page as
+//! it is. Dropping the [`Stream`] stops the screencast.
 
 use std::{
     io::{ErrorKind, Read, Write},
@@ -50,6 +53,9 @@ const PAGE: Duration = Duration::from_secs(2);
 const LISTING: Duration = Duration::from_millis(500);
 /// The largest target list the client reads. Chrome's is a few kilobytes.
 const LISTING_BYTES: usize = 1 << 20;
+/// How long after the page's address changes a frame has to arrive before
+/// the client restarts the screencast.
+const REFRESH: Duration = Duration::from_millis(1500);
 
 /// Whether frames are arriving.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -277,9 +283,17 @@ fn watch(
     let mut timeout = IDLE;
     let mut listed: Option<Instant> = None;
     let mut waiting_since: Option<Instant> = None;
+    let mut refresh = Refresh::default();
     loop {
         if shared.stop.load(Ordering::Relaxed) {
             send(socket, Outgoing::Stop);
+            return;
+        }
+        // A restart Chrome refuses, as during a change of renderer, ends the
+        // connection, and `run` connects again.
+        if refresh.due(Instant::now())
+            && !(send(socket, Outgoing::Stop) && send(socket, Outgoing::Start))
+        {
             return;
         }
         if listed.is_none_or(|at| at.elapsed() >= PAGE) {
@@ -287,6 +301,7 @@ fn watch(
             // Unlisted, the view shows the address agent-browser recorded,
             // which follows navigation; a stale listed one would not.
             let (address, title) = page(port, target).unwrap_or_default();
+            refresh.listed(address.as_deref(), Instant::now());
             {
                 let mut latest = lock(shared);
                 if (&latest.address, &latest.title) != (&address, &title) {
@@ -322,7 +337,10 @@ fn watch(
         }
         match socket.read() {
             Ok(Message::Text(text)) => match receive(&text, shared) {
-                Received::Changed => wake(),
+                Received::Changed => {
+                    refresh.framed();
+                    wake();
+                }
                 Received::Nothing => {}
                 Received::Refused => return,
             },
@@ -340,6 +358,49 @@ fn watch(
             }
             Err(_) => return,
         }
+    }
+}
+
+/// When to restart the screencast: once after the page's address changes,
+/// if no frame has come within `REFRESH`. A page that keeps its address is
+/// never restarted, however long it sends nothing.
+#[derive(Default)]
+struct Refresh {
+    /// The address Chrome last listed.
+    address: Option<String>,
+    /// When the address changed, while no frame has come since.
+    changed: Option<Instant>,
+}
+
+impl Refresh {
+    /// Chrome listed `address`; none when the list could not be read.
+    fn listed(&mut self, address: Option<&str>, now: Instant) {
+        let Some(address) = address else {
+            return;
+        };
+        if self.address.as_deref() != Some(address) {
+            // The first address is no change: a new screencast sends a frame.
+            if self.address.is_some() {
+                self.changed = Some(now);
+            }
+            self.address = Some(address.to_owned());
+        }
+    }
+
+    /// A frame came, so the view shows the page.
+    fn framed(&mut self) {
+        self.changed = None;
+    }
+
+    /// Whether to restart now. Each change restarts at most once.
+    fn due(&mut self, now: Instant) -> bool {
+        let due = self
+            .changed
+            .is_some_and(|at| now.duration_since(at) >= REFRESH);
+        if due {
+            self.changed = None;
+        }
+        due
     }
 }
 
@@ -592,6 +653,36 @@ mod tests {
         assert!(eager(&mut since, true, true, start + EAGER));
         assert!(eager(&mut since, true, false, start + EAGER + POLL));
         assert!(!eager(&mut since, false, false, start + 2 * EAGER));
+    }
+
+    #[test]
+    fn a_new_address_without_a_frame_restarts_once() {
+        let start = Instant::now();
+        let mut refresh = Refresh::default();
+        refresh.listed(Some("https://example.com/a"), start);
+        // The first address, and the same one listed again, are no change.
+        refresh.listed(Some("https://example.com/a"), start + PAGE);
+        assert!(!refresh.due(start + PAGE + REFRESH));
+        // A new address and no frame: one restart, not a second.
+        let moved = start + 2 * PAGE;
+        refresh.listed(Some("https://example.com/b"), moved);
+        refresh.listed(None, moved + PAGE);
+        assert!(!refresh.due(moved + REFRESH / 2));
+        assert!(refresh.due(moved + REFRESH));
+        refresh.listed(Some("https://example.com/b"), moved + PAGE);
+        assert!(!refresh.due(moved + 2 * REFRESH));
+        // A frame after the change: no restart.
+        let again = moved + 2 * PAGE;
+        refresh.listed(Some("https://example.com/c"), again);
+        refresh.framed();
+        assert!(!refresh.due(again + REFRESH));
+    }
+
+    #[test]
+    fn a_refused_restart_ends_the_connection() {
+        let error =
+            r#"{"id":7,"error":{"code":-32000,"message":"Not attached to an active page"}}"#;
+        assert_eq!(receive(error, &shared()), Received::Refused);
     }
 
     #[test]

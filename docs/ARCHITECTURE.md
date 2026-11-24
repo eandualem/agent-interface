@@ -1461,7 +1461,12 @@ address is the one in `<session>.target`. A hidden or closed
 view stops the screencast. When the page can't be reached, the client tries
 again every two seconds; when discovery no longer finds the daemon, the view
 says the browser ended. A new tab bound in `<session>.target` starts a new
-screencast.
+screencast. After some navigations Chrome sends no frame of the new page
+until it changes again, so when the listed address changes and no frame
+follows within 1.5 seconds, the client stops and starts the screencast once,
+which sends the page as it is; a page that keeps its address is never
+restarted. If Chrome refuses the restart, as during a change of renderer,
+the client connects again.
 
 agent-browser records whether a session is headless only in its daemon's
 memory. The view reads it from the daemon's Chrome child process: its command
