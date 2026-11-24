@@ -1443,10 +1443,10 @@ mod tests {
 
     #[test]
     fn a_view_whose_read_could_not_be_made_says_how_old_its_data_is() {
-        let read = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(40));
+        let read = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(400));
         assert_eq!(
             stale_banner(NOT_ANSWERING, read),
-            "Backbone is not answering · last read 40s ago"
+            "Backbone is not answering · last read 6m ago"
         );
         assert_eq!(
             stale_banner(views::UNAVAILABLE, read),

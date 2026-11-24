@@ -243,13 +243,17 @@ impl Inbox {
                 let live = || running.load(Ordering::Acquire);
                 while live() {
                     let watched = c.watch_peers(&mut cursor, &live, &mut || {
+                        // A refusal stands until the stream opens again.
+                        ended.store(false, Ordering::Release);
                         opened.store(true, Ordering::Release);
                         let _ = tx.try_send(());
                     });
                     if !live() {
                         break;
                     }
-                    ended.store(watched.is_err_and(|e| !lost(e)), Ordering::Release);
+                    if watched.is_err_and(|e| !lost(e)) {
+                        ended.store(true, Ordering::Release);
+                    }
                     opened.store(false, Ordering::Release);
                     let _ = tx.try_send(());
                     for _ in 0..12 {

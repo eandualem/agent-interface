@@ -791,6 +791,8 @@ impl LiveAgents {
             }
             changed
         };
+        // The wording, and the age it gives, change while the roster stays.
+        let said = self.not_answering_text();
         self.0.current.borrow_mut().not_answering =
             update.error == Some(agent_interface_roster::profiles::Error::Unavailable);
         let roster = match update.error {
@@ -806,7 +808,13 @@ impl LiveAgents {
                 }
             }
         };
-        runs || roster
+        runs || roster || said != self.not_answering_text()
+    }
+
+    /// What the agents row says while Backbone is not answering.
+    fn not_answering_text(&self) -> Option<String> {
+        self.not_answering()
+            .then(|| not_answering(self.observed_at()))
     }
 
     fn take_update(&self) -> Option<bool> {
@@ -1180,9 +1188,10 @@ mod tests {
         agents.update_bound(timed_out.clone());
         assert!(agents.not_answering());
         // A refusal is Backbone's answer, and keeps saying unavailable.
+        // The same retained roster still repaints when the wording changes.
         let mut refused = timed_out;
         refused.error = Some(Error::Refused(401));
-        agents.update_bound(refused);
+        assert!(agents.update_bound(refused));
         assert!(!agents.not_answering());
         agents.update_bound(good);
         assert!(!agents.not_answering());
