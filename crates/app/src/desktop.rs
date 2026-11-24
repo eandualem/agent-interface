@@ -806,6 +806,9 @@ struct Browser {
     browser_panes: HashMap<String, String>,
     /// The view in each shown Browser pane.
     browser_views: HashMap<String, gpui::Entity<browser_view::BrowserView>>,
+    /// The Browser pane last chosen: its view gives its agent's browser the
+    /// pane's shape.
+    browser_chosen: Option<String>,
     /// The section each pane opening Reports & updates shows once its view
     /// appears, and the pane whose save is still deciding its choice.
     opening_sections: HashMap<String, views::Section>,

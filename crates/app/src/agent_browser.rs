@@ -247,6 +247,68 @@ fn chrome(address: &str) -> [&str; 5] {
     ["-n", "-a", "Google Chrome", "--args", address]
 }
 
+/// Folders agent-browser is installed in when `PATH` lacks them, as for an
+/// app started from the Finder.
+const INSTALLED: [&str; 2] = ["/opt/homebrew/bin", "/usr/local/bin"];
+
+/// The agent-browser command: on `PATH`, else where Homebrew installs it.
+fn command() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path)
+        .chain(INSTALLED.iter().map(PathBuf::from))
+        .map(|folder| folder.join("agent-browser"))
+        .find(|file| file.is_file())
+}
+
+/// Give `session`'s browser a viewport of `width` by `height` CSS pixels,
+/// through agent-browser itself, so its own record of the page stays right.
+/// Blocks until agent-browser answers.
+pub fn set_viewport(session: &Session, width: u32, height: u32) -> std::io::Result<()> {
+    use std::process::{Command, Stdio};
+    let error = |kind, text| Err(std::io::Error::new(kind, text));
+    // The folder discovery found the session in.
+    let Some(folder) = socket_dir() else {
+        return error(std::io::ErrorKind::NotFound, "no agent-browser folder");
+    };
+    // agent-browser starts a new browser for a session that has ended, so
+    // look again that this one still runs.
+    if !sessions(&folder)
+        .iter()
+        .any(|running| running.name == session.name && running.pid == session.pid)
+    {
+        return error(std::io::ErrorKind::NotFound, "the session ended");
+    }
+    let Some(program) = command() else {
+        return error(std::io::ErrorKind::NotFound, "agent-browser not found");
+    };
+    let mut run = Command::new(program);
+    run.args(viewport_args(&session.name, width, height))
+        .env("AGENT_BROWSER_SOCKET_DIR", folder)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let status = run.status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!("agent-browser {status}")))
+    }
+}
+
+/// The arguments of `set_viewport`. The final 2 keeps the page at twice its
+/// CSS resolution: without it agent-browser sets the scale to 1.
+fn viewport_args(session: &str, width: u32, height: u32) -> [String; 7] {
+    [
+        "--session".into(),
+        session.into(),
+        "set".into(),
+        "viewport".into(),
+        width.to_string(),
+        height.to_string(),
+        "2".into(),
+    ]
+}
+
 /// Each agent's session: a session named exactly as one of `agents`.
 /// Sessions that match no agent are left out.
 pub fn by_agent<'a>(
@@ -281,6 +343,14 @@ mod tests {
         let rows = by_agent(&found, ["coder", "reviewer", "Coder-2"]);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows["coder"], found[0]);
+    }
+
+    #[test]
+    fn the_viewport_is_set_at_twice_its_resolution() {
+        assert_eq!(
+            viewport_args("coder", 1280, 1460),
+            ["--session", "coder", "set", "viewport", "1280", "1460", "2"]
+        );
     }
 
     #[test]

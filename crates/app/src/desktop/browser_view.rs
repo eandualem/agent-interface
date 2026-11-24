@@ -7,9 +7,14 @@
 //! browser has no window. The pane is saved as an empty pane, so a Browser
 //! view is not restored.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    cell::Cell,
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 use futures::{StreamExt, channel::mpsc};
@@ -46,6 +51,15 @@ pub(super) struct BrowserView {
     woken: Arc<AtomicBool>,
     wake: mpsc::UnboundedSender<()>,
     _woken: Task<()>,
+    /// The size in points the page was last drawn in.
+    area: Rc<Cell<Option<(f32, f32)>>>,
+    /// When to give the agent's browser the pane's shape, and the wait for it.
+    settle: Settle,
+    fitting: Option<Task<()>>,
+    /// Whether the page's first frame has asked for the pane's shape.
+    attached: bool,
+    /// Whether a failed resize has been logged.
+    fit_failed: bool,
 }
 
 impl BrowserView {
@@ -73,6 +87,11 @@ impl BrowserView {
             woken,
             wake,
             _woken: task,
+            area: Rc::default(),
+            settle: Settle::default(),
+            fitting: None,
+            attached: false,
+            fit_failed: false,
         };
         view.set_session(session, cx);
         view
@@ -101,6 +120,7 @@ impl BrowserView {
                 });
             self.window = None;
             self.live = false;
+            self.attached = false;
             if cfg!(target_os = "macos")
                 && let Some(pid) = session.as_ref().map(|session| session.pid)
             {
@@ -146,6 +166,49 @@ impl BrowserView {
     fn address(&self) -> Option<String> {
         let (listed, _) = self.stream.as_ref().map(Stream::page).unwrap_or_default();
         listed.or_else(|| self.session.as_ref()?.address.clone())
+    }
+
+    /// Give the agent's browser this pane's shape once the pane holds still:
+    /// the view was resized, chosen, or shows a page for the first time.
+    pub fn claim(&mut self, cx: &mut Context<Self>) {
+        self.settle.moved(Instant::now());
+        self.fitting = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SETTLE).await;
+            let _ = this.update(cx, |view, cx| view.fit(cx));
+        }));
+    }
+
+    /// Set the agent's viewport to the page's width and the height that
+    /// gives it the pane's shape, unless it has that shape already.
+    fn fit(&mut self, cx: &mut Context<Self>) {
+        if !self.settle.due(Instant::now()) {
+            return;
+        }
+        let (Some(frame), Some(area), Some(session)) =
+            (&self.frame, self.area.get(), &self.session)
+        else {
+            return;
+        };
+        let Some(height) = viewport_height(frame.width, area) else {
+            return;
+        };
+        if !worth(height, frame.height) {
+            return;
+        }
+        let (session, width) = (session.clone(), frame.width.round() as u32);
+        let set = cx
+            .background_executor()
+            .spawn(async move { agent_browser::set_viewport(&session, width, height) });
+        cx.spawn(async move |this, cx| {
+            if let Err(error) = set.await {
+                let _ = this.update(cx, |view, _| {
+                    if !std::mem::replace(&mut view.fit_failed, true) {
+                        tracing::warn!(event = "browser_viewport_failed", %error, "Agent browser not resized");
+                    }
+                });
+            }
+        })
+        .detach();
     }
 
     /// The frames holding a texture, to release when the view goes.
@@ -245,6 +308,10 @@ impl Render for BrowserView {
         {
             let _ = window.drop_image(old.image);
         }
+        if !self.attached && self.frame.is_some() {
+            self.attached = true;
+            self.claim(cx);
+        }
         let address = self.address();
         let site = site_name(self.title().as_deref(), address.as_deref());
         let refused = self.open_refused(address.as_deref());
@@ -312,9 +379,16 @@ impl Render for BrowserView {
             // full-resolution frame.
             (_, Some(frame), _) => {
                 let (image, shape) = (frame.image.clone(), (frame.width, frame.height));
+                let (drawn, view) = (self.area.clone(), cx.entity().downgrade());
                 canvas(
                     |_, _, _| {},
-                    move |area, (), window, _| {
+                    move |area, (), window, cx| {
+                        let size = (f32::from(area.size.width), f32::from(area.size.height));
+                        if drawn.replace(Some(size)) != Some(size) {
+                            cx.defer(move |cx| {
+                                let _ = view.update(cx, |view, cx| view.claim(cx));
+                            });
+                        }
                         let shown = fit(shape, area);
                         let _ =
                             window.paint_image(shown, shown, Corners::default(), image, 0, false);
@@ -336,6 +410,50 @@ impl Render for BrowserView {
             .bg(c.surface)
             .child(header)
             .child(div().flex_1().min_h_0().child(body))
+    }
+}
+
+/// How long a pane's size holds before the agent's browser takes its shape.
+const SETTLE: Duration = Duration::from_millis(300);
+/// The smallest change of height, in CSS pixels, worth resizing the agent's
+/// browser for.
+const NOTICE: u32 = 8;
+
+/// The viewport height that gives a page `width` CSS pixels wide the shape
+/// of `area`, the width and height it is drawn in.
+fn viewport_height(width: f32, area: (f32, f32)) -> Option<u32> {
+    let (across, down) = area;
+    (across > 0.0 && width > 0.0).then(|| (down * width / across).round().clamp(360., 4096.) as u32)
+}
+
+/// Whether `height` differs enough from `shown`, the page's height now.
+fn worth(height: u32, shown: f32) -> bool {
+    height.abs_diff(shown.round() as u32) > NOTICE
+}
+
+/// When a view's pane has held still long enough to give the agent's browser
+/// its shape. The view exists only while its pane is shown, so a hidden pane
+/// asks for nothing.
+#[derive(Default)]
+struct Settle {
+    /// When the pane last moved, until its shape is due.
+    since: Option<Instant>,
+}
+
+impl Settle {
+    fn moved(&mut self, now: Instant) {
+        self.since = Some(now);
+    }
+
+    /// Whether the shape is due now: once per stillness.
+    fn due(&mut self, now: Instant) -> bool {
+        let due = self
+            .since
+            .is_some_and(|at| now.duration_since(at) >= SETTLE);
+        if due {
+            self.since = None;
+        }
+        due
     }
 }
 
@@ -523,6 +641,19 @@ impl super::Browser {
                 self.browser_views.insert(id, view);
             }
         }
+        // The view chosen last gives its browser its shape, as tmux sizes a
+        // window for its latest client.
+        let chosen = self
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.model().pane().map(|leaf| leaf.id.clone()))
+            .filter(|id| self.browser_views.contains_key(id));
+        if chosen != self.browser_chosen {
+            if let Some(view) = chosen.as_ref().and_then(|id| self.browser_views.get(id)) {
+                view.update(cx, |view, cx| view.claim(cx));
+            }
+            self.browser_chosen = chosen;
+        }
     }
 
     /// Show `agent`'s browser: in its open Browser pane, else in a visible
@@ -643,6 +774,45 @@ mod tests {
             ),
             Some("This browser has no profile of its own")
         );
+    }
+
+    #[test]
+    fn the_viewport_takes_the_panes_shape_within_limits() {
+        // A tall pane: 1280 wide pages drawn 400 points wide and 456.3 high.
+        assert_eq!(viewport_height(1280., (400., 456.3)), Some(1460));
+        assert_eq!(viewport_height(1280., (1000., 100.)), Some(360));
+        assert_eq!(viewport_height(1280., (100., 1000.)), Some(4096));
+        assert_eq!(viewport_height(1280., (0., 500.)), None);
+        // Only a change of more than 8 pixels is worth a resize.
+        assert!(!worth(641, 633.));
+        assert!(worth(642, 633.));
+        assert!(worth(624, 633.));
+    }
+
+    #[test]
+    fn the_shape_follows_a_pane_that_has_held_still() {
+        let start = Instant::now();
+        let mut settle = Settle::default();
+        assert!(!settle.due(start + SETTLE));
+        settle.moved(start);
+        settle.moved(start + SETTLE / 2);
+        // Still moving 300 ms after the first move: not yet.
+        assert!(!settle.due(start + SETTLE));
+        assert!(settle.due(start + SETTLE / 2 + SETTLE));
+        assert!(!settle.due(start + 2 * SETTLE));
+    }
+
+    #[test]
+    fn the_view_moved_or_chosen_last_gives_the_browser_its_shape() {
+        let start = Instant::now();
+        let (mut first, mut second) = (Settle::default(), Settle::default());
+        first.moved(start);
+        second.moved(start + SETTLE / 3);
+        // The first view's shape goes first, so the second's, set after it,
+        // is the one the browser keeps.
+        assert!(first.due(start + SETTLE));
+        assert!(!second.due(start + SETTLE));
+        assert!(second.due(start + SETTLE / 3 + SETTLE));
     }
 
     #[test]
