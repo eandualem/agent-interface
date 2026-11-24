@@ -260,10 +260,17 @@ fn command() -> Option<PathBuf> {
         .find(|file| file.is_file())
 }
 
-/// Give `session`'s browser a viewport of `width` by `height` CSS pixels,
-/// through agent-browser itself, so its own record of the page stays right.
-/// Blocks until agent-browser answers.
-pub fn set_viewport(session: &Session, width: u32, height: u32) -> std::io::Result<()> {
+/// A browser's viewport: its size in CSS pixels and its scale.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Viewport {
+    pub width: u32,
+    pub height: u32,
+    pub scale: f32,
+}
+
+/// Give `session`'s browser `viewport`, through agent-browser itself, so its
+/// own record of the page stays right. Blocks until agent-browser answers.
+pub fn set_viewport(session: &Session, viewport: Viewport) -> std::io::Result<()> {
     use std::process::{Command, Stdio};
     let error = |kind, text| Err(std::io::Error::new(kind, text));
     // The folder discovery found the session in.
@@ -282,7 +289,7 @@ pub fn set_viewport(session: &Session, width: u32, height: u32) -> std::io::Resu
         return error(std::io::ErrorKind::NotFound, "agent-browser not found");
     };
     let mut run = Command::new(program);
-    run.args(viewport_args(&session.name, width, height))
+    run.args(viewport_args(&session.name, viewport))
         .env("AGENT_BROWSER_SOCKET_DIR", folder)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -295,17 +302,22 @@ pub fn set_viewport(session: &Session, width: u32, height: u32) -> std::io::Resu
     }
 }
 
-/// The arguments of `set_viewport`. The final 2 keeps the page at twice its
-/// CSS resolution: without it agent-browser sets the scale to 1.
-fn viewport_args(session: &str, width: u32, height: u32) -> [String; 7] {
+/// The arguments of `set_viewport`. The scale is always given: without it
+/// agent-browser sets it to 1. A whole scale is written as an integer.
+fn viewport_args(session: &str, viewport: Viewport) -> [String; 7] {
+    let scale = if viewport.scale.fract() == 0.0 {
+        format!("{}", viewport.scale as u32)
+    } else {
+        viewport.scale.to_string()
+    };
     [
         "--session".into(),
         session.into(),
         "set".into(),
         "viewport".into(),
-        width.to_string(),
-        height.to_string(),
-        "2".into(),
+        viewport.width.to_string(),
+        viewport.height.to_string(),
+        scale,
     ]
 }
 
@@ -346,11 +358,17 @@ mod tests {
     }
 
     #[test]
-    fn the_viewport_is_set_at_twice_its_resolution() {
+    fn the_viewport_is_set_with_its_scale() {
+        let viewport = |scale| Viewport {
+            width: 900,
+            height: 1300,
+            scale,
+        };
         assert_eq!(
-            viewport_args("coder", 1280, 1460),
-            ["--session", "coder", "set", "viewport", "1280", "1460", "2"]
+            viewport_args("coder", viewport(2.)),
+            ["--session", "coder", "set", "viewport", "900", "1300", "2"]
         );
+        assert_eq!(viewport_args("coder", viewport(1.5))[6], "1.5");
     }
 
     #[test]
