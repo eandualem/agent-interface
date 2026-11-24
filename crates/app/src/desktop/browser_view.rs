@@ -103,7 +103,8 @@ impl BrowserView {
                 self.check_window(pid, false, cx);
             }
         } else if cfg!(target_os = "macos")
-            && !matches!(self.window, Some(agent_browser::Window::Shown(_)))
+            // Only a missing window can change for the same daemon.
+            && matches!(self.window, None | Some(agent_browser::Window::NotStarted))
             && let Some(pid) = session.as_ref().map(|session| session.pid)
         {
             // The daemon may have started its Chrome since the last look.
@@ -121,7 +122,8 @@ impl BrowserView {
         if live
             && !self.live
             && cfg!(target_os = "macos")
-            && !matches!(self.window, Some(agent_browser::Window::Shown(_)))
+            // Only a missing window can change for the same daemon.
+            && matches!(self.window, None | Some(agent_browser::Window::NotStarted))
             && let Some(pid) = self.session.as_ref().map(|session| session.pid)
         {
             self.check_window(pid, false, cx);

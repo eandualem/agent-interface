@@ -370,7 +370,7 @@ agent-browser namespace are not shown.
 
 Click the row to open the **Browser** view, in a visible empty pane or a new
 tab. It shows the page as a live picture, scaled to fit, with its address
-above it. The label **Live view of <agent>'s browser** stays in view: the
+above it. The label **Live view of the agent's browser** stays in view: the
 picture is for watching and cannot be clicked or typed into. To act in the
 page, click **Open in Chrome**, which brings the agent's own Chrome window to
 the front. When the session runs without a window (headless), when
