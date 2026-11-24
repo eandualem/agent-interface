@@ -137,14 +137,14 @@ fn chrome_in(processes: &str, daemon: u32) -> Option<(u32, &str)> {
 }
 
 /// The window of the daemon's Chrome; `person` is the person's own Chrome
-/// profile folder.
+/// profile folder, without which no profile counts as the agent's own.
 fn window_in(processes: &str, daemon: u32, person: Option<&Path>) -> Window {
     // Symbolic links and relative parts can't make one folder look like two.
     let real = |path: &Path| fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
     match chrome_in(processes, daemon) {
         Some((_, command)) if command.contains(" --headless") => Window::Headless {
             own_profile: profile_in(processes, daemon)
-                .is_some_and(|profile| person.is_none_or(|person| real(&profile) != real(person))),
+                .is_some_and(|profile| person.is_some_and(|person| real(&profile) != real(person))),
         },
         Some((pid, _)) => Window::Shown(pid),
         None => Window::NotStarted,
@@ -336,9 +336,17 @@ mod tests {
             Window::Headless { own_profile: false }
         );
         assert_eq!(window_in(processes, 30, None), Window::NotStarted);
+        let person = Some(Path::new(
+            "/Users/someone/Library/Application Support/Google/Chrome",
+        ));
+        assert_eq!(
+            window_in(processes, 40, person),
+            Window::Headless { own_profile: true }
+        );
+        // Without the person's folder to compare with, none counts as its own.
         assert_eq!(
             window_in(processes, 40, None),
-            Window::Headless { own_profile: true }
+            Window::Headless { own_profile: false }
         );
     }
 
