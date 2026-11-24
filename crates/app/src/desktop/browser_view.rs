@@ -29,6 +29,8 @@ pub(super) struct BrowserView {
     stream: Option<Stream>,
     /// The frame on screen.
     frame: Option<Frame>,
+    /// Frames of an earlier session, to release when the view next paints.
+    retired: Vec<Frame>,
     /// Whether the browser has a window to bring forward; none while unknown.
     window: Option<agent_browser::Window>,
     /// Set while a wake from the stream waits to be taken.
@@ -55,6 +57,7 @@ impl BrowserView {
             session: None,
             stream: None,
             frame: None,
+            retired: Vec::new(),
             window: None,
             woken,
             wake,
@@ -72,6 +75,8 @@ impl BrowserView {
         let same_daemon = self.session.as_ref().map(|s| (s.pid, s.port))
             == session.as_ref().map(|s| (s.pid, s.port));
         if !same_daemon {
+            // A new browser never shows the picture of the one before it.
+            self.retired.extend(self.frame.take());
             self.stream = session
                 .as_ref()
                 .and_then(|session| session.port)
@@ -97,9 +102,9 @@ impl BrowserView {
         self.stream.as_ref()?.page().1
     }
 
-    /// The frame on screen, to release its texture when the view goes.
-    pub fn take_shown(&mut self) -> Option<Frame> {
-        self.frame.take()
+    /// The frames holding a texture, to release when the view goes.
+    pub fn take_shown(&mut self) -> Vec<Frame> {
+        self.retired.drain(..).chain(self.frame.take()).collect()
     }
 
     /// Learn whether the daemon `pid`'s browser has a window, and bring it
@@ -149,6 +154,9 @@ impl BrowserView {
 impl Render for BrowserView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (t, c) = (tokens(), colors());
+        for old in self.retired.drain(..) {
+            let _ = window.drop_image(old.image);
+        }
         if let Some(frame) = self.stream.as_ref().and_then(Stream::take_frame)
             && let Some(old) = self.frame.replace(frame)
         {
@@ -240,6 +248,9 @@ impl Render for BrowserView {
                 .size_full()
                 .object_fit(ObjectFit::Contain)
                 .into_any_element(),
+            (_, None, Some(State::Connecting)) => {
+                quiet("Connecting to the browser…").into_any_element()
+            }
             (_, None, _) => quiet("Waiting for the page…").into_any_element(),
         };
         div()
@@ -349,10 +360,10 @@ impl super::Browser {
             .map(|(id, _)| id.clone())
             .collect();
         for id in gone {
-            if let Some(view) = self.browser_views.remove(&id)
-                && let Some(frame) = view.update(cx, |view, _| view.take_shown())
-            {
-                let _ = window.drop_image(frame.image);
+            if let Some(view) = self.browser_views.remove(&id) {
+                for frame in view.update(cx, |view, _| view.take_shown()) {
+                    let _ = window.drop_image(frame.image);
+                }
             }
         }
         for (id, agent) in shown {
@@ -394,7 +405,10 @@ impl super::Browser {
             tab.tree
                 .leaves()
                 .into_iter()
-                .find(|leaf| panes.get(&leaf.id).is_some_and(|shown| shown == agent))
+                // A pane another writer filled is no longer this Browser pane.
+                .find(|leaf| {
+                    holds_nothing(leaf) && panes.get(&leaf.id).is_some_and(|shown| shown == agent)
+                })
                 .map(|leaf| (tab.id.clone(), leaf.id.clone()))
         });
         let free = |leaf: &&agent_interface_core::Leaf| {

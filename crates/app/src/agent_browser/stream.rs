@@ -141,11 +141,7 @@ fn lock(shared: &Shared) -> std::sync::MutexGuard<'_, Latest> {
 fn run(port: u16, shared: &Shared, wake: &dyn Fn()) {
     while !shared.stop.load(Ordering::Relaxed) {
         if let Some(mut socket) = connect(port) {
-            {
-                let mut latest = lock(shared);
-                latest.state = State::Connecting;
-                latest.drawn = None;
-            }
+            restart(shared);
             wake();
             watch(&mut socket, shared, wake);
             let _ = socket.close(None);
@@ -166,6 +162,15 @@ fn run(port: u16, shared: &Shared, wake: &dyn Fn()) {
             waited += POLL;
         }
     }
+}
+
+/// Start a new connection: a frame from the previous one is neither drawn
+/// nor acknowledged on it.
+fn restart(shared: &Shared) {
+    let mut latest = lock(shared);
+    latest.state = State::Connecting;
+    latest.frame = None;
+    latest.drawn = None;
 }
 
 fn connect(port: u16) -> Option<WebSocket<TcpStream>> {
@@ -322,6 +327,21 @@ mod tests {
         assert_eq!(newest.seq, 5);
         assert!(stream.take_frame().is_none());
         assert_eq!(stream.latest().drawn, Some(5));
+    }
+
+    #[test]
+    fn a_new_connection_forgets_the_last_frame() {
+        let shared = Shared {
+            latest: Mutex::default(),
+            stop: AtomicBool::new(false),
+        };
+        let data = jpeg();
+        receive(&frame(1, &data), &shared);
+        receive(&frame(2, "not a picture"), &shared);
+        restart(&shared);
+        let latest = lock(&shared);
+        assert!(latest.frame.is_none() && latest.drawn.is_none());
+        assert_eq!(latest.state, State::Connecting);
     }
 
     #[test]
