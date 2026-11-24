@@ -104,7 +104,7 @@ impl BrowserView {
             if cfg!(target_os = "macos")
                 && let Some(pid) = session.as_ref().map(|session| session.pid)
             {
-                self.check_window(pid, false, cx);
+                self.check_window(pid, false, None, cx);
             }
         } else if cfg!(target_os = "macos")
             // Only a missing window can change for the same daemon.
@@ -112,7 +112,7 @@ impl BrowserView {
             && let Some(pid) = session.as_ref().map(|session| session.pid)
         {
             // The daemon may have started its Chrome since the last look.
-            self.check_window(pid, false, cx);
+            self.check_window(pid, false, None, cx);
         }
         self.session = session;
         cx.notify();
@@ -130,7 +130,7 @@ impl BrowserView {
             && matches!(self.window, None | Some(agent_browser::Window::NotStarted))
             && let Some(pid) = self.session.as_ref().map(|session| session.pid)
         {
-            self.check_window(pid, false, cx);
+            self.check_window(pid, false, None, cx);
         }
         self.live = live;
         cx.notify();
@@ -154,8 +154,15 @@ impl BrowserView {
     }
 
     /// Learn whether the daemon `pid`'s browser has a window, and bring it
-    /// forward when `open` asks for that.
-    fn check_window(&mut self, pid: u32, open: bool, cx: &mut Context<Self>) {
+    /// forward when `open` asks for that, or open `address`, the page's
+    /// address when the person clicked, when it has none.
+    fn check_window(
+        &mut self,
+        pid: u32,
+        open: bool,
+        address: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let found = cx
             .background_executor()
             .spawn(async move { agent_browser::window(pid) });
@@ -174,7 +181,7 @@ impl BrowserView {
                         // Without a window, the person's own Chrome shows the
                         // page, unless the agent's Chrome may be using its profile.
                         agent_browser::Window::Headless { own_profile: true } => {
-                            if let Some(address) = view.address() {
+                            if let Some(address) = address {
                                 cx.background_executor()
                                     .spawn(async move { agent_browser::open_in_chrome(&address) })
                                     .detach();
@@ -185,7 +192,7 @@ impl BrowserView {
                     }
                 }
                 #[cfg(not(target_os = "macos"))]
-                let _ = open;
+                let _ = (open, address);
                 view.window = Some(window);
                 cx.notify();
             });
@@ -257,7 +264,8 @@ impl Render for BrowserView {
         .when_some(pid.filter(|_| refused.is_none()), |button, pid| {
             button.on_click(cx.listener(move |view, _, _, cx| {
                 // Look again: the browser may have been started anew.
-                view.check_window(pid, true, cx);
+                let address = view.address();
+                view.check_window(pid, true, address, cx);
             }))
         });
         let named = |name: String| {
