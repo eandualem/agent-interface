@@ -6,7 +6,8 @@
 //! only after the client acknowledges them. The client acknowledges frames
 //! only when the view takes one to draw, then also those a newer frame
 //! replaced, so a view that is not painting pauses Chrome after a few frames
-//! instead of decoding a full-rate stream. Frames come at the page's own pixel
+//! instead of decoding a full-rate stream. A frame that cannot be decoded is
+//! acknowledged at once. Frames come at the page's own pixel
 //! size, with its size in CSS pixels, and are decoded on the client's own
 //! thread into one slot that the newest frame replaces, so nothing queues.
 //! The client sends three methods only: `Page.startScreencast`,
@@ -239,7 +240,16 @@ fn local(port: u16) -> Option<TcpStream> {
     Some(stream)
 }
 
+/// Whether `target` can name a page: Chrome's ids are hexadecimal, so
+/// nothing in one can lead the address to another endpoint.
+fn page_id(target: &str) -> bool {
+    !target.is_empty() && target.bytes().all(|byte| byte.is_ascii_alphanumeric())
+}
+
 fn connect(port: u16, target: &str) -> Option<WebSocket<TcpStream>> {
+    if !page_id(target) {
+        return None;
+    }
     let stream = local(port)?;
     stream.set_nodelay(true).ok()?;
     let url = format!("ws://127.0.0.1:{port}/devtools/page/{target}");
@@ -590,10 +600,25 @@ mod tests {
         let data = jpeg();
         receive(&frame(1, &data), &shared);
         receive(&frame(2, "not a picture"), &shared);
+        receive(&frame(3, &data), &shared);
+        {
+            let latest = lock(&shared);
+            // A frame that cannot be drawn is acknowledged at once.
+            assert_eq!(latest.acks, [2]);
+            assert_eq!(latest.replaced, [1]);
+        }
         restart(&shared);
         let latest = lock(&shared);
-        assert!(latest.frame.is_none() && latest.acks.is_empty());
+        assert!(latest.frame.is_none() && latest.acks.is_empty() && latest.replaced.is_empty());
         assert_eq!(latest.state, State::Connecting);
+    }
+
+    #[test]
+    fn only_a_page_id_reaches_the_address() {
+        assert!(page_id("429D38A9FA3BEDB8E4D6258FAD43F481"));
+        for target in ["", "../json/version", "PAGE?x=1", "PAGE/../x"] {
+            assert!(!page_id(target), "{target}");
+        }
     }
 
     #[test]

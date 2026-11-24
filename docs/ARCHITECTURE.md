@@ -1443,7 +1443,8 @@ viewport, screenshots and commands are unchanged, and agent-browser's own
 stream keeps working beside it. Chrome keeps a few frames in flight and sends
 more only after they are acknowledged. The client's thread decodes each JPEG
 frame into one slot that a newer frame replaces, and acknowledges frames only
-when the view takes one to paint, together with those it replaced. Frames
+when the view takes one to paint, together with those it replaced; a frame
+that cannot be decoded is acknowledged at once. Frames
 never queue, and a view that is not painting pauses Chrome after a few frames
 instead of decoding a full-rate stream. Chrome
 sends each frame at the page's own pixel size, 2x on a Retina display or
