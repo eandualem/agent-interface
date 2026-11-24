@@ -1484,17 +1484,22 @@ narrow, responsive layout, which is the page the agent sees. The change goes
 through agent-browser, not DevTools, so its record of the page stays right,
 and the screencast still sends only its three methods. Only a browser the
 daemon started is resized: one agent-browser attached to may be the
-person's own Chrome.
+person's own Chrome. This works on Linux too, where the view also reads the
+daemon's Chrome process, while Open in Chrome stays macOS only.
 
 The command is sent only when the size or scale differs from the last one
 set for that tab, or the page shows another size. A frame never sends it,
 so a viewport the agent sets for itself, as to try a phone layout, is left
 alone until the next resize, change of scale, choice of the pane or new
-page. A size is recorded only once agent-browser has set it. One command
-runs at a time for a tab, and the newest size waiting is sent after it; a
-command that has not answered in 5 seconds is stopped. Of two views on one
-browser, the one chosen last sizes it, as tmux sizes a window for its latest
-client, so a window resize that moves both counts only for that one.
+page. A size is recorded only once agent-browser has set it, and a command
+that failed leaves it unknown. One command runs at a time for a tab, and the
+newest size waiting is sent after it; a command that has not answered in 5
+seconds is stopped. Of two views on one browser, the one chosen last sizes
+it, as tmux sizes a window for its latest client, so a window resize that
+moves both counts only for that one. Before any choice, or for a browser
+that started anew while no Browser pane was chosen, the first view to ask
+sizes it, and when the view sizing a browser goes, the next view to ask
+takes over.
 agent-browser starts a new browser for a session that has ended, so the
 command runs only while discovery's files still show the same daemon; a
 session ending in the moment between that check and the command can still
