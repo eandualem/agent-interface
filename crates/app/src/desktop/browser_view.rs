@@ -568,9 +568,9 @@ impl Shapes {
     fn ended(&self, page: &(u32, String), viewport: Viewport, set: bool) -> Option<Viewport> {
         let mut record = self.0.borrow_mut();
         let page = record.pages.entry(page.clone()).or_default();
-        if set {
-            page.set = Some(viewport);
-        }
+        // A command that failed or timed out may still have taken effect, so
+        // the size is then unknown.
+        page.set = set.then_some(viewport);
         page.sending = false;
         let next = page.next.take().filter(|next| page.set != Some(*next))?;
         page.sending = true;
@@ -999,15 +999,16 @@ mod tests {
         // A newer size waits for the command running, and the last one wins.
         assert!(!shapes.start(&page(), at(700, 2.)));
         assert!(!shapes.start(&page(), at(600, 2.)));
-        // The first failed: nothing is recorded, and the newest follows.
+        // The first failed: no size is known, and the newest follows.
         assert_eq!(shapes.ended(&page(), at(800, 2.), false), Some(at(600, 2.)));
         assert!(shapes.needed(&page(), at(800, 2.), shown(800)));
         assert_eq!(shapes.ended(&page(), at(600, 2.), true), None);
         assert!(!shapes.needed(&page(), at(600, 2.), shown(600)));
-        // A size already set is not sent again after the command running.
+        // A size set before is sent again after a command that failed, as
+        // that one may have taken effect.
         assert!(shapes.start(&page(), at(500, 2.)));
         assert!(!shapes.start(&page(), at(600, 2.)));
-        assert_eq!(shapes.ended(&page(), at(500, 2.), false), None);
+        assert_eq!(shapes.ended(&page(), at(500, 2.), false), Some(at(600, 2.)));
     }
 
     #[test]
