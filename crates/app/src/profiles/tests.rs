@@ -187,9 +187,11 @@ printf '{"profiles":[]}'
             &|| mode != "cancel" || !beats.exists(),
             Duration::from_secs(2),
         );
-        let before = fs::metadata(&beats).unwrap().len();
+        // Under load the timeout can stop the child before its first beat.
+        let length = || fs::metadata(&beats).map_or(0, |m| m.len());
+        let before = length();
         std::thread::sleep(Duration::from_millis(120));
-        let after = fs::metadata(&beats).unwrap().len();
+        let after = length();
         if after != before {
             // Clean up the fixture even when testing a regressed implementation.
             // Growth proves this never-ending child still owns the recorded PID.
