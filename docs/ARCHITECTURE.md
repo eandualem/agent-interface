@@ -1454,28 +1454,7 @@ the largest size that fits the pane below its header, pinned to the pane's
 top left corner: a band left by a different shape falls to the right or
 below, and a 1x frame is scaled up to fill a larger pane. agent-browser's
 own stream is not used: it caps frames at its recorded viewport and reports
-that, rather than the page's real size.
-
-The agent's browser follows the pane's shape, as a terminal follows the
-pane's size, so the agent works on the same page shape the person watches.
-When a view first shows a page, is chosen, or has been resized and held
-still for 300 ms, it runs `agent-browser --session <name> set viewport <W>
-<H> 2` off the UI thread: W is the page's current CSS width, kept as it is,
-and H the height that gives the page the shape of the area below the header,
-between 360 and 4096. The final 2 keeps the page's scale, which agent-browser
-otherwise sets to 1. The change goes through agent-browser, not DevTools, so
-its record of the page stays right, and the screencast still sends only its
-three methods. It is skipped when H is within 8 pixels of the page's height
-now. agent-browser starts a new browser for a session that has ended, so
-the command runs only while discovery's files still show the same daemon.
-The program is found on `PATH`, else in `/opt/homebrew/bin` or
-`/usr/local/bin`, since an app started from the Finder may not have
-Homebrew on its `PATH`. Of two views on one browser, the one resized or
-chosen last sets the shape, as tmux sizes a window for its latest client.
-Closing a view leaves the viewport as it is, and a failed command is logged
-once while the view keeps fitting the frame. In headless mode the frames
-stay at one pixel per CSS pixel even with the scale at 2; the scale doubles
-only the agent's screenshots. Every two seconds the client reads the tab's address
+that, rather than the page's real size. Every two seconds the client reads the tab's address
 and title from Chrome's target list (`GET /json/list`). The header names the
 page by its title, else by its address's host; when that read fails, the
 address is the one in `<session>.target`. A hidden or closed
@@ -1491,6 +1470,31 @@ reload or a quick return to the same address within one two-second listing.
 If Chrome refuses the restart, as during a change of renderer, the client
 connects again at once and the view keeps its picture; only if that
 connection fails does the view say the page can't be reached.
+
+The agent's browser takes the pane's size, as a terminal does, so the agent
+works on the same page the person watches, at one CSS pixel per point. When
+a view first shows a page, is chosen, or has been resized and held still for
+300 ms, it runs `agent-browser --session <name> set viewport <W> <H>
+<scale>` off the UI thread: W and H are the width and height in points of
+the area below the header, rounded and kept to 320 to 4096 wide and 240 to
+4096 high, and the scale is the window's, 2 on a Retina display. The scale
+is always given, since agent-browser otherwise sets it to 1. A narrow pane
+gives the site's narrow, responsive layout, which is the page the agent
+sees. The change goes through agent-browser, not DevTools, so its record of
+the page stays right, and the screencast still sends only its three methods.
+The command is sent only when the size or scale differs from the last one
+set for that tab, or when the page shows another size, as after the agent
+set its own. agent-browser starts a new browser for a session that has
+ended, so the command runs only while discovery's files still show the same
+daemon. The program is found on `PATH`, else in `/opt/homebrew/bin` or
+`/usr/local/bin`, since an app started from the Finder may not have
+Homebrew on its `PATH`. Of two views on one browser, the one resized or
+chosen last sets the size, as tmux sizes a window for its latest client.
+Closing a view leaves the viewport as it is, and a failed command is logged
+once while the view keeps fitting the frame, which then matters only
+before the first size lands or when the size is clamped. In headless mode
+the frames stay at one pixel per CSS pixel even with the scale at 2; the
+scale doubles only the agent's screenshots.
 
 agent-browser records whether a session is headless only in its daemon's
 memory. The view reads it from the daemon's Chrome child process: its command
