@@ -1462,13 +1462,14 @@ view stops the screencast. When the page can't be reached, the client tries
 again every two seconds; when discovery no longer finds the daemon, the view
 says the browser ended. A new tab bound in `<session>.target` starts a new
 screencast. After some navigations Chrome sends no frame of the new page
-until it changes again, so when the listed address changes, the client stops
-and starts the screencast once 1.5 seconds later; a frame received after the
-listing saw the change cancels it. A frame from before then may be the old
-page's, so it does not count, at the cost of an occasional restart the new
-page did not need. The restart sends the page as it is; a page that keeps
-its address is never restarted. If Chrome refuses the restart, as during a change of renderer,
-the client connects again.
+until it changes again, so whenever the listed address changes, the client
+stops and starts the screencast once, 1.5 seconds later, which sends the
+page as it is. No frame cancels it, since a frame may still be the old
+page's. A page that keeps its address is never restarted, and neither is a
+reload or a quick return to the same address within one two-second listing.
+If Chrome refuses the restart, as during a change of renderer, the client
+connects again at once and the view keeps its picture; only if that
+connection fails does the view say the page can't be reached.
 
 agent-browser records whether a session is headless only in its daemon's
 memory. The view reads it from the daemon's Chrome child process: its command
@@ -1481,10 +1482,11 @@ page's address, HTTP or HTTPS only, in the person's Chrome by running
 a running Google Chrome too, so plain `open -a` could hand the address to
 one of them; `-n` starts Chrome with the default profile, and Chrome's own
 single-instance check passes the address to the person's Chrome. That
-needs the agent's Chrome to have its own `--user-data-dir`; a headless
-Chrome without one, or with the person's default Chrome folder, a browser the daemon did not start, a headless page with
-no web address, and Linux leave the button disabled, with the reason in its
-tooltip.
+needs the agent's Chrome to have its own `--user-data-dir`. The button is
+disabled, with the reason in its tooltip, on Linux; for a browser the daemon
+did not start; and for a headless session whose Chrome has no
+`--user-data-dir`, uses the person's default Chrome folder, or runs while
+the person's home folder is unknown, or whose page has no web address.
 
 ### Bound native Policies
 
