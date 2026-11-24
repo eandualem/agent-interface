@@ -276,13 +276,19 @@ impl Render for BrowserView {
                 .text_ellipsis()
                 .child(name)
         };
-        let header = ui::view_header("globe", "Browser")
+        // The names give way before Open in Chrome, and a long title before
+        // the agent's name.
+        let names = div()
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .overflow_hidden()
+            .items_center()
+            .gap(px(t.space.s8))
             .child("·")
-            // A long title gives way before the agent's name.
             .child(named(self.agent.clone()).flex_shrink_0())
-            .when_some(site, |header, site| header.child("·").child(named(site)))
-            .child(div().flex_1())
-            .child(open);
+            .when_some(site, |names, site| names.child("·").child(named(site)));
+        let header = ui::view_header("globe", "Browser").child(names).child(open);
         let quiet = |text: &'static str| {
             ui::text(
                 div()
