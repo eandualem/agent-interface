@@ -28,8 +28,9 @@ use tungstenite::{Message, WebSocket};
 /// The highest frame rate the client asks for.
 const MAX_FPS: u32 = 30;
 /// How long a read waits before the client checks for an acknowledgement
-/// to send or a request to stop.
-const POLL: Duration = Duration::from_millis(50);
+/// to send or a request to stop. Short, so the next frame is asked for soon
+/// after the view draws one.
+const POLL: Duration = Duration::from_millis(5);
 /// How long the client waits before it tries an unreachable stream again.
 const RETRY: Duration = Duration::from_secs(2);
 
@@ -140,6 +141,12 @@ fn lock(shared: &Shared) -> std::sync::MutexGuard<'_, Latest> {
 fn run(port: u16, shared: &Shared, wake: &dyn Fn()) {
     while !shared.stop.load(Ordering::Relaxed) {
         if let Some(mut socket) = connect(port) {
+            {
+                let mut latest = lock(shared);
+                latest.state = State::Connecting;
+                latest.drawn = None;
+            }
+            wake();
             watch(&mut socket, shared, wake);
             let _ = socket.close(None);
             let _ = socket.flush();

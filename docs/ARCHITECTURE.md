@@ -1091,8 +1091,10 @@ build-time advisory exception are described below.
   feature. It decodes the stream's frames off the UI thread. It was already in
   the graph through GPUI.
 - **`objc2-app-kit` 0.3.2:** MIT, pinned exactly, macOS only, with the
-  `NSRunningApplication` feature: Open in Chrome activates the agent's Chrome
-  process. It was already in the graph through GPUI.
+  `NSApplication` and `NSRunningApplication` features: Open in Chrome yields
+  activation to the agent's Chrome process and activates it, as macOS 14
+  expects, or activates it directly on earlier versions. It and the workspace's
+  `objc2` 0.6.5 (MIT) were already in the graph through GPUI.
 - **`chrono` 0.4.45:** MIT OR Apache-2.0, pinned exactly with only its `clock`
   feature. It names local days and times for records and messages without
   `unsafe` code in the app. GPUI already builds the same version and feature,

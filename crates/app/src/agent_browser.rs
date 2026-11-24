@@ -91,8 +91,11 @@ fn running(pid: u32) -> bool {
 pub enum Window {
     /// The Chrome process with the window.
     Shown(u32),
-    /// The browser runs headless, or is not a Chrome the daemon started.
-    None,
+    /// The daemon's Chrome runs headless.
+    Headless,
+    /// The daemon started no Chrome, as when it attached to a running
+    /// browser or a provider's, so its window cannot be found.
+    NotStarted,
 }
 
 /// Find the window of the browser that the daemon `pid` started. agent-browser
@@ -104,7 +107,7 @@ pub fn window(daemon: u32) -> Window {
         .args(["-A", "-o", "pid=,ppid=,command="])
         .output()
         .ok()
-        .map_or(Window::None, |out| {
+        .map_or(Window::NotStarted, |out| {
             window_in(&String::from_utf8_lossy(&out.stdout), daemon)
         })
 }
@@ -124,25 +127,39 @@ fn window_in(processes: &str, daemon: u32) -> Window {
                     .any(|flag| flag.starts_with("--remote-debugging")))
             .then(|| {
                 if flags.iter().any(|flag| flag.starts_with("--headless")) {
-                    Window::None
+                    Window::Headless
                 } else {
                     Window::Shown(pid)
                 }
             })
         })
-        .unwrap_or(Window::None)
+        .unwrap_or(Window::NotStarted)
 }
 
 /// Bring the windows of the Chrome process `pid` to the front. Only that
 /// process is activated: no other Chrome window is touched, and no
-/// permission is asked for.
+/// permission is asked for. Called on the main thread.
 #[cfg(target_os = "macos")]
 pub fn bring_forward(pid: u32) -> bool {
-    use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
-    i32::try_from(pid)
+    use objc2::{MainThreadMarker, runtime::NSObjectProtocol, sel};
+    use objc2_app_kit::{NSApplication, NSApplicationActivationOptions, NSRunningApplication};
+    let Some(chrome) = i32::try_from(pid)
         .ok()
         .and_then(NSRunningApplication::runningApplicationWithProcessIdentifier)
-        .is_some_and(|app| app.activateWithOptions(NSApplicationActivationOptions::empty()))
+    else {
+        return false;
+    };
+    let options = NSApplicationActivationOptions::empty();
+    // Since macOS 14 activation is cooperative: the active app yields to the
+    // app it activates.
+    if let Some(main) = MainThreadMarker::new()
+        && chrome.respondsToSelector(sel!(activateFromApplication:options:))
+    {
+        NSApplication::sharedApplication(main).yieldActivationToApplication(&chrome);
+        return chrome
+            .activateFromApplication_options(&NSRunningApplication::currentApplication(), options);
+    }
+    chrome.activateWithOptions(options)
 }
 
 /// Each agent's session: a session named exactly as one of `agents`.
@@ -191,8 +208,8 @@ mod tests {
   30     1 /usr/local/bin/agent-browser daemon
 ";
         assert_eq!(window_in(processes, 10), Window::Shown(11));
-        assert_eq!(window_in(processes, 20), Window::None);
-        assert_eq!(window_in(processes, 30), Window::None);
+        assert_eq!(window_in(processes, 20), Window::Headless);
+        assert_eq!(window_in(processes, 30), Window::NotStarted);
     }
 
     #[test]

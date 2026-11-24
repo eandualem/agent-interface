@@ -135,7 +135,12 @@ impl BrowserView {
         match (&self.session, self.window) {
             (None, _) => Some("The browser ended"),
             (_, None) => Some("Looking for its window…"),
-            (_, Some(agent_browser::Window::None)) => Some("This browser runs without a window"),
+            (_, Some(agent_browser::Window::Headless)) => {
+                Some("This browser runs without a window")
+            }
+            (_, Some(agent_browser::Window::NotStarted)) => {
+                Some("agent-browser did not open this browser, so its window can't be found")
+            }
             (_, Some(agent_browser::Window::Shown(_))) => None,
         }
     }
