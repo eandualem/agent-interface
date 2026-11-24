@@ -373,8 +373,11 @@ tab. An empty pane's chooser also lists each agent's browser under
 **BROWSERS**; choosing one opens the view in that pane. The view's header
 names the agent and the page, by its title or else its site. Below it, the
 page fills the pane as a live picture: all of it, as large as the pane holds
-it, from the pane's top left corner. The picture is for watching and cannot
-be clicked or typed into. To act in the page, click **Open in Chrome**: it
+it, from the pane's top left corner. The agent's browser takes the pane's
+shape, the way a terminal takes the pane's size, so the agent works on the
+page as you see it: in a tall, narrow pane the agent's page keeps its width
+and grows taller to match. The picture is for watching and cannot be clicked
+or typed into. To act in the page, click **Open in Chrome**: it
 brings the agent's own Chrome window to the front, or, when the session runs
 without a window (headless), opens the page's address in your Chrome. When
 agent-browser attached to a browser it did not open, when a headless page

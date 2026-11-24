@@ -1438,9 +1438,9 @@ session's daemon, reads the DevTools port from the `DevToolsActivePort` file
 in that Chrome's `--user-data-dir`, and opens a WebSocket to
 `127.0.0.1:<port>/devtools/page/<target>`. It sends three methods only:
 `Page.startScreencast`, `Page.screencastFrameAck` and `Page.stopScreencast`.
-No input, script, page or emulation method reaches the page, so the agent's
-viewport, screenshots and commands are unchanged, and agent-browser's own
-stream keeps working beside it. Chrome keeps a few frames in flight and sends
+No input, script, page or emulation method reaches the page over this
+connection, so the agent's screenshots and commands are unchanged, and
+agent-browser's own stream keeps working beside it. Chrome keeps a few frames in flight and sends
 more only after they are acknowledged. The client's thread decodes each JPEG
 frame into one slot that a newer frame replaces, and acknowledges frames only
 when the view takes one to paint, together with those it replaced; a frame
@@ -1452,9 +1452,30 @@ with `--force-device-scale-factor=2`, together with the page's size in CSS
 pixels. The view draws the whole frame from its full-resolution image, at
 the largest size that fits the pane below its header, pinned to the pane's
 top left corner: a band left by a different shape falls to the right or
-below, and a 1x frame is scaled up to fill a larger pane. agent-browser's own stream is not
-used: it caps frames at its recorded viewport and reports that, rather than
-the page's real size. Every two seconds the client reads the tab's address
+below, and a 1x frame is scaled up to fill a larger pane. agent-browser's
+own stream is not used: it caps frames at its recorded viewport and reports
+that, rather than the page's real size.
+
+The agent's browser follows the pane's shape, as a terminal follows the
+pane's size, so the agent works on the same page shape the person watches.
+When a view first shows a page, is chosen, or has been resized and held
+still for 300 ms, it runs `agent-browser --session <name> set viewport <W>
+<H> 2` off the UI thread: W is the page's current CSS width, kept as it is,
+and H the height that gives the page the shape of the area below the header,
+between 360 and 4096. The final 2 keeps the page's scale, which agent-browser
+otherwise sets to 1. The change goes through agent-browser, not DevTools, so
+its record of the page stays right, and the screencast still sends only its
+three methods. It is skipped when H is within 8 pixels of the page's height
+now. agent-browser starts a new browser for a session that has ended, so
+the command runs only while discovery's files still show the same daemon.
+The program is found on `PATH`, else in `/opt/homebrew/bin` or
+`/usr/local/bin`, since an app started from the Finder may not have
+Homebrew on its `PATH`. Of two views on one browser, the one resized or
+chosen last sets the shape, as tmux sizes a window for its latest client.
+Closing a view leaves the viewport as it is, and a failed command is logged
+once while the view keeps fitting the frame. In headless mode the frames
+stay at one pixel per CSS pixel even with the scale at 2; the scale doubles
+only the agent's screenshots. Every two seconds the client reads the tab's address
 and title from Chrome's target list (`GET /json/list`). The header names the
 page by its title, else by its address's host; when that read fails, the
 address is the one in `<session>.target`. A hidden or closed
