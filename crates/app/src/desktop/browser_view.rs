@@ -35,6 +35,9 @@ pub(super) struct BrowserView {
     window: Option<agent_browser::Window>,
     /// Whether the stream has been live since its last connection began.
     live: bool,
+    /// The newest look for the window; a newer look replaces and cancels it,
+    /// so an earlier answer never overwrites a later one.
+    probe: Option<Task<()>>,
     /// Set while a wake from the stream waits to be taken.
     woken: Arc<AtomicBool>,
     wake: mpsc::UnboundedSender<()>,
@@ -62,6 +65,7 @@ impl BrowserView {
             retired: Vec::new(),
             window: None,
             live: false,
+            probe: None,
             woken,
             wake,
             _woken: task,
@@ -142,7 +146,7 @@ impl BrowserView {
         let found = cx
             .background_executor()
             .spawn(async move { agent_browser::window(pid) });
-        cx.spawn(async move |this, cx| {
+        self.probe = Some(cx.spawn(async move |this, cx| {
             let window = found.await;
             let _ = this.update(cx, |view, cx| {
                 if view.session.as_ref().map(|session| session.pid) != Some(pid) {
@@ -157,8 +161,7 @@ impl BrowserView {
                 view.window = Some(window);
                 cx.notify();
             });
-        })
-        .detach();
+        }));
     }
 
     /// Why Open in Chrome cannot be used now, if it cannot.
