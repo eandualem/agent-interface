@@ -11,7 +11,9 @@ use std::sync::{
 };
 
 use futures::{StreamExt, channel::mpsc};
-use gpui::{Context, ObjectFit, SharedString, StyledImage, Task, Window, div, img, prelude::*, px};
+use gpui::{
+    Bounds, Context, Corners, Pixels, SharedString, Task, Window, canvas, div, prelude::*, px,
+};
 
 use super::{
     components as ui,
@@ -137,6 +139,13 @@ impl BrowserView {
         self.stream.as_ref()?.page().1
     }
 
+    /// The page's current address: as Chrome lists it, else as agent-browser
+    /// last recorded it.
+    fn address(&self) -> Option<String> {
+        let (listed, _) = self.stream.as_ref().map(Stream::page).unwrap_or_default();
+        listed.or_else(|| self.session.as_ref()?.address.clone())
+    }
+
     /// The frames holding a texture, to release when the view goes.
     pub fn take_shown(&mut self) -> Vec<Frame> {
         self.retired.drain(..).chain(self.frame.take()).collect()
@@ -196,10 +205,8 @@ impl Render for BrowserView {
         {
             let _ = window.drop_image(old.image);
         }
-        let (address, _) = self.stream.as_ref().map(Stream::page).unwrap_or_default();
-        let address = address
-            .or_else(|| self.session.as_ref()?.address.clone())
-            .unwrap_or_default();
+        let address = self.address();
+        let site = site_name(self.title().as_deref(), address.as_deref());
         let refused = self.open_refused();
         let pid = self.session.as_ref().map(|session| session.pid);
         let open = ui::button(
@@ -208,8 +215,11 @@ impl Render for BrowserView {
             ui::Button::Secondary,
         )
         .child(ui::icon("arrow-up-right", t.size.icon - 2.0, c.muted))
-        .when(refused.is_some(), |button| {
-            button.opacity(0.5).cursor_default()
+        .when_some(refused, |button, why| {
+            button
+                .opacity(0.5)
+                .cursor_default()
+                .tooltip(move |_, cx| cx.new(|_| Refused(why)).into())
         })
         .when_some(pid.filter(|_| refused.is_none()), |button, pid| {
             button.on_click(cx.listener(move |view, _, _, cx| {
@@ -217,48 +227,19 @@ impl Render for BrowserView {
                 view.check_window(pid, true, cx);
             }))
         });
-        let header = ui::view_header("globe", "Browser")
-            .child(
-                div()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .child(self.agent.clone()),
-            )
-            .child(div().flex_1())
-            .children(refused.map(|why| {
-                ui::text(div().flex_shrink_0().text_color(c.muted), &t.text.meta).child(why)
-            }))
-            .child(open);
-        let bar = ui::view_toolbar()
-            .child(ui::icon("globe", t.size.icon - 2.0, c.muted))
-            .child(
-                ui::mono(address)
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .text_color(c.text_2),
-            );
-        // Always shown, so the picture is never taken for the page itself.
-        let label = ui::text(
+        let named = |name: String| {
             div()
-                .flex()
-                .flex_shrink_0()
-                .items_center()
-                .gap(px(t.space.s6))
-                .px(px(t.space.s12))
-                .py(px(t.space.s4))
-                .bg(c.attention_soft)
-                .text_color(c.attention_text),
-            &t.text.meta,
-        )
-        .child(ui::icon("lock", t.size.icon - 3.0, c.attention_text))
-        .child(format!(
-            "Live view of {}'s browser. Watch only: it cannot be clicked or typed into.",
-            self.agent
-        ));
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(name)
+        };
+        let header = ui::view_header("globe", "Browser")
+            .child("·")
+            .child(named(self.agent.clone()))
+            .when_some(site, |header, site| header.child("·").child(named(site)))
+            .child(div().flex_1())
+            .child(open);
         let quiet = |text: &'static str| {
             ui::text(
                 div()
@@ -278,22 +259,21 @@ impl Render for BrowserView {
             (_, _, Some(State::Unreachable)) => {
                 quiet("Can't reach the browser's page. Trying again…").into_any_element()
             }
-            // One CSS pixel per point, as the page lays itself out: never
-            // stretched, and scaled down only to fit the pane.
-            (_, Some(frame), _) => div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    img(frame.image.clone())
-                        .w(px(frame.width))
-                        .h(px(frame.height))
-                        .max_w(gpui::relative(1.))
-                        .max_h(gpui::relative(1.))
-                        .object_fit(ObjectFit::Contain),
+            // The whole page, as large as the pane holds it, drawn from the
+            // full-resolution frame.
+            (_, Some(frame), _) => {
+                let (image, shape) = (frame.image.clone(), (frame.width, frame.height));
+                canvas(
+                    |_, _, _| {},
+                    move |area, (), window, _| {
+                        let shown = fit(shape, area);
+                        let _ =
+                            window.paint_image(shown, shown, Corners::default(), image, 0, false);
+                    },
                 )
-                .into_any_element(),
+                .size_full()
+                .into_any_element()
+            }
             (_, None, Some(State::Connecting)) => {
                 quiet("Connecting to the browser…").into_any_element()
             }
@@ -306,10 +286,50 @@ impl Render for BrowserView {
             .overflow_hidden()
             .bg(c.surface)
             .child(header)
-            .child(bar)
-            .child(label)
-            .child(div().flex_1().min_h_0().p(px(t.space.s8)).child(body))
+            .child(div().flex_1().min_h_0().child(body))
     }
+}
+
+/// Why Open in Chrome cannot be used, shown over the button.
+struct Refused(&'static str);
+
+impl Render for Refused {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        ui::menu().child(self.0)
+    }
+}
+
+/// Where a frame of `shape`, its width and height, is drawn in `area`: whole,
+/// in its own proportions and as large as fits, from the area's top left
+/// corner, so any band left over falls to the right or below it.
+fn fit(shape: (f32, f32), area: Bounds<Pixels>) -> Bounds<Pixels> {
+    let (width, height) = shape;
+    let scale = (f32::from(area.size.width) / width).min(f32::from(area.size.height) / height);
+    Bounds::new(
+        area.origin,
+        gpui::size(px(width * scale), px(height * scale)),
+    )
+}
+
+/// What the header names the page by: its title, else its address's host.
+fn site_name(title: Option<&str>, address: Option<&str>) -> Option<String> {
+    let title = title.map(str::trim).filter(|title| !title.is_empty());
+    title.or_else(|| host(address?)).map(str::to_owned)
+}
+
+/// The host of `address`, without its user, port, path, query or fragment.
+fn host(address: &str) -> Option<&str> {
+    let (_, rest) = address.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    let host = match authority.find(']') {
+        // An IPv6 address keeps its brackets.
+        Some(end) if authority.starts_with('[') => &authority[..=end],
+        _ => authority.split(':').next()?,
+    };
+    (!host.is_empty()).then_some(host)
 }
 
 /// How often discovery looks for sessions.
@@ -531,5 +551,46 @@ impl super::Browser {
         }
         self.reset_focus = true;
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{point, size};
+
+    #[test]
+    fn the_whole_frame_fills_the_pane_from_its_top_left_corner() {
+        let area = Bounds::new(point(px(10.), px(20.)), size(px(640.), px(600.)));
+        // Wider than the pane: the full width, the band below.
+        let wide = fit((1280., 640.), area);
+        assert_eq!(wide.origin, area.origin);
+        assert_eq!(wide.size, size(px(640.), px(320.)));
+        // Taller than the pane: the full height, the band to the right.
+        let tall = fit((400., 800.), area);
+        assert_eq!(tall.origin, area.origin);
+        assert_eq!(tall.size, size(px(300.), px(600.)));
+        // Smaller than the pane: made larger to fill it.
+        assert_eq!(fit((64., 60.), area).size, area.size);
+    }
+
+    #[test]
+    fn the_page_is_named_by_its_title_else_its_host() {
+        let address = Some("https://user@example.com:8443/issues?q=a#top");
+        assert_eq!(
+            site_name(Some("Issues"), address).as_deref(),
+            Some("Issues")
+        );
+        assert_eq!(
+            site_name(Some("  "), address).as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(site_name(None, address).as_deref(), Some("example.com"));
+        assert_eq!(
+            site_name(None, Some("http://[::1]:8080/")).as_deref(),
+            Some("[::1]")
+        );
+        assert_eq!(site_name(None, Some("about:blank")), None);
+        assert_eq!(site_name(None, None), None);
     }
 }

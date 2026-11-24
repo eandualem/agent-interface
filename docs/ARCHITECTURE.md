@@ -1449,12 +1449,15 @@ never queue, and a view that is not painting pauses Chrome after a few frames
 instead of decoding a full-rate stream. Chrome
 sends each frame at the page's own pixel size, 2x on a Retina display or
 with `--force-device-scale-factor=2`, together with the page's size in CSS
-pixels. The view draws it at that CSS size in points, never larger, and
-scales it down only to fit the pane. agent-browser's own stream is not
+pixels. The view draws the whole frame from its full-resolution image, at
+the largest size that fits the pane below its header, pinned to the pane's
+top left corner: a band left by a different shape falls to the right or
+below, and a 1x frame is scaled up to fill a larger pane. agent-browser's own stream is not
 used: it caps frames at its recorded viewport and reports that, rather than
 the page's real size. Every two seconds the client reads the tab's address
-and title from Chrome's target list (`GET /json/list`); when that read fails,
-the view shows the address in `<session>.target`. A hidden or closed
+and title from Chrome's target list (`GET /json/list`). The header names the
+page by its title, else by its address's host; when that read fails, the
+address is the one in `<session>.target`. A hidden or closed
 view stops the screencast. When the page can't be reached, the client tries
 again every two seconds; when discovery no longer finds the daemon, the view
 says the browser ended. A new tab bound in `<session>.target` starts a new
@@ -1465,7 +1468,8 @@ memory. The view reads it from the daemon's Chrome child process: its command
 line has `--headless` when it has no window. Open in Chrome activates that
 Chrome process with `NSRunningApplication`, which brings only that window
 forward and asks for no permission. A headless session, a browser the daemon
-did not start, and Linux leave the button disabled with the reason.
+did not start, and Linux leave the button disabled, with the reason in its
+tooltip.
 
 ### Bound native Policies
 
