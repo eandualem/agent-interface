@@ -94,7 +94,8 @@ pub enum Window {
     /// The Chrome process with the window.
     Shown(u32),
     /// The daemon's Chrome runs headless, with a profile folder of its own
-    /// or, as far as can be told, the person's.
+    /// or, as far as can be told, the person's: none given, or Chrome's
+    /// default folder.
     Headless { own_profile: bool },
     /// The daemon started no Chrome, as when it attached to a running
     /// browser or a provider's, so its window cannot be found.
@@ -106,8 +107,12 @@ pub enum Window {
 /// command line of the daemon's Chrome child, which carries `--headless`
 /// when it has no window.
 pub fn window(daemon: u32) -> Window {
-    window_in(&processes(), daemon)
+    let person = std::env::home_dir().map(|home| home.join(CHROME_PROFILE));
+    window_in(&processes(), daemon, person.as_deref())
 }
+
+/// The person's Chrome profile folder on macOS, under their home folder.
+const CHROME_PROFILE: &str = "Library/Application Support/Google/Chrome";
 
 /// Every process, as `pid ppid command` lines.
 fn processes() -> String {
@@ -131,10 +136,15 @@ fn chrome_in(processes: &str, daemon: u32) -> Option<(u32, &str)> {
     })
 }
 
-fn window_in(processes: &str, daemon: u32) -> Window {
+/// The window of the daemon's Chrome; `person` is the person's own Chrome
+/// profile folder.
+fn window_in(processes: &str, daemon: u32, person: Option<&Path>) -> Window {
+    // Symbolic links and relative parts can't make one folder look like two.
+    let real = |path: &Path| fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
     match chrome_in(processes, daemon) {
         Some((_, command)) if command.contains(" --headless") => Window::Headless {
-            own_profile: profile_in(processes, daemon).is_some(),
+            own_profile: profile_in(processes, daemon)
+                .is_some_and(|profile| person.is_none_or(|person| real(&profile) != real(person))),
         },
         Some((pid, _)) => Window::Shown(pid),
         None => Window::NotStarted,
@@ -320,14 +330,14 @@ mod tests {
   40     1 /usr/local/bin/agent-browser daemon
   41    40 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=0 --headless=new --user-data-dir=/tmp/b
 ";
-        assert_eq!(window_in(processes, 10), Window::Shown(11));
+        assert_eq!(window_in(processes, 10, None), Window::Shown(11));
         assert_eq!(
-            window_in(processes, 20),
+            window_in(processes, 20, None),
             Window::Headless { own_profile: false }
         );
-        assert_eq!(window_in(processes, 30), Window::NotStarted);
+        assert_eq!(window_in(processes, 30, None), Window::NotStarted);
         assert_eq!(
-            window_in(processes, 40),
+            window_in(processes, 40, None),
             Window::Headless { own_profile: true }
         );
     }
@@ -348,6 +358,35 @@ mod tests {
         // A helper of that Chrome, and a daemon beside a Chrome it did not start.
         assert_eq!(profile_in(processes, 11), None);
         assert_eq!(profile_in(processes, 20), None);
+    }
+
+    #[test]
+    fn a_headless_chrome_in_the_persons_profile_has_none_of_its_own() {
+        let home = tempfile::tempdir().unwrap();
+        let person = home.path().join(CHROME_PROFILE);
+        fs::create_dir_all(&person).unwrap();
+        let link = home.path().join("link");
+        std::os::unix::fs::symlink(&person, &link).unwrap();
+        for folder in [&person, &link] {
+            let processes = format!(
+                "  41     1 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=0 --headless=new --user-data-dir={}\n",
+                folder.display()
+            );
+            assert_eq!(
+                window_in(&processes, 1, Some(&person)),
+                Window::Headless { own_profile: false },
+                "{}",
+                folder.display()
+            );
+        }
+        let other = format!(
+            "  41     1 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=0 --headless=new --user-data-dir={}\n",
+            home.path().join("agent").display()
+        );
+        assert_eq!(
+            window_in(&other, 1, Some(&person)),
+            Window::Headless { own_profile: true }
+        );
     }
 
     #[test]

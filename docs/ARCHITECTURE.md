@@ -1480,7 +1480,7 @@ a running Google Chrome too, so plain `open -a` could hand the address to
 one of them; `-n` starts Chrome with the default profile, and Chrome's own
 single-instance check passes the address to the person's Chrome. That
 needs the agent's Chrome to have its own `--user-data-dir`; a headless
-Chrome without one, a browser the daemon did not start, a headless page with
+Chrome without one, or with the person's default Chrome folder, a browser the daemon did not start, a headless page with
 no web address, and Linux leave the button disabled, with the reason in its
 tooltip.
 
