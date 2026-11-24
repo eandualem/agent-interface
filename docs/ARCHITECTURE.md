@@ -1060,7 +1060,8 @@ build-time advisory exception are described below.
   `new_debug_unreachable` 1.0.6 (MIT). On macOS `phf`, `phf_shared` and
   `phf_generator` 0.13.1 (MIT) are new to the build as well.
 - **`base64` 0.23.1:** MIT OR Apache-2.0, pinned exactly. The roster sends a
-  skill folder's files to the Rust Backbone service in Base64.
+  skill folder's files to the Rust Backbone service in Base64, and the app
+  reads agent-browser's frames from Base64.
 - **`serde`, `serde_json`, `uuid` and `tempfile`:** existing workspace
   dependencies also used by artifact metadata, publication IDs and atomic
   staging. The macOS adapter also uses `tempfile` 3.27.0 (exact pin) for private
@@ -1080,6 +1081,18 @@ build-time advisory exception are described below.
   formatter, reloadable filter and nonblocking background writer. The small
   app-owned file writer adds size-based rotation and explicit write-health
   reporting; it does not implement another logging facade.
+- **`tungstenite` 0.30.0:** MIT OR Apache-2.0, pinned exactly with only its
+  `handshake` feature: the client of agent-browser's local frame stream,
+  without TLS. It adds `sha1` 0.11.0, `digest` 0.11.3, `block-buffer`
+  0.12.1, `crypto-common` 0.2.2, `hybrid-array` 0.4.15, `const-oid` 0.10.3,
+  `cpufeatures` 0.3.1, `rand` 0.10.4, `rand_core` 0.10.1 and `chacha20` 0.10.2
+  (each MIT OR Apache-2.0), and `data-encoding` 2.11.1 (MIT).
+- **`image` 0.25.10:** MIT OR Apache-2.0, pinned exactly with only its `jpeg`
+  feature. It decodes the stream's frames off the UI thread. It was already in
+  the graph through GPUI.
+- **`objc2-app-kit` 0.3.2:** MIT, pinned exactly, macOS only, with the
+  `NSRunningApplication` feature: Open in Chrome activates the agent's Chrome
+  process. It was already in the graph through GPUI.
 - **`chrono` 0.4.45:** MIT OR Apache-2.0, pinned exactly with only its `clock`
   feature. It names local days and times for records and messages without
   `unsafe` code in the app. GPUI already builds the same version and feature,
@@ -1398,6 +1411,41 @@ History pagination uses the service cursor. When reads
 fail the pane retains the last snapshot and pauses changes. The separate sample
 preview uses in-memory records and decisions which expire when the person exits.
 Neither path sends keystrokes to a terminal.
+
+### Agent browsers
+
+An agent that drives a browser with
+[agent-browser](https://github.com/vercel-labs/agent-browser) gets a Browser
+row under it in the sidebar. `agent_browser` finds the sessions from the files
+agent-browser keeps next to each session's socket, in
+`AGENT_BROWSER_SOCKET_DIR`, else `$XDG_RUNTIME_DIR/agent-browser`, else
+`~/.agent-browser`; sessions in a namespace (`AGENT_BROWSER_NAMESPACE`) are not
+read. Every two seconds a background read lists `<session>.pid` files and keeps
+those whose daemon is running (`kill(pid, 0)`). It reads the stream port from
+`<session>.stream` and the tab's address from `<session>.target`. It starts no
+process and opens no connection, so without agent-browser it costs one failed
+directory read. A session named exactly as an agent on this machine belongs to
+that agent; other sessions are not shown.
+
+The Browser view is a pane that stays in memory: the library saves it as an
+empty pane, so earlier readers can open the library and the view is not
+restored. While the view is shown, `agent_browser::stream` holds a WebSocket
+to the session's daemon on `127.0.0.1` and asks for acknowledged pacing
+(`?pacing=ack`). The daemon keeps one frame in flight and sends the next only
+after the client acknowledges the one it drew. The client's thread decodes each
+JPEG frame into one slot that a newer frame replaces, and the view takes the
+slot when it paints, so frames never queue. A hidden or closed view drops the
+connection. Acknowledgements are the only messages the client sends; it sends
+no mouse, keyboard or touch input. When the stream closes, the client tries
+again every two seconds; when discovery no longer finds the daemon, the view
+says the browser ended.
+
+agent-browser records whether a session is headless only in its daemon's
+memory. The view reads it from the daemon's Chrome child process: its command
+line has `--headless` when it has no window. Open in Chrome activates that
+Chrome process with `NSRunningApplication`, which brings only that window
+forward and asks for no permission. A headless session, a browser the daemon
+did not start, and Linux leave the button disabled with the reason.
 
 ### Bound native Policies
 

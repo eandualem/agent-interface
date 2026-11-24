@@ -355,6 +355,32 @@ A remote agent's pane is drawn natively like any other terminal. It shows
 what the profile allows. While it connects the pane shows **Connecting…**; after
 a failure it shows the reason with **Open again** and **Detach**.
 
+## Watch an agent's browser
+
+An agent that drives a browser with
+[agent-browser](https://github.com/vercel-labs/agent-browser) gets a
+**Browser** row under it in the sidebar's **AGENTS** section, showing the
+page's title or address. The row appears when the agent starts a session
+named exactly as the agent, for example
+`agent-browser --session <agent name> open https://example.com`, and goes
+when the session closes. Only agents on this computer are matched, and only
+sessions in agent-browser's usual folder: `AGENT_BROWSER_SOCKET_DIR`, else
+`$XDG_RUNTIME_DIR/agent-browser`, else `~/.agent-browser`. Sessions in an
+agent-browser namespace are not shown.
+
+Click the row to open the **Browser** view, in a visible empty pane or a new
+tab. It shows the page as a live picture, scaled to fit, with its address
+above it. The label **Live view of <agent>'s browser** stays in view: the
+picture is for watching and cannot be clicked or typed into. To act in the
+page, click **Open in Chrome**, which brings the agent's own Chrome window to
+the front. When the session runs without a window (headless), or on Linux,
+the button is disabled and says why. When the browser closes the view says
+**The browser ended.**; if its stream can't be reached the view says so and
+keeps trying.
+
+A Browser view is not kept when the app restarts: its pane reopens empty,
+and the row opens it again.
+
 ## Connections
 
 **Connections** shows a profile's links with other Agent Backbone profiles. Open
