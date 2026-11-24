@@ -2,10 +2,11 @@
 //!
 //! The client connects to the page's DevTools endpoint on `127.0.0.1`, at the
 //! port the agent's Chrome wrote in its own `DevToolsActivePort` file, and
-//! asks it to screencast. Chrome keeps a frame or two in flight and sends the
-//! next only after the client acknowledges one, so the client acknowledges a
-//! frame once the view takes it to draw, and at once a frame that a newer
-//! one replaced before it was drawn. Frames come at the page's own pixel
+//! asks it to screencast. Chrome keeps a few frames in flight and sends more
+//! only after the client acknowledges them. The client acknowledges frames
+//! only when the view takes one to draw, then also those a newer frame
+//! replaced, so a view that is not painting pauses Chrome after a few frames
+//! instead of decoding a full-rate stream. Frames come at the page's own pixel
 //! size, with its size in CSS pixels, and are decoded on the client's own
 //! thread into one slot that the newest frame replaces, so nothing queues.
 //! The client sends three methods only: `Page.startScreencast`,
@@ -37,6 +38,9 @@ const QUALITY: u32 = 80;
 const POLL: Duration = Duration::from_millis(5);
 /// How long a read waits while no frame waits to be drawn or acknowledged.
 const IDLE: Duration = Duration::from_millis(100);
+/// How long a waiting frame keeps reads short. A view that has not taken it
+/// by then is not painting, so the client looks less often.
+const EAGER: Duration = Duration::from_secs(1);
 /// How long the client waits before it tries an unreachable page again.
 const RETRY: Duration = Duration::from_secs(2);
 /// How often the client reads the page's address and title.
@@ -72,8 +76,11 @@ struct Latest {
     state: State,
     /// The newest frame not yet taken.
     frame: Option<Frame>,
-    /// Frames taken or replaced and not yet acknowledged.
+    /// Frames to acknowledge now.
     acks: Vec<i64>,
+    /// Frames replaced before they were drawn, acknowledged when the view
+    /// next takes one.
+    replaced: Vec<i64>,
     address: Option<String>,
     title: Option<String>,
 }
@@ -133,9 +140,12 @@ impl Stream {
             stop: AtomicBool::new(false),
         });
         let worker = shared.clone();
-        let _ = thread::Builder::new()
+        let started = thread::Builder::new()
             .name("agent-browser-stream".into())
             .spawn(move || run(&port, &target, &worker, &wake));
+        if started.is_err() {
+            lock(&shared).state = State::Unreachable;
+        }
         Self { shared }
     }
 
@@ -153,6 +163,8 @@ impl Stream {
     pub fn take_frame(&self) -> Option<Frame> {
         let mut latest = self.latest();
         let frame = latest.frame.take()?;
+        let replaced = std::mem::take(&mut latest.replaced);
+        latest.acks.extend(replaced);
         latest.acks.push(frame.id);
         Some(frame)
     }
@@ -193,6 +205,7 @@ fn run(port: &dyn Fn() -> Option<u16>, target: &str, shared: &Shared, wake: &dyn
             let mut latest = lock(shared);
             latest.state = State::Unreachable;
             latest.acks.clear();
+            latest.replaced.clear();
         }
         wake();
         let mut waited = Duration::ZERO;
@@ -210,6 +223,7 @@ fn restart(shared: &Shared) {
     latest.state = State::Connecting;
     latest.frame = None;
     latest.acks.clear();
+    latest.replaced.clear();
 }
 
 /// A local TCP connection to `port`, waiting at most `RETRY` for each read.
@@ -241,11 +255,13 @@ fn watch(
         sent += 1;
         socket.send(Message::text(message.text(sent))).is_ok()
     };
-    if !send(socket, Outgoing::Start) {
+    // A view that went while this connected asks for nothing.
+    if shared.stop.load(Ordering::Relaxed) || !send(socket, Outgoing::Start) {
         return;
     }
     let mut timeout = IDLE;
     let mut listed: Option<Instant> = None;
+    let mut waiting_since: Option<Instant> = None;
     loop {
         if shared.stop.load(Ordering::Relaxed) {
             send(socket, Outgoing::Stop);
@@ -253,7 +269,10 @@ fn watch(
         }
         if listed.is_none_or(|at| at.elapsed() >= PAGE) {
             listed = Some(Instant::now());
-            if let Some((address, title)) = page(port, target) {
+            // Unlisted, the view shows the address agent-browser recorded,
+            // which follows navigation; a stale listed one would not.
+            let (address, title) = page(port, target).unwrap_or_default();
+            {
                 let mut latest = lock(shared);
                 if (&latest.address, &latest.title) != (&address, &title) {
                     (latest.address, latest.title) = (address, title);
@@ -266,9 +285,15 @@ fn watch(
             let mut latest = lock(shared);
             (std::mem::take(&mut latest.acks), latest.frame.is_some())
         };
-        // Look often only while a frame waits for the view, so its
-        // acknowledgement leaves soon after it is drawn.
-        let wanted = if waiting { POLL } else { IDLE };
+        // Look often only while a frame has just begun to wait for the view,
+        // so its acknowledgement leaves soon after it is drawn.
+        let since = waiting.then(|| *waiting_since.get_or_insert_with(Instant::now));
+        waiting_since = since;
+        let wanted = if since.is_some_and(|since| since.elapsed() < EAGER) {
+            POLL
+        } else {
+            IDLE
+        };
         if wanted != timeout {
             if socket.get_ref().set_read_timeout(Some(wanted)).is_err() {
                 return;
@@ -335,11 +360,12 @@ fn receive(text: &str, shared: &Shared) -> Received {
     let mut latest = lock(shared);
     latest.state = State::Live;
     match frame {
-        // A newer frame replaces one that was never drawn, which is
-        // acknowledged so Chrome keeps sending.
+        // A newer frame replaces one that was never drawn. Its
+        // acknowledgement waits for the view to take a frame, so Chrome
+        // pauses while the view is not painting.
         Some(frame) => {
             if let Some(replaced) = latest.frame.replace(frame) {
-                latest.acks.push(replaced.id);
+                latest.replaced.push(replaced.id);
             }
         }
         // A frame that cannot be drawn is acknowledged at once.
@@ -392,33 +418,47 @@ fn page(port: u16, target: &str) -> Option<(Option<String>, Option<String>)> {
     // Chrome keeps the connection open, so read only the stated length.
     let mut response = Vec::new();
     let mut chunk = [0; 16 * 1024];
-    let body = loop {
+    loop {
         let read = stream.read(&mut chunk).ok().filter(|read| *read > 0)?;
         response.extend_from_slice(&chunk[..read]);
-        let text = String::from_utf8_lossy(&response);
-        if let Some((head, body)) = text.split_once("\r\n\r\n") {
-            let length = head.lines().find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                name.eq_ignore_ascii_case("content-length")
-                    .then(|| value.trim().parse::<usize>().ok())?
-            })?;
-            if body.len() >= length {
-                break body.to_owned();
-            }
+        if let Some(listing) = listing(&response, target) {
+            return listing;
         }
+    }
+}
+
+/// Read the page `target` from a response to `GET /json/list`, or `None`
+/// while the response is still incomplete. A page Chrome does not list, or a
+/// response that is not a target list, gives `Some(None)`.
+fn listing(response: &[u8], target: &str) -> Option<Option<(Option<String>, Option<String>)>> {
+    let end = response.windows(4).position(|bytes| bytes == b"\r\n\r\n")?;
+    let head = String::from_utf8_lossy(&response[..end]);
+    let Some(length) = head.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse::<usize>().ok())?
+    }) else {
+        return Some(None);
     };
-    let targets: Vec<Value> = serde_json::from_str(&body).ok()?;
-    let listed = targets
-        .iter()
-        .find(|listed| listed.get("id").and_then(Value::as_str) == Some(target))?;
-    let text = |key: &str| {
-        listed
-            .get(key)
-            .and_then(Value::as_str)
-            .filter(|text| !text.is_empty())
-            .map(str::to_owned)
+    let body = response.get(end + 4..end + 4 + length)?;
+    let Ok(targets) = serde_json::from_slice::<Vec<Value>>(body) else {
+        return Some(None);
     };
-    Some((text("url"), text("title")))
+    Some(
+        targets
+            .iter()
+            .find(|listed| listed.get("id").and_then(Value::as_str) == Some(target))
+            .map(|listed| {
+                let text = |key: &str| {
+                    listed
+                        .get(key)
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                        .map(str::to_owned)
+                };
+                (text("url"), text("title"))
+            }),
+    )
 }
 
 #[cfg(test)]
@@ -466,13 +506,37 @@ mod tests {
         let stream = Stream {
             shared: Arc::new(shared),
         };
+        // Until the view takes one, Chrome hears nothing and pauses.
+        assert!(stream.latest().acks.is_empty());
         let newest = stream.take_frame().expect("a frame to draw");
         assert_eq!(newest.id, 5);
         // Drawn at the page's CSS size, not its pixel size.
         assert_eq!((newest.width, newest.height), (2.0, 1.0));
         assert!(stream.take_frame().is_none());
-        // Every frame is acknowledged, so Chrome never waits on one.
+        // Then every frame is acknowledged, so Chrome sends again.
         assert_eq!(stream.latest().acks, [1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn the_page_is_read_from_a_listing_that_arrives_in_pieces() {
+        let body = r#"[{"id":"OTHER","url":"https://example.org/","title":"Other"},{"id":"PAGE","url":"https://example.com/","title":"Café"}]"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let response = response.as_bytes();
+        // Cut inside the two-byte "é": the listing waits for the rest.
+        let cut = response.len() - body.len() + body.find('é').unwrap() + 1;
+        assert_eq!(listing(&response[..cut], "PAGE"), None);
+        assert_eq!(
+            listing(response, "PAGE"),
+            Some(Some((
+                Some("https://example.com/".into()),
+                Some("Café".into())
+            )))
+        );
+        // A tab Chrome no longer lists leaves the address to agent-browser's.
+        assert_eq!(listing(response, "GONE"), Some(None));
     }
 
     #[test]
@@ -506,6 +570,21 @@ mod tests {
                 },
             )
             .unwrap();
+            // Answer the target list as Chrome does, keeping the connection open.
+            thread::spawn(move || {
+                let mut open = Vec::new();
+                for mut stream in listener.incoming().flatten() {
+                    let mut request = [0; 1024];
+                    let _ = stream.read(&mut request);
+                    let body = r#"[{"id":"PAGE","url":"https://example.com/","title":"Example"}]"#;
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    );
+                    open.push(stream);
+                }
+            });
             let data = jpeg();
             for id in 1..=3 {
                 socket.send(Message::text(frame(id, &data))).unwrap();
@@ -529,10 +608,16 @@ mod tests {
 
         let stream = Stream::open_on(move || Some(port), "PAGE".into(), || {});
         let deadline = Instant::now() + Duration::from_secs(10);
-        while stream.take_frame().is_none() {
+        let mut drawn = false;
+        while !drawn || stream.page().0.is_none() {
             assert!(Instant::now() < deadline, "the page never delivered");
+            drawn |= stream.take_frame().is_some();
             thread::sleep(Duration::from_millis(10));
         }
+        assert_eq!(
+            stream.page(),
+            (Some("https://example.com/".into()), Some("Example".into()))
+        );
         // Stop only once the page has heard an acknowledgement.
         first_ack
             .recv_timeout(Duration::from_secs(10))

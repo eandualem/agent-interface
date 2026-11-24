@@ -141,7 +141,11 @@ fn window_in(processes: &str, daemon: u32) -> Window {
 /// The DevTools port of the Chrome that the daemon `daemon` started, from
 /// the `DevToolsActivePort` file Chrome writes in its own profile.
 pub fn devtools_port(daemon: u32) -> Option<u16> {
-    let profile = profile_in(&processes(), daemon)?;
+    port_in(&profile_in(&processes(), daemon)?)
+}
+
+/// The port in the `DevToolsActivePort` file of the Chrome profile `profile`.
+fn port_in(profile: &Path) -> Option<u16> {
     let written = fs::read_to_string(profile.join("DevToolsActivePort")).ok()?;
     written.lines().next()?.trim().parse().ok()
 }
@@ -247,6 +251,18 @@ mod tests {
         // A helper of that Chrome, and a daemon beside a Chrome it did not start.
         assert_eq!(profile_in(processes, 11), None);
         assert_eq!(profile_in(processes, 20), None);
+    }
+
+    #[test]
+    fn the_devtools_port_is_read_from_the_profile() {
+        let profile = tempfile::tempdir().unwrap();
+        assert_eq!(port_in(profile.path()), None);
+        fs::write(
+            profile.path().join("DevToolsActivePort"),
+            "53746\n/devtools/browser/abc\n",
+        )
+        .unwrap();
+        assert_eq!(port_in(profile.path()), Some(53746));
     }
 
     #[test]

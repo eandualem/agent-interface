@@ -1440,17 +1440,20 @@ in that Chrome's `--user-data-dir`, and opens a WebSocket to
 `Page.startScreencast`, `Page.screencastFrameAck` and `Page.stopScreencast`.
 No input, script, page or emulation method reaches the page, so the agent's
 viewport, screenshots and commands are unchanged, and agent-browser's own
-stream keeps working beside it. Chrome sends the next frame only after earlier
-ones are acknowledged. The client's thread decodes each JPEG frame into one
-slot that a newer frame replaces, acknowledging a replaced frame at once and
-the newest when the view takes it to paint, so frames never queue. Chrome
+stream keeps working beside it. Chrome keeps a few frames in flight and sends
+more only after they are acknowledged. The client's thread decodes each JPEG
+frame into one slot that a newer frame replaces, and acknowledges frames only
+when the view takes one to paint, together with those it replaced. Frames
+never queue, and a view that is not painting pauses Chrome after a few frames
+instead of decoding a full-rate stream. Chrome
 sends each frame at the page's own pixel size, 2x on a Retina display or
 with `--force-device-scale-factor=2`, together with the page's size in CSS
 pixels. The view draws it at that CSS size in points, never larger, and
 scales it down only to fit the pane. agent-browser's own stream is not
 used: it caps frames at its recorded viewport and reports that, rather than
 the page's real size. Every two seconds the client reads the tab's address
-and title from Chrome's target list (`GET /json/list`). A hidden or closed
+and title from Chrome's target list (`GET /json/list`); when that read fails,
+the view shows the address in `<session>.target`. A hidden or closed
 view stops the screencast. When the page can't be reached, the client tries
 again every two seconds; when discovery no longer finds the daemon, the view
 says the browser ended. A new tab bound in `<session>.target` starts a new
