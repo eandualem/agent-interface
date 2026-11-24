@@ -362,19 +362,16 @@ fn watch(
 }
 
 /// When to restart the screencast: once after the page's address changes,
-/// if no frame has come since the listing before the change nor within
-/// `REFRESH` of it. A page that keeps its address is never restarted,
-/// however long it sends nothing.
+/// if no frame has come within `REFRESH` of the listing that showed it. A
+/// frame from before then may be the old page's, so only a later one counts,
+/// at the cost of a restart the new page did not need. A page that keeps its
+/// address is never restarted, however long it sends nothing.
 #[derive(Default)]
 struct Refresh {
     /// The address Chrome last listed.
     address: Option<String>,
     /// When the address changed, while no frame has come since.
     changed: Option<Instant>,
-    /// Whether a frame came since Chrome last listed the page. The listing
-    /// sees a change up to `PAGE` after it happens, so such a frame may be
-    /// the new page's.
-    framed: bool,
 }
 
 impl Refresh {
@@ -385,18 +382,16 @@ impl Refresh {
         };
         if self.address.as_deref() != Some(address) {
             // The first address is no change: a new screencast sends a frame.
-            if self.address.is_some() && !self.framed {
+            if self.address.is_some() {
                 self.changed = Some(now);
             }
             self.address = Some(address.to_owned());
         }
-        self.framed = false;
     }
 
     /// A frame came, so the view shows the page.
     fn framed(&mut self) {
         self.changed = None;
-        self.framed = true;
     }
 
     /// Whether to restart now. Each change restarts at most once.
@@ -686,17 +681,14 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_before_the_listing_sees_the_change_counts() {
+    fn a_frame_before_the_listing_sees_the_change_does_not_count() {
         let start = Instant::now();
         let mut refresh = Refresh::default();
         refresh.listed(Some("https://example.com/a"), start);
-        // The new page's frame came before the listing noticed its address.
+        // The old page's frame, as for the click that left it.
         refresh.framed();
         refresh.listed(Some("https://example.com/b"), start + PAGE);
-        assert!(!refresh.due(start + PAGE + REFRESH));
-        // A frame from before the previous listing does not count.
-        refresh.listed(Some("https://example.com/c"), start + 2 * PAGE);
-        assert!(refresh.due(start + 2 * PAGE + REFRESH));
+        assert!(refresh.due(start + PAGE + REFRESH));
     }
 
     #[test]
