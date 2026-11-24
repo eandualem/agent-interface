@@ -1090,8 +1090,8 @@ build-time advisory exception are described below.
 - **`image` 0.25.10:** MIT OR Apache-2.0, pinned exactly with only its `jpeg`
   feature. It decodes the stream's frames off the UI thread. It was already in
   the graph through GPUI.
-- **`objc2-app-kit` 0.3.2:** MIT, pinned exactly, macOS only, with the
-  `NSApplication` and `NSRunningApplication` features: Open in Chrome yields
+- **`objc2-app-kit` 0.3.2:** Zlib OR Apache-2.0 OR MIT, pinned exactly, macOS
+  only, with the `NSApplication` and `NSRunningApplication` features: Open in Chrome yields
   activation to the agent's Chrome process and activates it, as macOS 14
   expects, or activates it directly on earlier versions. It and the workspace's
   `objc2` 0.6.5 (MIT) were already in the graph through GPUI.

@@ -31,6 +31,8 @@ const MAX_FPS: u32 = 30;
 /// to send or a request to stop. Short, so the next frame is asked for soon
 /// after the view draws one.
 const POLL: Duration = Duration::from_millis(5);
+/// How long a read waits while no frame waits to be drawn or acknowledged.
+const IDLE: Duration = Duration::from_millis(100);
 /// How long the client waits before it tries an unreachable stream again.
 const RETRY: Duration = Duration::from_secs(2);
 
@@ -158,8 +160,8 @@ fn run(port: u16, shared: &Shared, wake: &dyn Fn()) {
         wake();
         let mut waited = Duration::ZERO;
         while waited < RETRY && !shared.stop.load(Ordering::Relaxed) {
-            thread::sleep(POLL);
-            waited += POLL;
+            thread::sleep(IDLE);
+            waited += IDLE;
         }
     }
 }
@@ -181,16 +183,29 @@ fn connect(port: u16) -> Option<WebSocket<TcpStream>> {
     // Pacing set on the address governs the first frame too.
     let url = format!("ws://127.0.0.1:{port}/?pacing=ack&maxFps={MAX_FPS}");
     let (socket, _) = tungstenite::client(url, stream).ok()?;
-    socket.get_ref().set_read_timeout(Some(POLL)).ok()?;
+    socket.get_ref().set_read_timeout(Some(IDLE)).ok()?;
     Some(socket)
 }
 
 fn watch(socket: &mut WebSocket<TcpStream>, shared: &Shared, wake: &dyn Fn()) {
+    let mut timeout = IDLE;
     loop {
         if shared.stop.load(Ordering::Relaxed) {
             return;
         }
-        let drawn = lock(shared).drawn.take();
+        let (drawn, waiting) = {
+            let mut latest = lock(shared);
+            (latest.drawn.take(), latest.frame.is_some())
+        };
+        // Look often only while a frame waits for the view, so its
+        // acknowledgement leaves soon after it is drawn.
+        let wanted = if waiting { POLL } else { IDLE };
+        if wanted != timeout {
+            if socket.get_ref().set_read_timeout(Some(wanted)).is_err() {
+                return;
+            }
+            timeout = wanted;
+        }
         if let Some(seq) = drawn
             && socket
                 .send(Message::text(Outgoing::Ack(seq).text()))

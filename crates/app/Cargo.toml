@@ -69,7 +69,8 @@ agent-interface-native-fs = { path = "../native-fs" }
 wry = { version = "=0.57.1", default-features = false, features = ["os-webview"] }
 # Safe access to the existing native macOS bridge (Apache-2.0).
 gpui_macos = { package = "gpui-pre-macos", version = "=0.3.9", default-features = false }
-# Bring an agent's own Chrome window to the front by its process (MIT).
+# Bring an agent's own Chrome window to the front by its process
+# (objc2: MIT; objc2-app-kit: Zlib OR Apache-2.0 OR MIT).
 objc2.workspace = true
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "libc", "NSApplication", "NSResponder", "NSRunningApplication"] }
 

@@ -92,6 +92,12 @@ impl BrowserView {
             if let Some(pid) = session.as_ref().map(|session| session.pid) {
                 self.check_window(pid, false, cx);
             }
+        } else if cfg!(target_os = "macos")
+            && !matches!(self.window, Some(agent_browser::Window::Shown(_)))
+            && let Some(pid) = session.as_ref().map(|session| session.pid)
+        {
+            // The daemon may have started its Chrome since the last look.
+            self.check_window(pid, false, cx);
         }
         self.session = session;
         cx.notify();

@@ -373,8 +373,9 @@ tab. It shows the page as a live picture, scaled to fit, with its address
 above it. The label **Live view of <agent>'s browser** stays in view: the
 picture is for watching and cannot be clicked or typed into. To act in the
 page, click **Open in Chrome**, which brings the agent's own Chrome window to
-the front. When the session runs without a window (headless), or on Linux,
-the button is disabled and says why. When the browser closes the view says
+the front. When the session runs without a window (headless), when
+agent-browser attached to a browser it did not open, or on Linux, the button
+is disabled and says why. When the browser closes the view says
 **The browser ended.**; if its stream can't be reached the view says so and
 keeps trying.
 
