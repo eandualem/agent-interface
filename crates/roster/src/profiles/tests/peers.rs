@@ -159,6 +159,10 @@ fn a_refused_connection_request_keeps_the_service_reason() {
             (409, refusal("conflict", lapsed)),
             (409, json!({})),
             (404, refusal("not_found", "unknown peer invitation")),
+            (
+                409,
+                refusal("binding_required", "bind this workspace first"),
+            ),
         ],
     );
     let c = profile.connect().unwrap();
@@ -169,6 +173,11 @@ fn a_refused_connection_request_keeps_the_service_reason() {
     let status = |status| Err(AddError::Connection(Error::Refused(status)));
     assert_eq!(c.answer_peer("req", false, "k4").map(drop), status(409));
     assert_eq!(c.answer_peer("req", true, "k5").map(drop), status(404));
+    // A binding refusal is never shown as a reason.
+    assert_eq!(
+        c.invite_peer("peer", "k6").map(drop),
+        Err(AddError::Connection(Error::BindingRequired))
+    );
     server.join().unwrap();
 }
 
