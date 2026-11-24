@@ -1482,11 +1482,13 @@ is always given, since agent-browser otherwise sets it to 1. A narrow pane
 gives the site's narrow, responsive layout, which is the page the agent
 sees. The change goes through agent-browser, not DevTools, so its record of
 the page stays right, and the screencast still sends only its three methods.
-The command is sent only when the size or scale differs from the last one
-set for that tab, or when the page shows another size, as after the agent
-set its own. agent-browser starts a new browser for a session that has
-ended, so the command runs only while discovery's files still show the same
-daemon. The program is found on `PATH`, else in `/opt/homebrew/bin` or
+The command is sent only then, or when the window's scale changes, and only
+when the size or scale differs from the last one set for that tab or the
+page shows another size. A frame never sends it, so a viewport the agent
+sets for itself, as to try a phone layout, is left alone until the next
+resize, change of scale, choice of the pane or new page. agent-browser
+starts a new browser for a session that has ended, so the command runs only
+while discovery's files still show the same daemon. The program is found on `PATH`, else in `/opt/homebrew/bin` or
 `/usr/local/bin`, since an app started from the Finder may not have
 Homebrew on its `PATH`. Of two views on one browser, the one resized or
 chosen last sets the size, as tmux sizes a window for its latest client.

@@ -376,8 +376,9 @@ page fills the pane as a live picture: all of it, as large as the pane holds
 it, from the pane's top left corner. The agent's browser takes the pane's
 size, the way a terminal does, so the agent works on the page exactly as you
 see it: a tall pane gives it a tall page, and a narrow pane gives it the
-site's narrow layout. The picture is for watching and cannot be clicked or
-typed into. To act in the page, click **Open in Chrome**: it
+site's narrow layout. If the agent sets its own page size, it keeps it until
+you resize or choose the pane again. The picture is for watching and cannot
+be clicked or typed into. To act in the page, click **Open in Chrome**: it
 brings the agent's own Chrome window to the front, or, when the session runs
 without a window (headless), opens the page's address in your Chrome. When
 agent-browser attached to a browser it did not open, when a headless page

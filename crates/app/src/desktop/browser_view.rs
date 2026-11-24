@@ -837,6 +837,21 @@ mod tests {
     }
 
     #[test]
+    fn the_frame_our_own_size_brings_is_not_the_agents() {
+        let shapes = Shapes::default();
+        let page = || (10, "PAGE".to_owned());
+        let pane = Viewport {
+            width: 900,
+            height: 1300,
+            scale: 2.,
+        };
+        // Sent while the page still shows the agent's 1280 by 633.
+        assert!(shapes.wanted(page(), pane, Some((1280., 633.))));
+        // The page then shows the size sent: the next trigger sends nothing.
+        assert!(!shapes.wanted(page(), pane, Some((900., 1300.))));
+    }
+
+    #[test]
     fn the_size_follows_a_pane_that_has_held_still() {
         let start = Instant::now();
         let mut settle = Settle::default();
