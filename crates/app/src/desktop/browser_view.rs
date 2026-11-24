@@ -79,17 +79,17 @@ impl BrowserView {
         if self.session == session {
             return;
         }
-        let same_daemon = self.session.as_ref().map(|s| (s.pid, s.port))
-            == session.as_ref().map(|s| (s.pid, s.port));
-        if !same_daemon {
-            // A new browser never shows the picture of the one before it.
+        let page = |session: &Option<Session>| session.as_ref().map(|s| (s.pid, s.target.clone()));
+        let same_page = page(&self.session) == page(&session);
+        if !same_page {
+            // A new browser or tab never shows the picture of the one before it.
             self.retired.extend(self.frame.take());
             self.stream = session
                 .as_ref()
-                .and_then(|session| session.port)
-                .map(|port| {
+                .and_then(|session| Some((session.pid, session.target.clone()?)))
+                .map(|(daemon, target)| {
                     let (wake, woken) = (self.wake.clone(), self.woken.clone());
-                    Stream::open(port, move || {
+                    Stream::open(daemon, target, move || {
                         if !woken.swap(true, Ordering::Relaxed) {
                             let _ = wake.unbounded_send(());
                         }
@@ -274,13 +274,25 @@ impl Render for BrowserView {
         let state = self.stream.as_ref().map(Stream::state);
         let body = match (&self.session, &self.frame, state) {
             (None, _, _) => quiet("The browser ended.").into_any_element(),
-            (_, _, None) => quiet("This browser has no stream yet.").into_any_element(),
+            (_, _, None) => quiet("This browser has no page yet.").into_any_element(),
             (_, _, Some(State::Unreachable)) => {
-                quiet("Can't reach the browser's stream. Trying again…").into_any_element()
+                quiet("Can't reach the browser's page. Trying again…").into_any_element()
             }
-            (_, Some(frame), _) => img(frame.image.clone())
+            // One CSS pixel per point, as the page lays itself out: never
+            // stretched, and scaled down only to fit the pane.
+            (_, Some(frame), _) => div()
                 .size_full()
-                .object_fit(ObjectFit::Contain)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    img(frame.image.clone())
+                        .w(px(frame.width))
+                        .h(px(frame.height))
+                        .max_w(gpui::relative(1.))
+                        .max_h(gpui::relative(1.))
+                        .object_fit(ObjectFit::Contain),
+                )
                 .into_any_element(),
             (_, None, Some(State::Connecting)) => {
                 quiet("Connecting to the browser…").into_any_element()

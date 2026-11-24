@@ -1,12 +1,12 @@
 //! Browsers that agents drive with [agent-browser] on this machine.
 //!
 //! agent-browser keeps one daemon per session and writes its files next to
-//! the session's socket as `<session>.<kind>`: `pid` (the daemon), `stream`
-//! (the port of its frame stream) and `target` (the bound tab, with its
-//! address). Reading these files finds the sessions without starting a
-//! process or opening a connection, so a machine without agent-browser pays
-//! one failed directory read per look. A session named exactly as an agent
-//! belongs to that agent; every other session is left out.
+//! the session's socket as `<session>.<kind>`: `pid` (the daemon) and
+//! `target` (the bound tab, with its id and address). Reading these files
+//! finds the sessions without starting a process or opening a connection, so
+//! a machine without agent-browser pays one failed directory read per look.
+//! A session named exactly as an agent belongs to that agent; every other
+//! session is left out.
 //!
 //! [agent-browser]: https://github.com/vercel-labs/agent-browser
 
@@ -24,8 +24,8 @@ pub struct Session {
     pub name: String,
     /// The session's daemon.
     pub pid: u32,
-    /// The port of its frame stream, once the daemon has started it.
-    pub port: Option<u16>,
+    /// The DevTools id of its tab, once it has one.
+    pub target: Option<String>,
     /// The address of its tab, as agent-browser last recorded it.
     pub address: Option<String>,
 }
@@ -55,16 +55,18 @@ pub fn sessions(dir: &Path) -> Vec<Session> {
             if !running(pid) {
                 return None;
             }
-            let port = read("stream").and_then(|port| port.trim().parse().ok());
-            let address = read("target")
-                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-                .and_then(|target| Some(target.get("url")?.as_str()?.to_owned()))
-                .filter(|url| !url.is_empty());
+            let tab = read("target")
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+            let field = |key: &str| {
+                tab.as_ref()
+                    .and_then(|tab| Some(tab.get(key)?.as_str()?.to_owned()))
+                    .filter(|text| !text.is_empty())
+            };
             Some(Session {
                 name: name.to_owned(),
                 pid,
-                port,
-                address,
+                target: field("targetId"),
+                address: field("url"),
             })
         })
         .collect();
@@ -103,37 +105,54 @@ pub enum Window {
 /// command line of the daemon's Chrome child, which carries `--headless`
 /// when it has no window.
 pub fn window(daemon: u32) -> Window {
+    window_in(&processes(), daemon)
+}
+
+/// Every process, as `pid ppid command` lines.
+fn processes() -> String {
     std::process::Command::new("ps")
         .args(["-A", "-o", "pid=,ppid=,command="])
         .output()
-        .ok()
-        .map_or(Window::NotStarted, |out| {
-            window_in(&String::from_utf8_lossy(&out.stdout), daemon)
-        })
+        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+/// The Chrome that the daemon started, as its process id and command line.
+fn chrome_in(processes: &str, daemon: u32) -> Option<(u32, &str)> {
+    processes.lines().find_map(|line| {
+        let line = line.trim_start();
+        let (pid, rest) = line.split_once(char::is_whitespace)?;
+        let rest = rest.trim_start();
+        let (parent, command) = rest.split_once(char::is_whitespace)?;
+        // agent-browser starts Chrome with a debugging port or pipe.
+        (parent.parse::<u32>().ok()? == daemon && command.contains(" --remote-debugging"))
+            .then_some((pid.parse().ok()?, command))
+    })
 }
 
 fn window_in(processes: &str, daemon: u32) -> Window {
-    processes
-        .lines()
-        .find_map(|line| {
-            let mut fields = line.split_whitespace();
-            let pid = fields.next()?.parse::<u32>().ok()?;
-            let parent = fields.next()?.parse::<u32>().ok()?;
-            let flags: Vec<&str> = fields.collect();
-            // agent-browser starts Chrome with a debugging port or pipe.
-            (parent == daemon
-                && flags
-                    .iter()
-                    .any(|flag| flag.starts_with("--remote-debugging")))
-            .then(|| {
-                if flags.iter().any(|flag| flag.starts_with("--headless")) {
-                    Window::Headless
-                } else {
-                    Window::Shown(pid)
-                }
-            })
-        })
-        .unwrap_or(Window::NotStarted)
+    match chrome_in(processes, daemon) {
+        Some((_, command)) if command.contains(" --headless") => Window::Headless,
+        Some((pid, _)) => Window::Shown(pid),
+        None => Window::NotStarted,
+    }
+}
+
+/// The DevTools port of the Chrome that the daemon `daemon` started, from
+/// the `DevToolsActivePort` file Chrome writes in its own profile.
+pub fn devtools_port(daemon: u32) -> Option<u16> {
+    let profile = profile_in(&processes(), daemon)?;
+    let written = fs::read_to_string(profile.join("DevToolsActivePort")).ok()?;
+    written.lines().next()?.trim().parse().ok()
+}
+
+/// The profile folder of the daemon's Chrome, from its `--user-data-dir`.
+fn profile_in(processes: &str, daemon: u32) -> Option<PathBuf> {
+    let (_, command) = chrome_in(processes, daemon)?;
+    let (_, rest) = command.split_once(" --user-data-dir=")?;
+    // The folder ends where the next flag begins.
+    let folder = rest.split(" --").next()?.trim();
+    (!folder.is_empty()).then(|| PathBuf::from(folder))
 }
 
 /// Bring the windows of the Chrome process `pid` to the front. Only that
@@ -185,7 +204,7 @@ mod tests {
         Session {
             name: name.into(),
             pid: 1,
-            port: Some(9000),
+            target: Some("T".into()),
             address: None,
         }
     }
@@ -213,11 +232,28 @@ mod tests {
     }
 
     #[test]
+    fn only_the_daemons_own_chrome_gives_a_devtools_profile() {
+        let processes = "\
+  10     1 /usr/local/bin/agent-browser daemon
+  11    10 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=0 --user-data-dir=/tmp/agent profile --headless=new
+  12    11 /Applications/Google Chrome.app/Contents/Frameworks/Helper --type=renderer --user-data-dir=/tmp/helper
+  20     1 /usr/local/bin/agent-browser daemon
+  21     5 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=9222 --user-data-dir=/tmp/own
+";
+        assert_eq!(
+            profile_in(processes, 10),
+            Some(PathBuf::from("/tmp/agent profile"))
+        );
+        // A helper of that Chrome, and a daemon beside a Chrome it did not start.
+        assert_eq!(profile_in(processes, 11), None);
+        assert_eq!(profile_in(processes, 20), None);
+    }
+
+    #[test]
     fn running_sessions_are_read_from_their_files() {
         let dir = tempfile::tempdir().unwrap();
         let write = |file: &str, text: &str| fs::write(dir.path().join(file), text).unwrap();
         write("coder.pid", &format!("{}\n", std::process::id()));
-        write("coder.stream", "51234");
         write(
             "coder.target",
             r#"{"targetId":"T","url":"https://example.com/","pinned":false}"#,
@@ -234,7 +270,7 @@ mod tests {
             [Session {
                 name: "coder".into(),
                 pid: std::process::id(),
-                port: Some(51234),
+                target: Some("T".into()),
                 address: Some("https://example.com/".into()),
             }]
         );

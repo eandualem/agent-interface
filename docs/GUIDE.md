@@ -370,15 +370,18 @@ agent-browser namespace are not shown.
 
 Click the row to open the **Browser** view, in a visible empty pane or a new
 tab. An empty pane's chooser also lists each agent's browser under
-**BROWSERS**; choosing one opens the view in that pane. It shows the page as a live picture, scaled to fit, with its address
-above it. The label **Live view of the agent's browser** stays in view: the
-picture is for watching and cannot be clicked or typed into. To act in the
-page, click **Open in Chrome**, which brings the agent's own Chrome window to
-the front. When the session runs without a window (headless), when
-agent-browser attached to a browser it did not open, or on Linux, the button
-is disabled and says why. When the browser closes the view says
-**The browser ended.**; if its stream can't be reached the view says so and
-keeps trying.
+**BROWSERS**; choosing one opens the view in that pane. The view shows the
+page as a live picture at the size the page has in the agent's browser, made
+smaller only when the pane is smaller, with its address above it. The label
+**Live view of the agent's browser** stays in view: the picture is for
+watching and cannot be clicked or typed into. To act in the page, click
+**Open in Chrome**, which brings the agent's own Chrome window to the front.
+When the session runs without a window (headless), when agent-browser
+attached to a browser it did not open, or on Linux, the button is disabled
+and says why. When the browser closes the view says **The browser ended.**;
+if the page can't be reached the view says so and keeps trying. Only a
+browser that agent-browser opened itself can be watched; one it attached to
+can't be reached.
 
 A Browser view is not kept when the app restarts: its pane reopens empty,
 and the row opens it again.
