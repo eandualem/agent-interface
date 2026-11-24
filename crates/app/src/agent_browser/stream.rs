@@ -366,6 +366,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let (sent, received) = mpsc::channel();
+        let (acked, first_ack) = mpsc::channel();
         let server = thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             let mut path = String::new();
@@ -389,7 +390,10 @@ mod tests {
             let mut messages = Vec::new();
             while let Ok(message) = socket.read() {
                 match message {
-                    Message::Text(text) => messages.push(text.to_string()),
+                    Message::Text(text) => {
+                        messages.push(text.to_string());
+                        let _ = acked.send(());
+                    }
                     Message::Close(_) => break,
                     _ => {}
                 }
@@ -407,8 +411,10 @@ mod tests {
             }
             thread::sleep(Duration::from_millis(10));
         }
-        // Give the last acknowledgement time to leave.
-        thread::sleep(POLL * 4);
+        // Close only once the server has heard from the client.
+        first_ack
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the client acknowledged a frame");
         drop(stream);
         let (path, messages) = received.recv_timeout(Duration::from_secs(10)).unwrap();
         server.join().unwrap();

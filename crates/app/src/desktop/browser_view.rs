@@ -93,7 +93,9 @@ impl BrowserView {
                 });
             self.window = None;
             self.live = false;
-            if let Some(pid) = session.as_ref().map(|session| session.pid) {
+            if cfg!(target_os = "macos")
+                && let Some(pid) = session.as_ref().map(|session| session.pid)
+            {
                 self.check_window(pid, false, cx);
             }
         } else if cfg!(target_os = "macos")
