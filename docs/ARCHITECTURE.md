@@ -1467,9 +1467,15 @@ agent-browser records whether a session is headless only in its daemon's
 memory. The view reads it from the daemon's Chrome child process: its command
 line has `--headless` when it has no window. Open in Chrome activates that
 Chrome process with `NSRunningApplication`, which brings only that window
-forward and asks for no permission. A headless session, a browser the daemon
-did not start, and Linux leave the button disabled, with the reason in its
-tooltip.
+forward and asks for no permission. For a headless session it opens the
+page's address, HTTP or HTTPS only, in the person's Chrome by running
+`open -n -a "Google Chrome" --args <address>` as an argument vector, and
+`open <address>` when that fails. Each agent's headless Chrome registers as
+a running Google Chrome too, so plain `open -a` could hand the address to
+one of them; `-n` starts Chrome with the default profile, and Chrome's own
+single-instance check passes the address to the person's Chrome. A browser
+the daemon did not start, a headless page with no web address, and Linux
+leave the button disabled, with the reason in its tooltip.
 
 ### Bound native Policies
 

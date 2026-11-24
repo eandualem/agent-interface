@@ -185,6 +185,50 @@ pub fn bring_forward(pid: u32) -> bool {
     chrome.activateWithOptions(options)
 }
 
+/// `address` if it is a web page's: Open in Chrome opens nothing else.
+pub fn web_address(address: &str) -> Option<&str> {
+    let (scheme, _) = address.split_once("://")?;
+    ["http", "https"]
+        .iter()
+        .any(|web| scheme.eq_ignore_ascii_case(web))
+        .then_some(address)
+}
+
+/// Open the web page `address` in the person's Chrome, or in their default
+/// browser when Chrome cannot be opened. Nothing but a web address is
+/// opened, and it goes to `open` as an argument, never through a shell.
+#[cfg(target_os = "macos")]
+pub fn open_in_chrome(address: &str) {
+    use std::process::{Command, Stdio};
+    let Some(address) = web_address(address) else {
+        return;
+    };
+    let open = |args: &[&str]| {
+        Command::new("open")
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    };
+    if !open(&chrome(address)) {
+        open(&[address]);
+    }
+}
+
+/// The arguments for `open` that show `address` in the person's Chrome. An
+/// agent's headless Chrome registers as a running "Google Chrome" too, so
+/// plain `open -a` could hand the address to it, where nobody sees it. `-n`
+/// starts Chrome with the person's default profile instead, and Chrome's own
+/// single-instance check passes the address to their running Chrome, or
+/// starts it. Agents' Chromes run with their own profiles, so the address
+/// never reaches one.
+#[cfg(target_os = "macos")]
+fn chrome(address: &str) -> [&str; 5] {
+    ["-n", "-a", "Google Chrome", "--args", address]
+}
+
 /// Each agent's session: a session named exactly as one of `agents`.
 /// Sessions that match no agent are left out.
 pub fn by_agent<'a>(
@@ -219,6 +263,36 @@ mod tests {
         let rows = by_agent(&found, ["coder", "reviewer", "Coder-2"]);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows["coder"], found[0]);
+    }
+
+    #[test]
+    fn only_web_addresses_are_opened() {
+        for address in ["https://example.com/a?b", "HTTP://example.com"] {
+            assert_eq!(web_address(address), Some(address));
+        }
+        for address in [
+            "file:///etc/hosts",
+            "javascript:alert(1)",
+            "chrome://newtab/",
+            "-a",
+        ] {
+            assert_eq!(web_address(address), None, "{address}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_address_goes_to_a_chrome_with_the_persons_own_profile() {
+        assert_eq!(
+            chrome("https://example.com/"),
+            [
+                "-n",
+                "-a",
+                "Google Chrome",
+                "--args",
+                "https://example.com/"
+            ]
+        );
     }
 
     #[test]

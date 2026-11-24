@@ -2,8 +2,10 @@
 //!
 //! The view exists while its pane is shown. It holds a [`Stream`] only then,
 //! so a hidden or closed view receives no frames. It sends the page nothing:
-//! to act in the page, Open in Chrome brings the agent's own window forward.
-//! The pane is saved as an empty pane, so a Browser view is not restored.
+//! to act in the page, Open in Chrome brings the agent's own window forward,
+//! or opens the page's address in the person's Chrome when the agent's
+//! browser has no window. The pane is saved as an empty pane, so a Browser
+//! view is not restored.
 
 use std::sync::{
     Arc,
@@ -164,8 +166,21 @@ impl BrowserView {
                     return;
                 }
                 #[cfg(target_os = "macos")]
-                if open && let agent_browser::Window::Shown(chrome) = window {
-                    agent_browser::bring_forward(chrome);
+                if open {
+                    match window {
+                        agent_browser::Window::Shown(chrome) => {
+                            agent_browser::bring_forward(chrome);
+                        }
+                        // Without a window, the person's own Chrome shows the page.
+                        agent_browser::Window::Headless => {
+                            if let Some(address) = view.address() {
+                                cx.background_executor()
+                                    .spawn(async move { agent_browser::open_in_chrome(&address) })
+                                    .detach();
+                            }
+                        }
+                        agent_browser::Window::NotStarted => {}
+                    }
                 }
                 #[cfg(not(target_os = "macos"))]
                 let _ = open;
@@ -175,17 +190,21 @@ impl BrowserView {
         }));
     }
 
-    /// Why Open in Chrome cannot be used now, if it cannot.
-    fn open_refused(&self) -> Option<&'static str> {
+    /// Why Open in Chrome cannot be used now, if it cannot. `address` is the
+    /// page's current address.
+    fn open_refused(&self, address: Option<&str>) -> Option<&'static str> {
         if cfg!(not(target_os = "macos")) {
             return Some("Not available on Linux yet");
         }
         match (&self.session, self.window) {
             (None, _) => Some("The browser ended"),
             (_, None) => Some("Looking for its window…"),
-            (_, Some(agent_browser::Window::Headless)) => {
-                Some("This browser runs without a window")
+            (_, Some(agent_browser::Window::Headless))
+                if address.and_then(agent_browser::web_address).is_none() =>
+            {
+                Some("This page has no web address to open")
             }
+            (_, Some(agent_browser::Window::Headless)) => None,
             (_, Some(agent_browser::Window::NotStarted)) => {
                 Some("agent-browser did not open this browser, so its window can't be found")
             }
@@ -207,7 +226,7 @@ impl Render for BrowserView {
         }
         let address = self.address();
         let site = site_name(self.title().as_deref(), address.as_deref());
-        let refused = self.open_refused();
+        let refused = self.open_refused(address.as_deref());
         let pid = self.session.as_ref().map(|session| session.pid);
         let open = ui::button(
             SharedString::from(format!("browser-open-{}", self.agent)),
