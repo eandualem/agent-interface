@@ -143,6 +143,45 @@ fn reconnect_supplies_last_event_id_before_refreshing_the_owner_snapshot() {
 }
 
 #[test]
+fn a_refused_connection_request_keeps_the_service_reason() {
+    let (dir, listener, socket) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(dir.path(), &socket);
+    let refusal = |code, message| json!({"detail":{"code":code,"message":message}});
+    let no_relay = "no relay is set: set peer_connections.relay_url";
+    let own_id = "this profile's own connection ID";
+    let lapsed = "this request cannot be answered: it was sent from here, answered, or lapsed";
+    let server = serve(
+        listener,
+        vec![
+            (200, identity),
+            (409, refusal("conflict", no_relay)),
+            (422, refusal("invalid_request", own_id)),
+            (409, refusal("conflict", lapsed)),
+            (409, json!({})),
+            (404, refusal("not_found", "unknown peer invitation")),
+            (
+                409,
+                refusal("binding_required", "bind this workspace first"),
+            ),
+        ],
+    );
+    let c = profile.connect().unwrap();
+    let reason = |text: &str| Err(AddError::Refused(text.into()));
+    assert_eq!(c.invite_peer("peer", "k1").map(drop), reason(no_relay));
+    assert_eq!(c.invite_peer("peer", "k2").map(drop), reason(own_id));
+    assert_eq!(c.answer_peer("req", true, "k3").map(drop), reason(lapsed));
+    let status = |status| Err(AddError::Connection(Error::Refused(status)));
+    assert_eq!(c.answer_peer("req", false, "k4").map(drop), status(409));
+    assert_eq!(c.answer_peer("req", true, "k5").map(drop), status(404));
+    // A binding refusal is never shown as a reason.
+    assert_eq!(
+        c.invite_peer("peer", "k6").map(drop),
+        Err(AddError::Connection(Error::BindingRequired))
+    );
+    server.join().unwrap();
+}
+
+#[test]
 fn a_new_policy_only_affects_its_own_direction() {
     let data: super::super::peers::Gates =
         serde_json::from_value(json!({"outgoing":"future","incoming":"review"})).unwrap();
