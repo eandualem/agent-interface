@@ -16,6 +16,7 @@ use gpui::{
 use crate::library::{Library, Update, WindowLayout};
 mod agent_groups;
 mod agent_status;
+mod browser_view;
 mod chooser;
 mod chooser_source;
 mod creation_origin;
@@ -427,6 +428,7 @@ fn open_browser_with_status(
                 ..Browser::default()
             };
             browser.open(directory, cx);
+            browser.watch_agent_browsers(cx);
             browser.workspace_profiles = workspace_profiles;
             browser.profile_client = profile_client;
             // Stopping the library joins its storage worker, which can wait on
@@ -796,6 +798,14 @@ struct Browser {
     views: HashMap<String, (gpui::Entity<views::ViewPane>, navigation_origin::ViewEvents)>,
     /// The chooser in each shown empty pane, with its event subscription.
     new_panes: HashMap<String, (gpui::Entity<new_pane::NewPane>, gpui::Subscription)>,
+    /// The agent-browser sessions running on this machine, read every two seconds.
+    agent_browsers: Vec<crate::agent_browser::Session>,
+    _agent_browsers: Option<Task<()>>,
+    /// The agent whose browser each empty pane shows. Kept only in memory:
+    /// the pane is saved as an empty pane.
+    browser_panes: HashMap<String, String>,
+    /// The view in each shown Browser pane.
+    browser_views: HashMap<String, gpui::Entity<browser_view::BrowserView>>,
     /// The section each pane opening Reports & updates shows once its view
     /// appears, and the pane whose save is still deciding its choice.
     opening_sections: HashMap<String, views::Section>,
@@ -3480,13 +3490,15 @@ impl Render for Browser {
                 self.views.get_mut(&id).unwrap().1.subscription = Some(events);
             }
         }
-        let expanded = self.layout.as_ref().and_then(|layout| {
+        let focused = self.layout.as_ref().and_then(|layout| {
             let model = layout.model();
             model
                 .focus_mode()
-                .then(|| model.tab().map(|tab| tab.focus.as_str()))
+                .then(|| model.tab().map(|tab| tab.focus.clone()))
                 .flatten()
         });
+        self.sync_browser_views(&drawn, focused.as_deref(), window, cx);
+        let expanded = focused.as_deref();
         for (id, terminal) in &self.terminals {
             if !leaves.iter().any(|leaf| &leaf.id == id)
                 || expanded.is_some_and(|focused| focused != id)
@@ -3510,6 +3522,7 @@ impl Render for Browser {
         let empty: Vec<String> = drawn
             .iter()
             .filter(|leaf| leaf.empty && leaf.attachment.is_none())
+            .filter(|leaf| !self.browser_panes.contains_key(&leaf.id))
             .map(|leaf| leaf.id.clone())
             .collect();
         let placement = self.selected_navigation_origin().zip(

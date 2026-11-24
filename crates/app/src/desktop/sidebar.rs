@@ -1006,6 +1006,52 @@ impl Browser {
                             })
                             .collect::<Vec<_>>()
                     };
+                    // Each local agent's browser, a session named as it is.
+                    let browsers = crate::agent_browser::by_agent(
+                        &self.agent_browsers,
+                        entries
+                            .iter()
+                            .map(|(name, _)| name.as_str())
+                            .filter(|name| {
+                                self.agent_target(name)
+                                    .is_some_and(|target| target.remote_profile.is_none())
+                            }),
+                    );
+                    // An agent's browser, a row one level under it.
+                    let browsing = |browser: &Self,
+                                    cx: &mut Context<Self>,
+                                    key: String,
+                                    name: &str,
+                                    indent: f32| {
+                        let session = browsers.get(name)?;
+                        let title = browser
+                            .browser_views
+                            .values()
+                            .map(|view| view.read(cx))
+                            .find(|view| view.agent == name)
+                            .and_then(|view| view.title());
+                        let label = title
+                            .or_else(|| session.address.clone())
+                            .unwrap_or_else(|| "Browser".into());
+                        let open = name.to_owned();
+                        Some(
+                            ui::row(SharedString::from(format!("browser-{key}")), false)
+                                .pl(px(indent))
+                                .child(ui::icon("globe", t.size.icon, c.muted))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .text_color(c.text_2)
+                                        .child(label),
+                                )
+                                .on_click(cx.listener(move |browser, _, window, cx| {
+                                    browser.open_agent_browser(&open, window, cx);
+                                })),
+                        )
+                    };
                     for section in sections {
                         let show_badge = !multi_machine;
                         let mut expanded_offline = false;
@@ -1107,6 +1153,19 @@ impl Browser {
                                 }
                                 agent_groups::Row::Swarm { .. } => None,
                             };
+                            let browsed = match &row {
+                                agent_groups::Row::Agent { name, .. } => {
+                                    browsing(self, cx, name.clone(), name, t.space.s10 * 2.0)
+                                }
+                                agent_groups::Row::Member { swarm, name, .. } => browsing(
+                                    self,
+                                    cx,
+                                    format!("{swarm}/{name}"),
+                                    name,
+                                    t.space.s10 * 4.0,
+                                ),
+                                agent_groups::Row::Swarm { .. } => None,
+                            };
                             rows = rows.child(match row {
                                 agent_groups::Row::Agent {
                                     name,
@@ -1193,6 +1252,7 @@ impl Browser {
                                     agent(self, cx, &name, state, Some(&swarm), show_badge)
                                 }
                             });
+                            rows = rows.children(browsed);
                             rows = rows.children(reviewed.into_iter().flatten());
                         }
                         if expanded_offline {

@@ -29,6 +29,7 @@ pub(super) struct Cards<'a> {
     pub terminals: &'a HashMap<String, Entity<LiveTerminal>>,
     pub views: &'a HashMap<String, (Entity<ViewPane>, super::navigation_origin::ViewEvents)>,
     pub new_panes: &'a HashMap<String, (Entity<NewPane>, gpui::Subscription)>,
+    pub browser_views: &'a HashMap<String, Entity<super::browser_view::BrowserView>>,
     pub chooser: Option<&'a Attaching>,
     pub split_bounds: &'a Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
     pub pane_bounds: &'a Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
@@ -124,7 +125,7 @@ impl Browser {
         let (t, c) = (tokens(), colors());
         let id = leaf.id.clone();
         let focused = leaf.id == cards.focus;
-        let is_view = leaf.view.is_some();
+        let is_view = leaf.view.is_some() || cards.browser_views.contains_key(&leaf.id);
         let state = cards.leaf_states.get(&leaf.id).copied();
         let group: SharedString = format!("pane-group-{id}").into();
         let border = if state.is_some_and(AgentState::needs_you)
@@ -177,6 +178,8 @@ impl Browser {
                     .cached(gpui::StyleRefinement::default().size_full())
                     .into_any_element()
             }
+        } else if let Some(view) = cards.browser_views.get(&leaf.id) {
+            view.clone().into_any_element()
         } else {
             match cards.new_panes.get(&leaf.id) {
                 Some((chooser, _)) => chooser.clone().into_any_element(),

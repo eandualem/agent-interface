@@ -39,6 +39,11 @@ pulldown-cmark.workspace = true
 unicode-properties.workspace = true
 # Find Git pointers in Documents as a browser tokenizes HTML (MIT OR Apache-2.0).
 html5ever = "=0.39.0"
+# Watch an agent's browser over agent-browser's local frame stream (MIT OR Apache-2.0).
+tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake"] }
+# Decode that stream's frames: base64 text and JPEG pixels (MIT OR Apache-2.0).
+base64.workspace = true
+image = { version = "=0.25.10", default-features = false, features = ["jpeg"] }
 agent-interface-core = { path = "../core" }
 agent-interface-store = { path = "../store" }
 agent-interface-roster = { path = "../roster" }
@@ -64,6 +69,8 @@ agent-interface-native-fs = { path = "../native-fs" }
 wry = { version = "=0.57.1", default-features = false, features = ["os-webview"] }
 # Safe access to the existing native macOS bridge (Apache-2.0).
 gpui_macos = { package = "gpui-pre-macos", version = "=0.3.9", default-features = false }
+# Bring an agent's own Chrome window to the front by its process (MIT).
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "libc", "NSRunningApplication"] }
 
 [dev-dependencies]
 rusqlite.workspace = true

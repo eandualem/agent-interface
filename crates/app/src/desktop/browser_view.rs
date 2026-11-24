@@ -1,0 +1,435 @@
+//! The Browser view: a live picture of an agent's browser, for watching only.
+//!
+//! The view exists while its pane is shown. It holds a [`Stream`] only then,
+//! so a hidden or closed view receives no frames. It sends the page nothing:
+//! to act in the page, Open in Chrome brings the agent's own window forward.
+//! The pane is saved as an empty pane, so a Browser view is not restored.
+
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
+use futures::{StreamExt, channel::mpsc};
+use gpui::{Context, ObjectFit, SharedString, StyledImage, Task, Window, div, img, prelude::*, px};
+
+use super::{
+    components as ui,
+    design::{colors, tokens},
+};
+use crate::agent_browser::{
+    self, Session,
+    stream::{Frame, State, Stream},
+};
+
+pub(super) struct BrowserView {
+    pub agent: String,
+    /// The agent's session, or none once it has ended.
+    session: Option<Session>,
+    stream: Option<Stream>,
+    /// The frame on screen.
+    frame: Option<Frame>,
+    /// Whether the browser has a window to bring forward; none while unknown.
+    window: Option<agent_browser::Window>,
+    /// Set while a wake from the stream waits to be taken.
+    woken: Arc<AtomicBool>,
+    wake: mpsc::UnboundedSender<()>,
+    _woken: Task<()>,
+}
+
+impl BrowserView {
+    pub fn new(agent: String, session: Option<Session>, cx: &mut Context<Self>) -> Self {
+        let (wake, mut wakes) = mpsc::unbounded();
+        let woken = Arc::new(AtomicBool::new(false));
+        let taken = woken.clone();
+        let task = cx.spawn(async move |this, cx| {
+            while wakes.next().await.is_some() {
+                taken.store(false, Ordering::Relaxed);
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut view = Self {
+            agent,
+            session: None,
+            stream: None,
+            frame: None,
+            window: None,
+            woken,
+            wake,
+            _woken: task,
+        };
+        view.set_session(session, cx);
+        view
+    }
+
+    /// Follow the session as discovery last found it.
+    pub fn set_session(&mut self, session: Option<Session>, cx: &mut Context<Self>) {
+        if self.session == session {
+            return;
+        }
+        let same_daemon = self.session.as_ref().map(|s| (s.pid, s.port))
+            == session.as_ref().map(|s| (s.pid, s.port));
+        if !same_daemon {
+            self.stream = session
+                .as_ref()
+                .and_then(|session| session.port)
+                .map(|port| {
+                    let (wake, woken) = (self.wake.clone(), self.woken.clone());
+                    Stream::open(port, move || {
+                        if !woken.swap(true, Ordering::Relaxed) {
+                            let _ = wake.unbounded_send(());
+                        }
+                    })
+                });
+            self.window = None;
+            if let Some(pid) = session.as_ref().map(|session| session.pid) {
+                self.check_window(pid, false, cx);
+            }
+        }
+        self.session = session;
+        cx.notify();
+    }
+
+    /// The page's title as the stream last reported it.
+    pub fn title(&self) -> Option<String> {
+        self.stream.as_ref()?.page().1
+    }
+
+    /// The frame on screen, to release its texture when the view goes.
+    pub fn take_shown(&mut self) -> Option<Frame> {
+        self.frame.take()
+    }
+
+    /// Learn whether the daemon `pid`'s browser has a window, and bring it
+    /// forward when `open` asks for that.
+    fn check_window(&mut self, pid: u32, open: bool, cx: &mut Context<Self>) {
+        let found = cx
+            .background_executor()
+            .spawn(async move { agent_browser::window(pid) });
+        cx.spawn(async move |this, cx| {
+            let window = found.await;
+            let _ = this.update(cx, |view, cx| {
+                if view.session.as_ref().map(|session| session.pid) != Some(pid) {
+                    return;
+                }
+                #[cfg(target_os = "macos")]
+                if open && let agent_browser::Window::Shown(chrome) = window {
+                    agent_browser::bring_forward(chrome);
+                }
+                #[cfg(not(target_os = "macos"))]
+                let _ = open;
+                view.window = Some(window);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Why Open in Chrome cannot be used now, if it cannot.
+    fn open_refused(&self) -> Option<&'static str> {
+        if cfg!(not(target_os = "macos")) {
+            return Some("Not available on Linux yet");
+        }
+        match (&self.session, self.window) {
+            (None, _) => Some("The browser ended"),
+            (_, None) => Some("Looking for its window…"),
+            (_, Some(agent_browser::Window::None)) => Some("This browser runs without a window"),
+            (_, Some(agent_browser::Window::Shown(_))) => None,
+        }
+    }
+}
+
+impl Render for BrowserView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (t, c) = (tokens(), colors());
+        if let Some(frame) = self.stream.as_ref().and_then(Stream::take_frame)
+            && let Some(old) = self.frame.replace(frame)
+        {
+            let _ = window.drop_image(old.image);
+        }
+        let (address, _) = self.stream.as_ref().map(Stream::page).unwrap_or_default();
+        let address = address
+            .or_else(|| self.session.as_ref()?.address.clone())
+            .unwrap_or_default();
+        let refused = self.open_refused();
+        let pid = self.session.as_ref().map(|session| session.pid);
+        let open = ui::button(
+            SharedString::from(format!("browser-open-{}", self.agent)),
+            "Open in Chrome",
+            ui::Button::Secondary,
+        )
+        .child(ui::icon("arrow-up-right", t.size.icon - 2.0, c.muted))
+        .when(refused.is_some(), |button| {
+            button.opacity(0.5).cursor_default()
+        })
+        .when_some(pid.filter(|_| refused.is_none()), |button, pid| {
+            button.on_click(cx.listener(move |view, _, _, cx| {
+                // Look again: the browser may have been started anew.
+                view.check_window(pid, true, cx);
+            }))
+        });
+        let header = ui::view_header("globe", "Browser")
+            .child(
+                div()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(self.agent.clone()),
+            )
+            .child(div().flex_1())
+            .children(refused.map(|why| {
+                ui::text(div().flex_shrink_0().text_color(c.muted), &t.text.meta).child(why)
+            }))
+            .child(open);
+        let bar = ui::view_toolbar()
+            .child(ui::icon("globe", t.size.icon - 2.0, c.muted))
+            .child(
+                ui::mono(address)
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_color(c.text_2),
+            );
+        // Always shown, so the picture is never taken for the page itself.
+        let label = ui::text(
+            div()
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap(px(t.space.s6))
+                .px(px(t.space.s12))
+                .py(px(t.space.s4))
+                .bg(c.attention_soft)
+                .text_color(c.attention_text),
+            &t.text.meta,
+        )
+        .child(ui::icon("lock", t.size.icon - 3.0, c.attention_text))
+        .child(format!(
+            "Live view of {}'s browser. Watch only: it cannot be clicked or typed into.",
+            self.agent
+        ));
+        let quiet = |text: &'static str| {
+            ui::text(
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(c.muted),
+                &t.text.body,
+            )
+            .child(text)
+        };
+        let state = self.stream.as_ref().map(Stream::state);
+        let body = match (&self.session, &self.frame, state) {
+            (None, _, _) => quiet("The browser ended.").into_any_element(),
+            (_, _, None) => quiet("This browser has no stream yet.").into_any_element(),
+            (_, _, Some(State::Unreachable)) => {
+                quiet("Can't reach the browser's stream. Trying again…").into_any_element()
+            }
+            (_, Some(frame), _) => img(frame.image.clone())
+                .size_full()
+                .object_fit(ObjectFit::Contain)
+                .into_any_element(),
+            (_, None, _) => quiet("Waiting for the page…").into_any_element(),
+        };
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .bg(c.surface)
+            .child(header)
+            .child(bar)
+            .child(label)
+            .child(div().flex_1().min_h_0().p(px(t.space.s8)).child(body))
+    }
+}
+
+/// How often discovery looks for sessions.
+const DISCOVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether `leaf` is an empty pane, the only kind a Browser view takes.
+fn holds_nothing(leaf: &agent_interface_core::Leaf) -> bool {
+    leaf.empty && leaf.attachment.is_none() && leaf.view.is_none()
+}
+
+impl super::Browser {
+    /// Look for agent-browser sessions while the window is open.
+    pub(super) fn watch_agent_browsers(&mut self, cx: &mut Context<Self>) {
+        let Some(dir) = agent_browser::socket_dir() else {
+            return;
+        };
+        self._agent_browsers = Some(cx.spawn(async move |this, cx| {
+            loop {
+                let read = dir.clone();
+                let found = cx
+                    .background_executor()
+                    .spawn(async move { agent_browser::sessions(&read) })
+                    .await;
+                if this
+                    .update(cx, |browser, cx| browser.found_agent_browsers(found, cx))
+                    .is_err()
+                {
+                    break;
+                }
+                cx.background_executor().timer(DISCOVERY).await;
+            }
+        }));
+    }
+
+    fn found_agent_browsers(&mut self, found: Vec<Session>, cx: &mut Context<Self>) {
+        if self.agent_browsers == found {
+            return;
+        }
+        for view in self.browser_views.values() {
+            view.update(cx, |view, cx| {
+                let session = found.iter().find(|session| session.name == view.agent);
+                view.set_session(session.cloned(), cx);
+            });
+        }
+        self.agent_browsers = found;
+        cx.notify();
+    }
+
+    /// The running session of `agent`, a session with exactly its name.
+    pub(super) fn agent_browser(&self, agent: &str) -> Option<&Session> {
+        self.agent_browsers
+            .iter()
+            .find(|session| session.name == agent)
+    }
+
+    /// Keep a view for each shown Browser pane and none for any other: a
+    /// hidden view closes its stream.
+    pub(super) fn sync_browser_views(
+        &mut self,
+        drawn: &[agent_interface_core::Leaf],
+        expanded: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(model) = self.layout.as_ref().map(|layout| layout.model()) {
+            // A pane opened by a save that has not landed is not in the model yet.
+            let settled = !self.saving && self.pending_save.is_none();
+            let leaves: Vec<_> = model
+                .workspaces
+                .iter()
+                .flat_map(|space| &space.tabs)
+                .flat_map(|tab| tab.tree.leaves())
+                .collect();
+            self.browser_panes.retain(|id, _| {
+                leaves
+                    .iter()
+                    .find(|leaf| &leaf.id == id)
+                    .map_or(!settled, |leaf| holds_nothing(leaf))
+            });
+        }
+        let shown: Vec<(String, String)> = drawn
+            .iter()
+            .filter(|leaf| holds_nothing(leaf) && expanded.is_none_or(|id| id == leaf.id))
+            .filter_map(|leaf| Some((leaf.id.clone(), self.browser_panes.get(&leaf.id)?.clone())))
+            .collect();
+        let gone: Vec<String> = self
+            .browser_views
+            .iter()
+            .filter(|(id, view)| {
+                !shown
+                    .iter()
+                    .any(|(shown, agent)| shown == *id && &view.read(cx).agent == agent)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in gone {
+            if let Some(view) = self.browser_views.remove(&id)
+                && let Some(frame) = view.update(cx, |view, _| view.take_shown())
+            {
+                let _ = window.drop_image(frame.image);
+            }
+        }
+        for (id, agent) in shown {
+            if !self.browser_views.contains_key(&id) {
+                let session = self.agent_browser(&agent).cloned();
+                let view = cx.new(|cx| BrowserView::new(agent, session, cx));
+                self.browser_views.insert(id, view);
+            }
+        }
+    }
+
+    /// Show `agent`'s browser: in its open Browser pane, else in a visible
+    /// empty pane, else in a new tab.
+    pub(super) fn open_agent_browser(
+        &mut self,
+        agent: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.saving || self.save_failed {
+            return;
+        }
+        if let Some(update) = self
+            .library
+            .as_ref()
+            .and_then(crate::library::Library::take_update)
+        {
+            self.apply(update);
+        }
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        let model = layout.model();
+        let Some(space) = model.workspace() else {
+            return;
+        };
+        let panes = &self.browser_panes;
+        let existing = space.tabs.iter().find_map(|tab| {
+            tab.tree
+                .leaves()
+                .into_iter()
+                .find(|leaf| panes.get(&leaf.id).is_some_and(|shown| shown == agent))
+                .map(|leaf| (tab.id.clone(), leaf.id.clone()))
+        });
+        let free = |leaf: &&agent_interface_core::Leaf| {
+            holds_nothing(leaf) && !panes.contains_key(&leaf.id)
+        };
+        let empty = model.tab().and_then(|tab| {
+            model
+                .pane()
+                .filter(free)
+                .or_else(|| {
+                    (!model.focus_mode())
+                        .then(|| tab.tree.leaves().into_iter().find(free))
+                        .flatten()
+                })
+                .map(|leaf| leaf.id.clone())
+        });
+        self.close_menus();
+        if let Some(focus) = &self.navigation {
+            window.focus(focus, cx);
+        }
+        let layout = self.layout.as_mut().expect("checked above");
+        if let Some((tab, leaf)) = existing {
+            let model = layout.model_mut();
+            model.choose_tab(&tab);
+            model.choose_pane(&leaf);
+        } else if let Some(leaf) = empty {
+            layout.model_mut().choose_pane(&leaf);
+            self.browser_panes.insert(leaf, agent.to_owned());
+        } else {
+            let (base, mut proposed) = layout.save_snapshot();
+            if !proposed.add_tab(Some("Browser".into()), "/".into(), true) {
+                return;
+            }
+            let leaf = proposed.pane().expect("a new tab has a pane").id.clone();
+            self.browser_panes.insert(leaf, agent.to_owned());
+            self.creation_from = Some(super::Selection::capture(layout.model()));
+            self.pending_save = Some((base, proposed));
+            self.save(cx);
+        }
+        self.reset_focus = true;
+        cx.notify();
+    }
+}
