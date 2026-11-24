@@ -527,9 +527,17 @@ impl Shapes {
     }
 
     /// Whether `page`, showing a page of `shown` CSS pixels, needs
-    /// `viewport`: the last one set differs, or the page shows another size.
+    /// `viewport`: a command is running, the last one set differs, or the
+    /// page shows another size.
     fn needed(&self, page: &(u32, String), viewport: Viewport, shown: Option<(f32, f32)>) -> bool {
-        let set = self.0.borrow().pages.get(page).and_then(|page| page.set);
+        let record = self.0.borrow();
+        let page = record.pages.get(page);
+        // While a command runs, the newest size waits behind it, whatever it
+        // is: the size before it may be wanted back.
+        if page.is_some_and(|page| page.sending) {
+            return true;
+        }
+        let set = page.and_then(|page| page.set);
         let size = shown.map(|(width, height)| (width.round() as u32, height.round() as u32));
         set != Some(viewport) || size != Some((viewport.width, viewport.height))
     }
@@ -985,6 +993,20 @@ mod tests {
         assert!(shapes.start(&page(), at(500, 2.)));
         assert!(!shapes.start(&page(), at(600, 2.)));
         assert_eq!(shapes.ended(&page(), at(500, 2.), false), None);
+    }
+
+    #[test]
+    fn a_size_wanted_back_while_another_is_sent_follows_it() {
+        let shapes = Shapes::default();
+        assert!(send(&shapes, at(800, 2.), None));
+        // Resized to 700, then back to 800 while 700 is still being sent.
+        let ask = |viewport| {
+            shapes.needed(&page(), viewport, shown(800)) && shapes.start(&page(), viewport)
+        };
+        assert!(ask(at(700, 2.)));
+        assert!(!ask(at(800, 2.)));
+        assert_eq!(shapes.ended(&page(), at(700, 2.), true), Some(at(800, 2.)));
+        assert_eq!(shapes.ended(&page(), at(800, 2.), true), None);
     }
 
     #[test]
