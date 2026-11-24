@@ -1274,8 +1274,8 @@ impl LiveTerminal {
         self.restarts.attempting(false);
         let target = self.target.clone();
         self.refresh_on_reopen = false;
-        self.remote_retry = false;
-        self.remote_restarting = false;
+        // The last error's kind stays until this open ends, so a pane that
+        // restarts keeps saying so meanwhile.
         let work = cx.background_executor().spawn(async move {
             let profile = target.remote().unwrap();
             let connection = target
@@ -1300,6 +1300,8 @@ impl LiveTerminal {
                     Ok((remote, size, access, updates)) => {
                         terminal.error = None;
                         terminal.error_is_end = false;
+                        terminal.remote_retry = false;
+                        terminal.remote_restarting = false;
                         terminal.restarts.connected(false);
                         terminal.launched = false;
                         terminal.launch_result = None;
