@@ -185,11 +185,17 @@ printf '{"profiles":[]}'
         let result = client.read(
             &["profiles", "list", "--json"],
             &|| mode != "cancel" || !beats.exists(),
-            Duration::from_secs(2),
+            // The others end at the first beat, which can take seconds under load.
+            Duration::from_secs(if mode == "timeout" { 2 } else { 30 }),
         );
-        let before = fs::metadata(&beats).unwrap().len();
+        // Under load the timeout can stop the child before its first beat.
+        let length = || match fs::metadata(&beats) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+            other => other.unwrap().len(),
+        };
+        let before = length();
         std::thread::sleep(Duration::from_millis(120));
-        let after = fs::metadata(&beats).unwrap().len();
+        let after = length();
         if after != before {
             // Clean up the fixture even when testing a regressed implementation.
             // Growth proves this never-ending child still owns the recorded PID.
