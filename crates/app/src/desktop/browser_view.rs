@@ -278,7 +278,8 @@ impl Render for BrowserView {
         };
         let header = ui::view_header("globe", "Browser")
             .child("·")
-            .child(named(self.agent.clone()))
+            // A long title gives way before the agent's name.
+            .child(named(self.agent.clone()).flex_shrink_0())
             .when_some(site, |header, site| header.child("·").child(named(site)))
             .child(div().flex_1())
             .child(open);
