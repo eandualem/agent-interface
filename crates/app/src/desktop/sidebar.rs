@@ -663,6 +663,9 @@ impl Browser {
             entries
         });
         let observed = self.active_agents().is_some_and(|roster| roster.observed());
+        let not_answering = self
+            .active_agents()
+            .is_some_and(|roster| roster.not_answering());
         let is_stale = |name: &str| {
             self.active_agents()
                 .is_some_and(|agents| agents.get(name).stale)
@@ -683,6 +686,7 @@ impl Browser {
             entries.iter().filter(|(name, _)| is_stale(name)).count()
         });
         let (summary, summary_color) = match &entries {
+            None if observed && not_answering => ("not answering".to_owned(), c.attention_text),
             None if observed => ("unavailable".to_owned(), c.attention_text),
             None => (String::new(), c.muted),
             Some(_) if needing > 0 => (format!("{needing} need you"), c.attention_text),
@@ -712,7 +716,7 @@ impl Browser {
         if self.agents_collapsed {
             return Some(heading.into_any_element());
         }
-        let quiet = |label: &'static str, icon: Option<&'static str>| {
+        let quiet = |label: SharedString, icon: Option<&'static str>| {
             ui::text(
                 div()
                     .h(px(t.size.row))
@@ -738,10 +742,17 @@ impl Browser {
             )
             .overflow_y_scroll();
         match &entries {
-            None if observed => {
-                rows = rows.child(quiet("Agent Backbone unavailable", Some("unplug")))
+            None if observed && not_answering => {
+                let read = self.active_agents().and_then(|agents| agents.observed_at());
+                rows = rows.child(quiet(
+                    super::agent_status::not_answering(read).into(),
+                    Some("unplug"),
+                ))
             }
-            None => rows = rows.child(quiet("Loading agents…", None)),
+            None if observed => {
+                rows = rows.child(quiet("Agent Backbone unavailable".into(), Some("unplug")))
+            }
+            None => rows = rows.child(quiet("Loading agents…".into(), None)),
             Some(entries) => {
                 let swarms = self
                     .active_agents()
@@ -772,7 +783,7 @@ impl Browser {
                     .iter()
                     .any(|section| !section.rows.is_empty() || !section.offline_agents.is_empty());
                 if !has_any {
-                    rows = rows.child(quiet("No active agents", None));
+                    rows = rows.child(quiet("No active agents".into(), None));
                 } else {
                     let creation = self.creation_target();
                     // An agent row; `swarm` marks a member indented under its swarm.
@@ -1222,7 +1233,9 @@ impl Browser {
         let inbox = self.peer_inboxes.get(&space.id).map(|(_, e, _)| e.read(cx));
         let summary = inbox.and_then(|i| i.summary.as_deref());
         let unavailable = inbox.is_some_and(|i| i.error.is_some());
-        let label = if unavailable {
+        let label = if inbox.is_some_and(|i| i.not_answering()) {
+            "not answering".into()
+        } else if unavailable {
             "unavailable".into()
         } else {
             summary.map_or_else(String::new, |s| s.label())

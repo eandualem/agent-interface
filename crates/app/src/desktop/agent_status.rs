@@ -176,6 +176,9 @@ struct Current {
     background: Option<gpui::SharedString>,
     /// Minute bucket for ticking relative `last_seen` labels while a machine is offline.
     offline_tick: Option<u64>,
+    /// Whether the newest failure was a read that could not be made, not a
+    /// refusal.
+    not_answering: bool,
 }
 
 impl Current {
@@ -200,6 +203,7 @@ impl Default for Current {
             activity: HashMap::new(),
             background: None,
             offline_tick: None,
+            not_answering: false,
         }
     }
 }
@@ -330,6 +334,18 @@ fn activity(runs: &Runs) -> HashMap<String, Rc<Activity>> {
 /// How long failed reads keep showing the last roster before it is reported
 /// as unavailable.
 pub(super) const TOLERANCE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// What the person reads while Backbone does not answer, with how old the
+/// last good read is, when there was one.
+pub(super) fn not_answering(read: Option<std::time::Instant>) -> String {
+    match read {
+        Some(read) => format!(
+            "Backbone is not answering · last read {} ago",
+            super::views::ago(read.elapsed().as_secs_f64())
+        ),
+        None => "Backbone is not answering".into(),
+    }
+}
 
 /// Clones share the same current observation, including across native windows.
 #[derive(Clone, Default)]
@@ -523,6 +539,13 @@ impl LiveAgents {
 
     pub fn observed(&self) -> bool {
         self.0.current.borrow().snapshot.is_some()
+    }
+
+    /// Whether the roster is reported unavailable because Backbone did not
+    /// answer, rather than because it refused the read.
+    pub fn not_answering(&self) -> bool {
+        let current = self.0.current.borrow();
+        current.not_answering && current.reported_unavailable()
     }
 
     /// When the roster shown was read, if it has been.
@@ -768,6 +791,8 @@ impl LiveAgents {
             }
             changed
         };
+        self.0.current.borrow_mut().not_answering =
+            update.error == Some(agent_interface_roster::profiles::Error::Unavailable);
         let roster = match update.error {
             None => self.update(update.snapshot),
             Some(error) => {
@@ -1133,6 +1158,37 @@ mod tests {
         assert!(agents.offline_with_runs().is_empty());
         assert!(agents.runs_of(worker).active.is_empty());
         assert_eq!(agents.runs_of(worker).finished.len(), 1);
+    }
+
+    #[test]
+    fn a_read_that_could_not_be_made_says_backbone_is_not_answering() {
+        use agent_interface_roster::profiles::Error;
+        let profile = origin("a", "1");
+        let agents = LiveAgents(Rc::new(Source {
+            origin: Some(profile.clone()),
+            ..Source::default()
+        }));
+        let good = observation(&profile, "busy");
+        agents.update_bound(good.clone());
+        assert!(!agents.not_answering());
+        let mut timed_out = good.clone();
+        timed_out.error = Some(Error::Unavailable);
+        timed_out.snapshot.observed_at = std::time::Instant::now().checked_sub(TOLERANCE);
+        agents.update_bound(timed_out.clone());
+        assert!(agents.not_answering());
+        // A refusal is Backbone's answer, and keeps saying unavailable.
+        let mut refused = timed_out;
+        refused.error = Some(Error::Refused(401));
+        agents.update_bound(refused);
+        assert!(!agents.not_answering());
+        agents.update_bound(good);
+        assert!(!agents.not_answering());
+        assert_eq!(not_answering(None), "Backbone is not answering");
+        let read = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(150));
+        assert_eq!(
+            not_answering(read),
+            "Backbone is not answering · last read 2m ago"
+        );
     }
 
     #[test]

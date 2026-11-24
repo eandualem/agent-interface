@@ -12,13 +12,13 @@ use std::{
 };
 
 const UNSUPPORTED: &str = "This Agent Backbone version doesn\u{2019}t offer Connections.";
+const NOT_ANSWERING: &str = "Agent Backbone isn\u{2019}t answering. Try again.";
+const NOT_SENDING: &str = "Agent Backbone isn\u{2019}t sending updates. Reconnecting\u{2026}";
 
 /// What the person reads when a Connections request fails.
 pub(super) fn failure(error: Error) -> String {
     match error {
-        Error::Unavailable | Error::Refused(500..=599) => {
-            "Agent Backbone isn\u{2019}t answering. Try again.".into()
-        }
+        Error::Unavailable | Error::Refused(500..=599) => NOT_ANSWERING.into(),
         Error::Unsupported => UNSUPPORTED.into(),
         Error::Refused(404) => "That request or connection no longer exists.".into(),
         Error::BindingRequired | Error::BindingMismatch | Error::RegistrationChanged => {
@@ -188,6 +188,12 @@ impl Drop for Inbox {
 }
 
 impl Inbox {
+    /// Whether the overview is missing because Backbone did not answer or
+    /// its updates stopped, rather than because it refused.
+    pub fn not_answering(&self) -> bool {
+        matches!(self.error.as_deref(), Some(NOT_ANSWERING | NOT_SENDING))
+    }
+
     pub fn profile_id(&self) -> &str {
         &self.service.identity().profile_id
     }
@@ -263,8 +269,7 @@ impl Inbox {
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         if !self.online.load(Ordering::Acquire) {
-            self.error =
-                Some("Agent Backbone isn\u{2019}t sending updates. Reconnecting\u{2026}".into());
+            self.error = Some(NOT_SENDING.into());
             cx.notify();
             return;
         }

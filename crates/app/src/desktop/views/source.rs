@@ -91,6 +91,9 @@ impl Source {
                     agent_interface_roster::profiles::Error::BindingRequired
                     | agent_interface_roster::profiles::Error::BindingMismatch,
                 ) => "The original profile binding was refused. Reconnect to that profile.",
+                content::Error::Connection(
+                    agent_interface_roster::profiles::Error::Unavailable,
+                ) => super::NOT_ANSWERING,
                 _ => views::UNAVAILABLE,
             });
         Some((wanted, result))

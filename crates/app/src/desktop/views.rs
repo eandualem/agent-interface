@@ -209,6 +209,8 @@ pub(super) struct ViewPane {
     /// Immutable origin for retained content and every operation it opens.
     connection: Option<Connection>,
     data: Option<Data>,
+    /// When `data` was read.
+    read_at: Option<std::time::Instant>,
     error: Option<&'static str>,
     range: Range,
     grouping: Grouping,
@@ -366,6 +368,7 @@ impl ViewPane {
             connections: None,
             connection,
             data: None,
+            read_at: None,
             error: None,
             range: Range::Day,
             grouping: Grouping::Folder,
@@ -502,6 +505,7 @@ impl ViewPane {
                                 }
                                 pane.error = None;
                                 pane.data = Some(data);
+                                pane.read_at = Some(std::time::Instant::now());
                             }
                             // Keep the last data and say it is stale.
                             Err(error) => pane.error = Some(error),
@@ -690,6 +694,7 @@ impl ViewPane {
                                 );
                                 pane.reports.open = Some(item.clone());
                                 pane.data = Some(Data::Reports(page));
+                                pane.read_at = Some(std::time::Instant::now());
                                 // Follow the opened record so its updates are kept.
                                 pane.refetch(false, cx);
                             } else if let Some(error) = link_error
@@ -1360,7 +1365,7 @@ impl Render for ViewPane {
                                 .text_color(c.attention_text),
                             &t.text.meta,
                         )
-                        .child(format!("{error} Showing the last data read."))
+                        .child(stale_banner(error, self.read_at))
                     }),
             )
     }
@@ -1390,8 +1395,21 @@ fn count(tokens: u64) -> String {
     }
 }
 
+/// A view's read that could not be made, unlike a refusal, which keeps
+/// [`views::UNAVAILABLE`].
+const NOT_ANSWERING: &str = "Backbone is not answering.";
+
+/// What a view says over the last data it read when a newer read failed.
+fn stale_banner(error: &str, read_at: Option<std::time::Instant>) -> String {
+    if error == NOT_ANSWERING {
+        super::agent_status::not_answering(read_at)
+    } else {
+        format!("{error} Showing the last data read.")
+    }
+}
+
 /// How long ago, in one unit: 40s, 6m, 2h, 3d.
-fn ago(seconds: f64) -> String {
+pub(super) fn ago(seconds: f64) -> String {
     let seconds = seconds.max(0.0) as u64;
     match seconds {
         0..60 => format!("{seconds}s"),
@@ -1422,6 +1440,19 @@ fn line(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_view_whose_read_could_not_be_made_says_how_old_its_data_is() {
+        let read = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(40));
+        assert_eq!(
+            stale_banner(NOT_ANSWERING, read),
+            "Backbone is not answering · last read 40s ago"
+        );
+        assert_eq!(
+            stale_banner(views::UNAVAILABLE, read),
+            "Backbone could not provide this view. Showing the last data read."
+        );
+    }
 
     #[test]
     fn leaving_the_reader_closes_its_record_so_a_late_read_is_refused() {

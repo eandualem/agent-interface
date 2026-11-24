@@ -503,7 +503,9 @@ releases its cache and disposes of the poller off the UI thread. Deferred wakes
 refer weakly to their original source, and bound updates must match that source's
 identity. Failed reads keep the last roster for 30 seconds while the poller
 retries; after that they hide its active rows and show unavailable status
-without changing another source's attention state. That status appears in the
+without changing another source's attention state. A read that could not be
+made, unlike a refusal, says that Backbone is not answering and how long ago
+the last good read was, as a view's banner over its last data does. That status appears in the
 sidebar only and never takes space from a pane, so it cannot resize a session. No global selected source supplies
 status to readers. Authored reports and historical events never update this model.
 `roster::views::content` reads only retained Reports, Responses and Documents
