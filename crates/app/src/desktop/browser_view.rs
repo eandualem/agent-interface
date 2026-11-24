@@ -353,6 +353,41 @@ impl super::Browser {
             .find(|session| session.name == agent)
     }
 
+    /// What a row shows for `session`: its page title when a view knows it,
+    /// else its address.
+    pub(super) fn agent_browser_label(&self, session: &Session, cx: &gpui::App) -> String {
+        self.browser_views
+            .values()
+            .map(|view| view.read(cx))
+            .find(|view| view.agent == session.name)
+            .and_then(|view| view.title())
+            .or_else(|| session.address.clone())
+            .unwrap_or_else(|| "Browser".into())
+    }
+
+    /// Show `agent`'s browser in the empty pane `pane`, as its chooser asked.
+    pub(super) fn show_agent_browser_in(
+        &mut self,
+        pane: &str,
+        agent: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let empty = self.layout.as_ref().is_some_and(|layout| {
+            layout
+                .model()
+                .workspaces
+                .iter()
+                .flat_map(|space| &space.tabs)
+                .flat_map(|tab| tab.tree.leaves())
+                .any(|leaf| leaf.id == pane && holds_nothing(leaf))
+        });
+        if empty && self.agent_browser(agent).is_some() {
+            self.browser_panes.insert(pane.to_owned(), agent.to_owned());
+            self.reset_focus = true;
+            cx.notify();
+        }
+    }
+
     /// Keep a view for each shown Browser pane and none for any other: a
     /// hidden view closes its stream.
     pub(super) fn sync_browser_views(

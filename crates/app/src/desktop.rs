@@ -3594,6 +3594,9 @@ impl Render for Browser {
                             new_pane::NewPaneEvent::Attach(name) => {
                                 browser.attach_into(&pane, name, None, window, cx)
                             }
+                            new_pane::NewPaneEvent::Browser(agent) => {
+                                browser.show_agent_browser_in(&pane, agent, cx)
+                            }
                             new_pane::NewPaneEvent::OpenView(view)
                                 if view.kind == agent_interface_core::ViewKind::Connections =>
                             {
@@ -3631,9 +3634,15 @@ impl Render for Browser {
                 self.new_panes.insert(id, (chooser, events));
             }
         }
+        let browsers: Vec<(String, String)> = self
+            .agent_browsers
+            .iter()
+            .map(|session| (session.name.clone(), self.agent_browser_label(session, cx)))
+            .collect();
         for (id, (chooser, _)) in &self.new_panes {
             chooser.update(cx, |chooser, cx| {
                 chooser.set_visible(expanded.is_none_or(|focused| focused == id), cx);
+                chooser.set_browsers(browsers.clone(), cx);
             });
         }
         if let Some(request) = self.shell_to_open.take()

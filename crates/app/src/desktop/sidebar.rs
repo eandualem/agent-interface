@@ -1023,16 +1023,7 @@ impl Browser {
                                     key: String,
                                     name: &str,
                                     indent: f32| {
-                        let session = browsers.get(name)?;
-                        let title = browser
-                            .browser_views
-                            .values()
-                            .map(|view| view.read(cx))
-                            .find(|view| view.agent == name)
-                            .and_then(|view| view.title());
-                        let label = title
-                            .or_else(|| session.address.clone())
-                            .unwrap_or_else(|| "Browser".into());
+                        let label = browser.agent_browser_label(browsers.get(name)?, cx);
                         let open = name.to_owned();
                         Some(
                             ui::row(SharedString::from(format!("browser-{key}")), false)
