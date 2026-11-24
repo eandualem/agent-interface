@@ -14,9 +14,9 @@
 //! `Page.screencastFrameAck` and `Page.stopScreencast`. No input, script or
 //! emulation reaches the page. The page's address and title are read from
 //! Chrome's target list. After some navigations Chrome sends no frame of the
-//! new page until it changes again, so when the address changes and no frame
-//! follows, the client restarts the screencast once, which sends the page as
-//! it is. Dropping the [`Stream`] stops the screencast.
+//! new page until it changes again, so when the address changes the client
+//! restarts the screencast once, which sends the page as it is. Dropping the
+//! [`Stream`] stops the screencast.
 
 use std::{
     io::{ErrorKind, Read, Write},
@@ -206,9 +206,14 @@ fn run(port: &dyn Fn() -> Option<u16>, target: &str, shared: &Shared, wake: &dyn
         {
             restart(shared);
             wake();
-            watch(&mut socket, port, target, shared, wake);
+            let ended = watch(&mut socket, port, target, shared, wake);
             let _ = socket.close(None);
             let _ = socket.flush();
+            // The page is there: connect again at once, and the view keeps
+            // its picture unless that fails.
+            if ended == Ended::RestartRefused {
+                continue;
+            }
         }
         if shared.stop.load(Ordering::Relaxed) {
             return;
@@ -264,13 +269,23 @@ fn connect(port: u16, target: &str) -> Option<WebSocket<TcpStream>> {
     Some(socket)
 }
 
+/// How watching a page over one connection ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Ended {
+    /// Chrome refused the client's own restart, as during a change of
+    /// renderer.
+    RestartRefused,
+    /// The view went, or the page refused or closed the connection.
+    Lost,
+}
+
 fn watch(
     socket: &mut WebSocket<TcpStream>,
     port: u16,
     target: &str,
     shared: &Shared,
     wake: &dyn Fn(),
-) {
+) -> Ended {
     let mut sent = 0;
     let mut send = |socket: &mut WebSocket<TcpStream>, message: Outgoing| {
         sent += 1;
@@ -278,23 +293,24 @@ fn watch(
     };
     // A view that went while this connected asks for nothing.
     if shared.stop.load(Ordering::Relaxed) || !send(socket, Outgoing::Start) {
-        return;
+        return Ended::Lost;
     }
     let mut timeout = IDLE;
     let mut listed: Option<Instant> = None;
     let mut waiting_since: Option<Instant> = None;
     let mut refresh = Refresh::default();
+    // Whether a restart was sent and no frame has come since.
+    let mut restarting = false;
     loop {
         if shared.stop.load(Ordering::Relaxed) {
             send(socket, Outgoing::Stop);
-            return;
+            return Ended::Lost;
         }
-        // A restart Chrome refuses, as during a change of renderer, ends the
-        // connection, and `run` connects again.
-        if refresh.due(Instant::now())
-            && !(send(socket, Outgoing::Stop) && send(socket, Outgoing::Start))
-        {
-            return;
+        if refresh.due(Instant::now()) {
+            if !(send(socket, Outgoing::Stop) && send(socket, Outgoing::Start)) {
+                return Ended::Lost;
+            }
+            restarting = true;
         }
         if listed.is_none_or(|at| at.elapsed() >= PAGE) {
             listed = Some(Instant::now());
@@ -326,25 +342,26 @@ fn watch(
         };
         if wanted != timeout {
             if socket.get_ref().set_read_timeout(Some(wanted)).is_err() {
-                return;
+                return Ended::Lost;
             }
             timeout = wanted;
         }
         for frame in acks {
             if !send(socket, Outgoing::Ack(frame)) {
-                return;
+                return Ended::Lost;
             }
         }
         match socket.read() {
             Ok(Message::Text(text)) => match receive(&text, shared) {
                 Received::Changed => {
-                    refresh.framed();
+                    restarting = false;
                     wake();
                 }
                 Received::Nothing => {}
-                Received::Refused => return,
+                Received::Refused if restarting => return Ended::RestartRefused,
+                Received::Refused => return Ended::Lost,
             },
-            Ok(Message::Close(_)) => return,
+            Ok(Message::Close(_)) => return Ended::Lost,
             Ok(_) => {}
             Err(tungstenite::Error::Io(error))
                 if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
@@ -353,24 +370,23 @@ fn watch(
                 if let Err(tungstenite::Error::Io(error)) = socket.flush()
                     && !matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
                 {
-                    return;
+                    return Ended::Lost;
                 }
             }
-            Err(_) => return,
+            Err(_) => return Ended::Lost,
         }
     }
 }
 
-/// When to restart the screencast: once after the page's address changes,
-/// if no frame has come within `REFRESH` of the listing that showed it. A
-/// frame from before then may be the old page's, so only a later one counts,
-/// at the cost of a restart the new page did not need. A page that keeps its
-/// address is never restarted, however long it sends nothing.
+/// When to restart the screencast: once, `REFRESH` after the listing shows a
+/// new address. A frame does not cancel it, since it may still be the old
+/// page's. A page that keeps its address is never restarted, however long
+/// it sends nothing.
 #[derive(Default)]
 struct Refresh {
     /// The address Chrome last listed.
     address: Option<String>,
-    /// When the address changed, while no frame has come since.
+    /// When the address changed, until the restart is due.
     changed: Option<Instant>,
 }
 
@@ -387,11 +403,6 @@ impl Refresh {
             }
             self.address = Some(address.to_owned());
         }
-    }
-
-    /// A frame came, so the view shows the page.
-    fn framed(&mut self) {
-        self.changed = None;
     }
 
     /// Whether to restart now. Each change restarts at most once.
@@ -658,14 +669,14 @@ mod tests {
     }
 
     #[test]
-    fn a_new_address_without_a_frame_restarts_once() {
+    fn a_new_address_restarts_once() {
         let start = Instant::now();
         let mut refresh = Refresh::default();
         refresh.listed(Some("https://example.com/a"), start);
         // The first address, and the same one listed again, are no change.
         refresh.listed(Some("https://example.com/a"), start + PAGE);
         assert!(!refresh.due(start + PAGE + REFRESH));
-        // A new address and no frame: one restart, not a second.
+        // A new address: one restart, not a second.
         let moved = start + 2 * PAGE;
         refresh.listed(Some("https://example.com/b"), moved);
         refresh.listed(None, moved + PAGE);
@@ -673,29 +684,165 @@ mod tests {
         assert!(refresh.due(moved + REFRESH));
         refresh.listed(Some("https://example.com/b"), moved + PAGE);
         assert!(!refresh.due(moved + 2 * REFRESH));
-        // A frame after the change: no restart.
-        let again = moved + 2 * PAGE;
-        refresh.listed(Some("https://example.com/c"), again);
-        refresh.framed();
-        assert!(!refresh.due(again + REFRESH));
+    }
+
+    /// How the fake Chrome answers the client's restart.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Restart {
+        Answered,
+        Refused,
+        /// Refused, and the page can't be reached afterwards.
+        RefusedThenGone,
+    }
+
+    /// Watch a fake Chrome whose target list shows the page moving from `/a`
+    /// to `/b`, with a frame of the old page just after the move, until
+    /// `done` holds for the frames taken and the state. Returns each
+    /// connection's methods, the frames taken and every state seen.
+    // tungstenite's handshake returns its HTTP response as the error.
+    #[allow(clippy::result_large_err)]
+    fn watch_a_move(
+        restart: Restart,
+        done: impl Fn(&[i64], State) -> bool,
+    ) -> (Vec<(usize, String)>, Vec<i64>, Vec<State>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (said, heard) = mpsc::channel();
+        thread::spawn(move || {
+            let (moved, old_frame) = mpsc::channel();
+            let mut old_frame = Some(old_frame);
+            let ids = Arc::new(std::sync::atomic::AtomicI64::new(0));
+            let (mut listings, mut connections, mut open) = (0, 0, Vec::new());
+            for mut stream in listener.incoming().flatten() {
+                let mut head = [0; 9];
+                let _ = stream.peek(&mut head);
+                if &head == b"GET /json" {
+                    let _ = stream.read(&mut [0; 1024]);
+                    let address = if listings == 0 { "a" } else { "b" };
+                    let body = format!(
+                        r#"[{{"id":"PAGE","url":"https://example.com/{address}","title":"Example"}}]"#
+                    );
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    );
+                    if listings == 1 {
+                        let _ = moved.send(());
+                    }
+                    listings += 1;
+                    open.push(stream);
+                    continue;
+                }
+                let connection = connections;
+                connections += 1;
+                if connection > 0 && restart == Restart::RefusedThenGone {
+                    continue;
+                }
+                let (said, ids, old_frame) = (said.clone(), ids.clone(), old_frame.take());
+                thread::spawn(move || {
+                    let mut socket = tungstenite::accept(stream).unwrap();
+                    socket
+                        .get_ref()
+                        .set_read_timeout(Some(Duration::from_millis(10)))
+                        .unwrap();
+                    let data = jpeg();
+                    let send_frame = |socket: &mut WebSocket<TcpStream>| {
+                        let id = ids.fetch_add(1, Ordering::Relaxed) + 1;
+                        let _ = socket.send(Message::text(frame(id, &data)));
+                    };
+                    let mut stopped = false;
+                    loop {
+                        if old_frame
+                            .as_ref()
+                            .is_some_and(|moved| moved.try_recv().is_ok())
+                        {
+                            send_frame(&mut socket);
+                        }
+                        let text = match socket.read() {
+                            Ok(Message::Text(text)) => text,
+                            Ok(Message::Close(_)) => break,
+                            Ok(_) => continue,
+                            Err(tungstenite::Error::Io(error))
+                                if error.kind() == ErrorKind::WouldBlock
+                                    || error.kind() == ErrorKind::TimedOut =>
+                            {
+                                continue;
+                            }
+                            Err(_) => break,
+                        };
+                        let message: Value = serde_json::from_str(&text).unwrap();
+                        let method = message["method"].as_str().unwrap().to_owned();
+                        let _ = said.send((connection, method.clone()));
+                        match method.as_str() {
+                            "Page.stopScreencast" => stopped = true,
+                            "Page.startScreencast" if stopped && restart != Restart::Answered => {
+                                let refusal = serde_json::json!({
+                                    "id": message["id"],
+                                    "error": {"code": -32000, "message": "Not attached to an active page"},
+                                });
+                                let _ = socket.send(Message::text(refusal.to_string()));
+                            }
+                            "Page.startScreencast" => send_frame(&mut socket),
+                            _ => {}
+                        }
+                    }
+                });
+            }
+        });
+
+        let stream = Stream::open_on(move || Some(port), "PAGE".into(), || {});
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let (mut taken, mut states) = (Vec::new(), Vec::new());
+        while !done(&taken, stream.state()) {
+            assert!(Instant::now() < deadline, "took {taken:?}, saw {states:?}");
+            taken.extend(stream.take_frame().map(|frame| frame.id));
+            states.push(stream.state());
+            thread::sleep(Duration::from_millis(10));
+        }
+        let methods = heard
+            .try_iter()
+            .filter(|(_, method)| method != "Page.screencastFrameAck")
+            .collect();
+        (methods, taken, states)
+    }
+
+    fn methods(said: &[(usize, String)], connection: usize) -> Vec<&str> {
+        said.iter()
+            .filter(|(on, _)| *on == connection)
+            .map(|(_, method)| method.as_str())
+            .collect()
     }
 
     #[test]
-    fn a_frame_before_the_listing_sees_the_change_does_not_count() {
-        let start = Instant::now();
-        let mut refresh = Refresh::default();
-        refresh.listed(Some("https://example.com/a"), start);
-        // The old page's frame, as for the click that left it.
-        refresh.framed();
-        refresh.listed(Some("https://example.com/b"), start + PAGE);
-        assert!(refresh.due(start + PAGE + REFRESH));
+    fn a_restart_stops_and_starts_the_screencast_and_it_goes_on() {
+        // Frames 1, the first; 2, the old page's after the move; 3, the restart's.
+        let (said, taken, _) = watch_a_move(Restart::Answered, |taken, _| taken.contains(&3));
+        assert_eq!(
+            methods(&said, 0),
+            [
+                "Page.startScreencast",
+                "Page.stopScreencast",
+                "Page.startScreencast"
+            ]
+        );
+        assert!(methods(&said, 1).is_empty());
+        assert!(taken.contains(&2), "the old page's frame came: {taken:?}");
     }
 
     #[test]
-    fn a_refused_restart_ends_the_connection() {
-        let error =
-            r#"{"id":7,"error":{"code":-32000,"message":"Not attached to an active page"}}"#;
-        assert_eq!(receive(error, &shared()), Received::Refused);
+    fn a_refused_restart_reconnects_without_a_word() {
+        // Frame 3 is the new connection's.
+        let (said, _, states) = watch_a_move(Restart::Refused, |taken, _| taken.contains(&3));
+        assert_eq!(methods(&said, 1).first(), Some(&"Page.startScreencast"));
+        assert!(!states.contains(&State::Unreachable), "{states:?}");
+    }
+
+    #[test]
+    fn a_failed_reconnect_after_a_refused_restart_says_so() {
+        watch_a_move(Restart::RefusedThenGone, |_, state| {
+            state == State::Unreachable
+        });
     }
 
     #[test]
