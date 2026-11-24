@@ -315,6 +315,13 @@ fn reopens_remote(transient: bool, restarting: bool, restarts: &Restarts) -> boo
     transient || (restarting && restarts.under_way())
 }
 
+/// Whether a pane shows its agent's restart. A remote pane shows it only
+/// while its error, if any, is one it opens again by itself: any other
+/// refusal is shown as it is, with Open again.
+fn follows_restart(remote: bool, error: bool, transient: bool, restarting: bool) -> bool {
+    !remote || !error || transient || restarting
+}
+
 /// Whether a remote pane says what went wrong instead of its pane's message:
 /// a pane that shows no stopped agent and no restart.
 fn remote_failure(remote: bool, agent: Option<&str>, restart: Option<&RestartShown>) -> bool {
@@ -1591,9 +1598,17 @@ impl Render for LiveTerminal {
             .child(text)
         };
         let attached = self.view.is_some() && !self.client_gone(cx);
-        let restart = self.restarts.shown(attached);
+        let followed = follows_restart(
+            self.target.remote().is_some(),
+            self.error.is_some(),
+            self.remote_retry,
+            self.remote_restarting,
+        );
+        let none = Restarts::default();
+        let restarts = if followed { &self.restarts } else { &none };
+        let restart = restarts.shown(attached);
         let drawn = drawn(
-            &self.restarts,
+            restarts,
             self.error.as_deref(),
             self.error_is_end,
             attached,
@@ -1654,7 +1669,15 @@ impl Render for LiveTerminal {
                         .id("ended-message")
                         .min_h_0()
                         .overflow_y_scroll()
-                        .children(ended.error.map(|error| line(error, c.attention_text)))
+                        // A remote failure is said whole, even after a restart.
+                        .children(
+                            if remote {
+                                self.error.clone()
+                            } else {
+                                ended.error
+                            }
+                            .map(|error| line(error, c.attention_text)),
+                        )
                         .when(!remote, |el| el.child(line(ended.message, c.muted)))
                         // Shown whole, wrapping, as the service wrote it.
                         .children(ended.reason.map(|reason| line(reason, c.muted))),
@@ -2931,6 +2954,13 @@ mod tests {
         assert!(!reopens_remote(false, true, &Restarts::default()));
         assert!(reopens_remote(true, false, &Restarts::default()));
         assert!(remote_failure(true, None, None));
+        // A remote pane shows a restart only while its error, if any, is one
+        // it opens again by itself; any other refusal shows as it is.
+        assert!(follows_restart(false, true, false, false));
+        assert!(follows_restart(true, false, false, false));
+        assert!(follows_restart(true, true, true, false));
+        assert!(follows_restart(true, true, false, true));
+        assert!(!follows_restart(true, true, false, false));
         let fresh = frames("stream-agent-restart-fresh");
         let mut restarts = Restarts::default();
         // The remote stream opens, as every open of it does.
@@ -2974,7 +3004,7 @@ mod tests {
             RestartStep::Inspect(12)
         );
         assert_eq!(
-            restarts.inspected(12, Some(&fresh[4]), Some(at(2)), false),
+            restarts.inspected(12, Some(&fresh[4]), Some(at(2)), true),
             RestartStep::Attach
         );
         assert!(reopens_remote(false, true, &restarts));
