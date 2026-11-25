@@ -964,7 +964,8 @@ fn start(probe: &Probe, request: &mut Option<String>, saved: Option<&str>) -> Re
     })
 }
 
-/// Wait for the agent service to answer, for up to [`SERVICE_WAIT`].
+/// Wait for the agent service to answer, for up to [`SERVICE_WAIT`]. An
+/// older service answers too; the check that follows says so.
 fn answered() -> Option<()> {
     let deadline = Instant::now() + SERVICE_WAIT;
     // Ask the login shell where Backbone is once, not on every attempt.
@@ -973,7 +974,10 @@ fn answered() -> Option<()> {
         if client.is_none() {
             client = probe::profile_client();
         }
-        if matches!(probe::answers(client.clone()), Backbone::Running) {
+        if matches!(
+            probe::answers(client.clone()),
+            Backbone::Running | Backbone::Outdated(_)
+        ) {
             return Some(());
         }
         std::thread::sleep(SERVICE_POLL);
