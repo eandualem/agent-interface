@@ -42,7 +42,8 @@ run_step() {
 }
 usage() {
     printf '%s\n' 'Usage: sh install.sh [--archive PATH]' \
-        'Installs the latest published build, or a local archive with its .sha256 file.' \
+        'Installs the latest published build and Agent Backbone, or only the app from' \
+        'a local archive with its .sha256 file.' \
         'Quit the app before updating. Layouts and settings in the agent-interface folders are preserved.'
 }
 archive=
@@ -127,13 +128,15 @@ launcher_backup=
 installed=false
 new_link=false
 new_launcher=false
+# Set once the app is in place: an interrupt after that keeps it.
+app_kept=false
 cleanup() {
     status=$?
     trap - EXIT HUP INT TERM
     set +e
     stop_progress
     rollback_ok=true
-    if [ "$status" -ne 0 ]; then
+    if [ "$status" -ne 0 ] && [ "$app_kept" = false ]; then
         if [ "$new_wsl_launcher" = true ]; then
             if [ -n "$wsl_launcher_backup" ]; then
                 if ! sudo install -m 644 -- "$wsl_launcher_backup" "$wsl_launcher"; then
@@ -487,6 +490,7 @@ install_backbone() {
         printf '%s\n' "$retry" >&2
     fi
 }
+app_kept=true
 install_backbone || :
 
 }

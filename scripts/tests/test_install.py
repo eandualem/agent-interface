@@ -633,8 +633,10 @@ sys.exit(0 if outcome in ('ok', 'corrupt') else int(outcome))
         self.command("sleep", 'printf "%s\\n" "$1" >> "$TEST_SLEEPS"')
         stub = self.root / "download.py"
         # Files are served from releases/TAG/NAME. NAME.once, when present,
-        # is served in its place once, as while the latest release changes.
-        stub.write_text('''import os, shutil, sys
+        # is served in its place once, and NAME.gone makes it missing once,
+        # as while the latest release changes. TEST_INTERRUPT interrupts the
+        # installer at its first Backbone download.
+        stub.write_text('''import os, shutil, signal, sys
 from pathlib import Path
 args = sys.argv[1:]
 url = next(arg for arg in args if arg.startswith('https://'))
@@ -649,9 +651,17 @@ if tag == 'vfixture':
 else:
     with open(os.environ['TEST_DOWNLOADS'], 'a') as log:
         log.write(f'{tag}/{name}\\n')
+    if os.environ.get('TEST_INTERRUPT'):
+        os.kill(os.getppid(), signal.SIGINT)
+        sys.exit(22)
     served = Path(os.environ['TEST_RELEASES'], tag, name)
     once = served.with_name(name + '.once')
-    if once.exists():
+    gone = served.with_name(name + '.gone')
+    if gone.exists():
+        gone.unlink()
+        print('curl: (22) The requested URL returned error: 404', file=sys.stderr)
+        sys.exit(22)
+    elif once.exists():
         once.rename(output)
     elif served.exists():
         shutil.copyfile(served, output)
@@ -733,6 +743,25 @@ if '--write-out' in args:
         self.assertIn("again in 5 seconds", result.stderr)
         self.assertEqual((self.root / "sleeps").read_text(), "5\n")
         self.assertEqual(self.backbone_downloads()[:4], self.LATEST * 2)
+
+    def test_backbone_missing_file_is_downloaded_again_once(self):
+        self.backbone_releases()
+        signature = self.publish_backbone("0.2.0")
+        signature.with_name(signature.name + ".gone").write_text("")
+        result = self.install(None)
+        self.assertEqual(self.backbone_version(), "backbone 0.2.0")
+        self.assertIn("again in 5 seconds", result.stderr)
+        self.assertEqual(self.backbone_downloads()[:4], self.LATEST * 2)
+
+    def test_backbone_interrupt_keeps_the_app(self):
+        self.backbone_releases()
+        self.publish_backbone("0.2.0")
+        self.env["TEST_INTERRUPT"] = "1"
+        self.install(None, success=False)
+        self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "agent-interface 0.0.0")
+        self.assertEqual(sorted(path.name for path in self.destination.parent.iterdir()),
+                         [".agent-interface-download", "agent-interface"])
+        self.assertFalse(self.backbone.exists())
 
     def test_backbone_second_bad_signature_is_refused(self):
         self.backbone_releases()

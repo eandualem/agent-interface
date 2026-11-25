@@ -87,9 +87,9 @@ refusal or ended stream leaves the reason and an explicit reopen action in the p
 
 `app` connects the product crates. `store` also depends on `core`, and
 `install` on `release`; the other product libraries do not depend on one
-another. `install` has no GPUI, so the installer tests build it alone. GPUI stays inside `app` and
-terminal-engine types stay inside `term`. The dependency constraints are encoded
-in [`deny.toml`](../deny.toml).
+another. `install` has no GPUI, so the installer tests build it alone. GPUI
+stays inside `app` and terminal-engine types stay inside `term`. The
+dependency constraints are encoded in [`deny.toml`](../deny.toml).
 
 Development-only crates are separate: `test-support` provides disposable tmux
 fixtures and `bench` runs measurements.
