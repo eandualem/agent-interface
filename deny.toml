@@ -61,6 +61,7 @@ deny = [
     { crate = "agent-interface-tmux", wrappers = ["agent-interface-app", "agent-interface-bench"], reason = "only app connects tmux to the other crates; the benchmark harness measures the same path" },
     { crate = "agent-interface-term", wrappers = ["agent-interface-app", "agent-interface-bench"], reason = "only app connects the terminal engine to the other crates; the benchmark harness measures the same path" },
     { crate = "agent-interface-roster", wrappers = ["agent-interface-app"], reason = "only app maps roster data into the model" },
+    { crate = "backbone-release", wrappers = ["agent-interface-install"], reason = "only the installer's commands verify Backbone releases" },
     { crate = "agent-interface-test-support", wrappers = [
         "agent-interface-tmux",
         "agent-interface-app",
