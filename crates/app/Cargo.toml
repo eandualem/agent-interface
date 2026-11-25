@@ -44,6 +44,7 @@ agent-interface-store = { path = "../store" }
 agent-interface-roster = { path = "../roster" }
 agent-interface-term = { path = "../term" }
 agent-interface-tmux = { path = "../tmux" }
+agent-interface-install = { path = "../install" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Set decoration hints only on our own X11 windows (MIT OR Apache-2.0).

@@ -4,10 +4,17 @@
 
 use std::{ffi::OsString, path::PathBuf, process::ExitCode};
 
-const USAGE: &str = "Usage: agent-interface [--data-dir PATH]\n       agent-interface [--data-dir PATH] --reconnect-shells-from FORMER_FOLDER\n       agent-interface [--data-dir PATH] artifact publish FILE.html --title TITLE [--author NAME]\n\nOpen saved workspaces, or publish a self-contained HTML artifact to the\nlibrary without opening a window.\n";
+const USAGE: &str = "Usage: agent-interface [--data-dir PATH]\n       agent-interface [--data-dir PATH] --reconnect-shells-from FORMER_FOLDER\n       agent-interface [--data-dir PATH] artifact publish FILE.html --title TITLE [--author NAME]\n       agent-interface backbone-install COMMAND ...\n\nOpen saved workspaces, or publish a self-contained HTML artifact to the\nlibrary without opening a window. The installer runs backbone-install to\ninstall Agent Backbone.\n";
 
 fn main() -> ExitCode {
-    match options(std::env::args_os().skip(1)) {
+    let mut arguments = std::env::args_os().skip(1).peekable();
+    if arguments
+        .next_if(|argument| argument == "backbone-install")
+        .is_some()
+    {
+        return agent_interface_install::main(arguments);
+    }
+    match options(arguments) {
         Ok(Options::Open(directory)) => {
             if let Err(error) = agent_interface_app::desktop::run(directory) {
                 eprintln!("agent-interface: {}", error.escape_debug());

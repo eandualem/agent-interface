@@ -426,5 +426,68 @@ if ! command -v tmux >/dev/null 2>&1 && [ ! -x /opt/homebrew/bin/tmux ] && [ ! -
     printf '%s\n' 'Install tmux 3.4 or newer before opening terminal panes (see the installation guide).'
 fi
 
+# Agent Backbone, from its signed release. The app is installed whatever
+# happens here: the new app binary makes every check, and a refusal or
+# failure is reported, never returned.
+install_backbone() {
+    app=$destination/$executable
+    retry='Agent Interface is installed; Agent Backbone is not. Rerun the installer to try again.'
+    printf '\n%s\n' 'Installing Agent Backbone...'
+    if [ -n "$archive" ]; then
+        printf '%s\n' 'Agent Backbone is installed only from its published release: run the installer without --archive.'
+        return 0
+    fi
+    # Exit statuses of the app's backbone-install commands: 3, not published
+    # (no release key in this build); 4, an earlier Backbone left in place;
+    # 5, a manifest or signature missing or not holding.
+    if "$app" backbone-install check; then :; else
+        backbone_status=$?
+        [ "$backbone_status" -eq 3 ] || [ "$backbone_status" -eq 4 ] || printf '%s\n' "$retry" >&2
+        return 0
+    fi
+    downloads=https://github.com/eandualem/agent-interface/releases/download
+    backbone=$staging/backbone
+    mkdir "$backbone" || { printf '%s\n' "$retry" >&2; return 0; }
+    manifest=$backbone/backbone-release-manifest
+    # The latest release's two files are replaced one after the other, so a
+    # signature that does not hold, or a file missing, gets one more try.
+    attempt=1
+    while :; do
+        rm -f "$manifest" "$manifest.minisig"
+        for file in "$manifest" "$manifest.minisig"; do
+            curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
+                --connect-timeout 15 --max-time 60 --retry 4 --retry-delay 2 --retry-connrefused \
+                "$downloads/backbone-latest/${file##*/}" -o "$file" || :
+        done
+        if offer=$("$app" backbone-install verify-manifest --target "$target" "$manifest" "$manifest.minisig"); then
+            break
+        else
+            backbone_status=$?
+        fi
+        if [ "$backbone_status" -ne 5 ] || [ "$attempt" -eq 2 ]; then
+            printf '%s\n' "$retry" >&2
+            return 0
+        fi
+        printf '%s\n' 'Downloading the release manifest again in 5 seconds...' >&2
+        sleep 5
+        attempt=2
+    done
+    version=$(printf '%s\n' "$offer" | sed -n 1p)
+    name=$(printf '%s\n' "$offer" | sed -n 2p)
+    printf 'Downloading Agent Backbone %s...\n' "$version"
+    if ! curl --fail --location --progress-bar --show-error --proto '=https' --tlsv1.2 \
+        --connect-timeout 15 --speed-limit 1 --speed-time 60 --retry 4 --retry-delay 2 --retry-connrefused \
+        "$downloads/backbone-v$version/$name" -o "$backbone/$name"; then
+        printf 'Agent Backbone %s could not be downloaded.\n%s\n' "$version" "$retry" >&2
+        return 0
+    fi
+    if version=$("$app" backbone-install install --target "$target" "$manifest" "$manifest.minisig" "$backbone/$name"); then
+        printf 'Installed Agent Backbone %s in %s\n' "$version" "$HOME/.local/bin/backbone"
+    else
+        printf '%s\n' "$retry" >&2
+    fi
+}
+install_backbone || :
+
 }
 main "$@"

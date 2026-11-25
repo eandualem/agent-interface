@@ -1,7 +1,7 @@
 # Vendored from Agent Backbone (https://github.com/eandualem/agent-backbone-rs),
 # crates/release at commit 0294cd55, MIT. The sources are unchanged; only
 # this manifest differs, with the workspace fields written out and the
-# dependencies pinned exactly.
+# dependencies pinned exactly, to the versions Agent Backbone builds it with.
 [package]
 name = "backbone-release"
 description = "Verifies a Backbone release before it is installed: its signed manifest, its version and its artifact's digest."
@@ -19,7 +19,7 @@ unsafe_code = "deny"
 [dependencies]
 minisign-verify = "=0.3.0"
 semver = "=1.0.28"
-sha2 = "=0.10.9"
+sha2 = "=0.11.1"
 
 [dev-dependencies]
 minisign = "=0.10.0"
