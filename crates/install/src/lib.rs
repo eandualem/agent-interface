@@ -682,7 +682,7 @@ fn unpack_bundle(archive: &[u8], directory: &Path) -> Result<(), Failure> {
         let parts: Vec<&[u8]> = relative.split(|&byte| byte == b'/').collect();
         let plain = parts
             .iter()
-            .all(|part| !part.is_empty() && *part != b"." && *part != b"..");
+            .all(|part| !part.is_empty() && *part != b"." && *part != b".." && !part.contains(&0));
         let inside = parts[0] == BUNDLE.as_bytes() && (kind.is_dir() || parts.len() > 1);
         let is_license = parts == [b"LICENSE"] && kind.is_file();
         if !plain || !(inside || is_license) {
@@ -1386,6 +1386,12 @@ mod tests {
             0o755,
             b"",
         ));
+        // A PAX path record naming a path with a NUL byte in it.
+        let body = b" path=Agent Backbone.app/Contents/a\0b\n";
+        let record = [(body.len() + 2).to_string().as_bytes(), body].concat();
+        let mut nul = good.clone();
+        nul.push((EntryType::XHeader, "PaxHeader", 0o644, &record));
+        nul.push((Regular, "Agent Backbone.app/Contents/c", 0o644, b""));
         for entries in [
             with((
                 EntryType::Symlink,
@@ -1443,6 +1449,7 @@ mod tests {
             without(PROGRAM),
             without("LICENSE"),
             program_folder,
+            nul,
         ] {
             let release = fixture.release_for(APPLE, "0.2.0", &raw_archive(&entries));
             let failure = fixture.run(&release).unwrap_err();
