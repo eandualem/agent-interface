@@ -886,7 +886,7 @@ mod tests {
             worker.restart,
             Some(Restart {
                 id: Some(12),
-                phase: Some("waiting".into()),
+                phase: Some("stopping".into()),
                 status: None,
                 resume: Some(false),
                 result: None,
