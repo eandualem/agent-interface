@@ -82,7 +82,7 @@ refusal or ended stream leaves the reason and an explicit reopen action in the p
 | `native-fs` | Safe descriptor-based native filesystem checks; narrowly scoped Darwin ACL FFI, no paths or application state |
 | `webview-host` | Borrowed XCB-to-Xlib window-handle adaptation for Linux document embedding; no application state or process ownership |
 | `app` | Native windows, input routing, storage and terminal workers, and integration between the other crates |
-| `install` | The installer's `backbone-install` commands: verify an Agent Backbone release and put `backbone` in place; no app state |
+| `install` | The installer's `backbone-install` commands: verify an Agent Backbone release and put Backbone in place; no app state |
 | `release` | Vendored from Agent Backbone: verifies a Backbone release's signed manifest, version and archive digest |
 
 `app` connects the product crates. `store` also depends on `core`, and
@@ -1223,16 +1223,42 @@ crate, vendored from `crates/release` at commit `0294cd55` (MIT) with only
 its manifest changed.
 
 1. `check` refuses when the build has no release key or an earlier Backbone
-   is in the way, before anything is downloaded.
+   is in the way, before anything is downloaded. It takes the target, like the
+   other two, because the target's archive decides the layout below.
 2. `verify-manifest` verifies the manifest's signature against the release key
    built into the app, refuses a version older than the installed one, and
    prints the version and this target's archive name. The two files of
    `backbone-latest` are replaced one after the other, so a signature that does
    not hold, or a missing file, gets one more download five seconds later.
 3. `install` verifies the manifest again, checks the archive's SHA-256 against
-   it, unpacks `backbone` from an archive that holds exactly `backbone` and
-   `LICENSE` as regular files, and renames it over `~/.local/bin/backbone` from
-   a temporary file in that directory, so nothing partial is ever in place.
+   it and puts Backbone in place, by the layout of the target's archive.
+
+On Linux the archive holds exactly `backbone` and `LICENSE`, as regular files.
+`install` unpacks `backbone` and renames it over `~/.local/bin/backbone` from a
+temporary file in that directory, so nothing partial is ever in place.
+
+On macOS, a target ending in `-apple-darwin`, Backbone is a signed app bundle,
+so that macOS keeps one named Local Network permission for it across upgrades.
+The archive holds `Agent Backbone.app/` and `LICENSE`. `install` accepts only
+folders and regular files under `Agent Backbone.app/`, each once and by a
+plain relative path, and refuses links, other entry types, absolute paths,
+`.` or `..` components and anything else at the root.
+`Agent Backbone.app/Contents/MacOS/backbone` must be present. Files keep the
+archive's permission bits, without setuid, setgid or sticky bits, so the
+program stays executable and the bundle's signature holds; the installer never
+writes inside a placed bundle and never signs it. In order, `install`:
+
+1. removes folders named `.agent-backbone.*` in `~/Applications`, which an
+   interrupted run left; links and files with that name are not its own and
+   stay;
+2. unpacks the bundle into a new such folder, so a refused archive changes
+   nothing more;
+3. writes the marker;
+4. renames a bundle already in place into that folder, and the new bundle to
+   `~/Applications/Agent Backbone.app`;
+5. renames a new symbolic link to the bundle's program over
+   `~/.local/bin/backbone`;
+6. removes the folder, and the previous bundle with it.
 
 The release key's signature of the manifest is the root of trust. The archive
 is trusted only through the digest the signed manifest names, and nothing in
@@ -1246,12 +1272,18 @@ program of the `install` crate that packaging never builds.
 The installer replaces `~/.local/bin/backbone` only while its marker
 `~/.local/bin/.agent-interface-backbone` exists. The marker lies outside the
 app's installation, so app updates and rollbacks keep it, and `backbone
-upgrade` replacing the program in place keeps it the installer's. The
+upgrade` replacing the program or the bundle in place keeps it the
+installer's. On macOS the marker also names the link and the bundle, and the
+installer owns them while `~/.local/bin/backbone` is missing or a link to
+exactly `~/Applications/Agent Backbone.app/Contents/MacOS/backbone`, and the
+bundle, if present, is a folder. A marker of the other layout owns nothing. The
 installed version, against which an older release is refused, is the one
-the owned program reports for `--version`; a program the installer does not
-own is never run. The marker is written before the rename, so an interruption
-leaves either no program or an owned one. A program the installer does not
-own, or a defined login service of the earlier Backbone
+the owned program reports for `--version`, run through the link on macOS; a
+program the installer does not own is never run. The marker is written before
+the renames, so an interruption leaves either no program or an owned one. On
+macOS an owned link that is missing or leads to a missing program counts as no
+installed version, which a rerun completes. A program, link or bundle the
+installer does not own, or a defined login service of the earlier Backbone
 (`~/Library/LaunchAgents/dev.agent-backbone.plist`, or the systemd user unit
 `agent-backbone.service`), is left in place and Backbone is not installed.
 Each outcome has its own exit status for the installer to report. A refusal

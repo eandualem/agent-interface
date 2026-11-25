@@ -435,7 +435,13 @@ fi
 install_backbone() {
     app=$destination/$executable
     outcome='was not installed'
-    if [ -e "$HOME/.local/bin/backbone" ] || [ -L "$HOME/.local/bin/backbone" ]; then outcome='was not updated'; fi
+    # On macOS, Backbone is an app bundle, and ~/.local/bin/backbone a link
+    # to its program.
+    placed=$HOME/.local/bin/backbone
+    case $target in *-apple-darwin) placed="$HOME/Applications/Agent Backbone.app" ;; esac
+    for found in "$HOME/.local/bin/backbone" "$placed"; do
+        if [ -e "$found" ] || [ -L "$found" ]; then outcome='was not updated'; fi
+    done
     retry="Agent Interface is installed; Agent Backbone $outcome. Rerun the installer to try again."
     printf '\n%s\n' 'Installing Agent Backbone...'
     if [ -n "$archive" ]; then
@@ -445,7 +451,7 @@ install_backbone() {
     # Exit statuses of the app's backbone-install commands: 3, not published
     # (no release key in this build); 4, an earlier Backbone left in place;
     # 5, a manifest or signature missing or not holding.
-    if "$app" backbone-install check; then :; else
+    if "$app" backbone-install check --target "$target"; then :; else
         backbone_status=$?
         [ "$backbone_status" -eq 3 ] || [ "$backbone_status" -eq 4 ] || printf '%s\n' "$retry" >&2
         return 0
@@ -487,7 +493,7 @@ install_backbone() {
         return 0
     fi
     if version=$("$app" backbone-install install --target "$target" "$manifest" "$manifest.minisig" "$backbone/$name"); then
-        printf 'Installed Agent Backbone %s in %s\n' "$version" "$HOME/.local/bin/backbone"
+        printf 'Installed Agent Backbone %s in %s\n' "$version" "$placed"
     else
         printf '%s\n' "$retry" >&2
     fi
