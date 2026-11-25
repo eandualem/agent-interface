@@ -21,7 +21,7 @@ fn fixture(name: &str) -> Json {
 }
 
 /// A served profile on a fake socket answering `replies` in turn, after the
-/// identity its connection asks for first; the requests it got come back.
+/// version and identity its connection asks for first; the requests it got come back.
 pub(in crate::profiles) fn served(
     replies: Vec<(u16, Json)>,
 ) -> (Connection, thread::JoinHandle<Vec<String>>) {
@@ -38,9 +38,10 @@ pub(in crate::profiles) fn served(
     for field in ["state", "socket", "tmux_socket", "credential_reference"] {
         identity.as_object_mut().unwrap().remove(field);
     }
+    let health = json!({"version": crate::profiles::MINIMUM_BACKBONE.to_string()});
     let server = serve(
         listener,
-        [vec![(200, identity)], replies].concat(),
+        [vec![(200, health), (200, identity)], replies].concat(),
         directory,
     );
     let profile = Profile::parse(&serde_json::to_vec(&entry).unwrap()).unwrap();
@@ -77,7 +78,10 @@ fn serve(
                 stream.read_exact(&mut body).unwrap();
                 request.push_str(&String::from_utf8(body).unwrap());
             }
-            requests.push(request);
+            // The version check before every connection is not what tests read.
+            if !request.starts_with("GET /health ") {
+                requests.push(request);
+            }
             let body = body.to_string();
             write!(stream, "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
         }

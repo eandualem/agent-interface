@@ -420,12 +420,23 @@ credential, so no key is read or sent. The socket must be owned by the app's
 effective user with mode 0600, inside a directory owned by that user with mode
 0700, and the connected peer's UID must match before any HTTP is sent. This
 authenticates the OS account, not an individual process within that account.
-There is no TCP fallback. Every request carries `X-Backbone-Profile-ID`, and a
+There is no TCP fallback. Every request for a profile carries
+`X-Backbone-Profile-ID`, and a
 request that changes a record may carry `X-Backbone-Request-ID`, so a repeat
 after a lost reply gets the first result. A failed entry keeps the service's
 `reason`, a sentence for a person that the workspace shows as given.
 
-Connecting reads `GET /api/profile` and compares the profile, the machine and
+Connecting first reads the service's `GET /health`, which names no profile,
+and compares its `version` with `MINIMUM_BACKBONE` in `roster::profiles`, the
+lowest Agent Backbone the app works with, by semantic-version precedence. An
+older service, including a pre-release of the minimum, is refused with both
+versions and a request to run `backbone upgrade`; a missing or unreadable
+version, or a service without `/health`, is refused the same way rather than
+treated as compatible. The minimum is 0.1.0, which every development build of
+Backbone reports, so it refuses nothing yet. It is raised when the app first
+needs a newer Backbone.
+
+Connecting then reads `GET /api/profile` and compares the profile, the machine and
 the service's `instance_id` with the entry just read. The instance changes at
 every service start, so later checks on the same connection compare only the
 profile and the machine; the machine ID fills the identity's installation and
@@ -1071,6 +1082,9 @@ build-time advisory exception are described below.
   `digest` 0.11.3, `block-buffer` 0.12.1, `crypto-common` 0.2.2,
   `hybrid-array` 0.4.15, `const-oid` 0.10.3 and `cpufeatures` 0.3.1 (MIT OR
   Apache-2.0), beside the workspace's `sha2` 0.10.9.
+- **`semver` 1.0.28:** MIT OR Apache-2.0, pinned exactly as above. The
+  `roster` crate also uses it to compare the version a service reports with
+  the lowest Backbone the app supports.
 - **`tar` 0.4.46:** MIT OR Apache-2.0, pinned exactly with default features
   off, as Agent Backbone pins it; reads Backbone's release archive in the
   `install` crate. It adds `filetime` 0.2.30 (MIT OR Apache-2.0). The existing

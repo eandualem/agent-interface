@@ -35,7 +35,8 @@ fn receive(listener: &UnixListener, route: &str) -> BufReader<UnixStream> {
             length = n.parse().unwrap();
         }
     }
-    assert!(profile);
+    // `/health` names no profile.
+    assert_eq!(profile, route != "GET /health");
     if length > 0 {
         let mut body = vec![0; length];
         request.read_exact(&mut body).unwrap();
@@ -74,6 +75,8 @@ fn fixture(
     let info = json!({"state":"serving","protocol_version":1,"profile_id":"fixture-profile","display_name":"Fixture","instance_id":"instance-a","machine":{"id":"local","name":"Mac"},"home":true,"socket":socket,"tmux_socket":dir.path().join("unused.sock"),"credential_reference":{"type":"socket"}});
     let profile = Profile::parse(&serde_json::to_vec(&info).unwrap()).unwrap();
     let server = thread::spawn(move || {
+        let version = agent_interface_roster::profiles::MINIMUM_BACKBONE.to_string();
+        reply(&listener, "GET /health", &json!({ "version": version }));
         reply(&listener, "GET /api/profile", &info);
         reply(&listener, "GET /api/profile", &info);
         let mut stream = receive(&listener, "POST /api/terminals/open");

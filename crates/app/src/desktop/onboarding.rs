@@ -297,6 +297,11 @@ impl Onboarding {
             }
             return;
         }
+        // Starting an older service again would not change its version.
+        if let Backbone::Outdated(reason) = &probe.backbone {
+            self.service = Service::Failed(reason.clone());
+            return;
+        }
         // Repair runs once; if the service still doesn't answer, say so.
         if self.repaired {
             self.service = Service::Failed(match &probe.backbone {
@@ -687,11 +692,12 @@ impl Onboarding {
                 )
             })
             .into_any_element();
-        Some((
-            "Agents can\u{2019}t start yet".into(),
-            "Agent Interface couldn\u{2019}t start the service that runs your agents. Your terminals still work.".into(),
-            body,
-        ))
+        // An older Backbone is not a failure to start: say what to do.
+        let line = match &probe.backbone {
+            Backbone::Outdated(reason) => reason.clone().into(),
+            _ => "Agent Interface couldn\u{2019}t start the service that runs your agents. Your terminals still work.".into(),
+        };
+        Some(("Agents can\u{2019}t start yet".into(), line, body))
     }
 
     /// Skip, during the scene, and the interface size, throughout.

@@ -57,12 +57,12 @@ impl Browser {
             let origin = self.selected_navigation_origin();
             let change_origin = origin.clone();
             let failure = self.profile_failure();
-            let reason = failure.and(self.profile_reason());
-            let (title, note) = match failure {
+            let reason = failure.as_ref().and(self.profile_reason());
+            let (title, note) = match failure.clone() {
                 Some(failure) => ("Workspace profile unavailable", failure),
                 None => (
                     "Connecting to this workspace’s profile…",
-                    "This can take a moment.",
+                    "This can take a moment.".into(),
                 ),
             };
             return area

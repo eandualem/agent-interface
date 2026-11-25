@@ -18,7 +18,7 @@ const NOT_ANSWERING: &str = "Agent Backbone isn\u{2019}t answering. Try again.";
 pub(super) fn failure(error: Error) -> String {
     match error {
         Error::Unavailable | Error::Refused(500..=599) => NOT_ANSWERING.into(),
-        Error::Unsupported => UNSUPPORTED.into(),
+        Error::Unsupported | Error::Outdated(_) | Error::VersionUnknown => UNSUPPORTED.into(),
         Error::Refused(404) => "That request or connection no longer exists.".into(),
         Error::BindingRequired | Error::BindingMismatch | Error::RegistrationChanged => {
             "This workspace no longer matches its profile. Open the workspace again.".into()

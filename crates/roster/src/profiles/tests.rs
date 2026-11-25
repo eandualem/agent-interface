@@ -116,45 +116,42 @@ fn serve(listener: UnixListener, replies: Vec<(u16, Value)>) -> thread::JoinHand
 fn serve_with_hook(
     listener: UnixListener,
     replies: Vec<(u16, Value)>,
+    hook: impl FnMut(usize) + Send + 'static,
+) -> thread::JoinHandle<Vec<String>> {
+    serve_replies(listener, replies, true, hook)
+}
+
+/// The service's `GET /health` reply for `version`.
+fn health(version: &str) -> Value {
+    json!({"status": "ok", "version": version})
+}
+
+/// Answer each request with the next of `replies`, in order. With `healthy`,
+/// a `GET /health` gets [`MINIMUM_BACKBONE`] without taking a reply or being
+/// recorded.
+fn serve_replies(
+    listener: UnixListener,
+    replies: Vec<(u16, Value)>,
+    healthy: bool,
     mut hook: impl FnMut(usize) + Send + 'static,
 ) -> thread::JoinHandle<Vec<String>> {
     thread::spawn(move || {
         listener.set_nonblocking(true).unwrap();
         let mut requests = Vec::new();
         for (at, (status, body)) in replies.into_iter().enumerate() {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            let mut stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error)
-                        if error.kind() == std::io::ErrorKind::WouldBlock
-                            && Instant::now() < deadline =>
-                    {
-                        thread::sleep(Duration::from_millis(5))
-                    }
-                    Err(error) => panic!("fixture accept: {error}"),
+            let (mut stream, request) = loop {
+                let (mut stream, request) = next_request(&listener);
+                if !(healthy && request.starts_with("get /health ")) {
+                    break (stream, request);
                 }
-            };
-            stream.set_nonblocking(false).unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
+                let body = health(&MINIMUM_BACKBONE.to_string()).to_string();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
                 .unwrap();
-            let mut header = Vec::new();
-            while !header.ends_with(b"\r\n\r\n") {
-                let mut byte = [0];
-                stream.read_exact(&mut byte).unwrap();
-                header.push(byte[0]);
-                assert!(header.len() < 8192);
-            }
-            let mut request = String::from_utf8(header).unwrap().to_ascii_lowercase();
-            if let Some(length) = request
-                .lines()
-                .find_map(|line| line.strip_prefix("content-length: "))
-            {
-                let mut body = vec![0; length.trim().parse().unwrap()];
-                stream.read_exact(&mut body).unwrap();
-                request.push_str(&String::from_utf8(body).unwrap().to_ascii_lowercase());
-            }
+            };
             requests.push(request);
             hook(at);
             let body = body.to_string();
@@ -162,6 +159,91 @@ fn serve_with_hook(
         }
         requests
     })
+}
+
+/// Accept the next request and read it, lowercased.
+fn next_request(listener: &UnixListener) -> (std::os::unix::net::UnixStream, String) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut stream = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(5))
+            }
+            Err(error) => panic!("fixture accept: {error}"),
+        }
+    };
+    stream.set_nonblocking(false).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut header = Vec::new();
+    while !header.ends_with(b"\r\n\r\n") {
+        let mut byte = [0];
+        stream.read_exact(&mut byte).unwrap();
+        header.push(byte[0]);
+        assert!(header.len() < 8192);
+    }
+    let mut request = String::from_utf8(header).unwrap().to_ascii_lowercase();
+    if let Some(length) = request
+        .lines()
+        .find_map(|line| line.strip_prefix("content-length: "))
+    {
+        let mut body = vec![0; length.trim().parse().unwrap()];
+        stream.read_exact(&mut body).unwrap();
+        request.push_str(&String::from_utf8(body).unwrap().to_ascii_lowercase());
+    }
+    (stream, request)
+}
+
+#[test]
+fn connect_goes_on_for_the_minimum_or_a_newer_backbone() {
+    for version in ["0.1.0", "0.2.0", "1.0.0"] {
+        let (directory, listener, socket) = crate::transport::tests::local_listener();
+        let (profile, identity) = profile_at(directory.path(), &socket);
+        let server = serve_replies(
+            listener,
+            vec![(200, health(version)), (200, identity)],
+            false,
+            |_| {},
+        );
+        profile.connect().unwrap();
+        let requests = server.join().unwrap();
+        // `/health` names no profile; the handshake follows it.
+        assert!(requests[0].starts_with("get /health "));
+        assert!(!requests[0].contains("x-backbone-profile-id"));
+        assert!(requests[1].starts_with("get /api/profile "));
+    }
+}
+
+#[test]
+fn connect_refuses_an_older_or_unreadable_backbone_before_its_handshake() {
+    let long = format!("0.0.9-{}", "a".repeat(60));
+    let cases = [
+        (200, health("0.0.9"), Some("0.0.9")),
+        // A pre-release of the minimum is older than it.
+        (200, health("0.1.0-rc.1"), Some("0.1.0-rc.1")),
+        (200, json!({"status": "ok"}), None),
+        (200, json!({"version": 1}), None),
+        (200, health("latest"), None),
+        (200, health(&long), None),
+        (404, json!({}), None),
+    ];
+    for (status, reply, outdated) in cases {
+        let (directory, listener, socket) = crate::transport::tests::local_listener();
+        let (profile, _) = profile_at(directory.path(), &socket);
+        let server = serve_replies(listener, vec![(status, reply)], false, |_| {});
+        match (profile.connect().err(), outdated) {
+            (Some(Error::Outdated(running)), Some(version)) => {
+                assert_eq!(running.as_str(), version)
+            }
+            (Some(Error::VersionUnknown), None) => {}
+            (error, _) => panic!("{status} {outdated:?}: {error:?}"),
+        }
+        assert_eq!(server.join().unwrap().len(), 1);
+    }
 }
 
 #[test]

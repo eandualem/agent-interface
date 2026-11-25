@@ -8,6 +8,12 @@ use std::{
     time::Instant,
 };
 
+/// The version check each connection makes first.
+fn health() -> String {
+    let version = agent_interface_roster::profiles::MINIMUM_BACKBONE.to_string();
+    json!({ "version": version }).to_string()
+}
+
 // Two requests after the handshake: a sentinel roster, then either another
 // observation or a refusal from a replacement bound at the same socket path.
 fn provider(
@@ -69,6 +75,16 @@ fn provider(
                 write!(
                     stream,
                     "HTTP/1.1 404 Fixture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
+                continue;
+            }
+            if request.starts_with("get /health ") {
+                let body = health();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
                 )
                 .unwrap();
                 continue;
@@ -320,7 +336,9 @@ fn pushed_state_and_run_changes_read_the_roster_and_runs_at_once() {
                 stream = Some(socket);
                 continue;
             }
-            let body = if request.starts_with("GET /api/profile ") {
+            let body = if request.starts_with("GET /health ") {
+                health()
+            } else if request.starts_with("GET /api/profile ") {
                 identity.to_string()
             } else if request.starts_with("GET /api/runs ") {
                 runs_before_their_push |= pushed.len() < 2;
@@ -465,7 +483,9 @@ fn a_pushed_state_shows_before_a_read_and_outlives_a_read_it_overlaps() {
                 stream = Some(socket);
                 continue;
             }
-            let body = if request.starts_with("GET /api/profile ") {
+            let body = if request.starts_with("GET /health ") {
+                health()
+            } else if request.starts_with("GET /api/profile ") {
                 identity.to_string()
             } else if request.starts_with("GET /api/agents ") {
                 let read = counted.fetch_add(1, Ordering::SeqCst);
@@ -836,7 +856,9 @@ fn an_open_stream_slows_the_poll_and_its_end_reads_at_once() {
                 continue;
             }
             let mut status = 200;
-            let body = if request.starts_with("GET /api/profile ") {
+            let body = if request.starts_with("GET /health ") {
+                health()
+            } else if request.starts_with("GET /api/profile ") {
                 identity.to_string()
             } else if request.starts_with("GET /api/swarms ") {
                 json!({"items": []}).to_string()
