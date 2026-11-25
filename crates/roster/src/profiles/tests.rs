@@ -227,6 +227,7 @@ fn connect_refuses_an_older_or_unreadable_backbone_before_its_handshake() {
         (200, health("0.1.0-rc.1"), Some("0.1.0-rc.1")),
         (200, json!({"status": "ok"}), None),
         (200, json!({"version": 1}), None),
+        (200, json!(["0.1.0"]), None),
         (200, health("latest"), None),
         (200, health(&long), None),
         (404, json!({}), None),

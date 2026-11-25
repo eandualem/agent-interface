@@ -737,13 +737,13 @@ fn supported(socket: &Path) -> Result<(), Error> {
         return Err(Error::Invalid);
     }
     successful(&response)?;
-    #[derive(Deserialize)]
-    struct Health {
-        version: String,
-    }
-    let version = serde_json::from_slice::<Health>(&response.body)
-        .ok()
-        .and_then(|health| semver::Version::parse(&health.version).ok())
+    let health: serde_json::Value =
+        serde_json::from_slice(&response.body).map_err(|_| Error::VersionUnknown)?;
+    // Only an object's string `version` counts.
+    let version = health
+        .as_object()
+        .and_then(|health| health.get("version")?.as_str())
+        .and_then(|version| semver::Version::parse(version).ok())
         .ok_or(Error::VersionUnknown)?;
     // Full semantic precedence: a pre-release of the minimum is older than it.
     if version < MINIMUM_BACKBONE {

@@ -55,7 +55,7 @@ enum State {
     Shared,
     /// The shell's settings couldn't be read.
     Unchecked,
-    Failed(&'static str),
+    Failed(SharedString),
 }
 
 /// Whether a shell keeps the profile's logins apart from this computer's.
@@ -120,10 +120,14 @@ impl Pane {
 
 /// Start a new shell in the profile and check where it keeps its logins.
 /// Runs on an I/O worker.
-fn open_shell(profile: &Profile) -> Result<(String, Check), &'static str> {
-    let connection = profile
-        .connect()
-        .map_err(|_| "The profile could not be reached. Try again.")?;
+fn open_shell(profile: &Profile) -> Result<(String, Check), SharedString> {
+    use agent_interface_roster::profiles::Error;
+    let connection = profile.connect().map_err(|error| match error {
+        Error::Outdated(_) | Error::VersionUnknown => {
+            crate::desktop::profile_picker::message(&crate::profiles::Error::Profile(error))
+        }
+        _ => "The profile could not be reached. Try again.".into(),
+    })?;
     let session = connection
         .ensure_shell(&shell_id(), None)
         .map_err(|_| "The profile's shell could not be started. Try again.")?;
@@ -371,7 +375,7 @@ impl Render for Pane {
                      Git's name and email from its shell isn't suggested.",
                 ))
             }
-            State::Failed(error) => body = body.child(ui::group_note(*error)),
+            State::Failed(error) => body = body.child(ui::group_note(error.clone())),
         }
         body
     }

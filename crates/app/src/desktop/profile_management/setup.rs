@@ -305,6 +305,14 @@ fn attempt(request: &Request, unresolved: bool) -> Answer {
         .map_or_else(|| request.profile.connect(), Ok)
     {
         Ok(connection) => connection,
+        Err(
+            error @ (agent_interface_roster::profiles::Error::Outdated(_)
+            | agent_interface_roster::profiles::Error::VersionUnknown),
+        ) => {
+            let error = crate::profiles::Error::Profile(error);
+            let text = crate::desktop::profile_picker::message(&error);
+            return unsent(&text, &text);
+        }
         Err(_) => {
             return unsent(
                 "The profile could not be reached. Try again.",
