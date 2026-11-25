@@ -1252,7 +1252,7 @@ writes inside a placed bundle and never signs it. In order, `install`:
    interrupted run left; links and files with that name are not its own and
    stay;
 2. unpacks the bundle into a new such folder, so a refused archive changes
-   nothing else;
+   nothing more;
 3. writes the marker;
 4. renames a bundle already in place into that folder, and the new bundle to
    `~/Applications/Agent Backbone.app`;

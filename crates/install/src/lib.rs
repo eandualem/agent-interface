@@ -702,7 +702,10 @@ fn unpack_bundle(archive: &[u8], directory: &Path) -> Result<(), Failure> {
         // A path already there differs from an earlier entry only by case,
         // or is a file where a folder is needed.
         let conflict = |error: io::Error| {
-            if error.kind() == io::ErrorKind::AlreadyExists {
+            if matches!(
+                error.kind(),
+                io::ErrorKind::AlreadyExists | io::ErrorKind::NotADirectory
+            ) {
                 refused(format!("{name:?} conflicts with another of its entries"))
             } else {
                 Failure::failed(error)
@@ -1420,6 +1423,12 @@ mod tests {
             with((
                 Regular,
                 "Agent Backbone.app/Contents/Info.plist/extra",
+                0o644,
+                b"",
+            )),
+            with((
+                Regular,
+                "Agent Backbone.app/Contents/Info.plist/a/extra",
                 0o644,
                 b"",
             )),
