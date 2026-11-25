@@ -49,6 +49,7 @@ class InstallTests(unittest.TestCase):
         self.command("getconf", "echo glibc 2.39")
         self.env = dict(os.environ, HOME=str(self.home), PATH=str(self.tools) + os.pathsep + os.environ["PATH"])
         self.env.pop("XDG_DATA_HOME", None)
+        self.env.pop("XDG_CONFIG_HOME", None)
         self.env.pop("WSL_DISTRO_NAME", None)
         # Ordinary fixtures must never inspect or configure the host's sandbox
         # policy. Sandbox cases opt into their own redirected paths below.
