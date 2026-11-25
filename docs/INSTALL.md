@@ -211,11 +211,15 @@ and the app's [diagnostic logging](GUIDE.md#find-work-and-change-appearance).
 ## Connect Agent Backbone
 
 Once the app is installed, the installer also installs Agent Backbone, the
-service that runs your agents, as `~/.local/bin/backbone`. It downloads the
-latest Backbone release's manifest and its signature, and the newly installed
-app checks that signature against the release key built into the app. The
-installer then downloads that version's archive, and the app checks its
-SHA-256 against the signed manifest before it puts `backbone` in place. Agent
+service that runs your agents. On Linux it installs the `backbone` program as
+`~/.local/bin/backbone`. On macOS it installs the app bundle
+`~/Applications/Agent Backbone.app`, and makes `~/.local/bin/backbone` a
+symbolic link to the program inside, so the `backbone` command and the service
+are one program. The installer downloads the latest Backbone release's
+manifest and its signature, and the newly installed app checks that signature
+against the release key built into the app. The installer then downloads that
+version's archive, and the app checks its SHA-256 against the signed manifest
+before it puts Backbone in place. Agent
 Backbone is not published yet: until it is, the installer says so and
 installs only the app.
 
@@ -226,9 +230,10 @@ the app stays installed and the installer says what happened; run the
 installer again to retry. `--archive` installs only the app archive you give
 it; run the installer without `--archive` to install Backbone.
 
-If `~/.local/bin/backbone` exists and this installer didn't put it there, or
-the earlier Agent Backbone's login service is defined, the installer changes
-neither and doesn't install Backbone. It says an earlier Backbone was found and
+If `~/.local/bin/backbone` or, on macOS, `~/Applications/Agent Backbone.app`
+exists and this installer didn't put it there, or the earlier Agent Backbone's
+login service is defined, the installer changes none of them and doesn't
+install Backbone. It says an earlier Backbone was found and
 left in place, and finishes installing the app.
 
 With the service installed, open Agent Interface to continue onboarding. Onboarding
@@ -284,8 +289,9 @@ sandbox configuration.
 
 These commands leave your data and terminal sessions intact, and leave Agent
 Backbone installed. If you remove Backbone's `~/.local/bin/backbone` yourself,
-also remove the installer's marker beside it,
-`~/.local/bin/.agent-interface-backbone`. See the
+and on macOS its bundle `~/Applications/Agent Backbone.app`, also remove the
+installer's marker beside the program, `~/.local/bin/.agent-interface-backbone`.
+See the
 [user guide](GUIDE.md) for library and settings locations.
 
 On WSL, also remove the Windows Start registration only if its installer marker
