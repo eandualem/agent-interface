@@ -42,7 +42,8 @@ run_step() {
 }
 usage() {
     printf '%s\n' 'Usage: sh install.sh [--archive PATH]' \
-        'Installs the latest published build, or a local archive with its .sha256 file.' \
+        'Installs the latest published build and Agent Backbone, or only the app from' \
+        'a local archive with its .sha256 file.' \
         'Quit the app before updating. Layouts and settings in the agent-interface folders are preserved.'
 }
 archive=
@@ -127,13 +128,15 @@ launcher_backup=
 installed=false
 new_link=false
 new_launcher=false
+# Set once the app is in place: an interrupt after that keeps it.
+app_kept=false
 cleanup() {
     status=$?
     trap - EXIT HUP INT TERM
     set +e
     stop_progress
     rollback_ok=true
-    if [ "$status" -ne 0 ]; then
+    if [ "$status" -ne 0 ] && [ "$app_kept" = false ]; then
         if [ "$new_wsl_launcher" = true ]; then
             if [ -n "$wsl_launcher_backup" ]; then
                 if ! sudo install -m 644 -- "$wsl_launcher_backup" "$wsl_launcher"; then
@@ -425,6 +428,72 @@ fi
 if ! command -v tmux >/dev/null 2>&1 && [ ! -x /opt/homebrew/bin/tmux ] && [ ! -x /usr/local/bin/tmux ]; then
     printf '%s\n' 'Install tmux 3.4 or newer before opening terminal panes (see the installation guide).'
 fi
+
+# Agent Backbone, from its signed release. The app is installed whatever
+# happens here: the new app binary makes every check, and a refusal or
+# failure is reported, never returned.
+install_backbone() {
+    app=$destination/$executable
+    outcome='was not installed'
+    if [ -e "$HOME/.local/bin/backbone" ] || [ -L "$HOME/.local/bin/backbone" ]; then outcome='was not updated'; fi
+    retry="Agent Interface is installed; Agent Backbone $outcome. Rerun the installer to try again."
+    printf '\n%s\n' 'Installing Agent Backbone...'
+    if [ -n "$archive" ]; then
+        printf '%s\n' 'Agent Backbone is installed only from its published release: run the installer without --archive.'
+        return 0
+    fi
+    # Exit statuses of the app's backbone-install commands: 3, not published
+    # (no release key in this build); 4, an earlier Backbone left in place;
+    # 5, a manifest or signature missing or not holding.
+    if "$app" backbone-install check; then :; else
+        backbone_status=$?
+        [ "$backbone_status" -eq 3 ] || [ "$backbone_status" -eq 4 ] || printf '%s\n' "$retry" >&2
+        return 0
+    fi
+    downloads=https://github.com/eandualem/agent-interface/releases/download
+    backbone=$staging/backbone
+    mkdir "$backbone" || { printf '%s\n' "$retry" >&2; return 0; }
+    manifest=$backbone/backbone-release-manifest
+    # The latest release's two files are replaced one after the other, so a
+    # signature that does not hold, or a file missing, gets one more try.
+    attempt=1
+    while :; do
+        rm -f "$manifest" "$manifest.minisig"
+        for file in "$manifest" "$manifest.minisig"; do
+            curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
+                --connect-timeout 15 --max-time 60 --retry 4 --retry-delay 2 --retry-connrefused \
+                "$downloads/backbone-latest/${file##*/}" -o "$file" || :
+        done
+        if offer=$("$app" backbone-install verify-manifest --target "$target" "$manifest" "$manifest.minisig"); then
+            break
+        else
+            backbone_status=$?
+        fi
+        if [ "$backbone_status" -ne 5 ] || [ "$attempt" -eq 2 ]; then
+            printf '%s\n' "$retry" >&2
+            return 0
+        fi
+        printf '%s\n' 'Downloading the release manifest again in 5 seconds...' >&2
+        sleep 5
+        attempt=2
+    done
+    version=$(printf '%s\n' "$offer" | sed -n 1p)
+    name=$(printf '%s\n' "$offer" | sed -n 2p)
+    printf 'Downloading Agent Backbone %s...\n' "$version"
+    if ! curl --fail --location --progress-bar --show-error --proto '=https' --tlsv1.2 \
+        --connect-timeout 15 --speed-limit 1 --speed-time 60 --retry 4 --retry-delay 2 --retry-connrefused \
+        "$downloads/backbone-v$version/$name" -o "$backbone/$name"; then
+        printf 'Agent Backbone %s could not be downloaded.\n%s\n' "$version" "$retry" >&2
+        return 0
+    fi
+    if version=$("$app" backbone-install install --target "$target" "$manifest" "$manifest.minisig" "$backbone/$name"); then
+        printf 'Installed Agent Backbone %s in %s\n' "$version" "$HOME/.local/bin/backbone"
+    else
+        printf '%s\n' "$retry" >&2
+    fi
+}
+app_kept=true
+install_backbone || :
 
 }
 main "$@"
