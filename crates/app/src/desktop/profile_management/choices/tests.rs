@@ -312,6 +312,95 @@ fn a_guide_is_the_services_first_agent_request_run_by_backbone_setup() {
 }
 
 #[test]
+fn an_older_backbone_refuses_the_orchestrator_and_the_new_request_unticked_leaves_it_out() {
+    use std::{fs, os::unix::fs::PermissionsExt};
+    let orchestrator: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../roster/src/profiles/setup/fixtures/setup-first-agent-orchestrator.json"
+    )))
+    .unwrap();
+    let plain: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../roster/src/profiles/setup/fixtures/setup-first-agent.json"
+    )))
+    .unwrap();
+    let ready: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../roster/src/profiles/setup/fixtures/first-agent-result.json"
+    )))
+    .unwrap();
+    // The fixtures' guide, made the orchestrator or not.
+    let guide = |orchestrator| Selection {
+        name: "guide",
+        project: Path::new("/home/user/projects/site"),
+        create: true,
+        brief: None,
+        greeting: true,
+        orchestrator,
+        ..choice()
+    };
+    let ticked_id = orchestrator["request_id"].as_str().unwrap();
+    // A fake backbone from before the choice: it refuses the field it
+    // doesn't know, as its own check does, and runs a request without it.
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let refused = json!({"schema_version": 3, "request_id": ticked_id, "seq": 1,
+        "type": "result", "action": "first_agent", "status": "failed",
+        "code": "invalid_request", "message": "the request is not one this version takes: \
+        unknown field `orchestrator`, expected one of `name`, `directory`, \
+        `create_directory`, `runtime`, `model`, `brief`",
+        "data": {}, "completed_steps": [], "retry": "new_request"});
+    fs::write(root.join("refused"), format!("{refused}\n")).unwrap();
+    let mut events = String::new();
+    for (seq, step) in (1..).zip(["preflight", "agent", "launch", "ready", "greeting"]) {
+        let event = json!({"schema_version": 3, "request_id": REQUEST, "seq": seq,
+            "type": "step", "step": step, "status": "completed"});
+        events += &format!("{event}\n");
+    }
+    events += &format!("{ready}\n");
+    fs::write(root.join("events"), events).unwrap();
+    let executable = root.join("backbone");
+    fs::write(
+        &executable,
+        format!(
+            "#!/bin/sh\n[ \"$1 $2 $4\" = 'setup --file --jsonl' ] || exit 9\n\
+             if /usr/bin/grep -q '\"orchestrator\":' \"$3\"; then /bin/cat \"$3\" > '{root}/ticked'; /bin/cat '{root}/refused'; exit 2; fi\n\
+             /bin/cat \"$3\" > '{root}/sent'\n/bin/cat '{root}/events'\n",
+            root = root.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+    let client = Client::new(executable, "/usr/bin:/bin".into()).unwrap();
+    let controller = Controller::new(
+        journal::Journal::open(&root.join("profile-setup")).unwrap(),
+        &client,
+    );
+    // Ticked: the older Backbone refuses it and nothing is left open.
+    let ticked = freeze(ticked_id, &profile(), &catalog(&runtimes()), guide(true)).unwrap();
+    let key = controller.enqueue(ticked).unwrap().key;
+    let answer = controller.submit(&key, &|| true, |_| {}).unwrap();
+    assert_eq!(answer.code.as_deref(), Some("invalid_request"));
+    let sent: Value = serde_json::from_slice(&fs::read(root.join("ticked")).unwrap()).unwrap();
+    assert_eq!(sent, orchestrator);
+    assert!(controller.read(&key).unwrap().closed());
+    assert!(
+        controller
+            .pending("0a1b2c3d4e5f", &|| true)
+            .unwrap()
+            .is_empty()
+    );
+    // Unticked, Start a new request draws a fresh ID and leaves the field out.
+    let fresh = freeze(REQUEST, &profile(), &catalog(&runtimes()), guide(false)).unwrap();
+    let key = controller.enqueue(fresh).unwrap().key;
+    let started = controller.submit(&key, &|| true, |_| {}).unwrap();
+    assert_eq!(started.ready_agent.as_deref(), Some("guide"));
+    let sent: Value = serde_json::from_slice(&fs::read(root.join("sent")).unwrap()).unwrap();
+    assert_eq!(sent, plain);
+    assert!(sent["agent"].get("orchestrator").is_none());
+}
+
+#[test]
 fn a_served_profile_lists_the_rust_services_runtimes() {
     use std::{fs, os::unix::fs::PermissionsExt};
     let temp = tempfile::tempdir().unwrap();
