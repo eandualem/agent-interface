@@ -770,7 +770,7 @@ if '--write-out' in args:
         self.assert_app_installed(result)
         self.assertFalse(self.backbone.exists())
         self.assertIn("signature does not hold", result.stderr)
-        self.assertIn("Agent Backbone is not. Rerun the installer to try again.", result.stderr)
+        self.assertIn("Agent Backbone was not installed. Rerun the installer to try again.", result.stderr)
         self.assertEqual(self.backbone_downloads(), self.LATEST * 2)
 
     def test_backbone_older_release_is_refused(self):
@@ -780,7 +780,7 @@ if '--write-out' in args:
         self.publish_backbone("0.2.0")
         result = self.install(None)
         self.assertIn("older than 0.3.0", result.stderr)
-        self.assertIn("Rerun the installer", result.stderr)
+        self.assertIn("Agent Backbone was not updated. Rerun the installer to try again.", result.stderr)
         self.assertEqual(self.backbone_version(), "backbone 0.3.0")
 
     def test_backbone_missing_target_and_wrong_digest_are_refused(self):

@@ -434,7 +434,9 @@ fi
 # failure is reported, never returned.
 install_backbone() {
     app=$destination/$executable
-    retry='Agent Interface is installed; Agent Backbone is not. Rerun the installer to try again.'
+    outcome='was not installed'
+    if [ -e "$HOME/.local/bin/backbone" ] || [ -L "$HOME/.local/bin/backbone" ]; then outcome='was not updated'; fi
+    retry="Agent Interface is installed; Agent Backbone $outcome. Rerun the installer to try again."
     printf '\n%s\n' 'Installing Agent Backbone...'
     if [ -n "$archive" ]; then
         printf '%s\n' 'Agent Backbone is installed only from its published release: run the installer without --archive.'
