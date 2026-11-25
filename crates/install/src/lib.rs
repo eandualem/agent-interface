@@ -364,17 +364,17 @@ fn installed(places: &Places, layout: Layout) -> Result<Option<Version>, Failure
     }
     let program = places.program();
     let found = exists(&program)?;
-    let owned = marker_names(places, layout)?;
     match layout {
         Layout::Program => {
             let Some(metadata) = found else {
                 return Ok(None);
             };
-            if !metadata.is_file() || owned != Some(true) {
+            if !metadata.is_file() || marker_names(places, layout)? != Some(true) {
                 return Err(Failure::Earlier);
             }
         }
         Layout::Bundle => {
+            let owned = marker_names(places, layout)?;
             let bundle = exists(&places.bundle())?;
             if bundle.as_ref().is_some_and(|bundle| !bundle.is_dir()) {
                 return Err(Failure::Earlier);
@@ -1296,6 +1296,15 @@ mod tests {
             assert_eq!(fixture.run(&check(TARGET)), Err(Failure::Earlier));
             fs::remove_file(service).unwrap();
         }
+        assert_eq!(fixture.run(&check(TARGET)), Ok(String::new()));
+    }
+
+    #[test]
+    fn a_marker_is_not_read_without_a_program() {
+        let fixture = Fixture::new();
+        fs::create_dir_all(&fixture.places.bin).unwrap();
+        fs::write(fixture.places.marker(), MARKER_HEADER).unwrap();
+        fs::set_permissions(fixture.places.marker(), fs::Permissions::from_mode(0o000)).unwrap();
         assert_eq!(fixture.run(&check(TARGET)), Ok(String::new()));
     }
 
