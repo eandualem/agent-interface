@@ -4,7 +4,7 @@
 use std::{
     collections::{BTreeMap, HashSet},
     ffi::{OsStr, OsString},
-    fs::{OpenOptions, TryLockError},
+    fs::{File, OpenOptions, TryLockError},
     io,
     os::unix::{
         ffi::{OsStrExt, OsStringExt},
@@ -291,6 +291,7 @@ pub fn ensure(socket: &Path, requests: &[Request], environment: &Environment) ->
             Err(TryLockError::Error(error)) => return Err(error),
         }
     }
+    let _held = Held(lock);
     let current = Path::new(&lock_path).symlink_metadata()?;
     if !current.is_file() || current.dev() != opened.dev() || current.ino() != opened.ino() {
         return Err(io::Error::other(
@@ -376,8 +377,19 @@ pub fn ensure(socket: &Path, requests: &[Request], environment: &Environment) ->
         }
         existing.insert(name);
     }
-    // File drop releases flock; the append-open lock file remains for other windows.
+    // Dropping `_held` releases the flock; the append-open lock file remains for other windows.
     Ok(())
+}
+
+/// The shell lock, released when this is dropped on every return. Closing
+/// the file alone leaves the lock held while a process another thread is
+/// starting still has a copy of it.
+struct Held(File);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
 }
 
 /// A shell that defines the Backbone guard for `claude`, `codex` and `agy`.
