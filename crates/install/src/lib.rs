@@ -1543,7 +1543,8 @@ mod tests {
         }
         let cases: [(&str, Setup); 11] = [
             ("a program, no marker", |fixture| {
-                link(fixture, Path::new("/bin/sh"));
+                fs::create_dir_all(&fixture.places.bin).unwrap();
+                fs::write(fixture.places.program(), program("0.2.0")).unwrap();
             }),
             ("a bundle, no marker", bundle),
             ("a link to the bundle, no marker", |fixture| {
