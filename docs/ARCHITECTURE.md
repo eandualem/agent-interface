@@ -82,9 +82,12 @@ refusal or ended stream leaves the reason and an explicit reopen action in the p
 | `native-fs` | Safe descriptor-based native filesystem checks; narrowly scoped Darwin ACL FFI, no paths or application state |
 | `webview-host` | Borrowed XCB-to-Xlib window-handle adaptation for Linux document embedding; no application state or process ownership |
 | `app` | Native windows, input routing, storage and terminal workers, and integration between the other crates |
+| `install` | The installer's `backbone-install` commands: verify an Agent Backbone release and put `backbone` in place; no app state |
+| `release` | Vendored from Agent Backbone: verifies a Backbone release's signed manifest, version and archive digest |
 
-`app` connects the product crates. `store` also depends on `core`; the other
-product libraries do not depend on one another. GPUI stays inside `app` and
+`app` connects the product crates. `store` also depends on `core`, and
+`install` on `release`; the other product libraries do not depend on one
+another. `install` has no GPUI, so the installer tests build it alone. GPUI stays inside `app` and
 terminal-engine types stay inside `term`. The dependency constraints are encoded
 in [`deny.toml`](../deny.toml).
 
@@ -1059,6 +1062,25 @@ build-time advisory exception are described below.
   and `phf_codegen` 0.13.1, `precomputed-hash` 0.1.1 and
   `new_debug_unreachable` 1.0.6 (MIT). On macOS `phf`, `phf_shared` and
   `phf_generator` 0.13.1 (MIT) are new to the build as well.
+- **`backbone-release` 0.1.0 (vendored):** Agent Backbone's release
+  verifier, from agent-backbone-rs `crates/release` at commit `0294cd55`,
+  MIT. Its sources are unchanged; its manifest writes out the workspace
+  fields. It uses `minisign-verify` 0.3.0 (MIT, no dependencies of its own),
+  `semver` 1.0.28 and `sha2` 0.11.1 (MIT OR Apache-2.0), pinned exactly to
+  the versions Agent Backbone builds it with. `sha2` 0.11.1 brings its own
+  `digest` 0.11.3, `block-buffer` 0.12.1, `crypto-common` 0.2.2,
+  `hybrid-array` 0.4.15, `const-oid` 0.10.3 and `cpufeatures` 0.3.1 (MIT OR
+  Apache-2.0), beside the workspace's `sha2` 0.10.9.
+- **`tar` 0.4.46:** MIT OR Apache-2.0, pinned exactly with default features
+  off, as Agent Backbone pins it; reads Backbone's release archive in the
+  `install` crate. It adds `filetime` 0.2.30 (MIT OR Apache-2.0). The existing
+  **`flate2` 1.1.10** (MIT OR Apache-2.0), now pinned exactly there,
+  decompresses the archive.
+- **`minisign` 0.10.0:** MIT, development only. It signs fixture releases in
+  the `install` crate's tests and the installer tests' example program. Its
+  `scrypt` 0.11.0, `salsa20` 0.10.2 (MIT OR Apache-2.0), `ct-codecs` 1.1.8
+  (MIT), `rpassword` 7.5.5 and `rtoolbox` 0.0.6 (Apache-2.0) are in test
+  builds only.
 - **`base64` 0.23.1:** MIT OR Apache-2.0, pinned exactly. The roster sends a
   skill folder's files to the Rust Backbone service in Base64.
 - **`serde`, `serde_json`, `uuid` and `tempfile`:** existing workspace
@@ -1111,8 +1133,8 @@ notices and source/build metadata.
 macOS receives an ad-hoc-signed `Agent Interface.app` bundle; Linux receives a glibc
 binary linked to the system desktop libraries. Neither package includes a
 language runtime, build toolchain, tmux server or application daemon. The
-installer does not install Agent Backbone: first run looks for the `backbone`
-command on the login shell's PATH and runs its own setup.
+installer then installs Agent Backbone from its signed release, as described
+below; first run finds the `backbone` command and runs its own setup.
 
 Archive transfers use curl's progress bar; quiet commands emit elapsed-time
 updates from a shell helper that is stopped and reaped when the command
@@ -1173,6 +1195,55 @@ uucode/Unicode, simdutf, Highway, X11 color data and compiler runtimes. The
 package retains Lucide's ISC notice and SQLite's public-domain dedication.
 The manual package workflow uses `actions/upload-artifact` v7.0.0 (MIT), pinned
 to a full commit, to retain build artifacts; it does not publish releases.
+
+### Agent Backbone from its signed release
+
+Once the app is in place, the installer installs Agent Backbone from its own
+releases in this repository: `backbone-latest` holds only the current
+version's `backbone-release-manifest` and its minisign signature, and
+`backbone-vX.Y.Z` holds that version's archives. The shell downloads only
+these fixed `releases/download/...` URLs, with curl, and makes no API calls.
+Every check is made by the new app binary's `backbone-install` commands, in
+the `install` crate, through `release`: Agent Backbone's `backbone-release`
+crate, vendored from `crates/release` at commit `0294cd55` (MIT) with only
+its manifest changed.
+
+1. `check` refuses when the build has no release key or an earlier Backbone
+   is in the way, before anything is downloaded.
+2. `verify-manifest` verifies the manifest's signature against the release key
+   built into the app, refuses a version older than the installed one, and
+   prints the version and this target's archive name. The two files of
+   `backbone-latest` are replaced one after the other, so a signature that does
+   not hold, or a missing file, gets one more download five seconds later.
+3. `install` verifies the manifest again, checks the archive's SHA-256 against
+   it, unpacks `backbone` from an archive that holds exactly `backbone` and
+   `LICENSE` as regular files, and renames it over `~/.local/bin/backbone` from
+   a temporary file in that directory, so nothing partial is ever in place.
+
+The release key's signature of the manifest is the root of trust. The archive
+is trusted only through the digest the signed manifest names, and nothing in
+the manifest is read before its signature holds, so neither GitHub nor the
+connection needs to be trusted. The key's public half is the constant
+`RELEASE_KEY` in the `install` crate. While it is unset, a build trusts no
+release, and the installer says Backbone is not published yet. The installer
+tests sign their fixture releases with a key they make, through an example
+program of the `install` crate that packaging never builds.
+
+The installer replaces `~/.local/bin/backbone` only while its marker
+`~/.local/bin/.agent-interface-backbone` exists. The marker lies outside the
+app's installation, so app updates and rollbacks keep it, and `backbone
+upgrade` replacing the program in place keeps it the installer's. The
+installed version, against which an older release is refused, is the one
+the owned program reports for `--version`; a program the installer does not
+own is never run. The marker is written before the rename, so an interruption
+leaves either no program or an owned one. A program the installer does not
+own, or a defined login service of the earlier Backbone
+(`~/Library/LaunchAgents/dev.agent-backbone.plist`, or the systemd user unit
+`agent-backbone.service`), is left in place and Backbone is not installed.
+Each outcome has its own exit status for the installer to report. A refusal
+or failure leaves the app installed, and the installer still exits 0, since
+the app's installation succeeded. `--archive` installs only the given app
+archive, offline, and skips Backbone.
 
 
 ### Retained Sheets
