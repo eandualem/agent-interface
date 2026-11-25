@@ -68,6 +68,8 @@ pub(super) struct Form {
     runtime: Option<String>,
     model: Option<String>,
     greeting: bool,
+    /// Make the guide the profile's orchestrator; off until the person chooses it.
+    orchestrator: bool,
     /// What Submit asks the Rust service to start.
     served: Option<setup::Request>,
     error: Option<&'static str>,
@@ -75,7 +77,7 @@ pub(super) struct Form {
     finished: bool,
     /// The name last filled in from the folder, kept until the person edits it.
     folder_name: Option<String>,
-    /// Model, instructions and greeting are open.
+    /// Model, instructions, greeting and orchestrator are open.
     more: bool,
     /// What leaving the form is called where it is shown.
     skip: &'static str,
@@ -145,6 +147,7 @@ impl Form {
             runtime: None,
             model: None,
             greeting: true,
+            orchestrator: false,
             served: None,
             error: None,
             ticket: Ticket::default(),
@@ -511,6 +514,7 @@ impl Form {
                     .custom_brief
                     .then(|| self.brief.read(cx).value().trim()),
                 greeting: self.greeting,
+                orchestrator: self.orchestrator,
             },
         )
     }
@@ -703,6 +707,7 @@ struct Selection<'a> {
     /// Own instructions; `None` is the coordinating brief a fresh install starts with.
     brief: Option<&'a str>,
     greeting: bool,
+    orchestrator: bool,
 }
 fn freeze(
     request_id: &str,
@@ -738,6 +743,7 @@ fn freeze(
                     template: "orchestrator-v1".into(),
                 },
             },
+            orchestrator: choice.orchestrator,
         },
         // A tool that takes the default brief as its first turn already
         // greets, since that brief asks it to; custom instructions may not.
@@ -1430,7 +1436,7 @@ impl Form {
             .child(tail)
     }
 
-    /// Folder, instructions, model and greeting, in one group: what setup
+    /// Folder, instructions, model, greeting and orchestrator, in one group: what setup
     /// takes for a first agent.
     fn more_options(&self, cx: &mut Context<Self>) -> gpui::Div {
         let (t, c) = (tokens(), colors());
@@ -1596,6 +1602,30 @@ impl Form {
                     },
                 )))
                 .child(quiet("The guide says hello first"))
+                .into_any_element(),
+        ));
+        let expected = ticket.clone();
+        group = group.child(row(
+            "Orchestrator",
+            div()
+                .flex()
+                .items_center()
+                .gap(px(t.space.s8))
+                .child(
+                    ui::switch("Orchestrator", self.orchestrator).on_click(cx.listener(
+                        move |form, _, _, cx| {
+                            if form.finished || !form.ticket.accepts(&expected) {
+                                return;
+                            }
+                            form.orchestrator = !form.orchestrator;
+                            form.changed = true;
+                            cx.notify();
+                        },
+                    )),
+                )
+                .child(quiet(
+                    "It speaks for the profile and may reach beyond its own repository",
+                ))
                 .into_any_element(),
         ));
         group

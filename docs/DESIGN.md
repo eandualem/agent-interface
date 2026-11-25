@@ -383,7 +383,7 @@ Name shows "Git commits as" the name and email on one `meta` line, the name in
 two fields. The guide shows its Name, "Runs in" with `tool_card`s two to a row
 (`s8` apart; selected takes `accent_soft` and the `focus` ring; the state line
 is `meta`, with a trailing Install or Update), then Start, and More options
-opens one `panel` group with folder, instructions, model, hooks and greeting.
+opens one `panel` group with folder, instructions, model, hooks, greeting and orchestrator.
 Errors are `meta` in `attention_text` under the button. When something needs
 the person, the same shape holds one button: "Install tmux to continue", or
 "Agents can't start yet" with Try again, Continue with terminals and Details,

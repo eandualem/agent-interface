@@ -144,6 +144,7 @@ fn first_agent_on_the_default_profile() {
         brief: Brief::Template {
             template: "orchestrator-v1".into(),
         },
+        orchestrator: false,
     };
     let request_id = uuid::Uuid::now_v7().simple().to_string();
     let prepared = Prepared::first_agent(&request_id, &profile, agent, true).expect("a request");

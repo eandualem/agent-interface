@@ -67,6 +67,10 @@ pub struct Agent {
     pub model: Option<String>,
     /// Explicit brief input.
     pub brief: Brief,
+    /// Make this agent the profile's orchestrator. Sent only when chosen,
+    /// so a request without it is the one every Backbone takes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub orchestrator: bool,
 }
 
 /// The two actions share the original request ID and all original choices.

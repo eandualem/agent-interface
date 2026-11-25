@@ -258,6 +258,7 @@ pub(super) fn first_agent(
         brief: Brief::Template {
             template: "orchestrator-v1".into(),
         },
+        orchestrator: false,
     };
     Prepared::first_agent(request_id, &profile, agent, true).unwrap()
 }

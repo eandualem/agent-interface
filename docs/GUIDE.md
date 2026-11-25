@@ -12,6 +12,13 @@ terminal** or pick a tmux session from its list. Opening an empty workspace does
 shell. To open another saved library, open Settings, choose **Open another**,
 and select its folder. The shortcut is Command-O on macOS or Ctrl+Shift+O on Linux.
 
+First run with Agent Backbone creates a profile and then starts its first agent,
+the guide. Under **More options**, **Orchestrator** makes the guide the
+profile's orchestrator: the agent that speaks for the profile and may reach
+beyond its own repository. It stays off unless you turn it on. An Agent
+Backbone too old to take this choice says so; run `backbone upgrade`, or turn
+the choice off and start again.
+
 Ordinary terminals and attached tmux sessions run on the same computer as the
 app. In a workspace with a profile, agents on the profile's other machines open
 in native panes too; see [Agents on other machines](#agents-on-other-machines).
