@@ -507,7 +507,7 @@ impl Flow {
             Err(error) => {
                 self.busy = false;
                 self.stalled = Some(Stalled::NotStarted);
-                self.error = Some(crate::desktop::profile_picker::message(&error).into());
+                self.error = Some(crate::desktop::profile_picker::message(&error));
                 return;
             }
         };
@@ -1260,7 +1260,7 @@ fn forget_unreadable(
 /// Why the new profile could not be reached: the service's own sentence
 /// when it gave one, as given.
 fn failure_line(reason: Option<SharedString>, error: &crate::profiles::Error) -> SharedString {
-    reason.unwrap_or_else(|| crate::desktop::profile_picker::message(error).into())
+    reason.unwrap_or_else(|| crate::desktop::profile_picker::message(error))
 }
 
 fn unconfirmed(key: String) -> Failure {

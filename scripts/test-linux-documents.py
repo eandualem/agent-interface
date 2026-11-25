@@ -134,7 +134,10 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             requests.append(self.path)
             path = self.path.split('?', 1)[0]
             status = 200
-            if path == '/api/profile':
+            if path == '/health':
+                # The version check the app makes before each connection.
+                body = dict(status='ok', version='0.1.0')
+            elif path == '/api/profile':
                 body = served
             elif path == '/api/documents/1':
                 body = dict(metadata, html=html)

@@ -74,9 +74,14 @@ fn provider_with_probe(
     .unwrap();
     let label = label.to_owned();
     let server = thread::spawn(move || {
-        let mut steps = std::iter::once(Step::get("/api/profile", identity))
-            .chain(steps)
-            .peekable();
+        let version = agent_interface_roster::profiles::MINIMUM_BACKBONE.to_string();
+        let mut steps = [
+            Step::get("/health", json!({"version": version})),
+            Step::get("/api/profile", identity),
+        ]
+        .into_iter()
+        .chain(steps)
+        .peekable();
         while let Some(step) = steps.next() {
             listener.set_nonblocking(true).unwrap();
             let deadline = Instant::now() + Duration::from_secs(10);
@@ -122,8 +127,10 @@ fn provider_with_probe(
                     "{headers}"
                 );
             }
-            assert!(
+            // `/health` names no profile.
+            assert_eq!(
                 headers.contains(&format!("x-backbone-profile-id: profile-{label}\r\n")),
+                step.path != "/health",
                 "{headers}"
             );
             if let Some(expected) = step.request {

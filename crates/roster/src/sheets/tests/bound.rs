@@ -25,6 +25,7 @@ pub(super) fn connection(
     .unwrap();
     let label = label.to_owned();
     let worker = thread::spawn(move || {
+        healthy(&listener);
         let (mut stream, body) = next(&listener, &label, "GET /api/profile");
         assert!(body.is_empty());
         reply(&mut stream, 200, identity.clone());
@@ -57,11 +58,20 @@ fn next(listener: &UnixListener, label: &str, path: &str) -> (UnixStream, Vec<u8
         "{headers}"
     );
     let headers = headers.to_ascii_lowercase();
-    assert!(
+    // `/health` names no profile.
+    assert_eq!(
         headers.contains(&format!("x-backbone-profile-id: {label}\r\n")),
+        path != "GET /health",
         "{headers}"
     );
     (stream, body)
+}
+
+/// Answer the version check each connection makes first.
+fn healthy(listener: &UnixListener) {
+    let (mut stream, _) = next(listener, "", "GET /health");
+    let version = crate::profiles::MINIMUM_BACKBONE.to_string();
+    reply(&mut stream, 200, json!({"version": version}));
 }
 
 fn feedback() -> Feedback {
@@ -82,6 +92,7 @@ fn delayed_sheets_and_prepared_retries_keep_original_profile() {
         let path = format!("POST /api/sheets/{}/feedback", id(1));
         let (stream, original) = next(&listener, "a", &path);
         drop(stream);
+        healthy(&listener);
         let (mut stream, _) = next(&listener, "a", "GET /api/profile");
         reply(&mut stream, 200, identity);
         let (mut stream, retried) = next(&listener, "a", &path);

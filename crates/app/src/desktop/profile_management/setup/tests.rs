@@ -445,39 +445,54 @@ pub(in crate::desktop::profile_management) fn served_socket(
     let server = std::thread::spawn(move || {
         let mut requests = Vec::new();
         for (status, body) in replies {
-            // A client that stopped early fails the test instead of hanging it.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            let mut stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error)
-                        if error.kind() == std::io::ErrorKind::WouldBlock
-                            && std::time::Instant::now() < deadline =>
-                    {
-                        std::thread::sleep(std::time::Duration::from_millis(5))
+            // The version check each connection makes first is answered
+            // without taking a reply or being recorded.
+            let (mut stream, request) = loop {
+                // A client that stopped early fails the test instead of hanging it.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error)
+                            if error.kind() == std::io::ErrorKind::WouldBlock
+                                && std::time::Instant::now() < deadline =>
+                        {
+                            std::thread::sleep(std::time::Duration::from_millis(5))
+                        }
+                        Err(error) => panic!("fixture accept: {error}"),
                     }
-                    Err(error) => panic!("fixture accept: {error}"),
+                };
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut header = Vec::new();
+                while !header.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    header.push(byte[0]);
                 }
-            };
-            stream.set_nonblocking(false).unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                let mut request = String::from_utf8(header).unwrap().to_ascii_lowercase();
+                if let Some(length) = request
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length: "))
+                {
+                    let mut body = vec![0; length.trim().parse().unwrap()];
+                    stream.read_exact(&mut body).unwrap();
+                    request.push_str(&String::from_utf8(body).unwrap());
+                }
+                if !request.starts_with("get /health ") {
+                    break (stream, request);
+                }
+                let version = agent_interface_roster::profiles::MINIMUM_BACKBONE.to_string();
+                let body = serde_json::json!({ "version": version }).to_string();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
                 .unwrap();
-            let mut header = Vec::new();
-            while !header.ends_with(b"\r\n\r\n") {
-                let mut byte = [0];
-                stream.read_exact(&mut byte).unwrap();
-                header.push(byte[0]);
-            }
-            let mut request = String::from_utf8(header).unwrap().to_ascii_lowercase();
-            if let Some(length) = request
-                .lines()
-                .find_map(|line| line.strip_prefix("content-length: "))
-            {
-                let mut body = vec![0; length.trim().parse().unwrap()];
-                stream.read_exact(&mut body).unwrap();
-                request.push_str(&String::from_utf8(body).unwrap());
-            }
+            };
             requests.push(request);
             let body = body.to_string();
             write!(

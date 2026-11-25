@@ -63,31 +63,45 @@ fn fixture(
     }
     let label = label.to_owned();
     let server = thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut stream = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error)
-                    if error.kind() == std::io::ErrorKind::WouldBlock
-                        && Instant::now() < deadline =>
-                {
-                    thread::sleep(Duration::from_millis(5))
+        // The version check comes first, then the handshake this holds.
+        let (mut stream, request) = loop {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        thread::sleep(Duration::from_millis(5))
+                    }
+                    Err(error) => panic!("fixture accept: {error}"),
                 }
-                Err(error) => panic!("fixture accept: {error}"),
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            while !bytes.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                bytes.push(byte[0]);
+                assert!(bytes.len() < 8192);
             }
-        };
-        stream.set_nonblocking(false).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            let request = String::from_utf8(bytes).unwrap().to_ascii_lowercase();
+            if !request.starts_with("get /health ") {
+                break (stream, request);
+            }
+            let version = agent_interface_roster::profiles::MINIMUM_BACKBONE.to_string();
+            let body = json!({ "version": version }).to_string();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
             .unwrap();
-        let mut bytes = Vec::new();
-        while !bytes.ends_with(b"\r\n\r\n") {
-            let mut byte = [0];
-            stream.read_exact(&mut byte).unwrap();
-            bytes.push(byte[0]);
-            assert!(bytes.len() < 8192);
-        }
-        let request = String::from_utf8(bytes).unwrap().to_ascii_lowercase();
+        };
         assert!(request.starts_with("get /api/profile http/1.1\r\n"));
         let expected = format!("x-backbone-profile-id: profile-{label}");
         assert!(request.contains(&expected), "missing {expected}");
