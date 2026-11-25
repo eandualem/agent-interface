@@ -684,8 +684,11 @@ if '--write-out' in args:
         lines = ["backbone-release-manifest 1", f"version {version}"]
         for target in targets:
             name = f"backbone-{version}-{target}.tar.gz"
+            # On macOS, Backbone is an app bundle.
+            program = ("Agent Backbone.app/Contents/MacOS/backbone" if target.endswith("-apple-darwin")
+                       else "backbone")
             with tarfile.open(release / name, "w:gz") as tar:
-                for member, text, mode in (("backbone", f"#!/bin/sh\necho 'backbone {version}'\n", 0o755),
+                for member, text, mode in ((program, f"#!/bin/sh\necho 'backbone {version}'\n", 0o755),
                                            ("LICENSE", "MIT\n", 0o644)):
                     info = tarfile.TarInfo(member)
                     data = text.encode()
@@ -843,6 +846,26 @@ if '--write-out' in args:
         self.publish_backbone("0.5.0")
         self.install(None)
         self.assertEqual(self.backbone_version(), "backbone 0.5.0")
+
+    def test_backbone_mac_installs_the_bundle(self):
+        self.command("uname", 'case "$1" in -s) echo Darwin;; -m) echo arm64;; esac')
+        self.command("codesign", "exit 0")
+        self.backbone_releases()
+        self.env["TEST_ARCHIVE"] = str(self.package(target="aarch64-apple-darwin"))
+        targets = ("aarch64-apple-darwin",)
+        self.publish_backbone("0.2.0", targets=targets)
+        bundle = self.home / "Applications/Agent Backbone.app"
+        result = self.install(None)
+        self.assertIn(f"Installed Agent Backbone 0.2.0 in {bundle}", result.stdout)
+        self.assertEqual(os.readlink(self.backbone), str(bundle / "Contents/MacOS/backbone"))
+        self.assertEqual(self.backbone_version(), "backbone 0.2.0")
+        # With only the bundle left in place, a refused release leaves
+        # Backbone not updated.
+        self.backbone.unlink()
+        self.publish_backbone("0.3.0", targets=targets, digest="0" * 64)
+        result = self.install(None)
+        self.assertIn("digest differs", result.stderr)
+        self.assertIn("Agent Backbone was not updated. Rerun the installer to try again.", result.stderr)
 
     def test_backbone_shipped_build_without_a_key(self):
         self.backbone_releases()
