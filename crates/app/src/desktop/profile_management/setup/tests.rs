@@ -119,6 +119,36 @@ fn answered(cancel: bool, status: &str, code: &str, retry: &str) -> Snapshot {
 }
 
 #[test]
+fn a_backbone_too_old_for_the_orchestrator_says_so_and_other_refusals_are_unchanged() {
+    // What a Backbone from before the choice says of the field it doesn't know.
+    let too_old = "the request is not one this version takes: unknown field `orchestrator`, \
+                   expected one of `name`, `directory`";
+    for (message, old) in [
+        (too_old, true),
+        (
+            "brief.template `orchestrator-v1` is not one setup has",
+            false,
+        ),
+        ("the agent's name is not one setup takes", false),
+    ] {
+        let mut s = answered(false, "failed", "invalid_request", "new_request");
+        s.first_result.as_mut().unwrap().message = Some(message.into());
+        let (text, _) = outcome(&s).unwrap();
+        assert_eq!(
+            text.starts_with("This Agent Backbone is too old"),
+            old,
+            "{message}"
+        );
+        assert_eq!(
+            text.starts_with("Setup refused the request"),
+            !old,
+            "{message}"
+        );
+        // Nothing was written, so a new request follows with the choices changed.
+        assert!(text.ends_with("change what you need and start again."));
+    }
+}
+#[test]
 fn every_answer_s_words_agree_with_its_status_and_buttons() {
     // Every code setup gives a first agent or its cancellation, and one it
     // doesn't know. Those the app has words of its own for show them;

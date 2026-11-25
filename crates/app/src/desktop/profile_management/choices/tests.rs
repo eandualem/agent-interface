@@ -38,6 +38,7 @@ fn choice() -> Selection<'static> {
         model: None,
         brief: Some("Do the project work"),
         greeting: false,
+        orchestrator: false,
     }
 }
 #[test]
@@ -48,6 +49,7 @@ fn explicit_choices_freeze_the_profile_and_identical_cancel_body() {
     let mut selected = choice();
     selected.model = Some("model-a");
     selected.greeting = true;
+    selected.orchestrator = true;
     let prepared = freeze(REQUEST, &profile(), &catalog, selected).unwrap();
     let first: Value = serde_json::from_slice(prepared.bytes(Action::FirstAgent)).unwrap();
     let mut cancel: Value =
@@ -62,8 +64,13 @@ fn explicit_choices_freeze_the_profile_and_identical_cancel_body() {
         json!({"text":"Do the project work"})
     );
     assert_eq!(first["start_greeting"], true);
+    assert_eq!(first["agent"]["orchestrator"], true);
     cancel["action"] = json!("first_agent");
     assert_eq!(first, cancel);
+    // Left unchosen, the request doesn't name it at all.
+    let plain = freeze(REQUEST, &profile(), &catalog, choice()).unwrap();
+    let first: Value = serde_json::from_slice(plain.bytes(Action::FirstAgent)).unwrap();
+    assert!(first["agent"].get("orchestrator").is_none());
     // Unauthenticated is an observation, never silently converted to account proof.
     assert_eq!(
         catalog.items()[0].authentication,
