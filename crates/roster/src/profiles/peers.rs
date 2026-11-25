@@ -200,16 +200,21 @@ impl Connection {
     }
 
     // The caller retains the same key and payload across an uncertain reply.
+    /// A change the service refuses (4xx) keeps its reason, written for the
+    /// person; a server error keeps its status, so the change can be retried.
     fn change_peer<T: DeserializeOwned>(
         &self,
         method: &'static str,
         path: String,
         body: Value,
         key: &str,
-    ) -> Result<T, Error> {
+    ) -> Result<T, AddError> {
         let response = self.send_peer(method, &path, &body, key)?;
+        if (400..500).contains(&response.status) {
+            added(&response)?;
+        }
         successful(&response)?;
-        serde_json::from_slice(&response.body).map_err(|_| Error::Invalid)
+        Ok(serde_json::from_slice(&response.body).map_err(|_| Error::Invalid)?)
     }
 
     fn send_peer(
@@ -226,8 +231,9 @@ impl Connection {
         self.write(method, path, Some(body), Some(key))
     }
 
-    /// [`Self::change_peer`] for a connection request, whose conflict or
-    /// invalid-request refusal keeps the service's reason.
+    /// A connection request keeps the service's reason only for a conflict or
+    /// an invalid request; any other refusal, such as a 404 from a service
+    /// without the route, keeps its status.
     fn request_peer<T: DeserializeOwned>(
         &self,
         path: String,
@@ -298,9 +304,9 @@ impl Connection {
         direction: Direction,
         policy: Policy,
         key: &str,
-    ) -> Result<Peer, Error> {
+    ) -> Result<Peer, AddError> {
         if policy == Policy::Unknown {
-            return Err(Error::Invalid);
+            return Err(Error::Invalid.into());
         }
         let path = format!("{ROOT}/{}/gates", segment(generation)?);
         self.change_peer(
@@ -317,9 +323,9 @@ impl Connection {
         message: &Message,
         decision: Decision<'_>,
         key: &str,
-    ) -> Result<Message, Error> {
+    ) -> Result<Message, AddError> {
         if message.state != "pending_review" {
-            return Err(Error::Invalid);
+            return Err(Error::Invalid.into());
         }
         let body = match decision {
             Decision::Pass => json!({"action":"pass"}),
@@ -329,7 +335,7 @@ impl Connection {
             {
                 json!({"action":"ask_to_revise","note":note})
             }
-            Decision::Revise(_) => return Err(Error::Invalid),
+            Decision::Revise(_) => return Err(Error::Invalid.into()),
         };
         let path = format!(
             "{ROOT}/{}/messages/{}/review",
@@ -340,7 +346,7 @@ impl Connection {
     }
 
     /// Request local revocation of this generation.
-    pub fn disconnect_peer(&self, generation: &str, key: &str) -> Result<Peer, Error> {
+    pub fn disconnect_peer(&self, generation: &str, key: &str) -> Result<Peer, AddError> {
         self.change_peer(
             "POST",
             format!("{ROOT}/{}/disconnect", segment(generation)?),

@@ -56,7 +56,7 @@ fn owner_routes_use_the_profile_socket_generation_and_original_request_key() {
     review.direction = Direction::Incoming;
     assert!(matches!(
         c.review_peer_message(&review, Decision::Revise("change"), "other-key"),
-        Err(Error::Invalid)
+        Err(AddError::Connection(Error::Invalid))
     ));
     c.disconnect_peer("gen", "disconnect-key").unwrap();
     assert!(matches!(
@@ -177,6 +177,51 @@ fn a_refused_connection_request_keeps_the_service_reason() {
     assert_eq!(
         c.invite_peer("peer", "k6").map(drop),
         Err(AddError::Connection(Error::BindingRequired))
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn a_refused_peer_change_keeps_the_service_reason() {
+    let (dir, listener, socket) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(dir.path(), &socket);
+    let gone = "no active peer connection for this generation";
+    let reviewed = "this message has already been reviewed";
+    let refusal = |code, message| json!({"detail":{"code":code,"message":message}});
+    let server = serve(
+        listener,
+        vec![
+            (200, identity),
+            (404, refusal("not_found", gone)),
+            (409, refusal("conflict", reviewed)),
+            (404, refusal("not_found", gone)),
+            (409, json!({})),
+            (503, refusal("unavailable", "the service is shutting down")),
+        ],
+    );
+    let c = profile.connect().unwrap();
+    let message: crate::profiles::peers::Message = serde_json::from_value(json!({"connection":{"generation":"gen","peer_id":"peer"},"message_id":"m","direction":"incoming","text":"t","submitted_at":"now","expires_at":"later","state":"pending_review","receipt":{"kind":"missing"}})).unwrap();
+    let reason = |text: &str| Err(AddError::Refused(text.into()));
+    assert_eq!(
+        c.set_peer_gate("gen", Direction::Incoming, Policy::Auto, "k1")
+            .map(drop),
+        reason(gone)
+    );
+    assert_eq!(
+        c.review_peer_message(&message, Decision::Pass, "k2")
+            .map(drop),
+        reason(reviewed)
+    );
+    assert_eq!(c.disconnect_peer("gen", "k3").map(drop), reason(gone));
+    // Without a reason the status is kept.
+    assert_eq!(
+        c.disconnect_peer("gen", "k4").map(drop),
+        Err(AddError::Connection(Error::Refused(409)))
+    );
+    // A server error keeps its status, so the app retries the same request.
+    assert_eq!(
+        c.disconnect_peer("gen", "k5").map(drop),
+        Err(AddError::Connection(Error::Refused(503)))
     );
     server.join().unwrap();
 }
