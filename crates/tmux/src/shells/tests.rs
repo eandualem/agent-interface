@@ -253,7 +253,8 @@ exit "$status"
             Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
                 thread::sleep(Duration::from_millis(10))
             }
-            Err(error) => panic!("the lock stayed held: {error:?}"),
+            Err(TryLockError::WouldBlock) => panic!("ensure left the lock held"),
+            Err(TryLockError::Error(error)) => panic!("could not check the lock: {error}"),
         }
     }
     assert_eq!(lock.metadata().unwrap().ino(), before.ino());
