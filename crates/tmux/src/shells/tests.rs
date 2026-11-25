@@ -242,8 +242,20 @@ exit "$status"
     assert_eq!(calls[0].0, "0");
     assert!(calls[1].1.contains(&"new-session"));
     assert_ne!(calls[1].0, "0");
+    // A process another test is starting holds a copy of this process's
+    // open files until it runs its program, so the released lock can read
+    // as held for a moment. A lock `ensure` left held stays held.
     let lock = OpenOptions::new().append(true).open(&lock_path).unwrap();
-    lock.try_lock().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match lock.try_lock() {
+            Ok(()) => break,
+            Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(10))
+            }
+            Err(error) => panic!("the lock stayed held: {error:?}"),
+        }
+    }
     assert_eq!(lock.metadata().unwrap().ino(), before.ino());
     drop(lock);
     environment.variables.insert("PATH".into(), original_path);
