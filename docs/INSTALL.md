@@ -282,7 +282,10 @@ The distribution Bubblewrap policy is shared system sandbox support, like the
 runtime libraries. Uninstalling this app does not remove it or change other apps'
 sandbox configuration.
 
-These commands leave your data and terminal sessions intact. See the
+These commands leave your data and terminal sessions intact, and leave Agent
+Backbone installed. If you remove Backbone's `~/.local/bin/backbone` yourself,
+also remove the installer's marker beside it,
+`~/.local/bin/.agent-interface-backbone`. See the
 [user guide](GUIDE.md) for library and settings locations.
 
 On WSL, also remove the Windows Start registration only if its installer marker
