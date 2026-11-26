@@ -73,7 +73,7 @@ curl -fsSL https://raw.githubusercontent.com/eandualem/agent-interface/main/inst
 
 **2. Open Agent Interface.** With Agent Backbone installed, native onboarding
 creates your first profile, signs you in to an agent tool and starts your first
-agent, its guide. Without it, first run says so and **Continue with terminals**
+agent, its orchestrator. Without it, first run says so and **Continue with terminals**
 opens the workspace.
 
 The [installation guide](docs/INSTALL.md) covers package architectures, manual

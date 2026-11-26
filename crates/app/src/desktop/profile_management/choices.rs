@@ -272,7 +272,7 @@ impl Form {
             .iter()
             .find(|r| Some(&r.id) == self.runtime.as_ref() && eligible(r, self.guide))
     }
-    /// Make this a profile's first agent, its guide: named "guide", with a
+    /// Make this a profile's first agent, its orchestrator: named "orchestrator", with a
     /// folder of its own, both shown and editable in place. `first` is set
     /// during first run, where there is nothing to go back to.
     pub fn as_guide(
@@ -761,7 +761,7 @@ fn read_again(last: Option<u64>, settled: Option<u64>) -> bool {
 /// agent's first turn, and the default brief asks it to greet.
 const BRIEF_AS_FIRST_TURN: [&str; 1] = ["antigravity"];
 /// The name a profile's first agent starts with.
-const GUIDE: &str = "guide";
+const GUIDE: &str = "orchestrator";
 /// A typed name as an agent name: spaces as hyphens.
 fn agent_name(typed: &str) -> String {
     typed.split_whitespace().collect::<Vec<_>>().join("-")
@@ -1252,8 +1252,11 @@ impl Form {
                     );
                 }
                 if shown == 0 {
-                    note("No tool in this profile can run a guide yet.".into(), true)
-                        .into_any_element()
+                    note(
+                        "No tool in this profile can run an orchestrator yet.".into(),
+                        true,
+                    )
+                    .into_any_element()
                 } else {
                     grid.into_any_element()
                 }
@@ -1601,7 +1604,7 @@ impl Form {
                         cx.notify();
                     },
                 )))
-                .child(quiet("The guide says hello first"))
+                .child(quiet("The orchestrator says hello first"))
                 .into_any_element(),
         ));
         let expected = ticket.clone();
@@ -1662,7 +1665,7 @@ fn start_label(
     } else if valid {
         format!("Start {name}")
     } else {
-        "Start guide".to_owned()
+        "Start orchestrator".to_owned()
     })
 }
 #[cfg(test)]

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Click through first run in a private Linux desktop: a fresh install makes
-its first profile and starts its guide, all in the one workspace window.
+its first profile and starts its orchestrator, all in the one workspace window.
 
 Uses the real native app and a stand-in for the Rust Agent Backbone service
 (scripts/tests/fixtures/fake_backbone.py), whose machine serves no profile
@@ -215,7 +215,7 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
             assert "Personal" in value, "the suggested name"
 
             click(main, "Continue")
-            wait_for(lambda: re.search(r"your\s+guide", text(main)), "Start your guide", timeout=60)
+            wait_for(lambda: re.search(r"your\s+orchestrator", text(main)), "Start your orchestrator", timeout=60)
             # Each tool's card says whether it is signed in; nothing else opens.
             # Both tools' account reads answer first (what each said is
             # asserted below); OCR reads the plain cards reliably, but the
@@ -241,11 +241,11 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
                         if entry["profile"] == profile_id and entry["path"].startswith("/api/profile/accounts/status")}
             assert accounts == {"claude": "missing", "codex": "missing"}, accounts
             assert stat.S_IMODE(library.stat().st_mode) == 0o700, "the library folder is private"
-            capture(main, "guide")
+            capture(main, "orchestrator")
 
             click(main, "Start", last=True)
-            # The layer fades as the guide's pane opens.
-            wait_for(lambda: not re.search(r"your\s+guide", text(main)), "the guide's pane", timeout=60)
+            # The layer fades as the orchestrator's pane opens.
+            wait_for(lambda: not re.search(r"your\s+orchestrator", text(main)), "the orchestrator's pane", timeout=60)
             capture(main, "working")
             assert list(app_windows()) == [main], "first run opened or closed a window"
 
@@ -259,10 +259,10 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
             assert request["request_id"] != setups[0]["request_id"], request
             assert same({**request, "request_id": None}, {
                 **FIRST_AGENT, "request_id": None, "profile_id": profile_id, "start_greeting": True,
-                "agent": {**FIRST_AGENT["agent"], "directory": str(root / "Agents/guide"),
+                "agent": {**FIRST_AGENT["agent"], "directory": str(root / "Agents/orchestrator"),
                           "runtime": "claude", "model": None, "create_directory": True,
-                          "name": "guide", "brief": {"template": "orchestrator-v1"}}}), request
-            assert (root / "Agents/guide").is_dir()
+                          "name": "orchestrator", "brief": {"template": "orchestrator-v1"}}}), request
+            assert (root / "Agents/orchestrator").is_dir()
 
             saved = tomllib.loads((settings / "settings.toml").read_text())
             assert saved["setup"] == {"intro_seen": True, "done": True}, saved["setup"]
@@ -279,8 +279,8 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
                 "first profile made and served by the service",
                 "private library folder", "one window throughout",
                 "sign-ins on the tool cards, from the profile's own accounts",
-                "guide on the first tool that can run",
-                "guide's setup request", "setup remembered as done",
+                "orchestrator on the first tool that can run",
+                "orchestrator's setup request", "setup remembered as done",
                 "one workspace bound to the profile"]), indent=2) + "\n")
             print(f"Linux onboarding regression passed at {SCALE}%")
         except BaseException:
