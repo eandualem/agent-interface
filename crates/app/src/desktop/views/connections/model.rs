@@ -15,6 +15,9 @@ pub(super) struct Sample {
     pub overview: api::Overview,
     messages: Vec<api::Message>,
     pub revisions: HashMap<String, u32>,
+    /// The next ID a request or connection made in the preview takes, so
+    /// none repeats after another is removed.
+    next: u32,
 }
 
 fn id(hex: &str) -> String {
@@ -214,6 +217,7 @@ impl Sample {
             },
             messages,
             revisions,
+            next: 0x400,
         };
         sample.count();
         sample
@@ -318,8 +322,9 @@ impl Sample {
             self.overview.invitations.remove(at);
             return;
         }
+        self.next += 1;
+        let generation = format!("{:032x}", self.next);
         let r = &mut self.overview.invitations[at];
-        let generation = format!("{:032x}", 0x200 + at);
         r.state = "accepted".into();
         r.generation = Some(generation.clone());
         let connection = api::Generation {
@@ -341,9 +346,9 @@ impl Sample {
 
     /// Send a request: it waits as `pending` until the other profile answers.
     pub(super) fn invite(&mut self, peer: &str) {
-        let n = self.overview.invitations.len() as u32 + 0x300;
+        self.next += 1;
         self.overview.invitations.push(api::Invitation {
-            request_id: format!("{n:032x}"),
+            request_id: format!("{:032x}", self.next),
             peer_id: peer.into(),
             display_name: None,
             direction: Direction::Outgoing,
@@ -409,5 +414,18 @@ mod tests {
             (sent.direction, sent.state.as_str()),
             (Direction::Outgoing, "pending")
         );
+        // Declining keeps nothing, and later IDs never repeat earlier ones.
+        let incoming = sample.overview.invitations.len();
+        sample.invite(&format!("v1:{}", "d".repeat(64)));
+        let first = sample.overview.invitations[incoming].request_id.clone();
+        sample.answer(&first, false);
+        sample.invite(&format!("v1:{}", "e".repeat(64)));
+        let ids: std::collections::HashSet<_> = sample
+            .overview
+            .invitations
+            .iter()
+            .map(|r| &r.request_id)
+            .collect();
+        assert_eq!(ids.len(), sample.overview.invitations.len());
     }
 }
