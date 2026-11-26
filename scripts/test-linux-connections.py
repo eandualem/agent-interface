@@ -280,6 +280,21 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
             # Choose a connection while its name can still be read.
             click("Ops")
             wait_for(lambda: find("delivers"), "the second thread again")
+            # At a middle width, with the list open, the header folds its
+            # gates into one button and keeps ⋯ at its right end in view.
+            command("xdotool", "windowsize", "--sync", window, "1040", "880")
+            time.sleep(0.6)
+            band = sorted((word for word in read()
+                           if abs(int(word["top"]) - int(label["top"])) < 24),
+                          key=lambda word: int(word["left"]))
+            header = "".join(word["text"] for word in band).lower()
+            assert "review" in header, f"the header lost its gates: {header!r}"
+            press(1040 - 35, middle)
+            wait_for(lambda: find("Disconnect"), "the header's ⋯ menu at a middle width")
+            capture("middle")
+            command("xdotool", "key", "Escape")
+            command("xdotool", "windowsize", "--sync", window, "1280", "880")
+            time.sleep(0.6)
             press(left + 228, middle)
             wait_for(lambda: not find("PEERS"), "the minimised peer list")
             capture("minimised")
