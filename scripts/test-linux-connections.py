@@ -257,7 +257,11 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
             capture("revise")
             # Its Cancel is below the fold; Escape in the note closes it.
             command("xdotool", "key", "Escape")
-            wait_for(lambda: find("Ask"), "the revise note closed")
+            # Focus returns to Ask to revise, whose focus ring keeps it from
+            # being read; the note's own line going and the pass note
+            # showing say the note closed.
+            wait_for(lambda: not find("should"), "the revise note closed")
+            wait_for(lambda: find("Pass"), "the waiting card's choices again")
             # The second connection has an incoming message waiting and a
             # failed delivery.
             click("Ops")
