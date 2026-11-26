@@ -50,6 +50,21 @@ class SweepTests(unittest.TestCase):
             }
             self.assertEqual(sweep.copied_hashes(binary), {"aaaaaaaaaaaaaaaa"})
 
+    def test_keeps_only_the_object_files_a_units_output_names(self):
+        with tempfile.TemporaryDirectory() as root:
+            deps = Path(root)
+            unit = "foo-0123456789abcdef"
+            (deps / f"lib{unit}.rlib").write_bytes(f"{unit}.unit.latest.rcgu.o/".encode())
+            (deps / f"{unit}.unit.latest.rcgu.o").write_bytes(b"")
+            (deps / f"{unit}.unit.earlier.rcgu.o").write_bytes(b"")
+            # This output names no object file, so its unit keeps them all.
+            (deps / "bar-fedcba9876543210").write_bytes(b"linked")
+            (deps / "bar-fedcba9876543210.unit.earlier.rcgu.o").write_bytes(b"")
+            self.assertEqual(
+                [path.name for path in sweep.unnamed_objects(deps)],
+                [f"{unit}.unit.earlier.rcgu.o"],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,8 +6,10 @@ without limit. This runs `cargo fmt --check`, `cargo clippy --all-targets
 -- -D warnings`, builds the tests and `cargo build`, notes every artifact
 cargo reports for them, whether it was rebuilt or still fresh, and removes
 every other hashed artifact from target/debug. That keeps exactly the latest
-build warm. It removes target/debug/incremental once that passes 2 GB. Then
-it runs `cargo test`, whose result is the script's.
+build warm. Of the object files rustc leaves in target/debug/deps, it keeps
+those a unit's output names: each rebuild of a unit writes a new set under
+the same hash. It removes target/debug/incremental once that passes 2 GB.
+Then it runs `cargo test`, whose result is the script's.
 
 Arguments after `--` go to `cargo test`. Nothing is removed when a step
 before the tests fails, since what failed to build was not reported, or
@@ -20,6 +22,7 @@ Usage: python3 scripts/sweep_target.py [-- TEST ARGS]
 import fcntl
 import filecmp
 import json
+import mmap
 import re
 import shutil
 import subprocess
@@ -82,6 +85,34 @@ def unused(entries, hashes):
         match = HASH.search(entry)
         if match and match.group(1) not in hashes:
             yield entry
+
+
+def unnamed_objects(deps):
+    """The object files in deps/ that their unit's output does not name.
+
+    Rustc names a unit's object files after the invocation that wrote them,
+    so a rebuilt unit leaves the previous set beside the new one, under the
+    same hash. The unit's library or executable names the object files of
+    the build it came from, which a debugger still reads for an executable.
+    A unit whose output names none of its object files keeps them all.
+    """
+    objects, outputs = {}, {}
+    for entry in deps.iterdir():
+        if match := HASH.search(entry.name):
+            kind = objects if entry.name.endswith(".rcgu.o") else outputs
+            kind.setdefault(match.group(1), []).append(entry)
+    for unit, entries in objects.items():
+        pattern = re.compile(rb"-%s\.[\w.-]+?\.rcgu\.o" % unit.encode())
+        named = set()
+        for output in outputs.get(unit, ()):
+            if not output.is_file() or not output.stat().st_size:
+                continue
+            with open(output, "rb") as handle:
+                with mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                    named.update(name.decode() for name in pattern.findall(data))
+        unnamed = [e for e in entries if e.name[e.name.index(f"-{unit}") :] not in named]
+        if len(unnamed) < len(entries):
+            yield from unnamed
 
 
 def take_locks(debug):
@@ -182,6 +213,11 @@ def main(test_args):
                     path = debug / folder / entry
                     freed += size(path)
                     remove(path)
+        for path in list(unnamed_objects(debug / "deps")):
+            # An object file the incremental cache also links frees nothing.
+            if path.stat().st_nlink == 1:
+                freed += size(path)
+            remove(path)
         incremental = debug / "incremental"
         if size(incremental) > INCREMENTAL_LIMIT:
             freed += size(incremental)
