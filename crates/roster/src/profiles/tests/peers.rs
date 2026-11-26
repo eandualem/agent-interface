@@ -282,6 +282,13 @@ fn service_fixtures_parse_into_the_client_shapes() {
     assert_eq!(failure.retry_at.as_deref(), Some("2026-11-21T12:05:00Z"));
     let pending: Peer = parse(fixture!("peer-disconnect"));
     assert_eq!(pending.state, "revocation_pending");
+    assert!(pending.revocation_failure.is_none());
+    let refused: Peer = parse(fixture!("peer-disconnect-refused"));
+    assert_eq!(refused.state, "revocation_pending");
+    assert_eq!(
+        refused.revocation_failure.unwrap().code,
+        "generation_mismatch"
+    );
     let reviews: Page<Review> = parse(fixture!("peer-reviews"));
     assert_eq!(reviews.items.len(), 2);
     let revoked: Message = parse(fixture!("peer-revoked-message"));

@@ -1023,9 +1023,9 @@ impl Pane {
                 let state = if connected {
                     ui::tag("Connected", ui::Tone::Done)
                 } else if peer.state == "revocation_pending" {
-                    ui::tag(link_status(&peer.state), ui::Tone::Attention)
+                    ui::tag(link_status(peer), ui::Tone::Attention)
                 } else {
-                    ui::tag(link_status(&peer.state), ui::Tone::Quiet)
+                    ui::tag(link_status(peer), ui::Tone::Quiet)
                 };
                 let mut controls = div()
                     .ml_auto()
@@ -1086,6 +1086,9 @@ impl Pane {
                             .is_some()
                             .then(|| ui::mono(id.peer_id.clone()).text_color(c.muted)),
                     )
+                    .children(revocation_note(peer).map(|note| {
+                        ui::text(div().text_color(c.attention_text), &t.text.meta).child(note)
+                    }))
                     .child(meta(format!(
                         "Left: {name} (external · available to main) · Right: main"
                     )));
@@ -1629,12 +1632,25 @@ fn clock(stamp: &str) -> String {
         .unwrap_or_else(|_| stamp.to_owned())
 }
 
-// Local revocation has stopped delivery; the peer has not yet acknowledged it.
-fn link_status(state: &str) -> String {
-    match state {
-        "revocation_pending" => "Stopped here, remote confirmation pending".into(),
-        s => s.replace('_', " "),
+// Local revocation has stopped delivery; the peer has not yet acknowledged it,
+// and may never learn of it once the relay has refused the revocation.
+fn link_status(peer: &api::Peer) -> String {
+    match (peer.state.as_str(), &peer.revocation_failure) {
+        ("revocation_pending", Some(_)) => "Stopped here, relay refused the disconnect".into(),
+        ("revocation_pending", None) => "Stopped here, remote confirmation pending".into(),
+        (s, _) => s.replace('_', " "),
     }
+}
+
+// The full reason, shown below the header where it can wrap.
+fn revocation_note(peer: &api::Peer) -> Option<String> {
+    let failure = peer.revocation_failure.as_ref()?;
+    (peer.state == "revocation_pending").then(|| {
+        format!(
+            "The relay refused the disconnect ({}), so the other side may not learn of it.",
+            failure.code
+        )
+    })
 }
 
 #[cfg(test)]
@@ -1655,16 +1671,28 @@ mod tests {
             "/../roster/src/profiles/peers/fixtures/peer-actions.json"
         )))
         .unwrap();
-        let state = |key: &str| {
-            serde_json::from_value::<api::Peer>(actions[key].clone())
-                .unwrap()
-                .state
-        };
+        let peer = |key: &str| serde_json::from_value::<api::Peer>(actions[key].clone()).unwrap();
         assert_eq!(
-            link_status(&state("disconnect_requested")),
+            link_status(&peer("disconnect_requested")),
             "Stopped here, remote confirmation pending"
         );
-        assert_eq!(link_status(&state("disconnect_confirmed")), "disconnected");
+        assert_eq!(link_status(&peer("disconnect_confirmed")), "disconnected");
+        let refused: api::Peer = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../roster/src/profiles/peers/fixtures/peer-disconnect-refused.json"
+        )))
+        .unwrap();
+        assert_eq!(
+            link_status(&refused),
+            "Stopped here, relay refused the disconnect"
+        );
+        assert_eq!(
+            revocation_note(&refused).as_deref(),
+            Some(
+                "The relay refused the disconnect (generation_mismatch), so the other side may not learn of it."
+            )
+        );
+        assert_eq!(revocation_note(&peer("disconnect_requested")), None);
     }
 
     #[test]
@@ -1694,6 +1722,7 @@ mod tests {
                         incoming: Policy::Review,
                         outgoing: Policy::Unknown,
                     },
+                    revocation_failure: None,
                 }],
             })),
             selection: Some(Selection::Peer(generation)),
