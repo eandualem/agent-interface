@@ -35,9 +35,9 @@ for earlier in OUTPUT.glob("*.png"):
 PROFILE = "0a1b2c3d4e5f"
 
 
-def wait_for(check, label):
+def wait_for(check, label, seconds=120):
     # One reading may take most of a minute on a constrained runner.
-    deadline = time.monotonic() + 120
+    deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         result = check()
         if result:
@@ -194,9 +194,17 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
 
             # Filled buttons are not read, so each wait is on plain text near
             # what it checks, one reading at a time.
-            click("Preview")
-            # The first sample connection opens with the list beside it.
-            wait_for(lambda: find("PEERS"), "the peer list")
+            # A click while the pane is still settling can be lost, so press
+            # Preview again until the sample's peer list shows.
+            for attempt in range(4):
+                click("Preview")
+                try:
+                    # The first sample connection opens with the list beside it.
+                    wait_for(lambda: find("PEERS"), "the peer list", 15)
+                    break
+                except AssertionError:
+                    if attempt == 3:
+                        raise
             wait_for(lambda: find("Relay"), "the first sample thread")
             capture("message-cut")
             # The first long message is cut; open it in place, then close it.
