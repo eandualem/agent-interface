@@ -286,6 +286,20 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
             # Choose a connection while its name can still be read.
             click("Ops")
             wait_for(lambda: find("delivers"), "the second thread again")
+            # A thread of about 650 px (the window less 495 px of panel and
+            # list) keeps both gates as rows, each shown by its direction icon
+            # alone, with its Review and Auto.
+            command("xdotool", "windowsize", "--sync", window, "1145", "880")
+            time.sleep(0.6)
+            band = sorted((word for word in read()
+                           if abs(int(word["top"]) - int(label["top"])) < 24),
+                          key=lambda word: int(word["left"]))
+            header = "".join(word["text"] for word in band).lower()
+            assert (header.count("review") >= 2 and header.count("auto") >= 2
+                    and "incoming" not in header and "outgoing" not in header), (
+                f"the header did not show its gates by icon alone: {header!r}"
+            )
+            capture("gates-icons")
             # Narrower, with the list open, the header folds its gates into one
             # button, each policy read once, and keeps ⋯ at its right end.
             command("xdotool", "windowsize", "--sync", window, "1040", "880")
