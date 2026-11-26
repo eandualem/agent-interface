@@ -94,7 +94,8 @@ def unnamed_objects(deps):
     so a rebuilt unit leaves the previous set beside the new one, under the
     same hash. The unit's library or executable names the object files of
     the build it came from, which a debugger still reads for an executable.
-    A unit whose output names none of its object files keeps them all.
+    A unit whose output names none of its object files, or cannot be read,
+    keeps them all.
     """
     objects, outputs = {}, {}
     for entry in deps.iterdir():
@@ -104,12 +105,15 @@ def unnamed_objects(deps):
     for unit, entries in objects.items():
         pattern = re.compile(rb"-%s\.[\w.-]+?\.rcgu\.o" % unit.encode())
         named = set()
-        for output in outputs.get(unit, ()):
-            if not output.is_file() or not output.stat().st_size:
-                continue
-            with open(output, "rb") as handle:
-                with mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as data:
-                    named.update(name.decode() for name in pattern.findall(data))
+        try:
+            for output in outputs.get(unit, ()):
+                if not output.is_file() or not output.stat().st_size:
+                    continue
+                with open(output, "rb") as handle:
+                    with mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                        named.update(name.decode() for name in pattern.findall(data))
+        except (OSError, ValueError):
+            continue
         unnamed = [e for e in entries if e.name[e.name.index(f"-{unit}") :] not in named]
         if len(unnamed) < len(entries):
             yield from unnamed
