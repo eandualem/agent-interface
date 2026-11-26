@@ -230,10 +230,30 @@ impl Pane {
             Some(Form::Revise(x)) if x.message_id == m.message_id => Some(false),
             _ => None,
         };
+        // A decision whose reply was lost is sent again from its own card.
+        if let Some((error, can_retry)) = self.lost_decision(&m.message_id) {
+            return bar
+                .child(ui::icon("triangle-alert", t.size.icon - 2.0, c.attention))
+                .child(
+                    ui::text(
+                        div().flex_1().min_w_0().text_color(c.attention_text),
+                        &t.text.meta,
+                    )
+                    .child(error),
+                )
+                .when(can_retry, |el| {
+                    el.child(self.live_button(
+                        format!("retry-{}", m.message_id),
+                        "Retry",
+                        ui::Button::Secondary,
+                        cx,
+                        |p, _, cx| p.send_live(cx),
+                    ))
+                });
+        }
+        // As before, the choices wait while Agent Backbone is being read.
         if !actions {
-            return bar.child(meta(
-                "Waiting for Agent Backbone before you can decide.".into(),
-            ));
+            return div();
         }
         match form {
             Some(true) => {

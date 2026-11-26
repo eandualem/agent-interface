@@ -472,7 +472,18 @@ impl Pane {
         cx.notify();
     }
 
-    fn send_live(&mut self, cx: &mut Context<Self>) {
+    /// A decision on `message` whose reply was lost: why, and whether it can
+    /// be sent again now.
+    pub(super) fn lost_decision(&self, message: &str) -> Option<(String, bool)> {
+        let pending = self.live.retry.as_ref()?;
+        let Change::Review(m, _) = &pending.action else {
+            return None;
+        };
+        let error = pending.error.clone()?;
+        (m.message_id == message).then_some((error, self.live.stream_ok && !self.live.sending))
+    }
+
+    pub(super) fn send_live(&mut self, cx: &mut Context<Self>) {
         if self.live.sending || !self.live.stream_ok {
             return;
         }
