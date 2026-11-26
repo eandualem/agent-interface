@@ -257,7 +257,15 @@ impl Pane {
                         cx,
                         |p, _, cx| p.send_live(cx),
                     ))
-                });
+                })
+                // As in the band, giving up on it frees the pane's actions.
+                .child(self.live_button(
+                    format!("dismiss-{}", m.message_id),
+                    "Dismiss",
+                    ui::Button::Secondary,
+                    cx,
+                    |p, _, cx| p.dismiss_retry(cx),
+                ));
         }
         // An open note or confirmation stays while a read is in flight, so
         // typing is not lost; the choices themselves wait for the read.

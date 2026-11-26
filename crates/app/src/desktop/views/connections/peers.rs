@@ -1,7 +1,7 @@
 //! The peer list: a row per connection and request, the All and Waiting on
 //! you choice, a filter, and this profile pinned at the bottom. Minimised, it
-//! is a strip of marks; under [`NARROW`] px of pane width a chooser in the
-//! thread header stands in for it.
+//! is a strip of marks; at [`Width::Narrow`] a chooser in the thread header
+//! stands in for it.
 use super::live::{Form, Tip, peer_mark};
 use super::rules;
 use super::*;
@@ -30,6 +30,33 @@ impl Width {
         } else {
             Self::Wide
         }
+    }
+}
+
+/// What the thread header shows at its width: both gates as rows, or
+/// folded into one button, and whether the fingerprint has room.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct HeaderFit {
+    pub fold: bool,
+    pub fingerprint: bool,
+}
+
+/// About the width the header needs for both gate rows beside a name, its
+/// tag and fingerprint, and the width below which the fingerprint goes.
+const HEADER_ROWS: f32 = 860.0;
+const HEADER_FINGERPRINT: f32 = 640.0;
+
+/// The header's fit for a thread column `thread` px wide.
+pub(super) fn header_fit(width: Width, thread: f32) -> HeaderFit {
+    if width == Width::Narrow {
+        return HeaderFit {
+            fold: true,
+            fingerprint: false,
+        };
+    }
+    HeaderFit {
+        fold: thread < HEADER_ROWS,
+        fingerprint: thread >= HEADER_FINGERPRINT,
     }
 }
 
@@ -813,6 +840,20 @@ mod tests {
         // Nothing waiting, nothing to open.
         let quiet: Vec<_> = rows.into_iter().filter(|e| !e.needs).collect();
         assert_eq!(next_waiting(&quiet, None), None);
+    }
+
+    #[test]
+    fn the_header_folds_its_gates_before_anything_is_pushed_out() {
+        let fit = |width, thread| {
+            let HeaderFit { fold, fingerprint } = header_fit(width, thread);
+            (fold, fingerprint)
+        };
+        // A 1280 px window with the list open leaves about 790 px.
+        assert_eq!(fit(Width::Wide, 1100.0), (false, true));
+        assert_eq!(fit(Width::Wide, 790.0), (true, true));
+        assert_eq!(fit(Width::Wide, 560.0), (true, false));
+        assert_eq!(fit(Width::Medium, 600.0), (true, false));
+        assert_eq!(fit(Width::Narrow, 540.0), (true, false));
     }
 
     #[test]

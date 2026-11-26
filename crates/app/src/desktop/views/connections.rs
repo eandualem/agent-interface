@@ -42,6 +42,8 @@ pub(super) struct Pane {
     filter: Entity<NameField>,
     input: Entity<NameField>,
     width: peers::Width,
+    /// The pane's width in px, for what the thread header has room for.
+    pane_width: f32,
     /// The key this workspace's peer list choice is saved under.
     list_key: Option<String>,
     /// This pane's own choice, made below the wide width.
@@ -138,6 +140,7 @@ impl Pane {
             filter,
             input,
             width: peers::Width::Wide,
+            pane_width: 0.0,
             list_key: None,
             list_local: None,
             profile_name: None,
@@ -193,6 +196,10 @@ impl Pane {
 
     /// A menu's button: open the menu with focus in it, or close it.
     fn toggle_menu(&mut self, menu: Menu, window: &mut Window, cx: &mut Context<Self>) {
+        // One popover at a time.
+        if self.connecting() {
+            self.live.form = None;
+        }
         if self.menu == menu || self.just_dismissed(menu) {
             self.menu = Menu::None;
         } else {
@@ -328,8 +335,13 @@ impl Render for Pane {
         let entity = cx.entity().downgrade();
         let tracker = canvas(
             move |bounds, _, cx| {
-                let width = peers::Width::of(f32::from(bounds.size.width));
+                let pixels = f32::from(bounds.size.width);
+                let width = peers::Width::of(pixels);
                 let _ = entity.update(cx, |this, cx| {
+                    if (this.pane_width - pixels).abs() >= 1.0 {
+                        this.pane_width = pixels;
+                        cx.notify();
+                    }
                     if this.width != width {
                         // A narrower list starts minimised again.
                         this.width = width;
@@ -388,6 +400,8 @@ impl Render for Pane {
                     .bg(c.field)
                     .child(
                         ui::button("exit-preview", "Exit preview", ui::Button::Secondary)
+                            .focusable()
+                            .tab_stop(true)
                             .on_click(cx.listener(|this, _, _, cx| this.preview(false, cx))),
                     )
                     .child(

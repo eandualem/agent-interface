@@ -298,6 +298,22 @@ fn gate_choices(
     })
 }
 
+/// Whether a lost decision is offered again on its message's card: the
+/// message is a waiting one in the thread shown.
+fn on_card(action: &Change, shown: &Snapshot, selected: Option<&Selection>) -> bool {
+    let Change::Review(m, _) = action else {
+        return false;
+    };
+    action.belongs_to(selected)
+        && shown.selection.as_ref() == selected
+        && shown.history.as_ref().is_some_and(|history| {
+            history
+                .items
+                .iter()
+                .any(|item| item.message_id == m.message_id && item.state == "pending_review")
+        })
+}
+
 /// The line a gate change leaves in its thread.
 fn gate_event(change: &Change) -> Option<GateEvent> {
     let Change::Gates(generation, changes) = change else {
@@ -569,6 +585,12 @@ impl Pane {
         cx.notify();
     }
 
+    /// Give up on a change whose reply was lost, freeing the pane's actions.
+    pub(super) fn dismiss_retry(&mut self, cx: &mut Context<Self>) {
+        self.live.retry = None;
+        cx.notify();
+    }
+
     /// A decision on `message` whose reply was lost: why, and whether it can
     /// be sent again now.
     pub(super) fn lost_decision(&self, message: &str) -> Option<(String, bool)> {
@@ -726,6 +748,7 @@ impl Pane {
     }
 
     pub(super) fn show_form(&mut self, form: Form, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu = Menu::None;
         if matches!(&form, Form::Connect | Form::Revise(_)) {
             self.input.update(cx, |field, cx| {
                 field.clear(cx);
@@ -1077,16 +1100,16 @@ impl Pane {
         )
         .tab_stop(true);
         let id = peer_id.to_owned();
-        div()
+        let fit = self.header_fit();
+        // What names the connection gives way to the controls, which are
+        // never pushed out of the header.
+        let named = div()
+            .flex_1()
+            .min_w_0()
+            .overflow_hidden()
             .flex()
-            .flex_shrink_0()
             .items_center()
             .gap(px(t.space.s10))
-            .h(px(t.size.peer_header))
-            .pl(px(t.space.s20))
-            .pr(px(t.space.s14))
-            .border_b(px(t.size.hairline))
-            .border_color(c.line)
             .whitespace_nowrap()
             .map(|el| {
                 if self.width == peers::Width::Narrow {
@@ -1116,9 +1139,8 @@ impl Pane {
                         )
                 }
             })
-            .children(state)
-            // The narrow header has no room for the fingerprint.
-            .when(self.width != peers::Width::Narrow, |el| {
+            .children(state.map(|tag| tag.flex_shrink_0()))
+            .when(fit.fingerprint, |el| {
                 el.child(
                     ui::text(
                         div()
@@ -1135,13 +1157,35 @@ impl Pane {
                 .child(copy.flex_shrink_0().on_click(
                     cx.listener(move |p, _, _, cx| p.copy("copy-peer-id".into(), id.clone(), cx)),
                 ))
-            })
-            .child(div().flex_1())
-            .children(controls)
+            });
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s10))
+            .h(px(t.size.peer_header))
+            .pl(px(t.space.s20))
+            .pr(px(t.space.s14))
+            .border_b(px(t.size.hairline))
+            .border_color(c.line)
+            .whitespace_nowrap()
+            .child(named)
+            .children(controls.map(|controls| controls.flex_shrink_0()))
     }
 
-    /// Each gate's label and its Review and Auto segments.
-    fn gate_rows(&self, peer: &api::Peer, actions: bool, cx: &Context<Self>) -> Div {
+    /// How the thread header fits its width now.
+    fn header_fit(&self) -> peers::HeaderFit {
+        let list = match (self.width, self.list_minimised()) {
+            (peers::Width::Narrow, _) => 0.0,
+            (_, true) => tokens().size.peer_strip,
+            (_, false) => tokens().size.peer_list,
+        };
+        peers::header_fit(self.width, self.pane_width - list)
+    }
+
+    /// Each gate's label and its Review and Auto segments, in a row or,
+    /// in the folded gates' menu, `stacked`.
+    fn gate_rows(&self, peer: &api::Peer, actions: bool, stacked: bool, cx: &Context<Self>) -> Div {
         let (t, c) = (tokens(), colors());
         let mut controls = div().flex().items_center().gap(px(t.space.s6));
         for (direction, icon, label, current) in [
@@ -1164,7 +1208,9 @@ impl Pane {
                         .flex()
                         .items_center()
                         .gap(px(t.space.s6))
-                        .when(direction == Direction::Outgoing, |el| el.ml(px(t.space.s6)))
+                        .when(direction == Direction::Outgoing && !stacked, |el| {
+                            el.ml(px(t.space.s6))
+                        })
                         .text_color(c.muted),
                     &t.text.meta,
                 )
@@ -1213,8 +1259,9 @@ impl Pane {
             .flex_shrink_0()
             .items_center()
             .gap(px(t.space.s6));
-        if self.width == peers::Width::Narrow {
-            // Narrow: both gates fold into one button that opens them.
+        if self.header_fit().fold {
+            // Without room for both rows, the gates fold into one button
+            // that opens them.
             let letter = |policy: Policy| match policy {
                 Policy::Review => "Review",
                 Policy::Auto => "Auto",
@@ -1254,14 +1301,18 @@ impl Pane {
                             .top(px(t.size.icon_button + t.space.s4))
                             .right_0()
                             .gap(px(t.space.s8))
-                            .child(self.gate_rows(peer, actions, cx).flex_col().items_start()),
+                            .child(
+                                self.gate_rows(peer, actions, true, cx)
+                                    .flex_col()
+                                    .items_start(),
+                            ),
                     )
                     .with_priority(1),
                 );
             }
             controls = controls.child(gates);
         } else {
-            controls = controls.child(self.gate_rows(peer, actions, cx));
+            controls = controls.child(self.gate_rows(peer, actions, false, cx));
         }
         let generation = peer.connection.generation.clone();
         let mut more = div().relative().ml(px(t.space.s4)).child(
@@ -1269,7 +1320,9 @@ impl Pane {
                 .track_focus(&self.more_focus)
                 .on_click(cx.listener(|p, _, w, cx| p.toggle_menu(Menu::More, w, cx))),
         );
-        if self.menu == Menu::More && actions {
+        // The menu stays drawn while a read or change is in flight, with
+        // Disconnect waiting for it, so it never opens later by itself.
+        if self.menu == Menu::More {
             more = more.child(
                 gpui::deferred(
                     self.menu_frame(cx)
@@ -1286,8 +1339,12 @@ impl Pane {
                             .focusable()
                             .tab_stop(true)
                             .text_color(c.attention_text)
+                            .when(!actions, |el| el.opacity(0.35))
                             .on_click(cx.listener(
                                 move |p, _, w, cx| {
+                                    if !actions {
+                                        return;
+                                    }
                                     p.menu = Menu::None;
                                     p.show_form(Form::Disconnect(generation.clone()), w, cx)
                                 },
@@ -1875,8 +1932,7 @@ impl Pane {
         if !preview
             && let Some(pending) = &self.live.retry
             && let Some(error) = &pending.error
-            && !(matches!(pending.action, Change::Review(..))
-                && pending.action.belongs_to(self.live.selected.as_ref()))
+            && !on_card(&pending.action, s, self.live.selected.as_ref())
         {
             let mut banner = band(error.clone());
             if pending.action.belongs_to(self.live.selected.as_ref()) {
@@ -2208,6 +2264,48 @@ mod tests {
             )
         );
         assert_eq!(revocation_note(&peer("disconnect_requested")), None);
+    }
+
+    #[test]
+    fn a_lost_decision_is_offered_on_its_card_only_when_the_card_is_shown() {
+        let history: api::Page<api::Message> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../roster/src/profiles/peers/fixtures/peer-history.json"
+        )))
+        .unwrap();
+        let waiting = history
+            .items
+            .iter()
+            .find(|m| m.state == "pending_review")
+            .unwrap()
+            .clone();
+        let peer = Selection::Peer(waiting.connection.clone());
+        let shown = |items: Vec<api::Message>| Snapshot {
+            summary: Arc::new(Summary::from_overview(api::Overview {
+                local_id: "peer_local".into(),
+                pending_reviews: 0,
+                invitations: vec![],
+                connections: vec![],
+            })),
+            selection: Some(peer.clone()),
+            history: Some(api::Page { items, older: None }),
+        };
+        let lost = Change::Review(Box::new(waiting.clone()), DecisionKind::Pass);
+        assert!(on_card(&lost, &shown(history.items.clone()), Some(&peer)));
+        // Not on the loaded page: the band keeps it, with Retry and Dismiss.
+        let others = history
+            .items
+            .iter()
+            .filter(|m| m.message_id != waiting.message_id)
+            .cloned()
+            .collect();
+        assert!(!on_card(&lost, &shown(others), Some(&peer)));
+        assert!(!on_card(&lost, &shown(history.items.clone()), None));
+        assert!(!on_card(
+            &Change::Disconnect("gen".into()),
+            &shown(vec![]),
+            Some(&peer)
+        ));
     }
 
     #[test]
