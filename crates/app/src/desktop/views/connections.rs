@@ -26,6 +26,9 @@ pub(super) struct Pane {
     preview: Option<model::Sample>,
     entry: gpui::FocusHandle,
     thread_focus: gpui::FocusHandle,
+    thread_scroll: gpui::ScrollHandle,
+    /// The next drawn thread scrolls to what waits on the person.
+    scroll_on_open: std::cell::Cell<bool>,
     selection: RefCell<Selection>,
     needs_you: bool,
     filter: Entity<NameField>,
@@ -113,6 +116,8 @@ impl Pane {
             preview: None,
             entry: cx.focus_handle().tab_stop(true),
             thread_focus: cx.focus_handle(),
+            thread_scroll: gpui::ScrollHandle::new(),
+            scroll_on_open: std::cell::Cell::new(false),
             selection: RefCell::default(),
             needs_you: false,
             filter,

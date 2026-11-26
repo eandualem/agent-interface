@@ -491,6 +491,7 @@ impl Pane {
         self.live.form = None;
         self.copied = None;
         self.menu = Menu::None;
+        self.scroll_on_open.set(true);
         self.refresh_live(cx);
         cx.notify();
     }
@@ -1283,6 +1284,7 @@ impl Pane {
         let column = div().flex_1().min_w_0().min_h_0().flex().flex_col();
         let body = div()
             .id("peer-history")
+            .track_scroll(&self.thread_scroll)
             .track_focus(&self.thread_focus)
             // A press in the thread lets the copy and select-all keys act
             // on its text.
@@ -1548,13 +1550,18 @@ impl Pane {
                             .child(self.live_form(cx)),
                     );
                 }
-                let mut body = body.children(revocation_note(peer).map(|note| {
+                let note = revocation_note(peer);
+                // Counts the thread's rows, to find the first waiting card.
+                let mut rows = usize::from(note.is_some());
+                let mut waiting_at = None;
+                let mut body = body.children(note.map(|note| {
                     ui::text(div().text_color(c.attention_text), &t.text.meta).child(note)
                 }));
                 let Some(history) = &snapshot.history else {
                     return column.child(body);
                 };
                 if history.older.is_some() {
+                    rows += 1;
                     body = body.child(div().flex().justify_center().child(self.live_button(
                         "older-history",
                         "Older messages",
@@ -1564,6 +1571,7 @@ impl Pane {
                     )));
                 }
                 if history.items.is_empty() {
+                    rows += 1;
                     body = body.child(event(
                         "message-square",
                         "No messages yet.".into(),
@@ -1582,6 +1590,7 @@ impl Pane {
                 for m in &history.items {
                     let sent = epoch(&m.submitted_at).unwrap_or(f64::MAX);
                     while let Some(gate) = events.next_if(|e| e.at < sent) {
+                        rows += 1;
                         body = body.child(event(
                             "sliders-horizontal",
                             gate.text.clone(),
@@ -1592,9 +1601,11 @@ impl Pane {
                         && let Some(now) = &now
                         && !day.is_some_and(|d| d.same_day(&at))
                     {
+                        rows += 1;
                         body = body.child(ui::thread_divider(at.day_name(now), false));
                         day = Some(at);
                     }
+                    rows += 1;
                     body = body.child(if m.state == "revision_requested" {
                         let (note, at) = self.notes.get(&m.message_id).cloned().unzip();
                         event(
@@ -1613,8 +1624,19 @@ impl Pane {
                             .preview
                             .as_ref()
                             .and_then(|sample| sample.revisions.get(&m.message_id).copied());
+                        if m.state == "pending_review" && waiting_at.is_none() {
+                            waiting_at = Some(rows - 1);
+                        }
                         self.message_card(name, m, revision, actions && connected, held, cx)
                     });
+                }
+                // A thread opens on its first message waiting for the person,
+                // with its choices in view, else on its latest message.
+                if self.scroll_on_open.take() {
+                    match waiting_at {
+                        Some(row) => self.thread_scroll.scroll_to_item(row),
+                        None => self.thread_scroll.scroll_to_bottom(),
+                    }
                 }
                 for gate in events {
                     body = body.child(event(
