@@ -144,11 +144,13 @@ pub(super) fn cut(text: &str) -> Option<(String, usize)> {
     }
     let mid_line = end == chars && !text[end..].starts_with('\n');
     if mid_line {
-        // End on a word where one is near, never inside a character.
-        if let Some(space) = text[..end].rfind(char::is_whitespace)
-            && space > end.saturating_sub(CUT_LINE_CHARS)
+        // End on a word of the same line where one is near, never inside
+        // a character.
+        let line = text[..end].rfind('\n').map_or(0, |at| at + 1);
+        if let Some(space) = text[line..end].rfind([' ', '\t'])
+            && line + space > end.saturating_sub(CUT_LINE_CHARS)
         {
-            end = space;
+            end = line + space;
         }
     }
     let rest = &text[end..];
@@ -162,20 +164,38 @@ pub(super) fn cut(text: &str) -> Option<(String, usize)> {
     if mid_line {
         shown.push('…');
     }
-    let fences = shown
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim_start();
-            ["```", "~~~"]
-                .into_iter()
-                .find(|mark| line.starts_with(mark))
-        })
-        .collect::<Vec<_>>();
-    if fences.len() % 2 == 1 {
+    if let Some(fence) = open_fence(&shown) {
         shown.push('\n');
-        shown.push_str(fences[fences.len() - 1]);
+        shown.push_str(&fence);
     }
     Some((shown, more))
+}
+
+/// The code fence `text` leaves open, as the line that closes it: a run of
+/// at least three backticks or tildes opens one, and only a bare run of the
+/// same mark, at least as long, closes it.
+fn open_fence(text: &str) -> Option<String> {
+    let mut open: Option<(char, usize)> = None;
+    for line in text.lines() {
+        let line = line.trim_start();
+        let Some(mark) = line.chars().next().filter(|c| matches!(c, '`' | '~')) else {
+            continue;
+        };
+        let run = line.chars().take_while(|&c| c == mark).count();
+        if run < 3 {
+            continue;
+        }
+        match open {
+            None => open = Some((mark, run)),
+            Some((opened, length))
+                if opened == mark && run >= length && line[run..].trim().is_empty() =>
+            {
+                open = None
+            }
+            Some(_) => {}
+        }
+    }
+    open.map(|(mark, length)| mark.to_string().repeat(length))
 }
 
 /// The link that opens a cut body, or closes an opened one.
@@ -426,6 +446,15 @@ mod tests {
             parse_authored(&shown).as_slice(),
             [Block::Paragraph(_), Block::Code(code)] if code.lines().count() == 4
         ));
+        // A longer fence is closed with as many marks, and the other mark
+        // inside it is only text.
+        assert_eq!(open_fence("````md\n```\nnot closed"), Some("````".into()));
+        assert_eq!(open_fence("~~~\n```\n~~~"), None);
+        assert_eq!(open_fence("```rust\nlet x = 1;\n```"), None);
+        // A cut on the budget ends on a word of its own line, with the mark.
+        let lines = format!("{}\n{}", "short line", "word ".repeat(150));
+        let (shown, _) = cut(&lines).unwrap();
+        assert!(shown.starts_with("short line\n") && shown.ends_with("word…"));
         assert_eq!(cut_label(24, false), "Show more · 24 more lines");
         assert_eq!(cut_label(1, false), "Show more · 1 more line");
         assert_eq!(cut_label(24, true), "Show less");
