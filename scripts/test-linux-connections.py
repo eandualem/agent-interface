@@ -210,8 +210,9 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
                     if attempt == 3:
                         raise
             # A thread opens on the message waiting for the person, its
-            # choices in view.
-            wait_for(lambda: find("Nothing"), "the thread opened on its waiting message")
+            # choices in view: Ask to revise is the first one read, as the
+            # filled Pass through is not.
+            wait_for(lambda: find("Ask"), "the first thread opened with its choices in view")
             capture("thread-open")
             scroll_thread("4")
             wait_for(lambda: find("Relay"), "the first sample thread")
@@ -237,8 +238,17 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
             # The second connection has an incoming message waiting and a
             # failed delivery.
             click("Ops")
-            wait_for(lambda: find("delivers"), "the waiting incoming message")
+            # The pass note sits in the waiting card's choices.
+            wait_for(lambda: find("delivers"), "Ops opened with its choices in view")
             capture("waiting-incoming")
+            # With the list open, the header still has room for the whole
+            # two-word name: the topmost "relay" is the header's, level with
+            # the list's PEERS label, not the list row's below it.
+            relay = wait_for(lambda: find("relay"), "the connection's name")
+            label = wait_for(lambda: find("PEERS"), "the peer list")
+            assert abs(int(relay["top"]) - int(label["top"])) < 24, (
+                f"the thread header cut the connection's name: {relay}"
+            )
             scroll_thread("4")
             wait_for(lambda: find("mailbox"), "the failed delivery")
             capture("failed")
