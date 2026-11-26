@@ -24,6 +24,9 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "target/linux-desktop-smoke/connections"
 OUTPUT.mkdir(parents=True, exist_ok=True)
+# An earlier run's captures must not pass for this one's.
+for earlier in OUTPUT.glob("*.png"):
+    earlier.unlink()
 PROFILE = "0a1b2c3d4e5f"
 
 
@@ -37,7 +40,8 @@ def wait_for(check, label):
     raise AssertionError(f"Timed out: {label}")
 
 
-with tempfile.TemporaryDirectory(prefix="connections-smoke-") as directory:
+# A Unix socket path is short: keep the profile's socket near the root.
+with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as directory:
     root = Path(directory)
     env = {k: v for k, v in os.environ.items()
            if k != "TMUX" and not k.startswith(("BACKBONE_", "AGENT_INTERFACE_"))}
@@ -121,10 +125,12 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-") as directory:
         db.execute("INSERT INTO terminal_layout VALUES (1, ?)", (json.dumps(model),))
 
     def command(*args, check=True):
-        # Match the other checks' bounded OCR worker count on constrained runners.
-        command_env = {**env, "OMP_THREAD_LIMIT": "1"} if args[0] == "tesseract" else env
+        # Match the other checks' bounded OCR worker count on constrained
+        # runners, where one reading can also take long.
+        reading = args[0] == "tesseract"
+        command_env = {**env, "OMP_THREAD_LIMIT": "1"} if reading else env
         return subprocess.run(args, env=command_env, text=True, capture_output=True,
-                              timeout=15, check=check).stdout.strip()
+                              timeout=60 if reading else 15, check=check).stdout.strip()
 
     app = wm = window = None
     with (OUTPUT / "app.txt").open("w") as app_log, (OUTPUT / "wm.txt").open("w") as wm_log:
@@ -154,7 +160,10 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-") as directory:
                 word = wait_for(lambda: find(text), text)
                 x = int(word["left"]) + int(word["width"]) // 2
                 y = int(word["top"]) + int(word["height"]) // 2
-                command("xdotool", "mousemove", "--window", window, str(x), str(y), "click", "1")
+                # The window has to see the pointer arrive before the press.
+                command("xdotool", "mousemove", "--window", window, str(x), str(y))
+                time.sleep(0.2)
+                command("xdotool", "click", "1")
 
             def capture(name):
                 # Move the pointer off the pane, so no row is drawn hovered.
@@ -167,7 +176,8 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-") as directory:
             wait_for(lambda: find("Exit") and find("maya-ops"), "sample data")
             capture("preview")
             click("priya-platform")
-            wait_for(lambda: find("Exit"), "the preview after choosing a peer")
+            # Only the chosen peer's request shows this button.
+            wait_for(lambda: find("Accept"), "the chosen peer's connection request")
             capture("peer")
         finally:
             for process in (app, wm):
