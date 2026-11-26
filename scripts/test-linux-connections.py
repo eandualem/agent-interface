@@ -161,7 +161,8 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
                 tsv = command("tesseract", str(OUTPUT / "current.png"), "stdout", "--psm", "11", "tsv")
                 (OUTPUT / "current.tsv").write_text(tsv)
                 found = [word for word in csv.DictReader(io.StringIO(tsv), delimiter="\t")
-                         if (word.get("text") or "").strip().rstrip(".,:;") == text]
+                         # A label can be read with a stray quote mark before it.
+                         if (word.get("text") or "").strip().lstrip("‘’'\"“”").rstrip(".,:;") == text]
                 found.sort(key=lambda word: (int(word["top"]), int(word["left"])))
                 return found[0] if found else None
 
@@ -185,11 +186,11 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
                 time.sleep(0.2)
                 command("xdotool", "click", "1")
 
-            def scroll_thread():
-                # A thread opens at its start; its waiting messages are last.
+            def scroll_thread(button="5"):
+                # Wheel down (5) or up (4) over the thread.
                 command("xdotool", "mousemove", "--window", window, "800", "450")
                 time.sleep(0.2)
-                command("xdotool", "click", "--repeat", "15", "--delay", "30", "5")
+                command("xdotool", "click", "--repeat", "15", "--delay", "30", button)
                 time.sleep(0.5)
 
             # Filled buttons are not read, so each wait is on plain text near
@@ -208,6 +209,11 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
                 except AssertionError:
                     if attempt == 3:
                         raise
+            # A thread opens on the message waiting for the person, its
+            # choices in view.
+            wait_for(lambda: find("Nothing"), "the thread opened on its waiting message")
+            capture("thread-open")
+            scroll_thread("4")
             wait_for(lambda: find("Relay"), "the first sample thread")
             capture("message-cut")
             # The first long message is cut; open it in place, then close it.
@@ -231,11 +237,11 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
             # The second connection has an incoming message waiting and a
             # failed delivery.
             click("Ops")
-            wait_for(lambda: find("mailbox"), "the failed delivery")
-            capture("failed")
-            scroll_thread()
             wait_for(lambda: find("delivers"), "the waiting incoming message")
             capture("waiting-incoming")
+            scroll_thread("4")
+            wait_for(lambda: find("mailbox"), "the failed delivery")
+            capture("failed")
             # The first unnamed row is the incoming request.
             click("Unnamed")
             wait_for(lambda: find("Declining"), "the incoming request")
@@ -254,7 +260,7 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
             wait_for(lambda: not find("Their"), "the connect popover closed")
             # Choose a connection while its name can still be read.
             click("Ops")
-            wait_for(lambda: find("mailbox"), "the second thread again")
+            wait_for(lambda: find("delivers"), "the second thread again")
             press(left + 228, middle)
             wait_for(lambda: not find("PEERS"), "the minimised peer list")
             capture("minimised")
