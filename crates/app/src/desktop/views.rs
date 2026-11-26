@@ -336,7 +336,11 @@ impl ViewPane {
         cx: &mut gpui::App,
     ) {
         if let Some(pane) = &self.connections {
-            pane.update(cx, |pane, _| pane.place(profile, workspace, name));
+            pane.update(cx, |pane, cx| {
+                if pane.place(profile, workspace, name) {
+                    cx.notify();
+                }
+            });
         }
     }
 

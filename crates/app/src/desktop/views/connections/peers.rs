@@ -96,6 +96,20 @@ pub(super) fn list_key(profile: Option<&str>, workspace: &str) -> String {
     }
 }
 
+/// Set a pane's peer list key and profile name from where it is, and say
+/// whether either changed.
+pub(super) fn place(
+    (key, profile_name): (&mut Option<String>, &mut Option<String>),
+    profile: Option<&str>,
+    workspace: &str,
+    name: Option<&str>,
+) -> bool {
+    let next = (Some(list_key(profile, workspace)), name.map(str::to_owned));
+    let changed = (&*key, &*profile_name) != (&next.0, &next.1);
+    (*key, *profile_name) = next;
+    changed
+}
+
 /// Whether the list is minimised: as saved when wide, else as chosen in
 /// this pane, and minimised until something is chosen.
 pub(super) fn minimised(width: Width, saved: bool, local: Option<bool>) -> bool {
@@ -813,6 +827,30 @@ mod tests {
             "0123abcd/4c1f0e9a2b3d"
         );
         assert_eq!(list_key(None, "4c1f0e9a2b3d"), "4c1f0e9a2b3d");
+        // A profile name that loads after the pane was placed still reaches it.
+        let (mut key, mut name) = (None, None);
+        assert!(place(
+            (&mut key, &mut name),
+            Some("0123abcd"),
+            "4c1f0e9a2b3d",
+            None
+        ));
+        assert!(!place(
+            (&mut key, &mut name),
+            Some("0123abcd"),
+            "4c1f0e9a2b3d",
+            None
+        ));
+        assert!(place(
+            (&mut key, &mut name),
+            Some("0123abcd"),
+            "4c1f0e9a2b3d",
+            Some("Work")
+        ));
+        assert_eq!(
+            (key.as_deref(), name.as_deref()),
+            (Some("0123abcd/4c1f0e9a2b3d"), Some("Work"))
+        );
     }
 
     #[test]

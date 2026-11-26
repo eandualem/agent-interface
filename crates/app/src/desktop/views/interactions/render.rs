@@ -1254,13 +1254,17 @@ fn ledger(view: &mut Interactions, cx: &mut Context<Interactions>) -> AnyElement
     // Layout can clamp a wheel offset after this render (especially near the
     // bottom or after collapsing rows). Reconcile virtualization against the
     // final offset so clamped scrolling never leaves visible rows unpainted.
+    // A notify while the window draws brings no frame of its own, so the
+    // redraw is scheduled for the next frame.
     let scroll = view.scroll.clone();
     let entity = cx.entity().downgrade();
     rows = rows.child(rail_layer).child(
         gpui::canvas(
-            move |_, _, cx| {
+            move |_, window, _| {
                 if (-f32::from(scroll.offset().y) - top).abs() > 1. {
-                    let _ = entity.update(cx, |_, cx| cx.notify());
+                    window.on_next_frame(move |_, cx| {
+                        let _ = entity.update(cx, |_, cx| cx.notify());
+                    });
                 }
             },
             |_, (), _, _| (),
@@ -1295,13 +1299,17 @@ impl Render for Interactions {
         let width = self.width.clone();
         let origin = self.origin.clone();
         let entity = cx.entity().downgrade();
+        // A new width is drawn on the next frame: a notify while the window
+        // draws brings no frame of its own.
         let tracker = gpui::canvas(
-            move |bounds, _, cx| {
+            move |bounds, window, _| {
                 origin.set(bounds.origin);
                 let next = f32::from(bounds.size.width);
                 if (width.get() - next).abs() > 1. {
                     width.set(next);
-                    let _ = entity.update(cx, |_, cx| cx.notify());
+                    window.on_next_frame(move |_, cx| {
+                        let _ = entity.update(cx, |_, cx| cx.notify());
+                    });
                 }
             },
             |_, (), _, _| (),

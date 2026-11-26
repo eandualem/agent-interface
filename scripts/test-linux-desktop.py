@@ -192,6 +192,14 @@ if not (args.no_compositor or args.light):
         str(ROOT / "scripts/test-linux-connections.py"),
     ], check=True)
 
+# The Interactions pane following a resize, in its own fresh desktop.
+if not (args.no_compositor or args.light):
+    subprocess.run([
+        "xvfb-run", "-a", "-s", "-screen 0 2560x1800x24",
+        "dbus-run-session", "--", sys.executable,
+        str(ROOT / "scripts/test-linux-interactions.py"),
+    ], check=True)
+
 # The panel's drag reordering, in its own fresh desktop.
 if not (args.no_compositor or args.light):
     subprocess.run([

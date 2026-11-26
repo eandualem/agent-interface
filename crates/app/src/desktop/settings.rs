@@ -62,6 +62,7 @@ static SETUP_REQUEST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(N
 static SETUP_IDENTITY: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
 static PEER_LISTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 /// At most this many minimised peer lists are kept, so the file stays small.
+/// They are kept in the order they were minimised, so the oldest gives way.
 const MAX_PEER_LISTS: usize = 512;
 
 /// How panes show their header now.
@@ -221,10 +222,11 @@ impl Settings {
                     !key.is_empty() && key.len() <= 256 && !key.chars().any(char::is_control)
                 })
                 .map(str::to_owned)
-                .take(MAX_PEER_LISTS)
                 .collect();
-            keys.sort();
-            keys.dedup();
+            let mut seen = std::collections::HashSet::new();
+            keys.retain(|key| seen.insert(key.clone()));
+            // The newest are last; an over-long list keeps those.
+            keys.drain(..keys.len().saturating_sub(MAX_PEER_LISTS));
             settings.minimised_peer_lists = keys;
         }
         if let Some(shortcuts) = table.get("shortcuts").and_then(toml::Value::as_table) {
@@ -372,25 +374,38 @@ pub fn peer_list_minimised(key: &str) -> bool {
     PEER_LISTS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .binary_search_by(|saved| saved.as_str().cmp(key))
-        .is_ok()
+        .iter()
+        .any(|saved| saved == key)
 }
 
 /// Remember whether the peer list `key` is minimised, without saving it.
+/// When the list is full, the one minimised longest ago gives way.
 pub fn set_peer_list_minimised(key: &str, minimised: bool) {
     let mut keys = PEER_LISTS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    match (
-        keys.binary_search_by(|saved| saved.as_str().cmp(key)),
-        minimised,
-    ) {
-        (Err(at), true) if keys.len() < MAX_PEER_LISTS => keys.insert(at, key.to_owned()),
-        (Ok(at), false) => {
-            keys.remove(at);
+    keys.retain(|saved| saved != key);
+    if minimised {
+        if keys.len() >= MAX_PEER_LISTS {
+            keys.remove(0);
         }
-        _ => {}
+        keys.push(key.to_owned());
     }
+}
+
+/// Forget the minimised peer lists of workspaces not in `workspaces`, and
+/// say whether any went. A key is `profile/workspace`, or the workspace
+/// alone.
+pub fn forget_peer_lists_outside(workspaces: &[&str]) -> bool {
+    let mut keys = PEER_LISTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = keys.len();
+    keys.retain(|key| {
+        let workspace = key.rsplit_once('/').map_or(key.as_str(), |(_, id)| id);
+        workspaces.contains(&workspace)
+    });
+    keys.len() != before
 }
 
 /// The dragged navigation panel width in pixels, if any.
@@ -732,6 +747,33 @@ mod tests {
             Settings::current().minimised_peer_lists,
             ["0123abcd/4c1f0e9a2b3d", "0123abcd/ffffffffffff"]
         );
+        // A full list still takes a new minimise: the oldest give way.
+        for n in 0..MAX_PEER_LISTS {
+            set_peer_list_minimised(&format!("0123abcd/{n:012x}"), true);
+        }
+        assert!(!peer_list_minimised("0123abcd/4c1f0e9a2b3d"));
+        assert!(!peer_list_minimised("0123abcd/ffffffffffff"));
+        set_peer_list_minimised("000000000003", true);
+        assert!(peer_list_minimised("000000000003"));
+        assert!(!peer_list_minimised("0123abcd/000000000000"));
+        assert_eq!(
+            Settings::current().minimised_peer_lists.len(),
+            MAX_PEER_LISTS
+        );
+        // The lists of deleted workspaces are forgotten.
+        assert!(forget_peer_lists_outside(&["000000000001", "000000000003"]));
+        assert_eq!(
+            Settings::current().minimised_peer_lists,
+            [
+                "0123abcd/000000000001",
+                "0123abcd/000000000003",
+                "000000000003"
+            ]
+        );
+        assert!(!forget_peer_lists_outside(&[
+            "000000000001",
+            "000000000003"
+        ]));
         Settings::default().apply();
         assert_eq!(Settings::current(), Settings::default());
         assert_eq!(Settings::parse("not toml ["), Settings::default());

@@ -1246,6 +1246,21 @@ impl Browser {
             } else {
                 self.layout = Some(WindowLayout::new(document));
             }
+            if let Some(layout) = &self.layout {
+                let workspaces: Vec<&str> = layout
+                    .model()
+                    .workspaces
+                    .iter()
+                    .map(|space| space.id.as_str())
+                    .collect();
+                if settings::forget_peer_lists_outside(&workspaces) {
+                    settings::save_in_background(settings::Settings::current(), |result| {
+                        if let Err(error) = result {
+                            tracing::warn!(%error, "Deleted workspaces' peer lists not forgotten");
+                        }
+                    });
+                }
+            }
         }
     }
 
@@ -3400,27 +3415,26 @@ impl Render for Browser {
                     ),
                     None => views::ViewPane::new(view, directory, folders, window, cx),
                 });
-                if let Some(space) = self
-                    .layout
-                    .as_ref()
-                    .and_then(|layout| layout.model().workspace_for_pane(&id))
-                {
-                    let name = self
-                        .workspace_profiles
-                        .profile_name(space)
-                        .map(str::to_owned);
-                    let (profile, workspace) = (space.profile_id.clone(), space.id.clone());
-                    pane.update(cx, |pane, cx| {
-                        pane.place_connections(profile.as_deref(), &workspace, name.as_deref(), cx)
-                    });
-                }
                 if let Some(section) = self.opening_sections.remove(&id)
                     && reports
                 {
                     pane.update(cx, |pane, cx| pane.open_section(section, window, cx));
                 }
                 self.views
-                    .insert(id, (pane, navigation_origin::ViewEvents::default()));
+                    .insert(id.clone(), (pane, navigation_origin::ViewEvents::default()));
+            }
+            // Placed on every draw, so a profile name that loads after the
+            // pane exists still reaches it.
+            if let Some((pane, _)) = self.views.get(&id)
+                && let Some(space) = self
+                    .layout
+                    .as_ref()
+                    .and_then(|layout| layout.model().workspace_for_pane(&id))
+            {
+                let name = self.workspace_profiles.profile_name(space);
+                pane.update(cx, |pane, cx| {
+                    pane.place_connections(space.profile_id.as_deref(), &space.id, name, cx)
+                });
             }
         }
         if let Some((workspace, key, selection)) = self.peer_to_open.take()
