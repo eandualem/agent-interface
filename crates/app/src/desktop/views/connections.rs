@@ -6,6 +6,9 @@ use gpui::{
 };
 mod live;
 mod model;
+// Drawn from in the next steps of the redesign.
+#[allow(dead_code)]
+mod rules;
 mod thread;
 use model::{Decision, Gates, Link, Peer, Receipt};
 

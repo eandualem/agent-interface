@@ -1,4 +1,5 @@
 //! Owner-scoped data for the native Connections pane. Stream frames only invalidate reads.
+use super::rules::clock;
 use super::*;
 use crate::desktop::peer_inbox::{Inbox, Selection, Summary, failure};
 use agent_interface_roster::profiles::{AddError, Connection, Error, peers as api};
@@ -1623,13 +1624,6 @@ fn band(message: String) -> Div {
 /// and refuses any other request ID before routing it.
 fn request_key() -> String {
     uuid::Uuid::now_v7().simple().to_string()
-}
-
-/// A service timestamp as local HH:MM, or as sent when it does not parse.
-fn clock(stamp: &str) -> String {
-    chrono::DateTime::parse_from_rfc3339(stamp)
-        .map(|at| at.with_timezone(&chrono::Local).format("%H:%M").to_string())
-        .unwrap_or_else(|_| stamp.to_owned())
 }
 
 // Local revocation has stopped delivery; the peer has not yet acknowledged it,
