@@ -217,7 +217,8 @@ def main(test_args):
                     path = debug / folder / entry
                     freed += size(path)
                     remove(path)
-        for path in list(unnamed_objects(debug / "deps")):
+        deps = debug / "deps"
+        for path in list(unnamed_objects(deps)) if deps.is_dir() else ():
             # An object file the incremental cache also links frees nothing.
             if path.stat().st_nlink == 1:
                 freed += size(path)

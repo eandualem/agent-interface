@@ -1,6 +1,7 @@
 """Check which artifacts the sweep keeps."""
 
 import importlib.util
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -63,11 +64,13 @@ class SweepTests(unittest.TestCase):
             (deps / "baz-1111111111111111").write_bytes(b"")
             (deps / "baz-1111111111111111.unit.earlier.rcgu.o").write_bytes(b"")
             # An output that cannot be read keeps its unit's object files too.
-            qux = "qux-2222222222222222"
-            (deps / f"lib{qux}.rlib").write_bytes(f"{qux}.unit.latest.rcgu.o/".encode())
-            (deps / f"lib{qux}.rlib").chmod(0)
-            (deps / f"{qux}.unit.latest.rcgu.o").write_bytes(b"")
-            (deps / f"{qux}.unit.earlier.rcgu.o").write_bytes(b"")
+            # Root reads any file, so the case is left out there.
+            if os.geteuid():
+                qux = "qux-2222222222222222"
+                (deps / f"lib{qux}.rlib").write_bytes(f"{qux}.unit.latest.rcgu.o/".encode())
+                (deps / f"lib{qux}.rlib").chmod(0)
+                (deps / f"{qux}.unit.latest.rcgu.o").write_bytes(b"")
+                (deps / f"{qux}.unit.earlier.rcgu.o").write_bytes(b"")
             self.assertEqual(
                 [path.name for path in sweep.unnamed_objects(deps)],
                 [f"{unit}.unit.earlier.rcgu.o"],
