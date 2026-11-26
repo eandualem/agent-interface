@@ -150,6 +150,8 @@ impl Pane {
         self.needs_you = false;
         self.expanded.clear();
         self.notes.clear();
+        // Gate changes belong to the records they were made on.
+        self.live.events.clear();
         self.filter.update(cx, |field, cx| field.clear(cx));
         let first = self.preview.as_ref().and_then(|sample| {
             sample
@@ -322,7 +324,6 @@ impl Render for Pane {
                     .bg(c.field)
                     .child(
                         ui::button("exit-preview", "Exit preview", ui::Button::Secondary)
-                            .track_focus(&self.entry)
                             .on_click(cx.listener(|this, _, _, cx| this.preview(false, cx))),
                     )
                     .child(

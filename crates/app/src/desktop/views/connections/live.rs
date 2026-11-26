@@ -315,7 +315,7 @@ fn gate_event(change: &Change) -> Option<GateEvent> {
 }
 
 /// A gate change made in this pane, shown in its thread at its time.
-struct GateEvent {
+pub(super) struct GateEvent {
     generation: String,
     /// Seconds since the epoch.
     at: f64,
@@ -345,7 +345,7 @@ pub(super) struct Live {
     oldest: Option<String>,
     pub(super) form: Option<Form>,
     /// Gate changes made in this pane, by generation, for their thread.
-    events: Vec<GateEvent>,
+    pub(super) events: Vec<GateEvent>,
     inbox: Entity<Inbox>,
     _events: Subscription,
 }
@@ -1041,11 +1041,13 @@ impl Pane {
         cx: &Context<Self>,
     ) -> Div {
         let (t, c) = (tokens(), colors());
-        let copy = ui::interaction_icon_button("copy-peer-id", "copy", "Copy its connection ID")
-            .tab_stop(true)
-            .when(self.copied.as_deref() == Some("copy-peer-id"), |el| {
-                el.child(ui::icon("check", t.size.icon - 1.0, c.ok))
-            });
+        let copied = self.copied.as_deref() == Some("copy-peer-id");
+        let copy = ui::interaction_icon_button(
+            "copy-peer-id",
+            if copied { "check" } else { "copy" },
+            "Copy its connection ID",
+        )
+        .tab_stop(true);
         let id = peer_id.to_owned();
         div()
             .flex()
@@ -1511,7 +1513,8 @@ impl Pane {
                 let connected = peer.state == "connected";
                 let state = if connected {
                     ui::tag("Connected", ui::Tone::Done)
-                } else if peer.state == "revocation_pending" {
+                } else if peer.state == "revocation_pending" && peer.revocation_failure.is_some() {
+                    // Only a disconnect the relay refused is a refusal.
                     ui::tag(link_status(peer), ui::Tone::Attention)
                 } else {
                     ui::tag(link_status(peer), ui::Tone::Quiet)
@@ -1527,11 +1530,13 @@ impl Pane {
                 ));
                 // An open form stays usable while only a read is in flight: the
                 // service checks each change, and the next read reconciles it.
+                // The preview's records never wait on Agent Backbone.
                 let held = connected
-                    && (self.preview.is_some() || self.live.stream_ok)
-                    && !self.live.sending
-                    && self.live.status.is_none()
-                    && self.live.retry.is_none();
+                    && (self.preview.is_some()
+                        || self.live.stream_ok
+                            && !self.live.sending
+                            && self.live.status.is_none()
+                            && self.live.retry.is_none());
                 if held && matches!(self.live.form, Some(Form::Disconnect(_))) {
                     column = column.child(
                         div()
@@ -1871,13 +1876,9 @@ impl Pane {
                     el.child("Agents write here. You decide what crosses a review gate.")
                 }),
             );
-        // The count opens the first peer waiting on the person.
-        let rows = s.summary.attention_rows();
-        if let Some((next, ..)) = rows
-            .iter()
-            .find(|(id, ..)| Some(id) != self.live.selected.as_ref())
-            .or(rows.first())
-            .cloned()
+        // The count opens the next peer waiting on the person.
+        if let Some(next) =
+            peers::next_waiting(&peers::entries(&s.summary), self.live.selected.as_ref())
             && !count.is_empty()
         {
             footer = footer.child(

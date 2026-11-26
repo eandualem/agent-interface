@@ -100,6 +100,16 @@ impl Entry {
     }
 }
 
+/// The row the waiting count opens: the first that waits on the person
+/// other than the one shown, else the one shown.
+pub(super) fn next_waiting(rows: &[Entry], shown: Option<&Selection>) -> Option<Selection> {
+    let waiting = || rows.iter().filter(|e| e.needs);
+    waiting()
+        .find(|e| Some(&e.selection) != shown)
+        .or_else(|| waiting().next())
+        .map(|e| e.selection.clone())
+}
+
 /// The rows for `summary`: requests not yet accepted, then connections.
 pub(super) fn entries(summary: &Summary) -> Vec<Entry> {
     let overview = &summary.overview;
@@ -579,6 +589,20 @@ impl Pane {
                         rules::display_name(entry.name.as_deref()).to_owned(),
                         None,
                     )
+                    // An unnamed connection is told apart by its fingerprint.
+                    .when(
+                        entry.name.as_deref().is_none_or(|n| n.trim().is_empty()),
+                        |el| {
+                            el.child(
+                                ui::text(
+                                    div().flex_shrink_0().font_family(t.font.mono.clone()),
+                                    &t.text.key,
+                                )
+                                .text_color(c.muted)
+                                .child(rules::fingerprint(&entry.peer_id)),
+                            )
+                        },
+                    )
                     .children(entry.badge.map(|(label, badge)| {
                         ui::text(
                             div().flex_shrink_0().text_color(badge_color(badge)),
@@ -722,6 +746,33 @@ mod tests {
             rows.iter()
                 .any(|e| e.badge == Some(("stopped".into(), Badge::Failed)))
         );
+    }
+
+    #[test]
+    fn the_waiting_count_opens_a_review_or_request_never_a_refusal() {
+        let sample = model::Sample::new();
+        let rows = entries(&Summary::with_counts(
+            sample.overview.clone(),
+            sample.counts(),
+        ));
+        let first = next_waiting(&rows, None).unwrap();
+        assert!(
+            rows.iter()
+                .any(|e| e.selection == first && e.badge.as_ref().unwrap().1 == Badge::Waiting)
+        );
+        // From the first waiting row, it moves on to the next one.
+        let second = next_waiting(&rows, Some(&first)).unwrap();
+        assert_ne!(second, first);
+        let declined = rows
+            .iter()
+            .find(|e| e.badge.as_ref().is_some_and(|b| b.1 == Badge::Failed))
+            .unwrap();
+        for shown in rows.iter().map(|e| Some(&e.selection)) {
+            assert_ne!(next_waiting(&rows, shown), Some(declined.selection.clone()));
+        }
+        // Nothing waiting, nothing to open.
+        let quiet: Vec<_> = rows.into_iter().filter(|e| !e.needs).collect();
+        assert_eq!(next_waiting(&quiet, None), None);
     }
 
     #[test]
