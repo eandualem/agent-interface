@@ -219,6 +219,9 @@ group!(
     /// Component sizes.
     Size {
         connections_rail: f32 = number, connections_split: f32 = number,
+        connections_narrow: f32 = number, peer_row: f32 = number, peer_strip: f32 = number,
+        peer_list: f32 = number, peer_header: f32 = number, message_avatar: f32 = number,
+        review_strip: f32 = number, connect_popover: f32 = number, request_card: f32 = number,
         titlebar: f32 = number, window_controls_x: f32 = number,
         window_controls_y: f32 = number, panel_width: f32 = number, panel_min: f32 = number,
         panel_max: f32 = number, workspace_tile: f32 = number, row: f32 = number,

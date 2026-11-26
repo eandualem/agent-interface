@@ -1,13 +1,15 @@
 //! Owner-scoped data for the native Connections pane. Stream frames only invalidate reads.
-use super::rules::clock;
+use super::card::LOCAL_AGENT;
+use super::rules;
 use super::*;
 use crate::desktop::peer_inbox::{Inbox, Selection, Summary, failure};
+use crate::desktop::views::clock::Local;
 use agent_interface_roster::profiles::{AddError, Connection, Error, peers as api};
 use api::{Direction, Policy};
 use std::{collections::HashSet, sync::Arc};
 
 #[derive(Clone)]
-enum Change {
+pub(super) enum Change {
     Invite(String),
     Answer(String, bool),
     Gates(String, Vec<(Direction, Policy, String)>),
@@ -16,7 +18,7 @@ enum Change {
 }
 
 #[derive(Clone)]
-enum DecisionKind {
+pub(super) enum DecisionKind {
     Pass,
     Decline,
     Revise(String),
@@ -160,33 +162,7 @@ impl Snapshot {
         selected: Option<Selection>,
         oldest: Option<String>,
     ) -> Result<Self, Error> {
-        let overview = &summary.overview;
-        let selection = match selected {
-            Some(Selection::Request(ref id)) => overview
-                .invitations
-                .iter()
-                .find(|r| &r.request_id == id)
-                .and_then(|r| {
-                    if r.state == "accepted" {
-                        overview
-                            .connections
-                            .iter()
-                            .find(|p| {
-                                Some(&p.connection.generation) == r.generation.as_ref()
-                                    && p.connection.peer_id == r.peer_id
-                            })
-                            .map(|p| Selection::Peer(p.connection.clone()))
-                    } else {
-                        Some(Selection::Request(id.clone()))
-                    }
-                }),
-            Some(Selection::Peer(ref id))
-                if overview.connections.iter().any(|p| &p.connection == id) =>
-            {
-                selected
-            }
-            _ => None,
-        };
+        let selection = resolve(&summary.overview, selected);
         let history = match &selection {
             Some(Selection::Peer(id)) => {
                 let mut page = c.peer_history(id, None)?;
@@ -221,6 +197,59 @@ impl Snapshot {
     }
 }
 
+/// What `selected` stands for in `overview` now: an accepted request is its
+/// connection, and anything no longer listed is nothing.
+fn resolve(overview: &api::Overview, selected: Option<Selection>) -> Option<Selection> {
+    match selected {
+        Some(Selection::Request(ref id)) => overview
+            .invitations
+            .iter()
+            .find(|r| &r.request_id == id)
+            .and_then(|r| {
+                if r.state == "accepted" {
+                    overview
+                        .connections
+                        .iter()
+                        .find(|p| {
+                            Some(&p.connection.generation) == r.generation.as_ref()
+                                && p.connection.peer_id == r.peer_id
+                        })
+                        .map(|p| Selection::Peer(p.connection.clone()))
+                } else {
+                    Some(Selection::Request(id.clone()))
+                }
+            }),
+        Some(Selection::Peer(ref id))
+            if overview.connections.iter().any(|p| &p.connection == id) =>
+        {
+            selected
+        }
+        _ => None,
+    }
+}
+
+/// The line a gate change leaves in its thread.
+fn gate_event(change: &Change) -> Option<(String, String)> {
+    let Change::Gates(generation, changes) = change else {
+        return None;
+    };
+    let text = changes
+        .iter()
+        .map(|(direction, policy, _)| {
+            format!(
+                "{} gate set to {policy:?}",
+                match direction {
+                    Direction::Incoming => "Incoming",
+                    Direction::Outgoing => "Outgoing",
+                }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let at = chrono::Local::now().format("%H:%M");
+    Some((generation.clone(), format!("{at} · {text}")))
+}
+
 struct PendingRetry {
     action: Change,
     key: String,
@@ -243,6 +272,8 @@ pub(super) struct Live {
     older_loading: bool,
     oldest: Option<String>,
     pub(super) form: Option<Form>,
+    /// Gate changes made in this pane, by generation, for their thread.
+    events: Vec<(String, String)>,
     inbox: Entity<Inbox>,
     _events: Subscription,
 }
@@ -270,6 +301,7 @@ impl Live {
             older_loading: false,
             oldest: None,
             form: None,
+            events: Vec::new(),
             inbox,
             _events: subscription,
         }
@@ -289,7 +321,7 @@ impl Pane {
     }
 
     pub(in crate::desktop) fn pick_peer(&mut self, target: Selection, cx: &mut Context<Self>) {
-        if self.preview {
+        if self.preview.is_some() {
             self.preview(false, cx);
         }
         self.pick(Some(target), cx);
@@ -305,7 +337,8 @@ impl Pane {
     }
 
     fn refresh_live(&mut self, cx: &mut Context<Self>) {
-        if !self.live.stream_ok {
+        // The preview's selection is not the service's to resolve.
+        if !self.live.stream_ok || self.preview.is_some() {
             return;
         }
         if self.live.reading {
@@ -373,19 +406,22 @@ impl Pane {
         cx.notify();
     }
 
-    fn pick(&mut self, target: Option<Selection>, cx: &mut Context<Self>) {
+    pub(super) fn pick(&mut self, target: Option<Selection>, cx: &mut Context<Self>) {
         self.live.oldest = None;
         self.live.selected = target;
         self.live.form = None;
         self.show_thread = self.live.selected.is_some();
-        self.copied = false;
+        self.copied = None;
         self.refresh_live(cx);
         cx.notify();
     }
 
-    fn change(&mut self, action: Change, cx: &mut Context<Self>) {
-        if self.preview
-            || !action.belongs_to(self.live.selected.as_ref())
+    pub(super) fn change(&mut self, action: Change, cx: &mut Context<Self>) {
+        if self.preview.is_some() {
+            self.change_preview(action, cx);
+            return;
+        }
+        if !action.belongs_to(self.live.selected.as_ref())
             || self.live.sending
             || self.live.retry.is_some()
             || self.live.status.is_some()
@@ -402,6 +438,40 @@ impl Pane {
         self.send_live(cx);
     }
 
+    /// Apply `action` to the preview's records, as the service would.
+    fn change_preview(&mut self, action: Change, cx: &mut Context<Self>) {
+        let Some(sample) = &mut self.preview else {
+            return;
+        };
+        if !action.belongs_to(self.live.selected.as_ref()) {
+            return;
+        }
+        if let Some(event) = gate_event(&action) {
+            self.live.events.push(event);
+        }
+        match action {
+            Change::Invite(id) => sample.invite(&id),
+            Change::Answer(request, accept) => sample.answer(&request, accept),
+            Change::Gates(generation, changes) => {
+                for (direction, policy, _) in changes {
+                    sample.set_gate(&generation, direction, policy);
+                }
+            }
+            Change::Review(m, decision) => sample.review(
+                &m.message_id,
+                match decision {
+                    DecisionKind::Pass => model::Decision::Pass,
+                    DecisionKind::Decline => model::Decision::Decline,
+                    DecisionKind::Revise(_) => model::Decision::Revise,
+                },
+            ),
+            Change::Disconnect(generation) => sample.disconnect(&generation),
+        }
+        self.live.form = None;
+        self.live.selected = resolve(&sample.overview, self.live.selected.take());
+        cx.notify();
+    }
+
     fn send_live(&mut self, cx: &mut Context<Self>) {
         if self.live.sending || !self.live.stream_ok {
             return;
@@ -414,10 +484,11 @@ impl Pane {
         else {
             return;
         };
-        if self.preview || !change.belongs_to(self.live.selected.as_ref()) {
+        if self.preview.is_some() || !change.belongs_to(self.live.selected.as_ref()) {
             return;
         }
         let description = change.description();
+        let event = gate_event(&change);
         let invite = matches!(change, Change::Invite(_));
         self.live.sending = true;
         self.live.form = None;
@@ -431,6 +502,7 @@ impl Pane {
                 pane.live.sending = false;
                 match result {
                     Ok(()) => {
+                        pane.live.events.extend(event);
                         pane.live.retry = None;
                         pane.live.status = None;
                         pane.live.inbox.update(cx, |inbox, cx| inbox.refresh(cx));
@@ -481,17 +553,19 @@ impl Pane {
             Some(Form::Connect) => {
                 self.change(Change::Invite(value.split_whitespace().collect()), cx)
             }
-            Some(Form::Revise(m)) => self.change(
-                Change::Review(Box::new(m.clone()), DecisionKind::Revise(value)),
-                cx,
-            ),
+            Some(Form::Revise(m)) => {
+                let at = chrono::Local::now().format("%H:%M").to_string();
+                self.notes.insert(m.message_id.clone(), (value.clone(), at));
+                let m = m.clone();
+                self.change(Change::Review(Box::new(m), DecisionKind::Revise(value)), cx)
+            }
             _ => {}
         }
     }
 }
 
 impl Pane {
-    fn live_button(
+    pub(super) fn live_button(
         &self,
         id: impl Into<String>,
         label: impl Into<String>,
@@ -505,7 +579,7 @@ impl Pane {
             .on_click(cx.listener(move |pane, _, window, cx| action(pane, window, cx)))
     }
 
-    fn show_form(&mut self, form: Form, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn show_form(&mut self, form: Form, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(&form, Form::Connect | Form::Revise(_)) {
             self.input.update(cx, |field, cx| {
                 field.clear(cx);
@@ -551,37 +625,8 @@ impl Pane {
                 )
         };
         let (label, prompt, action) = match form {
-            Form::Connect => return div(),
-            Form::Revise(_) => {
-                return div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(t.space.s6))
-                    .child(
-                        ui::text(div().text_color(c.text_2), &t.text.meta)
-                            .child("Revision note for main"),
-                    )
-                    .child(field_box(hinted(&self.input, "What should main change?", cx)))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap(px(t.space.s8))
-                            .child(self.live_button(
-                                "live-submit",
-                                "Send note to main",
-                                ui::Button::Primary,
-                                cx,
-                                |pane, _, cx| pane.submit_live_form(cx),
-                            ))
-                            .child(cancel),
-                    );
-            }
-            Form::Decline(message) => (
-                "Confirm decline",
-                "Decline this message? It will not be delivered.".to_owned(),
-                Change::Review(Box::new(message.clone()), DecisionKind::Decline),
-            ),
+            // These are drawn in the connect panel and in their message's card.
+            Form::Connect | Form::Revise(_) | Form::Decline(_) => return div(),
             Form::Disconnect(id) => (
                 "Disconnect",
                 "Disconnect? Delivery stops here at once; the other profile confirms when it next connects.".to_owned(),
@@ -765,16 +810,13 @@ impl Pane {
         entry: bool,
         cx: &Context<Self>,
     ) -> gpui::Stateful<Div> {
+        let copied = self.copied.as_deref() == Some(id);
         let button = self.live_button(
             id,
-            if self.copied { "Copied" } else { label },
+            if copied { "Copied" } else { label },
             ui::Button::Secondary,
             cx,
-            move |p, _, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(local.clone()));
-                p.copied = true;
-                cx.notify();
-            },
+            move |p, _, cx| p.copy(id.into(), local.clone(), cx),
         );
         if entry {
             button.track_focus(&self.entry)
@@ -888,19 +930,33 @@ impl Pane {
             .children(state)
     }
 
-    fn live_thread(&self, snapshot: &Snapshot, actions: bool, cx: &Context<Self>) -> Div {
+    fn live_thread(&self, snapshot: &Snapshot, actions: bool, cx: &mut Context<Self>) -> Div {
         let (t, c) = (tokens(), colors());
         let column = div().flex_1().min_w_0().min_h_0().flex().flex_col();
         let body = div()
             .id("peer-history")
+            .track_focus(&self.thread_focus)
+            // A press in the thread lets the copy and select-all keys act
+            // on its text.
+            .capture_any_mouse_down(cx.listener(|pane, _, window, cx| {
+                window.focus(&pane.thread_focus, cx);
+            }))
+            .on_action(cx.listener(|pane, _: &crate::desktop::Copy, _, cx| {
+                pane.selection.borrow().copy(cx);
+            }))
+            .on_action(cx.listener(|pane, _: &crate::desktop::SelectAll, _, cx| {
+                pane.selection.borrow_mut().select_all();
+                cx.notify();
+            }))
             .flex_1()
             .min_w_0()
             .min_h_0()
             .overflow_y_scroll()
-            .p(px(t.space.s12))
+            .px(px(t.space.s20))
+            .py(px(t.space.s16))
             .flex()
             .flex_col()
-            .gap(px(t.space.s10));
+            .gap(px(t.space.s12));
         let meta = |text: String| ui::text(div().text_color(c.muted), &t.text.meta).child(text);
         // Without a peer header, a narrow tile still needs its way back.
         let empty = |title: &'static str, body: &'static str| {
@@ -1017,7 +1073,7 @@ impl Pane {
                 else {
                     return empty("No longer listed", "Choose another peer.");
                 };
-                let name = peer.display_name.as_deref().unwrap_or(&id.peer_id);
+                let name = rules::display_name(peer.display_name.as_deref());
                 let gates = peer.gates;
                 let gate_label = format!("↙ {:?} · ↗ {:?}", gates.incoming, gates.outgoing);
                 let connected = peer.state == "connected";
@@ -1065,7 +1121,7 @@ impl Pane {
                 // An open form stays usable while only a read is in flight: the
                 // service checks each change, and the next read reconciles it.
                 let held = connected
-                    && self.live.stream_ok
+                    && (self.preview.is_some() || self.live.stream_ok)
                     && !self.live.sending
                     && self.live.status.is_none()
                     && self.live.retry.is_none();
@@ -1080,19 +1136,9 @@ impl Pane {
                             .child(self.live_form(cx)),
                     );
                 }
-                // A self-reported name never hides the identity it stands for.
-                let mut body = body
-                    .children(
-                        peer.display_name
-                            .is_some()
-                            .then(|| ui::mono(id.peer_id.clone()).text_color(c.muted)),
-                    )
-                    .children(revocation_note(peer).map(|note| {
-                        ui::text(div().text_color(c.attention_text), &t.text.meta).child(note)
-                    }))
-                    .child(meta(format!(
-                        "Left: {name} (external · available to main) · Right: main"
-                    )));
+                let mut body = body.children(revocation_note(peer).map(|note| {
+                    ui::text(div().text_color(c.attention_text), &t.text.meta).child(note)
+                }));
                 let Some(history) = &snapshot.history else {
                     return column.child(body);
                 };
@@ -1106,170 +1152,52 @@ impl Pane {
                     )));
                 }
                 if history.items.is_empty() {
-                    body = body.child(meta("No messages yet.".into()));
+                    body = body.child(event(
+                        "message-square",
+                        "No messages yet.".into(),
+                        String::new(),
+                    ));
                 }
-                let tint = [c.info, c.violet, c.green, c.accent][id
-                    .peer_id
-                    .bytes()
-                    .fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize))
-                    % 4];
+                let now = Local::now();
+                let mut day: Option<Local> = None;
                 for m in &history.items {
-                    body =
-                        body.child(self.live_card(name, tint, m, actions && connected, held, cx));
+                    if let Some(at) = epoch(&m.submitted_at).and_then(Local::at)
+                        && let Some(now) = &now
+                        && !day.is_some_and(|d| d.same_day(&at))
+                    {
+                        body = body.child(ui::thread_divider(at.day_name(now), false));
+                        day = Some(at);
+                    }
+                    body = body.child(if m.state == "revision_requested" {
+                        let (note, at) = self.notes.get(&m.message_id).cloned().unzip();
+                        event(
+                            "corner-down-left",
+                            format!(
+                                "{}You asked {LOCAL_AGENT} to revise its message",
+                                at.map(|at| format!("{at} · ")).unwrap_or_default()
+                            ),
+                            note.map(|note| {
+                                format!(": \u{201c}{}\u{201d}", note.lines().next().unwrap_or(""))
+                            })
+                            .unwrap_or_default(),
+                        )
+                    } else {
+                        let revision = self
+                            .preview
+                            .as_ref()
+                            .and_then(|sample| sample.revisions.get(&m.message_id).copied());
+                        self.message_card(name, m, revision, actions && connected, cx)
+                    });
+                }
+                for (_, text) in self.live.events.iter().filter(|(g, _)| g == &id.generation) {
+                    body = body.child(event("sliders-horizontal", text.clone(), String::new()));
+                }
+                if !connected {
+                    body = body.child(event("link-2-off", link_status(peer), String::new()));
                 }
                 column.child(body)
             }
         }
-    }
-
-    /// One message: the peer's on the left with its tint, main's on the right,
-    /// and a dashed outline while it waits for review.
-    fn live_card(
-        &self,
-        name: &str,
-        tint: gpui::Rgba,
-        m: &api::Message,
-        actions: bool,
-        held: bool,
-        cx: &Context<Self>,
-    ) -> Div {
-        let (t, c) = (tokens(), colors());
-        let outgoing = m.direction == Direction::Outgoing;
-        let waiting = m.state == "pending_review";
-        let meta = |text: String| ui::text(div().text_color(c.muted), &t.text.meta).child(text);
-        let mut card = div()
-            .min_w_0()
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .gap(px(t.space.s6))
-            .max_w(gpui::relative(if waiting { 0.88 } else { 0.82 }))
-            .p(px(t.space.s10))
-            .rounded(px(t.radius.card))
-            .border(px(t.size.hairline))
-            .bg(if outgoing && !waiting {
-                c.outgoing_surface
-            } else {
-                c.panel
-            })
-            .border_color(if outgoing { c.outgoing_border } else { c.line })
-            .when(outgoing, |el| el.self_end().rounded_tr(px(t.radius.key)))
-            .when(!outgoing, |el| {
-                el.self_start()
-                    .rounded_tl(px(t.radius.key))
-                    .border_l(px(t.space.s2))
-                    .border_color(tint)
-            })
-            .when(waiting, |el| {
-                el.border(px(t.size.hairline))
-                    .border_dashed()
-                    .border_color(c.attention)
-            })
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .justify_between()
-                    .gap(px(t.space.s12))
-                    .child(
-                        ui::mono(if outgoing {
-                            "main".to_owned()
-                        } else {
-                            name.to_owned()
-                        })
-                        .text_color(if outgoing {
-                            c.text_2
-                        } else {
-                            tint
-                        }),
-                    )
-                    .child(
-                        ui::text(
-                            div().text_color(if waiting { c.attention_text } else { c.muted }),
-                            &t.text.meta,
-                        )
-                        .child(if waiting {
-                            format!("review · {}", clock(&m.submitted_at))
-                        } else {
-                            clock(&m.submitted_at)
-                        }),
-                    ),
-            )
-            .child(ui::text(div().text_color(c.text), &t.text.body).child(m.text.clone()));
-        let receipt = match &m.receipt {
-            _ if waiting => None,
-            api::Receipt::Missing => Some(match m.state.as_str() {
-                "received" => "Stored by peer · terminal receipt pending".into(),
-                "uploaded" => "Uploaded to relay · terminal receipt pending".into(),
-                "queued" => "Queued · terminal receipt pending".into(),
-                "upload_unconfirmed" => "Upload unconfirmed".into(),
-                "outcome_unknown" => "Delivery outcome unknown".into(),
-                s => s.replace('_', " "),
-            }),
-            api::Receipt::Uncertain => Some("Delivery uncertain".into()),
-            api::Receipt::Confirmed {
-                outcome,
-                recorded_at,
-            } => Some(format!(
-                "{} · receipt received {}",
-                outcome.replace('_', " "),
-                clock(recorded_at)
-            )),
-        };
-        card = card.children(receipt.map(meta));
-        if let Some(f) = &m.upload_failure {
-            card = card.child(ui::mono(f.code.clone()).text_color(c.attention_text));
-        }
-        let ours = matches!(
-            &self.live.form,
-            Some(Form::Decline(x) | Form::Revise(x)) if x.message_id == m.message_id
-        );
-        if waiting && ours && held {
-            return card.child(self.live_form(cx));
-        }
-        if !(waiting && actions) {
-            return card;
-        }
-        let pass = m.clone();
-        let decline = m.clone();
-        let mut row = div()
-            .flex()
-            .flex_wrap()
-            .gap(px(t.space.s8))
-            .child(self.live_button(
-                format!("pass-{}", m.message_id),
-                "Pass through",
-                ui::Button::Primary,
-                cx,
-                move |p, _, cx| {
-                    p.change(
-                        Change::Review(Box::new(pass.clone()), DecisionKind::Pass),
-                        cx,
-                    )
-                },
-            ));
-        if outgoing {
-            let msg = m.clone();
-            row = row.child(self.live_button(
-                format!("revise-{}", m.message_id),
-                "Ask to revise",
-                ui::Button::Secondary,
-                cx,
-                move |p, w, cx| p.show_form(Form::Revise(msg.clone()), w, cx),
-            ));
-        }
-        card.child(row.child(self.live_button(
-            format!("decline-{}", m.message_id),
-            "Decline",
-            ui::Button::Danger,
-            cx,
-            move |p, w, cx| p.show_form(Form::Decline(decline.clone()), w, cx),
-        )))
-        .child(meta(if outgoing {
-            format!("Pass through sends it unchanged to {name}.")
-        } else {
-            "Pass through makes it available to main and notifies it.".into()
-        }))
     }
 
     /// The peer column for the service's invitations and connections.
@@ -1361,7 +1289,24 @@ impl Pane {
         self.rail_frame(rows, true, cx, |p, w, cx| p.show_form(Form::Connect, w, cx))
     }
 
-    pub(super) fn live_view(&self, cx: &Context<Self>) -> Div {
+    /// The preview's records as a read of the service would give them.
+    fn sample_snapshot(&self, sample: &model::Sample) -> Snapshot {
+        let selection = resolve(&sample.overview, self.live.selected.clone());
+        let history = match &selection {
+            Some(Selection::Peer(generation)) => Some(sample.history(generation)),
+            _ => None,
+        };
+        Snapshot {
+            summary: Arc::new(Summary::with_counts(
+                sample.overview.clone(),
+                sample.counts(),
+            )),
+            selection,
+            history,
+        }
+    }
+
+    pub(super) fn live_view(&self, cx: &mut Context<Self>) -> Div {
         let (t, c) = (tokens(), colors());
         let mut view = div()
             .relative()
@@ -1370,23 +1315,6 @@ impl Pane {
             .min_w_0()
             .flex()
             .flex_col();
-        let entity = cx.entity().downgrade();
-        view = view.child(
-            canvas(
-                move |bounds, _, cx| {
-                    let compact = f32::from(bounds.size.width) < tokens().size.connections_split;
-                    let _ = entity.update(cx, |p, cx| {
-                        if p.compact != compact {
-                            p.compact = compact;
-                            cx.notify();
-                        }
-                    });
-                },
-                |_, (), _, _| (),
-            )
-            .absolute()
-            .size_full(),
-        );
         let refresh = self.live_button(
             "live-refresh",
             "Retry",
@@ -1401,7 +1329,11 @@ impl Pane {
                 .justify_center()
                 .gap(px(t.space.s8))
         };
-        let Some(s) = &self.live.snapshot else {
+        let sample = self
+            .preview
+            .as_ref()
+            .map(|sample| self.sample_snapshot(sample));
+        let Some(s) = sample.as_ref().or(self.live.snapshot.as_ref()) else {
             let failed = self.live.status.clone();
             return view.child(ui::empty_state(
                 ui::empty_tile(
@@ -1438,18 +1370,21 @@ impl Pane {
                     ),
             ));
         };
-        let actions = self.live.stream_ok
-            && !self.live.reading
-            && !self.live.sending
-            && self.live.status.is_none()
-            && self.live.retry.is_none();
+        let preview = self.preview.is_some();
+        let actions = preview
+            || self.live.stream_ok
+                && !self.live.reading
+                && !self.live.sending
+                && self.live.status.is_none()
+                && self.live.retry.is_none();
         let local = s.summary.overview.local_id.clone();
         let overview = &s.summary.overview;
         // An invitation waits only for the service, not for a read in flight.
-        let can_send = self.live.stream_ok
-            && !self.live.sending
-            && self.live.status.is_none()
-            && self.live.retry.is_none();
+        let can_send = preview
+            || self.live.stream_ok
+                && !self.live.sending
+                && self.live.status.is_none()
+                && self.live.retry.is_none();
         let listed = !overview.connections.is_empty()
             || overview.invitations.iter().any(|r| r.state != "accepted");
         let mut main = div().relative().flex_1().min_h_0().min_w_0().flex();
@@ -1488,13 +1423,21 @@ impl Pane {
                 main = main.child(self.live_rail(s, cx));
             }
             if !self.compact || self.show_thread {
-                main = main.child(self.live_thread(s, actions, cx));
+                main = main.child(loop {
+                    // As in a reader: a block that changed after earlier ones
+                    // were drawn clears the selection, so draw them again.
+                    self.selection.borrow_mut().begin();
+                    let thread = self.live_thread(s, actions, cx);
+                    if !self.selection.borrow_mut().finish() {
+                        break thread;
+                    }
+                });
             }
         }
         if matches!(self.live.form, Some(Form::Connect)) {
             main = main.child(self.connect_panel(&local, can_send, cx));
         }
-        view = view.child(main);
+        view = view.child(main).child(selection::events(cx));
         if let Some(error) = &self.live.status {
             view = view.child(band(error.clone()).child(refresh));
         } else if let Some(notice) = &self.live.notice {
@@ -1544,39 +1487,57 @@ impl Pane {
             ));
             view = view.child(banner);
         }
-        let pending = s.summary.overview.pending_reviews;
+        let waiting = s.summary.overview.pending_reviews;
+        let requests = s.summary.requests();
+        let count = [
+            (requests, "request", "requests"),
+            (
+                waiting,
+                "waiting for your review",
+                "waiting for your review",
+            ),
+        ]
+        .into_iter()
+        .filter(|(n, ..)| *n > 0)
+        .map(|(n, one, many)| format!("{n} {}", if n == 1 { one } else { many }))
+        .collect::<Vec<_>>()
+        .join(" · ");
         let mut footer = div()
             .flex()
             .flex_shrink_0()
-            .flex_wrap()
             .items_center()
-            .justify_between()
-            .gap(px(t.space.s8))
-            .px(px(t.space.s12))
-            .py(px(t.space.s6))
+            .gap(px(t.space.s12))
+            .h(px(t.size.view_footer))
+            .px(px(t.space.s20))
             .border_t(px(t.size.hairline))
             .border_color(c.line)
             .child(
-                ui::text(div().min_w_0().text_color(c.muted), &t.text.meta).child(format!(
-                    "Agent-to-agent via Agent Backbone · read {}{}",
-                    self.live.read_at.as_deref().unwrap_or("—"),
-                    if pending > 0 {
-                        format!(" · {pending} waiting for review")
-                    } else {
-                        String::new()
-                    }
-                )),
+                ui::text(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .text_color(c.muted),
+                    &t.text.meta,
+                )
+                .child("Agents write here. You decide what crosses a review gate."),
             );
-        if let Some((next, name, _)) = s
-            .summary
-            .attention_rows()
-            .into_iter()
-            .find(|(id, _, _)| Some(id) != self.live.selected.as_ref())
+        // The count opens the first peer waiting on the person.
+        let rows = s.summary.attention_rows();
+        if let Some((next, ..)) = rows
+            .iter()
+            .find(|(id, ..)| Some(id) != self.live.selected.as_ref())
+            .or(rows.first())
+            .cloned()
+            && !count.is_empty()
         {
             footer = footer.child(
                 ui::text(
                     div()
                         .id("next-waiting")
+                        .flex_shrink_0()
                         .focusable()
                         .tab_stop(true)
                         .cursor_pointer()
@@ -1584,7 +1545,7 @@ impl Pane {
                         .hover(|el| el.underline()),
                     &t.text.meta,
                 )
-                .child(format!("Next waiting: {name} →"))
+                .child(count)
                 .on_click(cx.listener(move |p, _, _, cx| p.pick(Some(next.clone()), cx))),
             );
         }
@@ -1618,6 +1579,29 @@ fn band(message: String) -> Div {
             )
             .child(message),
         )
+}
+
+/// Something that happened in a thread, centred on one muted line.
+fn event(icon: &str, happened: String, subject: String) -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex()
+        .flex_shrink_0()
+        .justify_center()
+        .min_w_0()
+        .child(ui::thread_event(
+            ui::icon(icon, t.size.icon - 2.0, c.muted),
+            happened,
+            subject,
+            "",
+        ))
+}
+
+/// Seconds since the epoch for a service timestamp.
+fn epoch(stamp: &str) -> Option<f64> {
+    chrono::DateTime::parse_from_rfc3339(stamp)
+        .ok()
+        .map(|at| at.timestamp_millis() as f64 / 1000.0)
 }
 
 /// A change's repeat key: Agent Backbone takes only a UUIDv7 in 32 hex digits

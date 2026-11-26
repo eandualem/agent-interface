@@ -1,42 +1,53 @@
-//! The native peer list and asymmetric conversation. Sample records are loaded
+//! The native peer list and agent-to-agent thread. Sample records are loaded
 //! only after the person explicitly opens the preview and live in this pane.
-use super::{NameEvent, NameField, colors, tokens, ui};
-use gpui::{
-    ClipboardItem, Context, Div, Entity, Render, Subscription, Window, canvas, div, prelude::*, px,
+use super::{
+    NameEvent, NameField, colors,
+    selection::{self, Selectable, Selection},
+    tokens, ui,
 };
+use gpui::{
+    ClipboardItem, Context, Div, Entity, Render, SharedString, Subscription, Window, canvas, div,
+    prelude::*, px,
+};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
+mod card;
 mod live;
 mod model;
-// Drawn from in the next steps of the redesign.
+// The ID check and fingerprint are drawn from in the next steps.
 #[allow(dead_code)]
 mod rules;
-mod thread;
-use model::{Decision, Gates, Link, Peer, Receipt};
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Editor {
-    None,
-    Connect,
-    Gates(Gates),
-    Disconnect,
-    Decline(usize),
-    Revise(usize),
-}
 
 pub(super) struct Pane {
     live: live::Live,
-    preview: bool,
+    /// The sample records while the preview is open.
+    preview: Option<model::Sample>,
     entry: gpui::FocusHandle,
-    peers: Vec<Peer>,
-    selected: Option<String>,
+    thread_focus: gpui::FocusHandle,
+    selection: RefCell<Selection>,
     needs_you: bool,
     filter: Entity<NameField>,
     input: Entity<NameField>,
-    editor: Editor,
     compact: bool,
+    /// The pane's width, for the cards' share of the column.
+    narrow: bool,
     show_thread: bool,
-    copied: bool,
-    error: Option<&'static str>,
+    /// What was copied last, shown as Copied for a moment.
+    copied: Option<SharedString>,
+    /// Messages whose whole body is open.
+    expanded: HashSet<String>,
+    /// The notes this pane sent back with a message, and when, by message.
+    notes: HashMap<String, (String, String)>,
     _subscriptions: [Subscription; 2],
+}
+
+impl Selectable for Pane {
+    fn selection(&self) -> &RefCell<Selection> {
+        &self.selection
+    }
 }
 
 impl Pane {
@@ -55,43 +66,39 @@ impl Pane {
             field.focus = field.focus.clone().tab_stop(true);
             field
         });
-        let search = cx.subscribe(&filter, |this, _, event: &NameEvent, cx| {
+        let search = cx.subscribe(&filter, |_, _, event: &NameEvent, cx| {
             if matches!(event, NameEvent::Changed(_)) {
-                if this.preview {
-                    this.reconcile(cx);
-                }
                 cx.notify();
             }
         });
-        let editor_keys = cx.subscribe_in(
-            &input,
-            window,
-            |this, _, event: &NameEvent, window, cx| match event {
-                NameEvent::Cancel if !this.preview => {
-                    this.live.form = None;
-                    cx.notify();
-                }
-                NameEvent::Save if !this.preview => this.submit_live_form(cx),
-                NameEvent::Cancel => this.edit(Editor::None, window, cx),
-                NameEvent::Save if this.editor == Editor::Connect => this.connect(cx),
-                NameEvent::Save => this.submit_revision(cx),
-                NameEvent::Changed(_) => {}
-            },
-        );
+        let editor_keys =
+            cx.subscribe_in(
+                &input,
+                window,
+                |this, _, event: &NameEvent, _, cx| match event {
+                    NameEvent::Cancel => {
+                        this.live.form = None;
+                        cx.notify();
+                    }
+                    NameEvent::Save => this.submit_live_form(cx),
+                    NameEvent::Changed(_) => cx.notify(),
+                },
+            );
         Self {
             live: live::Live::new(connection, cx),
-            preview: false,
+            preview: None,
             entry: cx.focus_handle().tab_stop(true),
-            peers: Vec::new(),
-            selected: None,
+            thread_focus: cx.focus_handle(),
+            selection: RefCell::default(),
             needs_you: false,
             filter,
             input,
-            editor: Editor::None,
             compact: false,
+            narrow: false,
             show_thread: false,
-            copied: false,
-            error: None,
+            copied: None,
+            expanded: HashSet::new(),
+            notes: HashMap::new(),
             _subscriptions: [search, editor_keys],
         }
     }
@@ -104,195 +111,69 @@ impl Pane {
         window.focus(&self.entry, cx);
     }
 
-    fn matches(&self, peer: &Peer, cx: &gpui::App) -> bool {
-        let query = self.filter.read(cx).value().trim().to_lowercase();
-        (!self.needs_you || peer.needs_you())
-            && (peer.name.to_lowercase().contains(&query)
-                || peer.id.to_lowercase().contains(&query))
-    }
-
-    fn select(&mut self, id: Option<String>, cx: &mut Context<Self>) {
-        self.selected = id;
-        self.editor = Editor::None;
-        self.error = None;
-        self.copied = false;
-        self.input.update(cx, |field, cx| field.clear(cx));
-    }
-
-    fn reconcile(&mut self, cx: &mut Context<Self>) {
-        if self
-            .peers
-            .iter()
-            .any(|peer| Some(&peer.id) == self.selected.as_ref() && self.matches(peer, cx))
-        {
-            return;
-        }
-        let next = self
-            .peers
-            .iter()
-            .find(|p| self.matches(p, cx))
-            .map(|p| p.id.clone());
-        self.select(next, cx);
-        self.show_thread = false;
-    }
-
+    /// Open or close the preview. Its records are new each time it opens.
     fn preview(&mut self, open: bool, cx: &mut Context<Self>) {
-        self.preview = open;
-        self.peers = if open { model::sample() } else { Vec::new() };
+        self.preview = open.then(model::Sample::new);
         self.needs_you = false;
-        self.show_thread = false;
+        self.expanded.clear();
+        self.notes.clear();
         self.filter.update(cx, |field, cx| field.clear(cx));
-        self.select(self.peers.first().map(|p| p.id.clone()), cx);
-        cx.notify();
-    }
-
-    fn edit(&mut self, editor: Editor, window: &mut Window, cx: &mut Context<Self>) {
-        self.editor = editor;
-        self.error = None;
-        self.copied = false;
-        self.input.update(cx, |field, cx| {
-            field.clear(cx);
-            if matches!(editor, Editor::Connect | Editor::Revise(_)) {
-                window.focus(&field.focus, cx);
-            }
+        let first = self.preview.as_ref().and_then(|sample| {
+            sample
+                .overview
+                .connections
+                .first()
+                .map(|p| peer_inbox::Selection::Peer(p.connection.clone()))
         });
-        cx.notify();
+        self.pick(first, cx);
     }
 
-    fn submit_revision(&mut self, cx: &mut Context<Self>) {
-        let Editor::Revise(n) = self.editor else {
-            return;
-        };
-        let Some(peer) = self
-            .peers
-            .iter_mut()
-            .find(|p| Some(&p.id) == self.selected.as_ref())
-        else {
-            return;
-        };
-        let note = self.input.read(cx).value().to_owned();
-        if note.trim().is_empty() {
-            self.error = Some("Enter a revision note.");
-        } else {
-            peer.review(n, Decision::Revise(note));
-            self.error = None;
-            self.editor = Editor::None;
-            self.reconcile(cx);
-        }
+    /// Copy `text` and show Copied on the control `key` for a moment.
+    fn copy(&mut self, key: SharedString, text: String, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        self.copied = Some(key.clone());
         cx.notify();
-    }
-
-    fn connect(&mut self, cx: &mut Context<Self>) {
-        let id = self.input.read(cx).value().trim().to_owned();
-        if id.is_empty()
-            || id.chars().any(char::is_whitespace)
-            || id == "sample-local"
-            || self.peers.iter().any(|p| p.id == id)
-        {
-            self.error = Some("Enter a different peer ID.");
-        } else {
-            self.peers.push(Peer {
-                name: id.clone(),
-                id: id.clone(),
-                link: Link::Pending,
-                gates: Gates::default(),
-                messages: Vec::new(),
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(1500))
+                .await;
+            let _ = this.update(cx, |pane, cx| {
+                if pane.copied.as_ref() == Some(&key) {
+                    pane.copied = None;
+                    cx.notify();
+                }
             });
-            self.needs_you = false;
-            self.filter.update(cx, |field, cx| field.clear(cx));
-            self.select(Some(id), cx);
-            self.show_thread = true;
-        }
-        cx.notify();
-    }
-
-    fn connect_form(&self, cx: &mut Context<Self>) -> Div {
-        let (t, c) = (tokens(), colors());
-        div()
-            .p(px(t.space.s12))
-            .bg(c.panel)
-            .flex()
-            .flex_col()
-            .gap(px(t.space.s8))
-            .child("My connection ID")
-            .child(ui::mono("sample-local"))
-            .child(
-                ui::button(
-                    "copy-sample-id",
-                    if self.copied { "Copied" } else { "Copy ID" },
-                    ui::Button::Secondary,
-                )
-                .focusable()
-                .tab_stop(true)
-                .on_click(cx.listener(|this, _, _, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string("sample-local".into()));
-                    this.copied = true;
-                    cx.notify();
-                })),
-            )
-            .child("Peer connection ID")
-            .child(self.input.clone())
-            .children(
-                self.error
-                    .map(|error| div().text_color(c.attention_text).child(error)),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(px(t.space.s8))
-                    .child(
-                        ui::button("request-peer", "Send", ui::Button::Primary)
-                            .focusable()
-                            .tab_stop(true)
-                            .on_click(cx.listener(|this, _, _, cx| this.connect(cx))),
-                    )
-                    .child(
-                        ui::button("close-connect", "Cancel", ui::Button::Secondary)
-                            .focusable()
-                            .tab_stop(true)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.edit(Editor::None, window, cx)
-                            })),
-                    ),
-            )
-    }
-
-    fn rail(&self, cx: &mut Context<Self>) -> Div {
-        let mut rows = div()
-            .id("connections-peers")
-            .min_h_0()
-            .flex_1()
-            .overflow_y_scroll();
-        let mut count = 0;
-        for peer in self.peers.iter().filter(|p| self.matches(p, cx)) {
-            count += 1;
-            let id = peer.id.clone();
-            let (mark, label, color) = thread::row_status(peer);
-            rows = rows.child(
-                peer_row(
-                    format!("peer-{id}"),
-                    self.selected.as_ref() == Some(&id),
-                    peer.name.clone(),
-                    mark,
-                    label,
-                    color,
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.select(Some(id.clone()), cx);
-                    this.show_thread = true;
-                    cx.notify();
-                })),
-            );
-        }
-        if count == 0 {
-            rows = rows.child(no_rows("No matching peers"));
-        }
-        self.rail_frame(rows, false, cx, |this, window, cx| {
-            this.edit(Editor::Connect, window, cx)
         })
+        .detach();
     }
 
+    /// A quiet text control that copies `text`.
+    fn copy_text(
+        &self,
+        id: impl Into<SharedString>,
+        label: &'static str,
+        text: String,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let id = id.into();
+        let key = id.clone();
+        ui::text_action(
+            id.clone(),
+            if self.copied.as_ref() == Some(&id) {
+                "Copied"
+            } else {
+                label
+            },
+        )
+        .focusable()
+        .tab_stop(true)
+        .on_click(cx.listener(move |pane, _, _, cx| pane.copy(key.clone(), text.clone(), cx)))
+    }
+}
+
+use crate::desktop::peer_inbox;
+
+impl Pane {
     /// The peer column: its title and ＋, the All / Needs you choice, the
     /// search field and the rows.
     fn rail_frame(
@@ -321,9 +202,6 @@ impl Pane {
                     .tab_stop(true)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.needs_you = needs;
-                        if this.preview {
-                            this.reconcile(cx);
-                        }
                         cx.notify();
                     })),
             );
@@ -455,6 +333,24 @@ fn hinted(field: &Entity<NameField>, hint: &'static str, cx: &gpui::App) -> Div 
 impl Render for Pane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (t, c) = (tokens(), colors());
+        let entity = cx.entity().downgrade();
+        let tracker = canvas(
+            move |bounds, _, cx| {
+                let width = f32::from(bounds.size.width);
+                let compact = width < tokens().size.connections_split;
+                let narrow = width < tokens().size.connections_narrow;
+                let _ = entity.update(cx, |this, cx| {
+                    if this.compact != compact || this.narrow != narrow {
+                        this.compact = compact;
+                        this.narrow = narrow;
+                        cx.notify();
+                    }
+                });
+            },
+            |_, (), _, _| (),
+        )
+        .absolute()
+        .size_full();
         let frame = div()
             .tab_group()
             .capture_key_down(|event: &gpui::KeyDownEvent, window, cx| {
@@ -467,52 +363,17 @@ impl Render for Pane {
                     cx.stop_propagation();
                 }
             })
+            .relative()
             .size_full()
             .min_w_0()
             .min_h_0()
             .flex()
             .flex_col()
             .bg(c.surface)
+            .child(tracker)
             .child(ui::view_header("link-2", "Connections"));
-        if !self.preview {
-            return frame.child(self.live_view(cx));
-        }
-        let wide = !self.compact;
-        let selected = self
-            .peers
-            .iter()
-            .find(|p| Some(&p.id) == self.selected.as_ref());
-        let entity = cx.entity().downgrade();
-        let tracker = canvas(
-            move |bounds, _, cx| {
-                let compact = f32::from(bounds.size.width) < tokens().size.connections_split;
-                let _ = entity.update(cx, |this, cx| {
-                    if this.compact != compact {
-                        this.compact = compact;
-                        cx.notify();
-                    }
-                });
-            },
-            |_, (), _, _| (),
-        )
-        .absolute()
-        .size_full();
-        let mut content = div().relative().min_h_0().flex_1().flex().child(tracker);
-        if wide || !self.show_thread {
-            content = content.child(self.rail(cx));
-        }
-        if wide || self.show_thread {
-            content = content.child(match selected {
-                Some(peer) => self.thread(peer, cx),
-                None => ui::empty_state(
-                    ui::empty_tile("link-2", c.selected, c.muted),
-                    "No peer selected",
-                    "Choose a peer to see its conversation.",
-                ),
-            });
-        }
-        frame
-            .child(
+        let frame = frame.when(self.preview.is_some(), |el| {
+            el.child(
                 div()
                     .flex()
                     .flex_wrap()
@@ -532,9 +393,8 @@ impl Render for Pane {
                             .child("Sample data · actions apply only to this preview"),
                     ),
             )
-            .when(self.editor == Editor::Connect, |el| {
-                el.child(self.connect_form(cx))
-            })
-            .child(content)
+        });
+        let view = self.live_view(cx);
+        frame.child(view)
     }
 }
