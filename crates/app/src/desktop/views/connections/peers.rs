@@ -257,9 +257,7 @@ impl Pane {
                     .h(px(t.size.row))
                     .pl(px(t.space.s8))
                     .child(
-                        ui::text(div().flex_1().text_color(c.muted), &t.text.label)
-                            .font_weight(t.text.row_selected.weight())
-                            .child("PEERS"),
+                        ui::text(div().flex_1().text_color(c.muted), &t.text.label).child("PEERS"),
                     )
                     .child(self.plus(cx))
                     .child(
@@ -367,11 +365,7 @@ impl Pane {
             .pb(px(t.space.s4))
             .border_t(px(t.size.hairline))
             .border_color(c.line)
-            .child(
-                ui::text(div().text_color(c.muted), &t.text.label)
-                    .font_weight(t.text.row_selected.weight())
-                    .child("THIS PROFILE"),
-            )
+            .child(ui::text(div().text_color(c.muted), &t.text.label).child("THIS PROFILE"))
             .child(
                 div()
                     .flex()
@@ -513,14 +507,18 @@ impl Pane {
                 .items_center()
                 .gap(px(t.space.s8))
                 .min_w_0()
-                .h(px(t.size.button))
-                .px(px(t.space.s6))
+                .h(px(t.size.icon_button + t.space.s4))
+                .pl(px(t.space.s6))
+                .pr(px(t.space.s8))
                 .rounded(px(t.radius.row))
+                .border(px(t.size.hairline))
+                .border_color(c.line_strong)
+                .bg(c.field)
                 .cursor_pointer()
                 .focusable()
                 .tab_stop(true)
                 .hover(|el| el.bg(colors().hover))
-                .child(peer_mark(name, t.size.view_tile - t.space.s4))
+                .child(peer_mark(name, t.size.message_avatar))
                 .child(
                     ui::text(
                         div()
@@ -528,9 +526,8 @@ impl Pane {
                             .overflow_hidden()
                             .text_ellipsis()
                             .text_color(c.text),
-                        &t.text.workspace,
+                        &t.text.row_selected,
                     )
-                    .font_weight(t.text.row_selected.weight())
                     .child(label.to_owned()),
                 )
                 .when(waiting, |el| el.child(ui::dot(c.accent)))

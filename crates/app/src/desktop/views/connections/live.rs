@@ -823,7 +823,6 @@ impl Pane {
                     .gap(px(t.space.s8))
                     .child(
                         ui::text(div().flex_1().text_color(c.text), &t.text.workspace)
-                            .font_weight(t.text.row_selected.weight())
                             .child("Connect a profile"),
                     )
                     .child(ui::keycap("esc")),
@@ -1035,23 +1034,25 @@ impl Pane {
                                     .text_color(c.text),
                                 &t.text.workspace,
                             )
-                            .font_weight(t.text.row_selected.weight())
                             .child(rules::display_name(name).to_owned()),
                         )
                 }
             })
             .children(state)
-            .child(
-                ui::text(
-                    div().flex_shrink_0().font_family(t.font.mono.clone()),
-                    &t.text.key,
+            // The narrow header has no room for the fingerprint.
+            .when(self.width != peers::Width::Narrow, |el| {
+                el.child(
+                    ui::text(
+                        div().flex_shrink_0().font_family(t.font.mono.clone()),
+                        &t.text.key,
+                    )
+                    .text_color(c.muted)
+                    .child(rules::fingerprint(peer_id)),
                 )
-                .text_color(c.muted)
-                .child(rules::fingerprint(peer_id)),
-            )
-            .child(copy.on_click(
-                cx.listener(move |p, _, _, cx| p.copy("copy-peer-id".into(), id.clone(), cx)),
-            ))
+                .child(copy.on_click(
+                    cx.listener(move |p, _, _, cx| p.copy("copy-peer-id".into(), id.clone(), cx)),
+                ))
+            })
             .child(div().flex_1())
             .children(controls)
     }
@@ -1137,17 +1138,27 @@ impl Pane {
                 Policy::Unknown => "?",
             };
             let mut gates = div().relative().child(
-                ui::button(
-                    "folded-gates",
-                    format!(
-                        "↙ {} · ↗ {}",
-                        letter(peer.gates.incoming),
-                        letter(peer.gates.outgoing)
-                    ),
-                    ui::Button::Secondary,
+                ui::text(
+                    div()
+                        .id("folded-gates")
+                        .flex()
+                        .items_center()
+                        .gap(px(t.space.s6))
+                        .h(px(t.size.icon_button + t.space.s4))
+                        .px(px(t.space.s8))
+                        .rounded(px(t.radius.row))
+                        .border(px(t.size.hairline))
+                        .border_color(c.line_strong)
+                        .bg(c.field)
+                        .text_color(c.text_2)
+                        .cursor_pointer()
+                        .hover(|el| el.bg(colors().hover)),
+                    &t.text.meta,
                 )
-                .h(px(t.size.icon_button))
-                .px(px(t.space.s8))
+                .child(ui::icon("arrow-down-left", t.size.icon - 2.0, c.muted))
+                .child(letter(peer.gates.incoming))
+                .child(ui::icon("arrow-up-right", t.size.icon - 2.0, c.muted))
+                .child(letter(peer.gates.outgoing))
                 .child(ui::icon("chevron-down", t.size.icon - 2.0, c.muted))
                 .focusable()
                 .tab_stop(true)
@@ -1249,7 +1260,11 @@ impl Pane {
             .min_w_0()
             .min_h_0()
             .overflow_y_scroll()
-            .px(px(t.space.s20))
+            .px(px(if self.width == peers::Width::Narrow {
+                t.space.s14
+            } else {
+                t.space.s20
+            }))
             .py(px(t.space.s16))
             .flex()
             .flex_col()
@@ -1791,7 +1806,9 @@ impl Pane {
                         .text_color(c.muted),
                     &t.text.meta,
                 )
-                .child("Agents write here. You decide what crosses a review gate."),
+                .when(self.width != peers::Width::Narrow, |el| {
+                    el.child("Agents write here. You decide what crosses a review gate.")
+                }),
             );
         // The count opens the first peer waiting on the person.
         let rows = s.summary.attention_rows();
