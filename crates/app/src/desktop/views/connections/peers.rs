@@ -549,6 +549,7 @@ impl Pane {
                         div()
                             .min_w_0()
                             .overflow_hidden()
+                            .whitespace_nowrap()
                             .text_ellipsis()
                             .text_color(c.text),
                         &t.text.row_selected,

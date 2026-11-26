@@ -1068,9 +1068,12 @@ impl Pane {
                     el.child(peer_mark(name, t.size.view_tile - t.space.s4))
                         .child(
                             ui::text(
+                                // Measured on one line, so a name with a space
+                                // is cut only when the header is full.
                                 div()
                                     .min_w_0()
                                     .overflow_hidden()
+                                    .whitespace_nowrap()
                                     .text_ellipsis()
                                     .text_color(c.text),
                                 &t.text.workspace,
