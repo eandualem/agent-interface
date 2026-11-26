@@ -371,22 +371,36 @@ impl Render for Pane {
         let (t, c) = (tokens(), colors());
         let entity = cx.entity().downgrade();
         let tracker = canvas(
-            move |bounds, _, cx| {
+            move |bounds, window, cx| {
                 let pixels = f32::from(bounds.size.width);
                 let width = peers::Width::of(pixels);
-                let _ = entity.update(cx, |this, cx| {
-                    if (this.pane_width - pixels).abs() >= 1.0 {
-                        this.pane_width = pixels;
-                        cx.notify();
-                    }
-                    if this.width != width {
-                        // A narrower list starts minimised again.
-                        this.width = width;
-                        this.list_local = None;
-                        this.menu = Menu::None;
-                        cx.notify();
-                    }
-                });
+                let changed = entity
+                    .update(cx, |this, _| {
+                        let mut changed = false;
+                        if (this.pane_width - pixels).abs() >= 1.0 {
+                            this.pane_width = pixels;
+                            changed = true;
+                        }
+                        if this.width != width {
+                            // A narrower list starts minimised again.
+                            this.width = width;
+                            this.list_local = None;
+                            this.menu = Menu::None;
+                            changed = true;
+                        }
+                        changed
+                    })
+                    .unwrap_or(false);
+                // A view notified while the window draws gets no next frame
+                // of its own, so the pane would keep its old layout until
+                // some other event. A new width schedules the frame that
+                // shows it; an unchanged one schedules nothing.
+                if changed {
+                    let entity = entity.clone();
+                    window.on_next_frame(move |_, cx| {
+                        let _ = entity.update(cx, |_, cx| cx.notify());
+                    });
+                }
             },
             |_, (), _, _| (),
         )
