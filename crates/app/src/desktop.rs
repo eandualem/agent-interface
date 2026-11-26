@@ -774,6 +774,10 @@ struct Browser {
     watched_swarms: HashMap<(String, String), (String, std::collections::HashSet<String>)>,
     tabs_scroll: gpui::ScrollHandle,
     workspaces_scroll: gpui::ScrollHandle,
+    /// The tab or workspace a drag is over, and whether it lands after it.
+    reorder_target: Option<(String, bool)>,
+    /// A drop made while a save ran, applied when that save finishes.
+    queued_reorder: Option<sidebar::Reorder>,
     shown_workspace: Option<(String, gpui::Pixels)>,
     shell_environment: Option<Result<agent_interface_tmux::shells::Environment, String>>,
     shell_after_save: Option<Leaf>,
@@ -1759,8 +1763,13 @@ impl Browser {
                             browser.bind_workspace(item, connection, &name, cx);
                         }
                         browser.first_open_saved(!result.conflict, cx);
+                        if let Some(reorder) = browser.finish_queued_reorder(true) {
+                            browser.drop_reorder(reorder, cx);
+                        }
                     }
                     Err(error) => {
+                        // A drop made during the failed save is not applied.
+                        browser.finish_queued_reorder(false);
                         browser.save_failed = true;
                         browser.pending_save = Some((base, local));
                         // The status bar leads with "Changes not saved".
@@ -3749,6 +3758,13 @@ impl Render for Browser {
                             cx.stop_propagation();
                             return;
                         }
+                    }
+                    // Escape lets go of a dragged tab or workspace where it began.
+                    if event.keystroke.key == "escape" && cx.has_active_drag() {
+                        browser.reorder_target = None;
+                        cx.stop_active_drag(window);
+                        cx.stop_propagation();
+                        return;
                     }
                     if browser.editing.is_some() {
                         return;

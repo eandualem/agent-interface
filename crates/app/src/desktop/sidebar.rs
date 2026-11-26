@@ -32,10 +32,60 @@ struct TabDrag {
 
 impl Render for TabDrag {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        ui::row("dragged-tab", true)
-            .bg(colors().panel)
-            .text_color(colors().text)
-            .child(self.name.clone())
+        drag_preview("dragged-tab", self.name.clone())
+    }
+}
+
+#[derive(Clone)]
+struct WorkspaceDrag {
+    browser: EntityId,
+    workspace: String,
+    name: String,
+}
+
+impl Render for WorkspaceDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        drag_preview("dragged-workspace", self.name.clone())
+    }
+}
+
+/// What follows the pointer: see-through, so the line under it shows where
+/// the item will land.
+fn drag_preview(id: &'static str, name: String) -> impl IntoElement {
+    ui::row(id, true)
+        .bg(colors().panel)
+        .text_color(colors().text)
+        .opacity(colors().pane_dim)
+        .child(name)
+}
+
+/// A dropped tab or workspace: where it goes, by id, so a drop made while a
+/// save runs can be applied to the layout that save leaves.
+pub(super) enum Reorder {
+    Tab {
+        origin: Option<super::navigation_origin::Origin>,
+        workspace: String,
+        tab: String,
+        destination: String,
+        after: bool,
+    },
+    Workspace {
+        source: String,
+        destination: String,
+        after: bool,
+    },
+}
+
+/// The line that shows where a dragged item will land: along the top or
+/// bottom edge of a row, or the left or right edge of a workspace slot.
+fn landing_line(vertical: bool, after: bool) -> gpui::Div {
+    let width = px(tokens().size.focus_ring);
+    let line = div().absolute().bg(colors().focus);
+    match (vertical, after) {
+        (false, false) => line.left_0().right_0().top_0().h(width),
+        (false, true) => line.left_0().right_0().bottom_0().h(width),
+        (true, false) => line.top_0().bottom_0().left_0().w(width),
+        (true, true) => line.top_0().bottom_0().right_0().w(width),
     }
 }
 
@@ -44,6 +94,7 @@ fn reorder_tab_proposal(
     workspace: &str,
     source: &str,
     destination: &str,
+    after: bool,
 ) -> Option<(
     agent_interface_store::Document,
     agent_interface_core::Layout,
@@ -57,10 +108,26 @@ fn reorder_tab_proposal(
         .iter_mut()
         .find(|space| space.id == workspace)?;
     let from = space.tabs.iter().position(|tab| tab.id == source)?;
-    let to = space.tabs.iter().position(|tab| tab.id == destination)?;
+    space.tabs.iter().position(|tab| tab.id == destination)?;
     let tab = space.tabs.remove(from);
+    let to = space.tabs.iter().position(|tab| tab.id == destination)? + usize::from(after);
     space.tabs.insert(to, tab);
-    Some((base, proposed))
+    (to != from).then_some((base, proposed))
+}
+
+fn reorder_workspace_proposal(
+    layout: &crate::library::WindowLayout,
+    source: &str,
+    destination: &str,
+    after: bool,
+) -> Option<(
+    agent_interface_store::Document,
+    agent_interface_core::Layout,
+)> {
+    let (base, mut proposed) = layout.save_snapshot();
+    proposed
+        .move_workspace(source, destination, after)
+        .then_some((base, proposed))
 }
 
 fn section_toggle(label: &'static str, collapsed: bool) -> gpui::Stateful<gpui::Div> {
@@ -103,10 +170,56 @@ fn section_toggle(label: &'static str, collapsed: bool) -> gpui::Stateful<gpui::
     .child(div().flex_1().child(label))
 }
 
+/// Whether a tab row can be dragged. A save that is running does not stop
+/// it: the drop waits for that save. A failed save still waiting for Retry
+/// does, as it stops every other edit, and so does editing the tab's name.
+fn tab_row_draggable(editing: bool, save_failed: bool) -> bool {
+    !editing && !save_failed
+}
+
+/// Whether a drop on `bounds` at `pointer` lands after it: past the middle,
+/// across for a workspace slot (`vertical` line) and down for a tab row.
+fn lands_after(
+    bounds: gpui::Bounds<gpui::Pixels>,
+    pointer: gpui::Point<gpui::Pixels>,
+    vertical: bool,
+) -> bool {
+    if vertical {
+        pointer.x > bounds.center().x
+    } else {
+        pointer.y > bounds.center().y
+    }
+}
+
 impl Browser {
-    fn drop_tab(&mut self, dragged: &TabDrag, destination: &str, cx: &mut Context<Self>) {
-        if dragged.browser != cx.entity_id() || self.saving || self.save_failed {
+    /// Apply a drop now, or once the save that is running finishes.
+    pub(super) fn drop_reorder(&mut self, reorder: Reorder, cx: &mut Context<Self>) {
+        let Some(proposal) = self.reorder_proposal(reorder) else {
             return;
+        };
+        self.pending_save = Some(proposal);
+        self.name_click = None;
+        self.close_menus();
+        self.save(cx);
+    }
+
+    /// The layout a drop saves, or none: a drop made while a save runs is
+    /// kept for when it finishes; after a failed save, a moved or missing
+    /// item or a changed workspace connection, nothing happens.
+    fn reorder_proposal(
+        &mut self,
+        reorder: Reorder,
+    ) -> Option<(
+        agent_interface_store::Document,
+        agent_interface_core::Layout,
+    )> {
+        self.reorder_target = None;
+        if self.save_failed {
+            return None;
+        }
+        if self.saving {
+            self.queued_reorder = Some(reorder);
+            return None;
         }
         if let Some(update) = self
             .library
@@ -115,21 +228,73 @@ impl Browser {
         {
             self.apply(update);
         }
-        if !self.selected_origin_is_current(dragged.origin.as_ref()) {
-            return;
+        let layout = self.layout.as_ref()?;
+        match &reorder {
+            Reorder::Tab {
+                origin,
+                workspace,
+                tab,
+                destination,
+                after,
+            } => self
+                .selected_origin_is_current(origin.as_ref())
+                .then(|| reorder_tab_proposal(layout, workspace, tab, destination, *after))
+                .flatten(),
+            Reorder::Workspace {
+                source,
+                destination,
+                after,
+            } => reorder_workspace_proposal(layout, source, destination, *after),
         }
-        let Some(layout) = &self.layout else {
+    }
+
+    /// When a save finishes, the drop made during it: applied after a save
+    /// that succeeded, discarded after one that failed.
+    pub(super) fn finish_queued_reorder(&mut self, saved: bool) -> Option<Reorder> {
+        self.queued_reorder.take().filter(|_| saved)
+    }
+
+    /// Where a drag over `target` would land: before it, or after it when the
+    /// pointer is past its middle. Shown only while the pointer is over it.
+    fn track_landing(
+        &mut self,
+        target: &str,
+        bounds: gpui::Bounds<gpui::Pixels>,
+        position: gpui::Point<gpui::Pixels>,
+        vertical: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let landing = if bounds.contains(&position) {
+            Some((target.to_owned(), lands_after(bounds, position, vertical)))
+        } else if self
+            .reorder_target
+            .as_ref()
+            .is_some_and(|(shown, _)| shown == target)
+        {
+            None
+        } else {
             return;
         };
-        let Some(proposal) =
-            reorder_tab_proposal(layout, &dragged.workspace, &dragged.tab, destination)
-        else {
-            return;
-        };
-        self.pending_save = Some(proposal);
-        self.name_click = None;
-        self.close_menus();
-        self.save(cx);
+        if self.reorder_target != landing {
+            self.reorder_target = landing;
+            cx.notify();
+        }
+    }
+
+    /// Whether the drop on `target` lands after it. GPUI ends the drag
+    /// before it calls a drop listener, so this reads the last landing shown.
+    fn dropped_after(&self, target: &str) -> bool {
+        self.reorder_target
+            .as_ref()
+            .is_some_and(|(shown, after)| shown == target && *after)
+    }
+
+    /// The landing line for `target`, while a drag is over it.
+    fn landing(&self, target: &str, cx: &Context<Self>) -> Option<bool> {
+        self.reorder_target
+            .as_ref()
+            .filter(|(shown, _)| shown == target && cx.has_active_drag())
+            .map(|(_, after)| *after)
     }
 
     /// Each agent's state, or none in a workspace without a profile or while
@@ -490,6 +655,17 @@ impl Browser {
                 .on_click(
                     cx.listener(move |browser, event: &gpui::ClickEvent, window, cx| {
                         cx.stop_propagation();
+                        // The row owns the drag, so GPUI holds back only the
+                        // row's click after one. This name's click comes first,
+                        // while the drag is still held; a press released past
+                        // GPUI's 2 px drag threshold, as after Escape, is a
+                        // drag too. Neither selects anything.
+                        if cx.has_active_drag()
+                            || matches!(event, gpui::ClickEvent::Mouse(click)
+                                if (click.up.position - click.down.position).magnitude() > 2.0)
+                        {
+                            return;
+                        }
                         let active = browser.layout.as_ref().is_some_and(|layout| {
                             layout.model().tab().is_some_and(|tab| tab.id == tab_id)
                         });
@@ -526,16 +702,40 @@ impl Browser {
                 name: tab.name.clone(),
             };
             let destination = id.clone();
+            let target = id.clone();
+            let landing = self.landing(&id, cx);
             list = list.child(
                 ui::row(SharedString::from(format!("tab-{id}")), selected)
+                    .relative()
                     .group(group.clone())
-                    .when(!editing && !self.saving && !self.save_failed, |el| {
+                    .when(tab_row_draggable(editing, self.save_failed), |el| {
                         el.on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
-                            .drag_over::<TabDrag>(|style, _, _, _| style.bg(colors().accent_soft))
+                            .on_drag_move(cx.listener(
+                                move |browser, event: &gpui::DragMoveEvent<TabDrag>, _, cx| {
+                                    if event.drag(cx).browser == cx.entity_id() {
+                                        let position = event.event.position;
+                                        browser.track_landing(&target, event.bounds, position, false, cx);
+                                    }
+                                },
+                            ))
                             .on_drop(cx.listener(move |browser, dragged: &TabDrag, _, cx| {
-                                browser.drop_tab(dragged, &destination, cx);
+                                if dragged.browser != cx.entity_id() {
+                                    return;
+                                }
+                                let after = browser.dropped_after(&destination);
+                                browser.drop_reorder(
+                                    Reorder::Tab {
+                                        origin: dragged.origin.clone(),
+                                        workspace: dragged.workspace.clone(),
+                                        tab: dragged.tab.clone(),
+                                        destination: destination.clone(),
+                                        after,
+                                    },
+                                    cx,
+                                );
                             }))
                     })
+                    .children(landing.map(|after| landing_line(false, after)))
                     .on_mouse_down(gpui::MouseButton::Right, cx.listener({
                         let id = id.clone();
                         let origin = origin.clone();
@@ -1381,9 +1581,50 @@ impl Browser {
                         .is_some_and(|s| s.attention());
                 let glyph = icons::workspace(space.symbol.as_deref(), space.icon.as_deref());
                 let color = if current { c.accent } else { c.muted };
+                let dragged = WorkspaceDrag {
+                    browser: cx.entity_id(),
+                    workspace: id.clone(),
+                    name: space.name.clone(),
+                };
+                let (target, destination) = (id.clone(), id.clone());
                 let mut element = slot(SharedString::from(format!("workspace-slot-{id}")))
                     .when(current, |el| el.bg(c.accent_soft))
-                    .when(!current, |el| el.hover(|el| el.bg(colors().hover)));
+                    .when(!current, |el| el.hover(|el| el.bg(colors().hover)))
+                    .when(!self.save_failed, |el| {
+                        el.on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
+                            .on_drag_move(cx.listener(
+                                move |browser,
+                                      event: &gpui::DragMoveEvent<WorkspaceDrag>,
+                                      _,
+                                      cx| {
+                                    if event.drag(cx).browser == cx.entity_id() {
+                                        let position = event.event.position;
+                                        browser.track_landing(
+                                            &target,
+                                            event.bounds,
+                                            position,
+                                            true,
+                                            cx,
+                                        );
+                                    }
+                                },
+                            ))
+                            .on_drop(cx.listener(move |browser, dragged: &WorkspaceDrag, _, cx| {
+                                if dragged.browser != cx.entity_id() {
+                                    return;
+                                }
+                                let after = browser.dropped_after(&destination);
+                                browser.drop_reorder(
+                                    Reorder::Workspace {
+                                        source: dragged.workspace.clone(),
+                                        destination: destination.clone(),
+                                        after,
+                                    },
+                                    cx,
+                                );
+                            }))
+                    })
+                    .children(self.landing(&id, cx).map(|after| landing_line(true, after)));
                 element = match glyph {
                     Some(name) => element.child(ui::icon(name, t.size.icon_large, color)),
                     None => ui::text(element.text_color(color), &t.text.row_selected)
@@ -1468,7 +1709,8 @@ mod tests {
         let layout = crate::library::WindowLayout::new(store.load().unwrap());
         let space = model.workspace().unwrap();
         let (first, second, third) = (&space.tabs[0].id, &space.tabs[1].id, &space.tabs[2].id);
-        let (mut base, down) = reorder_tab_proposal(&layout, &space.id, first, third).unwrap();
+        let (mut base, down) =
+            reorder_tab_proposal(&layout, &space.id, first, third, true).unwrap();
         assert_eq!(
             down.workspace()
                 .unwrap()
@@ -1481,11 +1723,196 @@ mod tests {
         assert_eq!(down.workspace().unwrap().selected, space.selected);
         assert!(!store.save(&mut base, &down).unwrap().conflict);
         let layout = crate::library::WindowLayout::new(store.load().unwrap());
-        let (_, up) = reorder_tab_proposal(&layout, &space.id, first, second).unwrap();
+        let (_, up) = reorder_tab_proposal(&layout, &space.id, first, second, false).unwrap();
         assert_eq!(up.workspace().unwrap().tabs, space.tabs);
         assert_eq!(up.workspace().unwrap().selected, space.selected);
-        assert!(reorder_tab_proposal(&layout, &space.id, "removed", second).is_none());
-        assert!(reorder_tab_proposal(&layout, "other-workspace", first, third).is_none());
-        assert!(reorder_tab_proposal(&layout, &space.id, first, "removed").is_none());
+        assert!(reorder_tab_proposal(&layout, &space.id, "removed", second, false).is_none());
+        assert!(reorder_tab_proposal(&layout, "other-workspace", first, third, false).is_none());
+        assert!(reorder_tab_proposal(&layout, &space.id, first, "removed", false).is_none());
+    }
+
+    use super::{Reorder, lands_after, reorder_workspace_proposal, tab_row_draggable};
+
+    fn library(workspaces: &[(&str, &[&str])]) -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        drop(agent_interface_store::Store::open_or_create(directory.path()).unwrap());
+        let mut store =
+            agent_interface_store::Store::open_existing_writable(directory.path()).unwrap();
+        let mut base = store.load().unwrap();
+        let mut model = base.model().clone();
+        for (index, (name, tabs)) in workspaces.iter().enumerate() {
+            if index == 0 {
+                model.workspaces[0].name = (*name).into();
+            } else {
+                model.add_workspace((*name).into());
+            }
+            for tab in *tabs {
+                model.add_tab(Some((*tab).into()), "/work".into(), true);
+            }
+        }
+        let first = model.workspaces[0].id.clone();
+        model.choose_workspace(&first);
+        assert!(!store.save(&mut base, &model).unwrap().conflict);
+        directory
+    }
+
+    fn store(directory: &std::path::Path) -> agent_interface_store::Store {
+        agent_interface_store::Store::open_existing_writable(directory).unwrap()
+    }
+
+    fn workspace_names(model: &agent_interface_core::Layout) -> Vec<&str> {
+        model
+            .workspaces
+            .iter()
+            .map(|space| space.name.as_str())
+            .collect()
+    }
+
+    fn tab_names(model: &agent_interface_core::Layout) -> Vec<&str> {
+        let space = model.workspace().unwrap();
+        space.tabs.iter().map(|tab| tab.name.as_str()).collect()
+    }
+
+    #[test]
+    fn a_running_save_leaves_tab_rows_draggable() {
+        assert!(tab_row_draggable(false, false));
+        assert!(!tab_row_draggable(true, false));
+        assert!(!tab_row_draggable(false, true));
+    }
+
+    #[test]
+    fn a_drop_lands_after_an_item_past_its_middle() {
+        let bounds = gpui::Bounds::new(
+            gpui::point(gpui::px(10.), gpui::px(100.)),
+            gpui::size(gpui::px(40.), gpui::px(30.)),
+        );
+        let at = |x: f32, y: f32| gpui::point(gpui::px(x), gpui::px(y));
+        assert!(!lands_after(bounds, at(45., 105.), false));
+        assert!(lands_after(bounds, at(15., 125.), false));
+        assert!(!lands_after(bounds, at(15., 125.), true));
+        assert!(lands_after(bounds, at(45., 105.), true));
+    }
+
+    #[test]
+    fn a_tab_dropped_during_a_save_lands_after_it_unless_it_fails_or_the_tab_is_gone() {
+        let directory = library(&[("Work", &["First", "Second", "Third"])]);
+        let mut browser = super::Browser {
+            layout: Some(crate::library::WindowLayout::new(
+                store(directory.path()).load().unwrap(),
+            )),
+            directory: Some(directory.path().to_owned()),
+            ..Default::default()
+        };
+        let model = browser.layout.as_ref().unwrap().model().clone();
+        let space = model.workspace().unwrap();
+        let tab = |index: usize| space.tabs[index].id.clone();
+        let origin = browser.selected_navigation_origin();
+        let drop = |source: usize, destination: usize| Reorder::Tab {
+            origin: origin.clone(),
+            workspace: space.id.clone(),
+            tab: tab(source),
+            destination: tab(destination),
+            after: true,
+        };
+        // First after Third, dropped while a save runs: kept, nothing saved.
+        let first_after_third = drop(0, 2);
+        browser.saving = true;
+        assert!(browser.reorder_proposal(first_after_third).is_none());
+        assert!(browser.queued_reorder.is_some());
+        // The save finishes: the drop is applied to the layout it left.
+        browser.saving = false;
+        let queued = browser.finish_queued_reorder(true).unwrap();
+        let (mut base, proposed) = browser.reorder_proposal(queued).unwrap();
+        let mut library = store(directory.path());
+        assert!(!library.save(&mut base, &proposed).unwrap().conflict);
+        let saved = library.load().unwrap();
+        assert_eq!(tab_names(saved.model()), ["Second", "Third", "First"]);
+        assert_eq!(saved.model().workspace().unwrap().selected, space.selected);
+        browser.layout = Some(crate::library::WindowLayout::new(saved));
+
+        // A drop made during a save that fails is discarded.
+        let second_after_first = drop(1, 0);
+        browser.saving = true;
+        assert!(browser.reorder_proposal(second_after_first).is_none());
+        browser.saving = false;
+        assert!(browser.finish_queued_reorder(false).is_none());
+        assert!(browser.queued_reorder.is_none());
+        // After a failed save waiting for Retry, a drop does nothing.
+        browser.save_failed = true;
+        assert!(browser.reorder_proposal(drop(1, 0)).is_none());
+        assert!(browser.queued_reorder.is_none());
+        browser.save_failed = false;
+
+        // The running save removed the dropped tab: nothing happens.
+        let second_after_third = drop(1, 2);
+        browser.saving = true;
+        assert!(browser.reorder_proposal(second_after_third).is_none());
+        let mut base = library.load().unwrap();
+        let mut removed = base.model().clone();
+        let second = tab(1);
+        removed.workspaces[0].tabs.retain(|tab| tab.id != second);
+        assert!(!library.save(&mut base, &removed).unwrap().conflict);
+        browser.apply(crate::library::Update {
+            document: Some(library.load().unwrap()),
+            error: None,
+        });
+        browser.saving = false;
+        let queued = browser.finish_queued_reorder(true).unwrap();
+        assert!(browser.reorder_proposal(queued).is_none());
+    }
+
+    #[test]
+    fn a_moved_workspace_is_stored_and_merges_or_conflicts_with_another_writer() {
+        let directory = library(&[
+            ("Alpha", &["One"]),
+            ("Beta", &["Two"]),
+            ("Gamma", &["Three"]),
+        ]);
+        let mut library = store(directory.path());
+        let layout = crate::library::WindowLayout::new(library.load().unwrap());
+        let ids: Vec<String> = layout
+            .model()
+            .workspaces
+            .iter()
+            .map(|space| space.id.clone())
+            .collect();
+        let selected = layout.model().selected.clone();
+        // Beta before Alpha.
+        let (mut base, proposed) =
+            reorder_workspace_proposal(&layout, &ids[1], &ids[0], false).unwrap();
+        assert!(!library.save(&mut base, &proposed).unwrap().conflict);
+        let saved = library.load().unwrap();
+        assert_eq!(workspace_names(saved.model()), ["Beta", "Alpha", "Gamma"]);
+        assert_eq!(saved.model().selected, selected);
+        let layout = crate::library::WindowLayout::new(saved);
+
+        // Another writer renames Beta: Alpha after Gamma merges with it.
+        let mut other = store(directory.path());
+        let mut latest = other.load().unwrap();
+        let mut renamed = latest.model().clone();
+        renamed.workspaces[0].name = "Bravo".into();
+        assert!(!other.save(&mut latest, &renamed).unwrap().conflict);
+        let (mut base, proposed) =
+            reorder_workspace_proposal(&layout, &ids[0], &ids[2], true).unwrap();
+        assert!(!library.save(&mut base, &proposed).unwrap().conflict);
+        assert_eq!(
+            workspace_names(library.load().unwrap().model()),
+            ["Bravo", "Gamma", "Alpha"]
+        );
+        let layout = crate::library::WindowLayout::new(library.load().unwrap());
+
+        // Another writer moves Alpha first: a different move conflicts, and
+        // that writer's order stays.
+        let mut latest = other.load().unwrap();
+        let mut moved = latest.model().clone();
+        assert!(moved.move_workspace(&ids[0], &ids[1], false));
+        assert!(!other.save(&mut latest, &moved).unwrap().conflict);
+        let (mut base, proposed) =
+            reorder_workspace_proposal(&layout, &ids[1], &ids[0], true).unwrap();
+        assert!(library.save(&mut base, &proposed).unwrap().conflict);
+        assert_eq!(
+            workspace_names(library.load().unwrap().model()),
+            ["Alpha", "Bravo", "Gamma"]
+        );
     }
 }
