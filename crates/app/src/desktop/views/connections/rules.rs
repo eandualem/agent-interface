@@ -465,13 +465,13 @@ mod tests {
     #[test]
     fn a_connection_id_is_checked_as_agent_backbone_checks_it() {
         let local = format!("v1:{}", "1a".repeat(32));
-        let other = format!("v1:{}7ad02815", "0".repeat(56));
+        let other = format!("v1:{}5c0ffee1", "0".repeat(56));
         assert_eq!(check_id("  ", &local), IdCheck::Empty);
         assert_eq!(
             check_id(&format!(" {}\n{} ", &other[..20], &other[20..]), &local),
             IdCheck::Valid {
                 id: other.clone(),
-                ending: "…7ad02815".into()
+                ending: "…5c0ffee1".into()
             }
         );
         assert_eq!(
@@ -498,22 +498,22 @@ mod tests {
         assert_eq!(review_actions(Direction::Outgoing), [Pass, Revise, Decline]);
         assert_eq!(review_actions(Direction::Incoming), [Pass, Decline]);
         assert_eq!(
-            pass_note(Direction::Outgoing, "main", "CoolAI"),
-            "Pass through sends it to CoolAI unchanged."
+            pass_note(Direction::Outgoing, "main", "Harbor"),
+            "Pass through sends it to Harbor unchanged."
         );
         assert_eq!(
-            pass_note(Direction::Incoming, "main", "CoolAI"),
+            pass_note(Direction::Incoming, "main", "Harbor"),
             "Pass through delivers it to main and notifies it."
         );
     }
 
     #[test]
     fn a_connection_shows_a_name_or_a_fingerprint_never_its_id() {
-        assert_eq!(display_name(Some("CoolAI")), "CoolAI");
+        assert_eq!(display_name(Some("Harbor")), "Harbor");
         assert_eq!(display_name(Some("  ")), "Unnamed profile");
         assert_eq!(display_name(None), "Unnamed profile");
-        let id = format!("v1:466836eb{}3c5b", "0".repeat(52));
-        assert_eq!(fingerprint(&id), "466836eb…3c5b");
+        let id = format!("v1:a1b2c3d4{}9e8f", "0".repeat(52));
+        assert_eq!(fingerprint(&id), "a1b2c3d4…9e8f");
         assert_eq!(fingerprint("v1:short"), "short");
     }
 }

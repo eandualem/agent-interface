@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 /// This profile's ID in the preview.
 pub(super) const LOCAL_ID: &str =
-    "v1:466836eb0c1f7a2d9e4b58c3a1f06d7e2b9c4a8f1e3d5b7c9a0e2f4d6b8a3c5b";
+    "v1:49d0fa9e42cbf1bcb24f4a7cb29dcac9181d9a2f8f26ce13ddafd2f5e5efd177";
 
 /// A sample service: an overview, every message, and which resubmission a
 /// message is, which Agent Backbone does not report yet.
@@ -29,9 +29,9 @@ fn ago(minutes: i64) -> String {
     (chrono::Utc::now() - chrono::Duration::minutes(minutes)).to_rfc3339()
 }
 
-const COOL: &str = "297d99bdb0793d53ccabf154a88436b31ed9cdb4f0a7f181bc7d0cfd7ad02815";
+const HARBOR: &str = "f3463bf7a7b9bad26eca3b4ffa91966efba07382d3dbae245b51b19f8ab9b64d";
 const OPS: &str = "8e21c4f0a9d35b7e6c1048f2d9a3b5c7e0f1a2b3c4d5e6f708192a3b4c5d6e7f";
-const NEW: &str = "b41c07e25d3f9a6e8c1047ab92de6f3305c8e7d41fa2b6903e5d7c18a4f09a3d";
+const NEW: &str = "0444549921eeca2ff49d54a9b42bddab623b7f02833bc120da5d22f284100520";
 const ASKED: &str = "7c3e9a1b5d2f4e6a8c0b1d3f5e7a9c2b4d6f8e0a1c3b5d7f9e2a4c6b8d0f1e3a";
 const STAGING: &str = "51d0e2f3a4b5c6d7e8f90a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8091a2b3";
 const OLD: &str = "a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1";
@@ -43,7 +43,7 @@ Three things I checked after your message arrived:
 3. Nothing from the message was written to disk in plain text.
 
 One thing to confirm. Your message said:
-> testing the encrypted two-profile connection
+> the connection is set up
 
 but the relay address here is `http://127.0.0.1:7400`, which is a local relay. Is that intended for this test, or should both profiles point at a shared one?";
 
@@ -96,11 +96,11 @@ impl Sample {
         };
         use Direction::{Incoming, Outgoing};
         let mut delivered = message(
-            COOL,
+            HARBOR,
             1,
             Outgoing,
             40,
-            "Hello from this profile. This is main, testing the encrypted two-profile connection.",
+            "Hello from this profile. The connection is set up; reply when this reaches you.",
             "delivered",
         );
         delivered.receipt = api::Receipt::Confirmed {
@@ -135,23 +135,23 @@ impl Sample {
             declined,
             delivered,
             message(
-                COOL,
+                HARBOR,
                 1,
                 Incoming,
                 36,
-                "Your test message arrived. Replying over the same connection.",
+                "It reached me. This reply goes back over the same connection.",
                 "passed",
             ),
-            message(COOL, 1, Incoming, 28, LONG_REPLY, "passed"),
+            message(HARBOR, 1, Incoming, 28, LONG_REPLY, "passed"),
             message(
-                COOL,
+                HARBOR,
                 1,
                 Outgoing,
                 26,
                 "Yes, it is local for now.",
                 "revision_requested",
             ),
-            message(COOL, 1, Outgoing, 23, HELD, "pending_review"),
+            message(HARBOR, 1, Outgoing, 23, HELD, "pending_review"),
             message(
                 OPS,
                 2,
@@ -177,6 +177,16 @@ impl Sample {
                 "Once the release is tagged, send the checksum here so we can verify the staging canary.",
                 "pending_review",
             ),
+            // A later message after the waiting one: a thread still opens on
+            // what waits.
+            message(
+                OPS,
+                2,
+                Outgoing,
+                5,
+                "The staging canary is ready for the checksum.",
+                "uploaded",
+            ),
         ];
         let revisions = HashMap::from([(messages[5].message_id.clone(), 2)]);
         let mut sample = Self {
@@ -189,9 +199,9 @@ impl Sample {
                 ],
                 connections: vec![
                     peer(
-                        COOL,
+                        HARBOR,
                         1,
-                        Some("CoolAI"),
+                        Some("Harbor"),
                         "connected",
                         Policy::Review,
                         Policy::Review,
@@ -394,6 +404,15 @@ mod tests {
         let m = sample.messages.iter().find(|m| m.message_id == outgoing);
         assert_eq!(m.unwrap().state, "revision_requested");
         assert_eq!(sample.overview.pending_reviews, 0);
+    }
+
+    #[test]
+    fn a_sample_thread_has_messages_after_the_one_waiting() {
+        let sample = Sample::new();
+        let ops = &sample.overview.connections[1].connection;
+        let items = sample.history(ops).items;
+        let waiting = items.iter().position(|m| m.state == "pending_review");
+        assert!(waiting.is_some_and(|at| at + 1 < items.len()));
     }
 
     #[test]
