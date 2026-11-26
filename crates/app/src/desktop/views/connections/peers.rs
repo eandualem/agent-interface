@@ -84,7 +84,8 @@ pub(super) struct Entry {
     pub peer_id: String,
     pub connected: bool,
     pub badge: Option<(String, Badge)>,
-    /// Whether it waits on the person.
+    /// Whether it waits on the person: a review or a request, never a
+    /// refusal, which only takes the attention colour.
     pub needs: bool,
 }
 
@@ -118,7 +119,7 @@ pub(super) fn entries(summary: &Summary) -> Vec<Entry> {
                 name: r.display_name.clone(),
                 peer_id: r.peer_id.clone(),
                 connected: false,
-                needs: badge.1 != Badge::Quiet,
+                needs: badge.1 == Badge::Waiting,
                 badge: Some(badge),
             }
         });
@@ -129,7 +130,12 @@ pub(super) fn entries(summary: &Summary) -> Vec<Entry> {
         } else if p.state == "connected" {
             None
         } else if p.state == "revocation_pending" {
-            Some(("stopped".to_owned(), Badge::Quiet))
+            // A disconnect the relay refused for good is a refusal.
+            let refused = p.revocation_failure.is_some();
+            Some((
+                "stopped".to_owned(),
+                if refused { Badge::Failed } else { Badge::Quiet },
+            ))
         } else {
             Some((p.state.replace('_', " "), Badge::Quiet))
         };
@@ -194,7 +200,8 @@ impl Pane {
     pub(super) fn peer_list(&self, s: &Summary, cx: &Context<Self>) -> Div {
         let (t, c) = (tokens(), colors());
         let all = entries(s);
-        let waiting = all.iter().filter(|e| e.needs).count();
+        // The same count as the footer's: requests and messages to review.
+        let waiting = s.requests() + s.overview.pending_reviews;
         let query = self.filter.read(cx).value().to_owned();
         let mut rows = div()
             .id("live-peers")
@@ -456,19 +463,27 @@ impl Pane {
                         entry.name.as_deref(),
                         t.size.view_tile - t.space.s4,
                     ))
-                    .when(entry.needs, |el| {
-                        el.child(
-                            div()
-                                .absolute()
-                                .top(px(t.space.s2))
-                                .right(px(t.space.s2))
-                                .size(px(t.space.s8 + t.space.s4))
-                                .rounded_full()
-                                .bg(c.accent)
-                                .border(px(t.space.s2))
-                                .border_color(if selected { c.selected } else { c.surface }),
-                        )
-                    })
+                    .children(
+                        entry
+                            .badge
+                            .as_ref()
+                            .and_then(|(_, badge)| match badge {
+                                Badge::Waiting => Some(c.accent),
+                                Badge::Failed => Some(c.attention),
+                                Badge::Quiet => None,
+                            })
+                            .map(|dot| {
+                                div()
+                                    .absolute()
+                                    .top(px(t.space.s2))
+                                    .right(px(t.space.s2))
+                                    .size(px(t.space.s8 + t.space.s4))
+                                    .rounded_full()
+                                    .bg(dot)
+                                    .border(px(t.space.s2))
+                                    .border_color(if selected { c.selected } else { c.surface })
+                            }),
+                    )
                     .on_click(cx.listener(move |p, _, _, cx| p.pick(Some(selection.clone()), cx))),
             );
         }
@@ -680,9 +695,10 @@ mod tests {
         };
         assert_eq!(badge(None, "request"), Some((Badge::Waiting, true)));
         assert_eq!(badge(None, "pending"), Some((Badge::Quiet, false)));
+        // A refusal takes the attention colour but does not wait on the person.
         assert_eq!(
             badge(Some("Staging"), "declined"),
-            Some((Badge::Failed, true))
+            Some((Badge::Failed, false))
         );
         assert_eq!(
             badge(Some("CoolAI"), "1 to review"),
@@ -691,5 +707,29 @@ mod tests {
         let unnamed = rows.iter().find(|e| e.name.is_none()).unwrap();
         assert!(unnamed.matches(&rules::fingerprint(&unnamed.peer_id)[..8]));
         assert!(rows.iter().any(|e| e.matches("coolai")));
+        assert_eq!(rows.iter().filter(|e| e.needs).count(), 3);
+        assert_eq!(badge(None, "stopped"), Some((Badge::Quiet, false)));
+        let mut refused = sample.overview.clone();
+        for p in &mut refused.connections {
+            if p.state == "revocation_pending" {
+                p.revocation_failure = Some(api::RevocationFailure {
+                    code: "generation_mismatch".into(),
+                });
+            }
+        }
+        let rows = entries(&Summary::with_counts(refused, sample.counts()));
+        assert!(
+            rows.iter()
+                .any(|e| e.badge == Some(("stopped".into(), Badge::Failed)))
+        );
+    }
+
+    #[test]
+    fn the_width_decides_how_the_list_shows() {
+        use Width::{Medium, Narrow, Wide};
+        assert_eq!(
+            [559.0, 560.0, 719.0, 720.0].map(Width::of),
+            [Narrow, Medium, Medium, Wide]
+        );
     }
 }
