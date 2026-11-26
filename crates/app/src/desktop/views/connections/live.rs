@@ -749,6 +749,13 @@ impl Pane {
 
     pub(super) fn show_form(&mut self, form: Form, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = Menu::None;
+        // A confirmation takes focus on its Cancel; Escape there cancels.
+        if let Form::Decline(m) = &form {
+            self.decline_opener = Some(m.message_id.clone());
+        }
+        if matches!(&form, Form::Disconnect(_) | Form::Decline(_)) {
+            window.focus(&self.confirm_focus, cx);
+        }
         if matches!(&form, Form::Connect | Form::Revise(_)) {
             self.input.update(cx, |field, cx| {
                 field.clear(cx);
@@ -765,18 +772,23 @@ impl Pane {
         let Some(form) = &self.live.form else {
             return div();
         };
-        let cancel = self.live_button(
-            "live-cancel",
-            "Cancel",
-            ui::Button::Secondary,
-            cx,
-            |pane, _, cx| {
-                pane.live.form = None;
-                cx.notify();
-            },
-        );
+        let cancel = self
+            .live_button(
+                "live-cancel",
+                "Cancel",
+                ui::Button::Secondary,
+                cx,
+                |pane, window, cx| pane.cancel_form(window, cx),
+            )
+            .track_focus(&self.confirm_focus);
         let strip = |text: String| {
             div()
+                .on_key_down(cx.listener(|pane, event: &gpui::KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "escape" {
+                        cx.stop_propagation();
+                        pane.cancel_form(window, cx);
+                    }
+                }))
                 .flex()
                 .flex_wrap()
                 .items_center()
@@ -1124,10 +1136,11 @@ impl Pane {
                     el.child(peer_mark(name, t.size.view_tile - t.space.s4))
                         .child(
                             ui::text(
-                                // The name keeps its width, up to a limit,
-                                // and the fingerprint gives way first.
+                                // The name keeps its width up to a limit; with
+                                // less room it ends in an ellipsis before the
+                                // state tag beside it is cut.
                                 div()
-                                    .flex_shrink_0()
+                                    .min_w_0()
                                     .max_w(px(t.size.peer_list - t.size.view_tile * 2.0))
                                     .overflow_hidden()
                                     .whitespace_nowrap()
@@ -1228,8 +1241,7 @@ impl Pane {
                     if words {
                         el.child(label)
                     } else {
-                        el.aria_label(label)
-                            .tooltip(move |_, cx| cx.new(|_| Tip(label.into())).into())
+                        el.tooltip(move |_, cx| cx.new(|_| Tip(label.into())).into())
                     }
                 }),
             );
@@ -1246,8 +1258,15 @@ impl Pane {
                     format!("{choice:?}"),
                     on,
                 )
+                // Its name carries the direction, also when only an icon
+                // labels the gate.
+                .aria_label(format!("{label}: {choice:?}"))
                 .focusable()
-                .tab_stop(true);
+                .tab_stop(true)
+                .focus_visible(|el| {
+                    el.border(px(tokens().size.focus_ring))
+                        .border_color(colors().focus)
+                });
                 if choice == Policy::Auto {
                     segment = segment.tooltip(|_, cx| cx.new(|_| Tip(AUTO_NOTE.into())).into());
                 }
@@ -1288,6 +1307,10 @@ impl Pane {
                 ui::text(
                     div()
                         .id("folded-gates")
+                        .focus_visible(|el| {
+                            el.border(px(tokens().size.focus_ring))
+                                .border_color(colors().focus)
+                        })
                         .flex()
                         .items_center()
                         .gap(px(t.space.s6))
@@ -1359,6 +1382,10 @@ impl Pane {
                                 "Disconnect",
                                 None,
                             )
+                            .focus_visible(|el| {
+                                el.border(px(tokens().size.focus_ring))
+                                    .border_color(colors().focus)
+                            })
                             .focusable()
                             .tab_stop(true)
                             .text_color(c.attention_text)

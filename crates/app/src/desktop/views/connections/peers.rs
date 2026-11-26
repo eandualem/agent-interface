@@ -310,6 +310,10 @@ impl Pane {
         ] {
             segments = segments.child(
                 ui::segment(format!("filter-{needs}"), label, self.needs_you == needs)
+                    .focus_visible(|el| {
+                        el.border(px(tokens().size.focus_ring))
+                            .border_color(colors().focus)
+                    })
                     .flex_1()
                     .justify_center()
                     .focusable()
@@ -384,6 +388,10 @@ impl Pane {
         let selection = entry.selection.clone();
         div()
             .id(id)
+            .focus_visible(|el| {
+                el.border(px(tokens().size.focus_ring))
+                    .border_color(colors().focus)
+            })
             .flex()
             .flex_shrink_0()
             .items_center()
@@ -610,6 +618,10 @@ impl Pane {
         let mut chooser = div().relative().min_w_0().child(
             div()
                 .id("peer-chooser")
+                .focus_visible(|el| {
+                    el.border(px(tokens().size.focus_ring))
+                        .border_color(colors().focus)
+                })
                 .flex()
                 .items_center()
                 .gap(px(t.space.s8))
@@ -676,6 +688,10 @@ impl Pane {
                         rules::display_name(entry.name.as_deref()).to_owned(),
                         None,
                     )
+                    .focus_visible(|el| {
+                        el.border(px(tokens().size.focus_ring))
+                            .border_color(colors().focus)
+                    })
                     // An unnamed connection is told apart by its fingerprint.
                     .when(
                         entry.name.as_deref().is_none_or(|n| n.trim().is_empty()),
@@ -712,6 +728,10 @@ impl Pane {
                     "Connect a profile",
                     None,
                 )
+                .focus_visible(|el| {
+                    el.border(px(tokens().size.focus_ring))
+                        .border_color(colors().focus)
+                })
                 .focusable()
                 .tab_stop(true)
                 .on_click(cx.listener(|p, _, w, cx| {
@@ -731,6 +751,10 @@ fn mark_button(id: impl Into<SharedString>, selected: bool) -> gpui::Stateful<Di
     let size = t.size.view_tile + t.space.s8;
     div()
         .id(id.into())
+        .focus_visible(|el| {
+            el.border(px(tokens().size.focus_ring))
+                .border_color(colors().focus)
+        })
         .relative()
         .flex_shrink_0()
         .size(px(size))
@@ -751,6 +775,10 @@ pub(super) fn small_button(id: &'static str, label: &'static str) -> gpui::State
     ui::text(
         div()
             .id(id)
+            .focus_visible(|el| {
+                el.border(px(tokens().size.focus_ring))
+                    .border_color(colors().focus)
+            })
             .flex_shrink_0()
             .flex()
             .items_center()

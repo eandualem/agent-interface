@@ -260,8 +260,9 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
             )
             # At this width both gates show as rows, each with its Review and
             # Auto, not folded into one button.
-            assert header.count("review") >= 2 and header.count("auto") >= 2, (
-                f"the thread header folded its gates at full width: {header!r}"
+            assert (header.count("review") >= 2 and header.count("auto") >= 2
+                    and "incoming" in header and "outgoing" in header), (
+                f"the thread header did not show both gates with their words: {header!r}"
             )
             capture("gates-rows")
             scroll_thread("4")
@@ -326,6 +327,15 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
             command("xdotool", "windowsize", "--sync", window, "700", "880")
             time.sleep(0.6)
             wait_for(lambda: not find("Agents"), "the narrow layout")
+            # The header holds the peer chooser, named for the connection,
+            # and the gates folded into one button.
+            band = sorted((word for word in read()
+                           if abs(int(word["top"]) - int(label["top"])) < 24),
+                          key=lambda word: int(word["left"]))
+            header = "".join(word["text"] for word in band).lower()
+            assert "ops" in header and header.count("review") == 1, (
+                f"the narrow header lacks its chooser or folded gates: {header!r}"
+            )
             capture("narrow")
         finally:
             for process in (app, wm):

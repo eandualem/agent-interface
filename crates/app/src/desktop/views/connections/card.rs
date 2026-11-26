@@ -150,6 +150,10 @@ impl Pane {
             ui::text(
                 div()
                     .id(SharedString::from(format!("cut-{}", m.message_id)))
+                    .focus_visible(|el| {
+                        el.border(px(tokens().size.focus_ring))
+                            .border_color(colors().focus)
+                    })
                     .flex_shrink_0()
                     .focusable()
                     .tab_stop(true)
@@ -277,20 +281,26 @@ impl Pane {
         match form {
             Some(true) => {
                 let decline = m.clone();
-                bar.child(meta("Decline this message? It will not be delivered.".into()).flex_1())
-                    .child(self.live_button(
-                        "confirm-decline",
-                        "Decline",
-                        ui::Button::Danger,
-                        cx,
-                        move |p, _, cx| {
-                            p.change(
-                                Change::Review(Box::new(decline.clone()), DecisionKind::Decline),
-                                cx,
-                            )
-                        },
-                    ))
-                    .child(self.cancel_form(cx))
+                bar.on_key_down(cx.listener(|pane, event: &gpui::KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "escape" {
+                        cx.stop_propagation();
+                        pane.cancel_form(window, cx);
+                    }
+                }))
+                .child(meta("Decline this message? It will not be delivered.".into()).flex_1())
+                .child(self.live_button(
+                    "confirm-decline",
+                    "Decline",
+                    ui::Button::Danger,
+                    cx,
+                    move |p, _, cx| {
+                        p.change(
+                            Change::Review(Box::new(decline.clone()), DecisionKind::Decline),
+                            cx,
+                        )
+                    },
+                ))
+                .child(self.cancel_button(cx).track_focus(&self.confirm_focus))
             }
             Some(false) => {
                 let note = self.input.read(cx).value().trim().to_owned();
@@ -332,7 +342,7 @@ impl Pane {
                     .child(meta(format!(
                         "The message stays here. {LOCAL_AGENT} gets your note and sends a new version for review."
                     )))
-                    .child(div().flex().flex_wrap().gap(px(t.space.s8)).child(send).child(self.cancel_form(cx)))
+                    .child(div().flex().flex_wrap().gap(px(t.space.s8)).child(send).child(self.cancel_button(cx)))
             }
             None => {
                 let mut bar = bar;
@@ -359,15 +369,24 @@ impl Pane {
                             move |p, w, cx| p.show_form(Form::Revise(msg.clone()), w, cx),
                         ),
                         Action::Decline => {
-                            ui::text_action(format!("decline-{}", m.message_id), "Decline")
-                                .text_color(c.text_2)
-                                .h(px(t.size.button))
-                                .px(px(t.space.s10))
-                                .focusable()
-                                .tab_stop(true)
-                                .on_click(cx.listener(move |p, _, w, cx| {
-                                    p.show_form(Form::Decline(msg.clone()), w, cx)
-                                }))
+                            ring(ui::text_action(
+                                format!("decline-{}", m.message_id),
+                                "Decline",
+                            ))
+                            .text_color(c.text_2)
+                            .h(px(t.size.button))
+                            .px(px(t.space.s10))
+                            .focusable()
+                            .tab_stop(true)
+                            // Focus comes back here when its confirmation
+                            // is cancelled.
+                            .when(
+                                self.decline_opener.as_deref() == Some(m.message_id.as_str()),
+                                |el| el.track_focus(&self.decline_focus),
+                            )
+                            .on_click(cx.listener(
+                                move |p, _, w, cx| p.show_form(Form::Decline(msg.clone()), w, cx),
+                            ))
                         }
                     });
                 }
@@ -380,16 +399,13 @@ impl Pane {
         }
     }
 
-    fn cancel_form(&self, cx: &Context<Self>) -> gpui::Stateful<Div> {
+    fn cancel_button(&self, cx: &Context<Self>) -> gpui::Stateful<Div> {
         self.live_button(
             "cancel-form",
             "Cancel",
             ui::Button::Secondary,
             cx,
-            |pane, _, cx| {
-                pane.live.form = None;
-                cx.notify();
-            },
+            |pane, window, cx| pane.cancel_form(window, cx),
         )
     }
 }

@@ -32,6 +32,11 @@ pub(super) struct Pane {
     menu_focus: gpui::FocusHandle,
     more_focus: gpui::FocusHandle,
     gates_focus: gpui::FocusHandle,
+    /// A confirmation's Cancel, focused when it opens, and the Decline it
+    /// came from, by message, to return to.
+    confirm_focus: gpui::FocusHandle,
+    decline_focus: gpui::FocusHandle,
+    decline_opener: Option<String>,
     /// The menu a press outside just closed, so the press on its own button
     /// does not open it again.
     dismissed: Option<(Menu, std::time::Instant)>,
@@ -57,7 +62,7 @@ pub(super) struct Pane {
     expanded: HashSet<String>,
     /// The notes this pane sent back with a message, and when, by message.
     notes: HashMap<String, (String, String)>,
-    _subscriptions: [Subscription; 2],
+    _subscriptions: [Subscription; 3],
 }
 
 /// Which of the pane's small menus is open.
@@ -124,15 +129,27 @@ impl Pane {
                 NameEvent::Changed(_) => cx.notify(),
             },
         );
+        let menu_focus = cx.focus_handle();
+        // A menu closes when focus leaves it, as by Tab.
+        let menu_left = cx.on_focus_out(&menu_focus, window, |pane, _, _, cx| {
+            if !matches!(pane.menu, Menu::None) {
+                pane.dismissed = Some((pane.menu, std::time::Instant::now()));
+                pane.menu = Menu::None;
+                cx.notify();
+            }
+        });
         Self {
             live: live::Live::new(connection, cx),
             preview: None,
             entry: cx.focus_handle().tab_stop(true),
             thread_focus: cx.focus_handle(),
             thread_scroll: gpui::ScrollHandle::new(),
-            menu_focus: cx.focus_handle(),
+            menu_focus,
             more_focus: cx.focus_handle().tab_stop(true),
             gates_focus: cx.focus_handle().tab_stop(true),
+            confirm_focus: cx.focus_handle().tab_stop(true),
+            decline_focus: cx.focus_handle().tab_stop(true),
+            decline_opener: None,
             dismissed: None,
             scroll_on_open: std::cell::Cell::new(false),
             selection: RefCell::default(),
@@ -148,7 +165,7 @@ impl Pane {
             copied: None,
             expanded: HashSet::new(),
             notes: HashMap::new(),
-            _subscriptions: [search, editor_keys],
+            _subscriptions: [search, editor_keys, menu_left],
         }
     }
 
@@ -234,6 +251,17 @@ impl Pane {
             }))
     }
 
+    /// Close a confirmation or note and give focus back to what opened it,
+    /// where that is still drawn.
+    fn cancel_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.live.form.take() {
+            Some(live::Form::Disconnect(_)) => window.focus(&self.more_focus, cx),
+            Some(live::Form::Decline(_)) => window.focus(&self.decline_focus, cx),
+            _ => {}
+        }
+        cx.notify();
+    }
+
     /// Copy `text` and show Copied on the control `key` for a moment.
     fn copy(&mut self, key: SharedString, text: String, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -263,14 +291,14 @@ impl Pane {
     ) -> gpui::Stateful<Div> {
         let id = id.into();
         let key = id.clone();
-        ui::text_action(
+        ring(ui::text_action(
             id.clone(),
             if self.copied.as_ref() == Some(&id) {
                 "Copied"
             } else {
                 label
             },
-        )
+        ))
         .focusable()
         .tab_stop(true)
         .on_click(cx.listener(move |pane, _, _, cx| pane.copy(key.clone(), text.clone(), cx)))
@@ -278,6 +306,15 @@ impl Pane {
 }
 
 use crate::desktop::peer_inbox;
+
+/// The focus ring the shared interaction controls draw, for this pane's own
+/// focusable controls.
+fn ring(control: gpui::Stateful<Div>) -> gpui::Stateful<Div> {
+    control.focus_visible(|el| {
+        el.border(px(tokens().size.focus_ring))
+            .border_color(colors().focus)
+    })
+}
 
 /// The quiet line a list shows when nothing is in it.
 fn no_rows(text: &'static str) -> Div {
