@@ -2,19 +2,23 @@
 """Capture the Connections pane's sample data in a disposable Xvfb desktop.
 
 Run under xvfb-run + dbus-run-session as a normal user. Uses no live provider,
-real home, credentials or tmux server: the one profile it lists is not served,
-so the pane offers its preview. The captures land beside the desktop check's
-evidence, in target/linux-desktop-smoke/connections/, for a reader to look at.
+real home, credentials or tmux server: the one profile it serves refuses the
+connection reads, so the pane offers its preview. The captures land beside
+the desktop check's evidence, in target/linux-desktop-smoke/connections/, for
+a reader to look at.
 """
 import csv
+import http.server
 import io
 import json
 import os
 from pathlib import Path
 import shlex
+import socketserver
 import sqlite3
 import subprocess
 import tempfile
+import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,12 +52,13 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-") as directory:
     settings = root / "config/agent-interface"
     settings.mkdir(parents=True)
     (settings / "settings.toml").write_text("[setup]\nintro_seen = true\ndone = true\n")
-    # A `backbone` command that lists one profile whose socket nobody serves.
+    # A stand-in for the service: a `backbone` command that lists one served
+    # profile, whose private socket below answers the reads.
     profile = root / "backbone/profiles" / PROFILE
     profile.mkdir(mode=0o700, parents=True)
-    entry = dict(protocol_version=1, profile_id=PROFILE,
-                 instance_id="0190c3a2c1107a3b8c9d0e1f2a3b4c5d", machine=dict(id="5f2c9e0d1b7a4e38"),
-                 state="serving", display_name="Work", home=True,
+    served = dict(protocol_version=1, profile_id=PROFILE,
+                  instance_id="0190c3a2c1107a3b8c9d0e1f2a3b4c5d", machine=dict(id="5f2c9e0d1b7a4e38"))
+    entry = dict(served, state="serving", display_name="Work", home=True,
                  socket=str(profile / "api.sock"), tmux_socket=str(root / "tmux/profile.sock"),
                  credential_reference=dict(type="socket"))
     commands = root / ".local/bin"
@@ -73,6 +78,37 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-") as directory:
     (commands / "backbone").chmod(0o755)
     env.update(SHELL="/bin/sh", PATH=f"{commands}:{env.get('PATH', '')}")
     (root / ".profile").write_text(f'PATH={shlex.quote(str(commands))}:"$PATH"\nexport PATH\n')
+
+    class Provider(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            path = self.path.split("?", 1)[0]
+            status = 200
+            if path == "/health":
+                # The version check the app makes before each connection.
+                body = dict(status="ok", version="0.1.0")
+            elif path == "/api/profile":
+                body = served
+            elif path.startswith(("/api/peer-connections", "/api/conversations")):
+                # With no connections to read, the pane offers its preview.
+                status, body = 404, {}
+            else:
+                body = dict(items=[], has_more=False, next_cursor=None)
+            encoded = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, *_):
+            pass
+
+    class Server(socketserver.ThreadingUnixStreamServer):
+        daemon_threads = True
+
+    server = Server(str(profile / "api.sock"), Provider)
+    os.chmod(profile / "api.sock", 0o600)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
     # One workspace whose only pane is Connections, so no navigation is needed.
     library = root / "library"
     library.mkdir()
@@ -142,4 +178,6 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-") as directory:
                         process.kill()
             subprocess.run(["tmux", "-S", str(root / "tmux/profile.sock"), "kill-server"],
                            env=env, capture_output=True, check=False)
+            server.shutdown()
+            server.server_close()
 print(f"Connections captures are in {OUTPUT}")
