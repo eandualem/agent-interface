@@ -45,13 +45,18 @@ struct WorkspaceDrag {
 
 impl Render for WorkspaceDrag {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        // A slot is too small to see a line through the copy: the copy rides
+        // a switcher row higher, clear of the strip, so the line at the slot
+        // under the pointer shows at full strength.
         drag_preview("dragged-workspace", self.name.clone())
+            .relative()
+            .top(px(-tokens().size.slot_row))
     }
 }
 
 /// What follows the pointer: see-through, so the line under it shows where
 /// the item will land.
-fn drag_preview(id: &'static str, name: String) -> impl IntoElement {
+fn drag_preview(id: &'static str, name: String) -> gpui::Stateful<gpui::Div> {
     ui::row(id, true)
         .bg(colors().panel)
         .text_color(colors().text)
@@ -192,6 +197,13 @@ fn section_toggle(label: &'static str, collapsed: bool) -> gpui::Stateful<gpui::
 /// does, as it stops every other edit, and so does editing the tab's name.
 fn tab_row_draggable(editing: bool, save_failed: bool) -> bool {
     !editing && !save_failed
+}
+
+/// Whether a click inside a tab row ends a drag rather than activating
+/// what it is on. Only a mouse release can end the press that started a
+/// drag; Enter, Space and taps always activate.
+fn click_ends_drag(dragged_since_press: bool, click: &gpui::ClickEvent) -> bool {
+    dragged_since_press && matches!(click, gpui::ClickEvent::Mouse(_))
 }
 
 /// Where a drop on `bounds` at `pointer` lands: after it past its middle,
@@ -690,7 +702,7 @@ impl Browser {
                         cx.stop_propagation();
                         // The row owns the drag, so GPUI holds back only the
                         // row's click after one, not this name's.
-                        if browser.dragged_since_press {
+                        if click_ends_drag(browser.dragged_since_press, event) {
                             return;
                         }
                         let active = browser.layout.as_ref().is_some_and(|layout| {
@@ -811,7 +823,7 @@ impl Browser {
                                             ui::icon_button(SharedString::from(format!("tab-options-{id}")), "ellipsis")
                                                 .on_click(cx.listener(move |browser, event: &gpui::ClickEvent, window, cx| {
                                                     cx.stop_propagation();
-                                                    if browser.dragged_since_press {
+                                                    if click_ends_drag(browser.dragged_since_press, event) {
                                                         return;
                                                     }
                                                     browser.open_tab_menu(options_origin.as_ref(), &options_id, event.position(), window, cx);
@@ -1763,7 +1775,9 @@ mod tests {
         assert!(reorder_tab_proposal(&layout, &space.id, third, first, false).is_none());
     }
 
-    use super::{Reorder, landing_at, reorder_workspace_proposal, tab_row_draggable};
+    use super::{
+        Reorder, click_ends_drag, landing_at, reorder_workspace_proposal, tab_row_draggable,
+    };
 
     fn library(workspaces: &[(&str, &[&str])]) -> tempfile::TempDir {
         let directory = tempfile::tempdir().unwrap();
@@ -1803,6 +1817,41 @@ mod tests {
     fn tab_names(model: &agent_interface_core::Layout) -> Vec<&str> {
         let space = model.workspace().unwrap();
         space.tabs.iter().map(|tab| tab.name.as_str()).collect()
+    }
+
+    #[test]
+    fn after_a_drag_only_a_mouse_release_is_held_back_and_keys_still_activate() {
+        let at = gpui::point(gpui::px(20.), gpui::px(20.));
+        let mouse = gpui::ClickEvent::Mouse(gpui::MouseClickEvent {
+            down: gpui::MouseDownEvent {
+                button: gpui::MouseButton::Left,
+                position: at,
+                modifiers: gpui::Modifiers::none(),
+                click_count: 1,
+                first_mouse: false,
+            },
+            up: gpui::MouseUpEvent {
+                button: gpui::MouseButton::Left,
+                position: at,
+                modifiers: gpui::Modifiers::none(),
+                click_count: 1,
+            },
+        });
+        let bounds = gpui::Bounds::new(at, gpui::size(gpui::px(40.), gpui::px(30.)));
+        let enter = gpui::ClickEvent::Keyboard(gpui::KeyboardClickEvent {
+            button: gpui::KeyboardButton::Enter,
+            bounds,
+        });
+        let space = gpui::ClickEvent::Keyboard(gpui::KeyboardClickEvent {
+            button: gpui::KeyboardButton::Space,
+            bounds,
+        });
+        assert!(click_ends_drag(true, &mouse));
+        assert!(!click_ends_drag(false, &mouse));
+        for key in [&enter, &space] {
+            assert!(!click_ends_drag(true, key));
+            assert!(!click_ends_drag(false, key));
+        }
     }
 
     #[test]
