@@ -47,10 +47,13 @@ impl Render for WorkspaceDrag {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         // A slot is too small to see a line through the copy: the copy rides
         // a switcher row higher, clear of the strip, so the line at the slot
-        // under the pointer shows at full strength.
-        drag_preview("dragged-workspace", self.name.clone())
-            .relative()
-            .top(px(-tokens().size.slot_row))
+        // under the pointer shows at full strength. GPUI lays the drag view
+        // out as a root, which ignores its own offset, so the copy is a child.
+        div().child(
+            drag_preview("dragged-workspace", self.name.clone())
+                .relative()
+                .top(px(-tokens().size.slot_row)),
+        )
     }
 }
 
@@ -324,6 +327,37 @@ impl Browser {
             self.reorder_target = landing;
             cx.notify();
         }
+    }
+
+    /// Whether a dragged tab can still land among the tabs shown: they are
+    /// its workspace's, on the same connection, and the tab is still there.
+    /// After switching workspace mid-drag, no line promises a drop that
+    /// `reorder_proposal` would refuse.
+    fn tab_drag_lands_here(
+        &self,
+        origin: Option<&super::navigation_origin::Origin>,
+        workspace: &str,
+        tab: &str,
+    ) -> bool {
+        self.selected_origin_is_current(origin)
+            && self
+                .layout
+                .as_ref()
+                .and_then(|layout| layout.model().workspace())
+                .is_some_and(|space| {
+                    space.id == workspace && space.tabs.iter().any(|shown| shown.id == tab)
+                })
+    }
+
+    /// Whether a dragged workspace is still in the library.
+    fn workspace_exists(&self, workspace: &str) -> bool {
+        self.layout.as_ref().is_some_and(|layout| {
+            layout
+                .model()
+                .workspaces
+                .iter()
+                .any(|space| space.id == workspace)
+        })
     }
 
     /// Whether the drop on `target` lands after it. GPUI ends the drag
@@ -751,7 +785,14 @@ impl Browser {
                         el.on_drag(dragged, start_drag(cx))
                             .on_drag_move(cx.listener(
                                 move |browser, event: &gpui::DragMoveEvent<TabDrag>, _, cx| {
-                                    if event.drag(cx).browser == cx.entity_id() {
+                                    let drag = event.drag(cx);
+                                    if drag.browser == cx.entity_id()
+                                        && browser.tab_drag_lands_here(
+                                            drag.origin.as_ref(),
+                                            &drag.workspace,
+                                            &drag.tab,
+                                        )
+                                    {
                                         let position = event.event.position;
                                         browser.track_landing(&target, event.bounds, position, false, cx);
                                     }
@@ -1639,7 +1680,10 @@ impl Browser {
                                       event: &gpui::DragMoveEvent<WorkspaceDrag>,
                                       _,
                                       cx| {
-                                    if event.drag(cx).browser == cx.entity_id() {
+                                    let drag = event.drag(cx);
+                                    if drag.browser == cx.entity_id()
+                                        && browser.workspace_exists(&drag.workspace)
+                                    {
                                         let position = event.event.position;
                                         browser.track_landing(
                                             &target,
@@ -1852,6 +1896,34 @@ mod tests {
             assert!(!click_ends_drag(true, key));
             assert!(!click_ends_drag(false, key));
         }
+    }
+
+    #[test]
+    fn a_dragged_tab_shows_a_landing_only_among_its_own_workspaces_tabs() {
+        let directory = library(&[("Work", &["First", "Second"]), ("Other", &["Third"])]);
+        let mut browser = super::Browser {
+            layout: Some(crate::library::WindowLayout::new(
+                store(directory.path()).load().unwrap(),
+            )),
+            directory: Some(directory.path().to_owned()),
+            ..Default::default()
+        };
+        let model = browser.layout.as_ref().unwrap().model().clone();
+        let (work, other) = (&model.workspaces[0], &model.workspaces[1]);
+        let first = work.tabs[0].id.clone();
+        let origin = browser.selected_navigation_origin();
+        assert!(browser.tab_drag_lands_here(origin.as_ref(), &work.id, &first));
+        assert!(!browser.tab_drag_lands_here(origin.as_ref(), &work.id, "removed"));
+        assert!(browser.workspace_exists(&other.id));
+        assert!(!browser.workspace_exists("removed"));
+        // Switched to another workspace mid-drag: its tabs show no landing.
+        browser
+            .layout
+            .as_mut()
+            .unwrap()
+            .model_mut()
+            .choose_workspace(&other.id);
+        assert!(!browser.tab_drag_lands_here(origin.as_ref(), &work.id, &first));
     }
 
     #[test]

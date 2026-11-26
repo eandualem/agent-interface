@@ -55,7 +55,10 @@ with tempfile.TemporaryDirectory(prefix="agent-interface-reorder-") as directory
     library.mkdir()
     model = {"version": 2, "focus": False, "selected": "000000000001", "workspaces": [
         {"id": "000000000001", "name": "Alpha", "selected": "000000000002", "tabs": [
-            tab("000000000002", "Apple", "000000000003"),
+            # Two panes, the second focused, so a reset of pane focus shows.
+            {"id": "000000000002", "name": "Apple", "focus": "000000000012",
+             "tree": {"id": "000000000011", "direction": "right", "ratio": 0.5,
+                      "first": empty("000000000003"), "second": empty("000000000012")}},
             tab("000000000004", "Banana", "000000000005"),
             tab("000000000006", "Cherry", "000000000007")]},
         {"id": "000000000008", "name": "Beta", "selected": "000000000009", "tabs": [
@@ -195,9 +198,12 @@ with tempfile.TemporaryDirectory(prefix="agent-interface-reorder-") as directory
                     command("import", "-window", window, str(OUTPUT / "failure.png"))
                 except subprocess.SubprocessError:
                     pass
-            if app and app.poll() is None:
-                app.terminate()
-                app.wait(timeout=15)
-            if wm and wm.poll() is None:
-                wm.terminate()
-                wm.wait(timeout=15)
+            # Stop both, the window manager even if the app will not end.
+            for process in (app, wm):
+                if process and process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=15)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
