@@ -275,7 +275,7 @@ pub(super) enum Use<'a> {
     Recover(&'a Path),
 }
 
-fn lock(root: &Path) -> io::Result<fs::File> {
+fn lock(root: &Path) -> io::Result<Held> {
     let file = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -290,12 +290,23 @@ fn lock(root: &Path) -> io::Result<fs::File> {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         match file.try_lock() {
-            Ok(()) => return Ok(file),
+            Ok(()) => return Ok(Held(file)),
             Err(fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(10))
             }
             Err(e) => return Err(e.into()),
         }
+    }
+}
+
+/// The binding lock, released when this is dropped on every return. Closing
+/// the file alone leaves the lock held while a process another thread is
+/// starting still has a copy of it.
+struct Held(fs::File);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
     }
 }
 
