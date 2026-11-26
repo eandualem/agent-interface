@@ -223,9 +223,12 @@ impl Settings {
                 })
                 .map(str::to_owned)
                 .collect();
+            // The newest are last: a repeated key counts where it was last
+            // listed, and an over-long list keeps the newest.
             let mut seen = std::collections::HashSet::new();
+            keys.reverse();
             keys.retain(|key| seen.insert(key.clone()));
-            // The newest are last; an over-long list keeps those.
+            keys.reverse();
             keys.drain(..keys.len().saturating_sub(MAX_PEER_LISTS));
             settings.minimised_peer_lists = keys;
         }
@@ -699,6 +702,21 @@ mod tests {
             Some(PathBuf::from("/account/.config").join(file))
         );
         assert_eq!(path_from(None, None, || None), None);
+    }
+
+    #[test]
+    fn saved_peer_lists_keep_the_newest_and_a_repeat_where_it_was_last() {
+        let keys = (0..=MAX_PEER_LISTS)
+            .map(|n| format!("\"{n:012x}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let parsed = Settings::parse(&format!(
+            "[connections]\nminimised = [\"a\", {keys}, \"a\"]\n"
+        ))
+        .minimised_peer_lists;
+        assert_eq!(parsed.len(), MAX_PEER_LISTS);
+        assert_eq!(parsed.first().map(String::as_str), Some("000000000002"));
+        assert_eq!(parsed.last().map(String::as_str), Some("a"));
     }
 
     #[test]

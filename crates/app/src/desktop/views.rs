@@ -333,14 +333,18 @@ impl ViewPane {
         profile: Option<&str>,
         workspace: &str,
         name: Option<&str>,
+        window: &mut Window,
         cx: &mut gpui::App,
     ) {
         if let Some(pane) = &self.connections {
-            pane.update(cx, |pane, cx| {
-                if pane.place(profile, workspace, name) {
-                    cx.notify();
-                }
-            });
+            // Placed while the window draws, where a notify brings no frame
+            // of its own: a change is drawn on the next frame.
+            if pane.update(cx, |pane, _| pane.place(profile, workspace, name)) {
+                let pane = pane.downgrade();
+                window.on_next_frame(move |_, cx| {
+                    let _ = pane.update(cx, |_, cx| cx.notify());
+                });
+            }
         }
     }
 

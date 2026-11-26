@@ -167,8 +167,9 @@ with tempfile.TemporaryDirectory(prefix="interactions-smoke-", dir="/tmp") as di
             wait_for(lambda: find("Recorded"), "the Interactions footer")
             for size, note in (("2000", "causes"), ("1000", "communication"), ("2000", "causes")):
                 command("xdotool", "windowsize", "--sync", window, size, "880")
-                time.sleep(2)
-                assert find(note), f"the footer did not follow a resize to {size} px"
+                # Well within the view's 20 s refresh, which would redraw it
+                # anyway; one reading may misread the small footer.
+                wait_for(lambda: find(note), f"the footer to follow a resize to {size} px", 8)
                 command("import", "-window", window, str(OUTPUT / f"footer-{size}.png"))
         finally:
             for process in (app, wm):

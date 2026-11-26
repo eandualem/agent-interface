@@ -1246,7 +1246,11 @@ impl Browser {
             } else {
                 self.layout = Some(WindowLayout::new(document));
             }
-            if let Some(layout) = &self.layout {
+            // Unit tests apply documents of their own: they must not prune
+            // the shared list or write the person's settings.
+            if !cfg!(test)
+                && let Some(layout) = &self.layout
+            {
                 let workspaces: Vec<&str> = layout
                     .model()
                     .workspaces
@@ -3433,7 +3437,7 @@ impl Render for Browser {
             {
                 let name = self.workspace_profiles.profile_name(space);
                 pane.update(cx, |pane, cx| {
-                    pane.place_connections(space.profile_id.as_deref(), &space.id, name, cx)
+                    pane.place_connections(space.profile_id.as_deref(), &space.id, name, window, cx)
                 });
             }
         }
