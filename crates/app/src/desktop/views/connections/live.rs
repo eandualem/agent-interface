@@ -102,14 +102,47 @@ impl Change {
         }
     }
 
-    fn description(&self) -> String {
+    /// What this change was, by the connection's name, for a notice.
+    fn description(&self, overview: Option<&api::Overview>) -> String {
+        let connections = overview.map_or(&[][..], |o| o.connections.as_slice());
+        let by_generation = |g: &str| {
+            connections
+                .iter()
+                .find(|p| p.connection.generation == g)
+                .map_or_else(
+                    || "this connection".to_owned(),
+                    |p| known_as(p.display_name.as_deref(), &p.connection.peer_id),
+                )
+        };
         match self {
-            Self::Invite(id) => format!("Invitation to {id}"),
-            Self::Answer(id, _) => format!("Answer to request {id}"),
-            Self::Disconnect(g) => format!("Disconnect generation {g}"),
-            Self::Gates(g, _) => format!("Gate change for generation {g}"),
+            Self::Invite(id) => format!("Connection request to {}", known_as(None, id)),
+            Self::Answer(request, _) => {
+                let name = overview
+                    .and_then(|o| o.invitations.iter().find(|r| &r.request_id == request))
+                    .map_or_else(
+                        || "this profile".to_owned(),
+                        |r| known_as(r.display_name.as_deref(), &r.peer_id),
+                    );
+                format!("Answer to {name}")
+            }
+            Self::Disconnect(g) => format!("Disconnect from {}", by_generation(g)),
+            Self::Gates(g, _) => format!("Gate change for {}", by_generation(g)),
             Self::Review(m, _) => {
-                format!("Review of {} for {}", m.message_id, m.connection.peer_id)
+                let name = connections
+                    .iter()
+                    .find(|p| p.connection == m.connection)
+                    .map_or_else(
+                        || known_as(None, &m.connection.peer_id),
+                        |p| known_as(p.display_name.as_deref(), &p.connection.peer_id),
+                    );
+                format!(
+                    "Decision on the {} message {} {name}",
+                    rules::clock(&m.submitted_at),
+                    match m.direction {
+                        Direction::Incoming => "from",
+                        Direction::Outgoing => "to",
+                    }
+                )
             }
         }
     }
@@ -193,6 +226,14 @@ impl Snapshot {
             selection,
             history,
         })
+    }
+}
+
+/// A connection's name, or "Unnamed profile" with its short fingerprint.
+fn known_as(name: Option<&str>, peer_id: &str) -> String {
+    match rules::display_name(name) {
+        "Unnamed profile" => format!("Unnamed profile {}", rules::fingerprint(peer_id)),
+        name => name.to_owned(),
     }
 }
 
@@ -524,7 +565,12 @@ impl Pane {
         if self.preview.is_some() || !change.belongs_to(self.live.selected.as_ref()) {
             return;
         }
-        let description = change.description();
+        let description = change.description(
+            self.live
+                .snapshot
+                .as_ref()
+                .map(|snapshot| &snapshot.summary.overview),
+        );
         let event = gate_event(&change);
         let invite = matches!(change, Change::Invite(_));
         self.live.sending = true;
@@ -1934,6 +1980,35 @@ mod tests {
         assert!(gate_event(&change).is_some_and(|(g, text)| {
             g == "gen_1" && text.ends_with("Outgoing gate set to Auto")
         }));
+    }
+
+    #[test]
+    fn a_notice_names_the_connection_never_its_ids() {
+        let overview: api::Overview = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../roster/src/profiles/peers/fixtures/peer-overview.json"
+        )))
+        .unwrap();
+        let peer = &overview.connections[0];
+        let generation = peer.connection.generation.clone();
+        let name = known_as(peer.display_name.as_deref(), &peer.connection.peer_id);
+        for change in [
+            Change::Disconnect(generation.clone()),
+            Change::Gates(generation.clone(), vec![]),
+        ] {
+            let text = change.description(Some(&overview));
+            assert!(text.ends_with(&name), "{text}");
+            assert!(!text.contains(&generation) && !text.contains(&peer.connection.peer_id));
+        }
+        let unnamed = format!("v1:466836eb{}3c5b", "0".repeat(52));
+        assert_eq!(
+            Change::Invite(unnamed.clone()).description(None),
+            "Connection request to Unnamed profile 466836eb…3c5b"
+        );
+        assert_eq!(
+            Change::Disconnect(generation).description(None),
+            "Disconnect from this connection"
+        );
     }
 
     #[test]
