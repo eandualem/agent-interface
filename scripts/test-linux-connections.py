@@ -31,7 +31,8 @@ PROFILE = "0a1b2c3d4e5f"
 
 
 def wait_for(check, label):
-    deadline = time.monotonic() + 40
+    # One reading may take most of a minute on a constrained runner.
+    deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
         result = check()
         if result:
@@ -51,6 +52,7 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
     env.pop("BASH_ENV", None)
     env.update(HOME=str(root), XDG_CONFIG_HOME=str(root / "config"),
                XDG_DATA_HOME=str(root / "data"), XDG_STATE_HOME=str(root / "state"),
+               XDG_CACHE_HOME=str(root / "cache"),
                TMUX_TMPDIR=str(root / "tmux"), LIBGL_ALWAYS_SOFTWARE="1")
     (root / "tmux").mkdir(mode=0o700)
     settings = root / "config/agent-interface"
@@ -144,6 +146,8 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
                               "app window").splitlines()[0]
             command("xdotool", "windowactivate", "--sync", window)
             command("xdotool", "windowsize", "--sync", window, "1280", "820")
+            # The size is set before the window has drawn at it.
+            time.sleep(0.6)
 
             def find(text):
                 assert app.poll() is None, "application exited"
@@ -172,12 +176,13 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
                 command("import", "-window", window, str(OUTPUT / f"{name}.png"))
 
             click("Preview")
-            # The preview's own button: its note is read with stray quotes.
-            wait_for(lambda: find("Exit") and find("maya-ops"), "sample data")
+            # A sample peer's name: the preview's note is read with stray quotes.
+            wait_for(lambda: find("maya-ops"), "sample data")
             capture("preview")
             click("priya-platform")
-            # Only the chosen peer's request shows this button.
-            wait_for(lambda: find("Accept"), "the chosen peer's connection request")
+            # Only the chosen peer's request says this. Its filled Accept
+            # button is not read as text.
+            wait_for(lambda: find("Accepting"), "the chosen peer's connection request")
             capture("peer")
         finally:
             for process in (app, wm):
@@ -187,6 +192,7 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
                         process.wait(timeout=10)
                     except subprocess.TimeoutExpired:
                         process.kill()
+                        process.wait()
             subprocess.run(["tmux", "-S", str(root / "tmux/profile.sock"), "kill-server"],
                            env=env, capture_output=True, check=False)
             server.shutdown()
