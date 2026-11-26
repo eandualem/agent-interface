@@ -33,30 +33,57 @@ impl Width {
     }
 }
 
-/// What the thread header shows at its width: both gates as rows, or
-/// folded into one button, and whether the fingerprint has room.
+/// How the thread header shows the two gates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Gates {
+    /// Each gate's word, Incoming or Outgoing, beside its segments.
+    Words,
+    /// Only each gate's direction icon beside its segments; the word is
+    /// its tooltip and accessible name.
+    Icons,
+    /// One button that opens both gates.
+    Folded,
+}
+
+/// What the thread header shows at its width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct HeaderFit {
-    pub fold: bool,
+    pub gates: Gates,
     pub fingerprint: bool,
 }
 
-/// About the width the header needs for both gate rows beside a name, its
-/// tag and fingerprint, and the width below which the fingerprint goes.
-const HEADER_ROWS: f32 = 860.0;
-const HEADER_FINGERPRINT: f32 = 640.0;
+// Widths in px, measured from the Linux check's 1280 px capture of a
+// connected thread's header (a 790 px thread column).
+/// Left padding, the 24 px mark, a name allowance of 120 px (longer
+/// names give way), the Connected tag (81 px) and the gaps between them.
+const HEADER_NAMED: f32 = 20.0 + 24.0 + 10.0 + 120.0 + 10.0 + 81.0 + 10.0;
+/// The fingerprint (82 px), the copy button and their gaps.
+const HEADER_FINGERPRINT: f32 = 82.0 + 10.0 + 24.0 + 10.0;
+/// Both gates with their words, from the Incoming icon to the end of ⋯.
+const HEADER_WORDS: f32 = 433.0;
+/// The same without the two words and their 6 px gaps (52 and 53 px).
+const HEADER_ICONS: f32 = HEADER_WORDS - (6.0 + 52.0) - (6.0 + 53.0);
+/// The folded gates button (147 px), a gap and ⋯.
+const HEADER_FOLDED: f32 = 147.0 + 6.0 + 28.0;
+/// The right padding.
+const HEADER_END: f32 = 14.0;
 
-/// The header's fit for a thread column `thread` px wide.
+/// The header's fit for a thread column `thread` px wide: the widest gates
+/// that fit beside the name, then the fingerprint if it still has room.
 pub(super) fn header_fit(width: Width, thread: f32) -> HeaderFit {
-    if width == Width::Narrow {
-        return HeaderFit {
-            fold: true,
-            fingerprint: false,
-        };
-    }
+    let fits = |controls: f32| thread >= HEADER_NAMED + controls + HEADER_END;
+    let (gates, controls) = if width == Width::Narrow {
+        (Gates::Folded, HEADER_FOLDED)
+    } else if fits(HEADER_WORDS) {
+        (Gates::Words, HEADER_WORDS)
+    } else if fits(HEADER_ICONS) {
+        (Gates::Icons, HEADER_ICONS)
+    } else {
+        (Gates::Folded, HEADER_FOLDED)
+    };
     HeaderFit {
-        fold: thread < HEADER_ROWS,
-        fingerprint: thread >= HEADER_FINGERPRINT,
+        gates,
+        fingerprint: width != Width::Narrow && fits(controls + HEADER_FINGERPRINT),
     }
 }
 
@@ -843,17 +870,22 @@ mod tests {
     }
 
     #[test]
-    fn the_header_folds_its_gates_before_anything_is_pushed_out() {
+    fn the_header_drops_words_then_folds_its_gates_as_it_narrows() {
+        use Gates::{Folded, Icons, Words};
         let fit = |width, thread| {
-            let HeaderFit { fold, fingerprint } = header_fit(width, thread);
-            (fold, fingerprint)
+            let HeaderFit { gates, fingerprint } = header_fit(width, thread);
+            (gates, fingerprint)
         };
+        // Words need 722 px, icons 605 px, the fingerprint 126 px more.
+        assert_eq!(fit(Width::Wide, 1100.0), (Words, true));
         // A 1280 px window with the list open leaves about 790 px.
-        assert_eq!(fit(Width::Wide, 1100.0), (false, true));
-        assert_eq!(fit(Width::Wide, 790.0), (true, true));
-        assert_eq!(fit(Width::Wide, 560.0), (true, false));
-        assert_eq!(fit(Width::Medium, 600.0), (true, false));
-        assert_eq!(fit(Width::Narrow, 540.0), (true, false));
+        assert_eq!(fit(Width::Wide, 790.0), (Words, false));
+        assert_eq!(fit(Width::Wide, 722.0), (Words, false));
+        assert_eq!(fit(Width::Wide, 721.0), (Icons, false));
+        assert_eq!(fit(Width::Medium, 606.0), (Icons, false));
+        // A 1040 px window with the list open leaves about 560 px.
+        assert_eq!(fit(Width::Wide, 560.0), (Folded, false));
+        assert_eq!(fit(Width::Narrow, 540.0), (Folded, false));
     }
 
     #[test]

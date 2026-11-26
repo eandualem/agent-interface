@@ -1184,8 +1184,16 @@ impl Pane {
     }
 
     /// Each gate's label and its Review and Auto segments, in a row or,
-    /// in the folded gates' menu, `stacked`.
-    fn gate_rows(&self, peer: &api::Peer, actions: bool, stacked: bool, cx: &Context<Self>) -> Div {
+    /// in the folded gates' menu, `stacked`. Without `words` a label is its
+    /// direction icon, with the word as its tooltip and accessible name.
+    fn gate_rows(
+        &self,
+        peer: &api::Peer,
+        actions: bool,
+        stacked: bool,
+        words: bool,
+        cx: &Context<Self>,
+    ) -> Div {
         let (t, c) = (tokens(), colors());
         let mut controls = div().flex().items_center().gap(px(t.space.s6));
         for (direction, icon, label, current) in [
@@ -1205,6 +1213,7 @@ impl Pane {
             controls = controls.child(
                 ui::text(
                     div()
+                        .id(format!("gate-label-{direction:?}"))
                         .flex()
                         .items_center()
                         .gap(px(t.space.s6))
@@ -1215,7 +1224,14 @@ impl Pane {
                     &t.text.meta,
                 )
                 .child(ui::icon(icon, t.size.icon - 2.0, c.muted))
-                .child(label),
+                .map(|el| {
+                    if words {
+                        el.child(label)
+                    } else {
+                        el.aria_label(label)
+                            .tooltip(move |_, cx| cx.new(|_| Tip(label.into())).into())
+                    }
+                }),
             );
             if current == Policy::Unknown {
                 controls = controls.child(ui::tag("unknown to this version", ui::Tone::Quiet));
@@ -1259,7 +1275,8 @@ impl Pane {
             .flex_shrink_0()
             .items_center()
             .gap(px(t.space.s6));
-        if self.header_fit().fold {
+        let gates = self.header_fit().gates;
+        if gates == peers::Gates::Folded {
             // Without room for both rows, the gates fold into one button
             // that opens them.
             let letter = |policy: Policy| match policy {
@@ -1302,7 +1319,7 @@ impl Pane {
                             .right_0()
                             .gap(px(t.space.s8))
                             .child(
-                                self.gate_rows(peer, actions, true, cx)
+                                self.gate_rows(peer, actions, true, true, cx)
                                     .flex_col()
                                     .items_start(),
                             ),
@@ -1312,7 +1329,13 @@ impl Pane {
             }
             controls = controls.child(gates);
         } else {
-            controls = controls.child(self.gate_rows(peer, actions, false, cx));
+            controls = controls.child(self.gate_rows(
+                peer,
+                actions,
+                false,
+                gates == peers::Gates::Words,
+                cx,
+            ));
         }
         let generation = peer.connection.generation.clone();
         let mut more = div().relative().ml(px(t.space.s4)).child(

@@ -258,6 +258,12 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
             assert "opsre" in header and not re.search(r"ops(…|\.\.\.)", header), (
                 f"the thread header cut the connection's name: {header!r}"
             )
+            # At this width both gates show as rows, each with its Review and
+            # Auto, not folded into one button.
+            assert header.count("review") >= 2 and header.count("auto") >= 2, (
+                f"the thread header folded its gates at full width: {header!r}"
+            )
+            capture("gates-rows")
             scroll_thread("4")
             wait_for(lambda: find("mailbox"), "the failed delivery")
             capture("failed")
@@ -280,15 +286,18 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
             # Choose a connection while its name can still be read.
             click("Ops")
             wait_for(lambda: find("delivers"), "the second thread again")
-            # At a middle width, with the list open, the header folds its
-            # gates into one button and keeps ⋯ at its right end in view.
+            # Narrower, with the list open, the header folds its gates into one
+            # button, each policy read once, and keeps ⋯ at its right end.
             command("xdotool", "windowsize", "--sync", window, "1040", "880")
             time.sleep(0.6)
             band = sorted((word for word in read()
                            if abs(int(word["top"]) - int(label["top"])) < 24),
                           key=lambda word: int(word["left"]))
             header = "".join(word["text"] for word in band).lower()
-            assert "review" in header, f"the header lost its gates: {header!r}"
+            assert header.count("review") == 1 and header.count("auto") == 1, (
+                f"the header did not fold its gates at a middle width: {header!r}"
+            )
+            capture("gates-folded")
             press(1040 - 35, middle)
             wait_for(lambda: find("Disconnect"), "the header's ⋯ menu at a middle width")
             capture("middle")
