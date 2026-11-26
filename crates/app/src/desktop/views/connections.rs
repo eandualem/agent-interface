@@ -45,6 +45,8 @@ pub(super) struct Pane {
     dismissed: Option<(Menu, std::time::Instant)>,
     /// The next drawn thread scrolls to what waits on the person.
     scroll_on_open: std::cell::Cell<bool>,
+    /// Frames the open scroll has waited for the thread's size.
+    scroll_waits: std::cell::Cell<u8>,
     selection: RefCell<Selection>,
     needs_you: bool,
     filter: Entity<NameField>,
@@ -123,7 +125,7 @@ impl Pane {
                 }
                 NameEvent::Save => {
                     let connect = this.connecting();
-                    this.submit_live_form(cx);
+                    this.submit_live_form(window, cx);
                     if connect {
                         this.focus_after_connect(window, cx);
                     }
@@ -159,6 +161,7 @@ impl Pane {
             revise_opener: None,
             dismissed: None,
             scroll_on_open: std::cell::Cell::new(false),
+            scroll_waits: std::cell::Cell::new(0),
             selection: RefCell::default(),
             needs_you: false,
             filter,
@@ -218,6 +221,15 @@ impl Pane {
             .is_some_and(|(closed, at)| closed == menu && at.elapsed() < Duration::from_millis(400))
     }
 
+    /// The button that opened the menu now open.
+    fn menu_button(&self) -> &gpui::FocusHandle {
+        match self.menu {
+            Menu::More => &self.more_focus,
+            Menu::Gates => &self.gates_focus,
+            _ => &self.entry,
+        }
+    }
+
     /// A menu's button: open the menu with focus in it, or close it.
     fn toggle_menu(&mut self, menu: Menu, window: &mut Window, cx: &mut Context<Self>) {
         // One popover at a time.
@@ -241,17 +253,17 @@ impl Pane {
             .on_key_down(cx.listener(|pane, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
                     cx.stop_propagation();
-                    let button = match pane.menu {
-                        Menu::More => &pane.more_focus,
-                        Menu::Gates => &pane.gates_focus,
-                        _ => &pane.entry,
-                    };
-                    window.focus(button, cx);
+                    window.focus(pane.menu_button(), cx);
                     pane.menu = Menu::None;
                     cx.notify();
                 }
             }))
-            .on_mouse_down_out(cx.listener(|pane, _, _, cx| {
+            .on_mouse_down_out(cx.listener(|pane, _, window, cx| {
+                // Focus still in the closing menu goes back to its button;
+                // a press on another control then takes it from there.
+                if pane.menu_focus.contains_focused(window, cx) {
+                    window.focus(pane.menu_button(), cx);
+                }
                 pane.dismissed = Some((pane.menu, std::time::Instant::now()));
                 pane.menu = Menu::None;
                 cx.notify();
@@ -391,6 +403,7 @@ impl Render for Pane {
             move |bounds, window, cx| {
                 let pixels = f32::from(bounds.size.width);
                 let width = peers::Width::of(pixels);
+                let mut closed_menu = false;
                 let changed = entity
                     .update(cx, |this, _| {
                         let mut changed = false;
@@ -402,6 +415,7 @@ impl Render for Pane {
                             // A narrower list starts minimised again.
                             this.width = width;
                             this.list_local = None;
+                            closed_menu = this.menu != Menu::None;
                             this.menu = Menu::None;
                             changed = true;
                         }
@@ -414,8 +428,15 @@ impl Render for Pane {
                 // shows it; an unchanged one schedules nothing.
                 if changed {
                     let entity = entity.clone();
-                    window.on_next_frame(move |_, cx| {
-                        let _ = entity.update(cx, |_, cx| cx.notify());
+                    window.on_next_frame(move |window, cx| {
+                        let _ = entity.update(cx, |this, cx| {
+                            // Focus left in a menu the width closed goes to
+                            // the pane's ＋ or chooser.
+                            if closed_menu && this.menu_focus.contains_focused(window, cx) {
+                                window.focus(&this.entry, cx);
+                            }
+                            cx.notify()
+                        });
                     });
                 }
             },

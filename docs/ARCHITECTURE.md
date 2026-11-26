@@ -1527,8 +1527,8 @@ preview uses in-memory records and decisions which expire when the person exits.
 They are held in the service's own record shapes, so the preview is drawn by
 the same code as the live pane. Whether a workspace's peer list is minimised is
 saved in `settings.toml` under `[connections]`, keyed by profile and workspace
-ID (the workspace ID alone without a profile); only a choice made at the wide
-width is saved, so a narrow Connections pane never overwrites it.
+ID, or by the workspace ID alone when there is no profile; only a choice made
+at the wide width is saved, so a narrow Connections pane never overwrites it.
 Neither path sends keystrokes to a terminal.
 
 ### Bound native Policies

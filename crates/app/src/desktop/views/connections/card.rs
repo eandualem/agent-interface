@@ -296,9 +296,10 @@ impl Pane {
                     "Decline",
                     ui::Button::Danger,
                     cx,
-                    move |p, _, cx| {
-                        p.change(
+                    move |p, w, cx| {
+                        p.decide(
                             Change::Review(Box::new(decline.clone()), DecisionKind::Decline),
+                            w,
                             cx,
                         )
                     },
@@ -320,7 +321,7 @@ impl Pane {
                         format!("Send back to {LOCAL_AGENT}"),
                         ui::Button::Secondary,
                         cx,
-                        |p, _, cx| p.submit_live_form(cx),
+                        |p, w, cx| p.submit_live_form(w, cx),
                     )
                 };
                 div()
@@ -364,9 +365,10 @@ impl Pane {
                             "Pass through",
                             ui::Button::Primary,
                             cx,
-                            move |p, _, cx| {
-                                p.change(
+                            move |p, w, cx| {
+                                p.decide(
                                     Change::Review(Box::new(msg.clone()), DecisionKind::Pass),
+                                    w,
                                     cx,
                                 )
                             },

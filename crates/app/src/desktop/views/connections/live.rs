@@ -549,6 +549,7 @@ impl Pane {
         self.copied = None;
         self.menu = Menu::None;
         self.scroll_on_open.set(true);
+        self.scroll_waits.set(0);
         self.refresh_live(cx);
         cx.notify();
     }
@@ -737,7 +738,19 @@ impl Pane {
         }
     }
 
-    pub(super) fn submit_live_form(&mut self, cx: &mut Context<Self>) {
+    /// Send a decision whose control goes away once it is made, first moving
+    /// keyboard focus somewhere that stays: the thread for a message, the
+    /// pane's ＋ or chooser for a request or a disconnect.
+    pub(super) fn decide(&mut self, action: Change, window: &mut Window, cx: &mut Context<Self>) {
+        let stays = match &action {
+            Change::Review(..) => &self.thread_focus,
+            _ => &self.entry,
+        };
+        window.focus(stays, cx);
+        self.change(action, cx);
+    }
+
+    pub(super) fn submit_live_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let value = self.input.read(cx).value().trim().to_owned();
         if value.is_empty() {
             return;
@@ -753,7 +766,11 @@ impl Pane {
             }
             Some(Form::Revise(m)) => {
                 let m = m.clone();
-                self.change(Change::Review(Box::new(m), DecisionKind::Revise(value)), cx)
+                self.decide(
+                    Change::Review(Box::new(m), DecisionKind::Revise(value)),
+                    window,
+                    cx,
+                )
             }
             _ => {}
         }
@@ -854,7 +871,7 @@ impl Pane {
                 label,
                 ui::Button::Danger,
                 cx,
-                move |pane, _, cx| pane.change(action.clone(), cx),
+                move |pane, window, cx| pane.decide(action.clone(), window, cx),
             ))
             .child(cancel)
     }
@@ -904,7 +921,7 @@ impl Pane {
                 ui::Button::Primary,
                 cx,
                 |pane, window, cx| {
-                    pane.submit_live_form(cx);
+                    pane.submit_live_form(window, cx);
                     pane.focus_after_connect(window, cx);
                 },
             )
@@ -944,7 +961,11 @@ impl Pane {
                     }
                 }),
             )
-            .on_mouse_down_out(cx.listener(move |pane, _, _, cx| {
+            .on_mouse_down_out(cx.listener(move |pane, _, window, cx| {
+                // Focus in the closing popover's field goes back to ＋.
+                if pane.input.read(cx).focus.is_focused(window) {
+                    window.focus(&pane.entry, cx);
+                }
                 pane.dismissed = Some((Menu::Connect, std::time::Instant::now()));
                 close(pane, cx)
             }))
@@ -1617,7 +1638,9 @@ impl Pane {
                                 "Accept",
                                 ui::Button::Primary,
                                 cx,
-                                move |p, _, cx| p.change(Change::Answer(accept.clone(), true), cx),
+                                move |p, w, cx| {
+                                    p.decide(Change::Answer(accept.clone(), true), w, cx)
+                                },
                             ))
                             .child(
                                 ui::text_action("answer-false", "Decline")
@@ -1630,8 +1653,8 @@ impl Pane {
                                     .px(px(t.space.s10))
                                     .focusable()
                                     .tab_stop(true)
-                                    .on_click(cx.listener(move |p, _, _, cx| {
-                                        p.change(Change::Answer(decline.clone(), false), cx)
+                                    .on_click(cx.listener(move |p, _, w, cx| {
+                                        p.decide(Change::Answer(decline.clone(), false), w, cx)
                                     })),
                             )
                             .child(div().flex_1())
@@ -1802,8 +1825,13 @@ impl Pane {
                             Some(row) => self.thread_scroll.scroll_to_item(row),
                             None => self.thread_scroll.scroll_to_bottom(),
                         }
-                    } else {
+                    } else if self.scroll_waits.get() < 2 {
+                        // Two frames at most: a thread that never gets a
+                        // height is left where it is.
+                        self.scroll_waits.set(self.scroll_waits.get() + 1);
                         self.redraw_next_frame(window, cx);
+                    } else {
+                        self.scroll_on_open.set(false);
                     }
                 }
                 for gate in events {
