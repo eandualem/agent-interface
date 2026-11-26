@@ -37,6 +37,9 @@ pub(super) struct Pane {
     confirm_focus: gpui::FocusHandle,
     decline_focus: gpui::FocusHandle,
     decline_opener: Option<String>,
+    /// The Ask to revise that opened a note, to return to.
+    revise_focus: gpui::FocusHandle,
+    revise_opener: Option<String>,
     /// The menu a press outside just closed, so the press on its own button
     /// does not open it again.
     dismissed: Option<(Menu, std::time::Instant)>,
@@ -113,11 +116,10 @@ impl Pane {
             |this, _, event: &NameEvent, window, cx| match event {
                 NameEvent::Cancel => {
                     let connect = this.connecting();
-                    this.live.form = None;
+                    this.cancel_form(window, cx);
                     if connect {
                         this.focus_after_connect(window, cx);
                     }
-                    cx.notify();
                 }
                 NameEvent::Save => {
                     let connect = this.connecting();
@@ -131,11 +133,14 @@ impl Pane {
         );
         let menu_focus = cx.focus_handle();
         // A menu closes when focus leaves it, as by Tab.
-        let menu_left = cx.on_focus_out(&menu_focus, window, |pane, _, _, cx| {
+        // Focus changes are handled while the window draws, so the frame
+        // that shows the menu closed is scheduled for after this one. A
+        // press outside already marks the menu dismissed; leaving it by the
+        // keyboard does not, so Shift+Tab back and Enter opens it again.
+        let menu_left = cx.on_focus_out(&menu_focus, window, |pane, _, window, cx| {
             if !matches!(pane.menu, Menu::None) {
-                pane.dismissed = Some((pane.menu, std::time::Instant::now()));
                 pane.menu = Menu::None;
-                cx.notify();
+                pane.redraw_next_frame(window, cx);
             }
         });
         Self {
@@ -150,6 +155,8 @@ impl Pane {
             confirm_focus: cx.focus_handle().tab_stop(true),
             decline_focus: cx.focus_handle().tab_stop(true),
             decline_opener: None,
+            revise_focus: cx.focus_handle().tab_stop(true),
+            revise_opener: None,
             dismissed: None,
             scroll_on_open: std::cell::Cell::new(false),
             selection: RefCell::default(),
@@ -257,9 +264,19 @@ impl Pane {
         match self.live.form.take() {
             Some(live::Form::Disconnect(_)) => window.focus(&self.more_focus, cx),
             Some(live::Form::Decline(_)) => window.focus(&self.decline_focus, cx),
+            Some(live::Form::Revise(_)) => window.focus(&self.revise_focus, cx),
             _ => {}
         }
         cx.notify();
+    }
+
+    /// Draw the pane again after the frame being drawn, for a change made
+    /// while the window draws, which brings no next frame of its own.
+    fn redraw_next_frame(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let pane = cx.entity().downgrade();
+        window.on_next_frame(move |_, cx| {
+            let _ = pane.update(cx, |_, cx| cx.notify());
+        });
     }
 
     /// Copy `text` and show Copied on the control `key` for a moment.
@@ -367,7 +384,7 @@ fn hinted(field: &Entity<NameField>, hint: &'static str, cx: &gpui::App) -> Div 
 }
 
 impl Render for Pane {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (t, c) = (tokens(), colors());
         let entity = cx.entity().downgrade();
         let tracker = canvas(
@@ -451,6 +468,10 @@ impl Render for Pane {
                     .bg(c.field)
                     .child(
                         ui::button("exit-preview", "Exit preview", ui::Button::Secondary)
+                            .focus_visible(|el| {
+                                el.border(px(tokens().size.focus_ring))
+                                    .border_color(colors().focus)
+                            })
                             .focusable()
                             .tab_stop(true)
                             .on_click(cx.listener(|this, _, _, cx| this.preview(false, cx))),
@@ -461,7 +482,7 @@ impl Render for Pane {
                     ),
             )
         });
-        let view = self.live_view(cx);
+        let view = self.live_view(window, cx);
         frame.child(view)
     }
 }

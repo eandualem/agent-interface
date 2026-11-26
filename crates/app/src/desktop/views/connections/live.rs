@@ -742,6 +742,10 @@ impl Pane {
         action: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> gpui::Stateful<Div> {
         ui::button(id.into(), label.into(), style)
+            .focus_visible(|el| {
+                el.border(px(tokens().size.focus_ring))
+                    .border_color(colors().focus)
+            })
             .focusable()
             .tab_stop(true)
             .on_click(cx.listener(move |pane, _, window, cx| action(pane, window, cx)))
@@ -750,8 +754,10 @@ impl Pane {
     pub(super) fn show_form(&mut self, form: Form, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = Menu::None;
         // A confirmation takes focus on its Cancel; Escape there cancels.
-        if let Form::Decline(m) = &form {
-            self.decline_opener = Some(m.message_id.clone());
+        match &form {
+            Form::Decline(m) => self.decline_opener = Some(m.message_id.clone()),
+            Form::Revise(m) => self.revise_opener = Some(m.message_id.clone()),
+            _ => {}
         }
         if matches!(&form, Form::Disconnect(_) | Form::Decline(_)) {
             window.focus(&self.confirm_focus, cx);
@@ -1260,7 +1266,13 @@ impl Pane {
                 )
                 // Its name carries the direction, also when only an icon
                 // labels the gate.
+                .role(gpui::accesskit::Role::RadioButton)
                 .aria_label(format!("{label}: {choice:?}"))
+                .aria_toggled(if on {
+                    gpui::accesskit::Toggled::True
+                } else {
+                    gpui::accesskit::Toggled::False
+                })
                 .focusable()
                 .tab_stop(true)
                 .focus_visible(|el| {
@@ -1407,7 +1419,13 @@ impl Pane {
         controls.child(more)
     }
 
-    fn live_thread(&self, snapshot: &Snapshot, actions: bool, cx: &mut Context<Self>) -> Div {
+    fn live_thread(
+        &self,
+        snapshot: &Snapshot,
+        actions: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let (t, c) = (tokens(), colors());
         let column = div().flex_1().min_w_0().min_h_0().flex().flex_col();
         let body = div()
@@ -1594,6 +1612,10 @@ impl Pane {
                             ))
                             .child(
                                 ui::text_action("answer-false", "Decline")
+                                    .focus_visible(|el| {
+                                        el.border(px(tokens().size.focus_ring))
+                                            .border_color(colors().focus)
+                                    })
                                     .text_color(c.text_2)
                                     .h(px(t.size.button))
                                     .px(px(t.space.s10))
@@ -1772,7 +1794,7 @@ impl Pane {
                             None => self.thread_scroll.scroll_to_bottom(),
                         }
                     } else {
-                        cx.notify();
+                        self.redraw_next_frame(window, cx);
                     }
                 }
                 for gate in events {
@@ -1807,7 +1829,7 @@ impl Pane {
         }
     }
 
-    pub(super) fn live_view(&self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn live_view(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let (t, c) = (tokens(), colors());
         let mut view = div()
             .relative()
@@ -1932,7 +1954,7 @@ impl Pane {
                     // As in a reader: a block that changed after earlier ones
                     // were drawn clears the selection, so draw them again.
                     self.selection.borrow_mut().begin();
-                    let thread = self.live_thread(s, actions, cx);
+                    let thread = self.live_thread(s, actions, window, cx);
                     if !self.selection.borrow_mut().finish() {
                         break thread;
                     }
@@ -2064,6 +2086,10 @@ impl Pane {
                 ui::text(
                     div()
                         .id("next-waiting")
+                        .focus_visible(|el| {
+                            el.border(px(tokens().size.focus_ring))
+                                .border_color(colors().focus)
+                        })
                         .flex_shrink_0()
                         .focusable()
                         .tab_stop(true)

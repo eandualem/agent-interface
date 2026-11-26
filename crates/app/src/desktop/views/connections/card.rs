@@ -99,8 +99,11 @@ impl Pane {
             );
         }
         let name = |text: &str, agent: bool, color| {
+            // A long name ends in an ellipsis before the time is pushed out.
             let el = div()
-                .flex_shrink_0()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
                 .text_color(color)
                 .child(text.to_owned());
             if agent {
@@ -123,7 +126,7 @@ impl Pane {
                 .child(name(recipient, !outgoing, c.text_2))
                 .children(revision.map(|n| ui::pill(format!("revision {n}"))))
                 .child(div().flex_1())
-                .child(meta(rules::clock(&m.submitted_at), c.muted)),
+                .child(meta(rules::clock(&m.submitted_at), c.muted).flex_shrink_0()),
         );
         let cut = rules::cut(&m.text);
         let open = self.expanded.contains(&key);
@@ -321,6 +324,13 @@ impl Pane {
                     )
                 };
                 div()
+                    // Escape closes the note from its buttons too.
+                    .on_key_down(cx.listener(|pane, event: &gpui::KeyDownEvent, window, cx| {
+                        if event.keystroke.key == "escape" {
+                            cx.stop_propagation();
+                            pane.cancel_form(window, cx);
+                        }
+                    }))
                     .flex()
                     .flex_col()
                     .gap(px(t.space.s6))
@@ -361,13 +371,19 @@ impl Pane {
                                 )
                             },
                         ),
-                        Action::Revise => self.live_button(
-                            format!("revise-{}", m.message_id),
-                            "Ask to revise",
-                            ui::Button::Secondary,
-                            cx,
-                            move |p, w, cx| p.show_form(Form::Revise(msg.clone()), w, cx),
-                        ),
+                        Action::Revise => self
+                            .live_button(
+                                format!("revise-{}", m.message_id),
+                                "Ask to revise",
+                                ui::Button::Secondary,
+                                cx,
+                                move |p, w, cx| p.show_form(Form::Revise(msg.clone()), w, cx),
+                            )
+                            // Focus comes back here when its note is cancelled.
+                            .when(
+                                self.revise_opener.as_deref() == Some(m.message_id.as_str()),
+                                |el| el.track_focus(&self.revise_focus),
+                            ),
                         Action::Decline => {
                             ring(ui::text_action(
                                 format!("decline-{}", m.message_id),
