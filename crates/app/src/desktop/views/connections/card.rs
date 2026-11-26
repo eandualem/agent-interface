@@ -262,7 +262,10 @@ impl Pane {
                         "Retry",
                         ui::Button::Secondary,
                         cx,
-                        |p, _, cx| p.send_live(cx),
+                        |p, w, cx| {
+                            p.keep_focus(&p.thread_focus.clone(), w, cx);
+                            p.send_live(cx)
+                        },
                     ))
                 })
                 // As in the band, giving up on it frees the pane's actions.
@@ -271,7 +274,10 @@ impl Pane {
                     "Dismiss",
                     ui::Button::Secondary,
                     cx,
-                    |p, _, cx| p.dismiss_retry(cx),
+                    |p, w, cx| {
+                        p.keep_focus(&p.thread_focus.clone(), w, cx);
+                        p.dismiss_retry(cx)
+                    },
                 ));
         }
         // An open note or confirmation stays while a read is in flight, so

@@ -234,7 +234,11 @@ impl Pane {
         minimised(self.width, saved, self.list_local)
     }
 
-    fn toggle_list(&mut self, cx: &mut Context<Self>) {
+    /// Minimise or show the list. Its minimise and show buttons share one
+    /// focus handle, so focus moves to the button that takes the other's
+    /// place.
+    fn toggle_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.keep_focus(&self.list_focus.clone(), window, cx);
         let saved = self
             .list_key
             .as_deref()
@@ -350,8 +354,8 @@ impl Pane {
                             "panel-left-close",
                             "Minimise the peer list",
                         )
-                        .tab_stop(true)
-                        .on_click(cx.listener(|p, _, _, cx| p.toggle_list(cx))),
+                        .track_focus(&self.list_focus)
+                        .on_click(cx.listener(|p, _, w, cx| p.toggle_list(w, cx))),
                     ),
             )
             .child(segments.mt(px(t.space.s2)).mb(px(t.space.s8)))
@@ -511,8 +515,8 @@ impl Pane {
                     "panel-left-open",
                     "Show the peer list",
                 )
-                .tab_stop(true)
-                .on_click(cx.listener(|p, _, _, cx| p.toggle_list(cx))),
+                .track_focus(&self.list_focus)
+                .on_click(cx.listener(|p, _, w, cx| p.toggle_list(w, cx))),
             )
             .child(self.plus(cx))
             .child(
@@ -716,7 +720,7 @@ impl Pane {
                     .focusable()
                     .tab_stop(true)
                     .on_click(cx.listener(move |p, _, w, cx| {
-                        w.focus(&p.entry, cx);
+                        p.keep_focus(&p.entry.clone(), w, cx);
                         p.pick(Some(selection.clone()), cx)
                     })),
                 );

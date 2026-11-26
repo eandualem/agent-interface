@@ -27,6 +27,13 @@ pub(super) struct Pane {
     entry: gpui::FocusHandle,
     thread_focus: gpui::FocusHandle,
     thread_scroll: gpui::ScrollHandle,
+    /// The whole pane, to tell whether keyboard focus is in it.
+    root_focus: gpui::FocusHandle,
+    /// The peer list's minimise and show buttons, one at a time, so focus
+    /// stays on the button that takes the other's place.
+    list_focus: gpui::FocusHandle,
+    /// The connect popover.
+    connect_focus: gpui::FocusHandle,
     /// The open menu's frame, and the ⋯ and folded gates buttons that open
     /// a menu; the chooser and ＋ use `entry`.
     menu_focus: gpui::FocusHandle,
@@ -152,6 +159,9 @@ impl Pane {
             thread_focus: cx.focus_handle(),
             thread_scroll: gpui::ScrollHandle::new(),
             menu_focus,
+            root_focus: cx.focus_handle(),
+            list_focus: cx.focus_handle().tab_stop(true),
+            connect_focus: cx.focus_handle(),
             more_focus: cx.focus_handle().tab_stop(true),
             gates_focus: cx.focus_handle().tab_stop(true),
             confirm_focus: cx.focus_handle().tab_stop(true),
@@ -253,7 +263,7 @@ impl Pane {
             .on_key_down(cx.listener(|pane, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
                     cx.stop_propagation();
-                    window.focus(pane.menu_button(), cx);
+                    pane.keep_focus(&pane.menu_button().clone(), window, cx);
                     pane.menu = Menu::None;
                     cx.notify();
                 }
@@ -262,7 +272,7 @@ impl Pane {
                 // Focus still in the closing menu goes back to its button;
                 // a press on another control then takes it from there.
                 if pane.menu_focus.contains_focused(window, cx) {
-                    window.focus(pane.menu_button(), cx);
+                    pane.keep_focus(&pane.menu_button().clone(), window, cx);
                 }
                 pane.dismissed = Some((pane.menu, std::time::Instant::now()));
                 pane.menu = Menu::None;
@@ -273,13 +283,29 @@ impl Pane {
     /// Close a confirmation or note and give focus back to what opened it,
     /// where that is still drawn.
     fn cancel_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.live.form.take() {
-            Some(live::Form::Disconnect(_)) => window.focus(&self.more_focus, cx),
-            Some(live::Form::Decline(_)) => window.focus(&self.decline_focus, cx),
-            Some(live::Form::Revise(_)) => window.focus(&self.revise_focus, cx),
-            _ => {}
+        let opener = match self.live.form.take() {
+            Some(live::Form::Disconnect(_)) => Some(self.more_focus.clone()),
+            Some(live::Form::Decline(_)) => Some(self.decline_focus.clone()),
+            Some(live::Form::Revise(_)) => Some(self.revise_focus.clone()),
+            _ => None,
+        };
+        if let Some(opener) = opener {
+            self.keep_focus(&opener, window, cx);
         }
         cx.notify();
+    }
+
+    /// Move keyboard focus to a control that stays before a change takes away
+    /// the one that has it. Every control that removes itself or its
+    /// container goes through here, naming its survivor: the pane's ＋ or
+    /// chooser (`entry`), the thread, or the button that opened it.
+    fn keep_focus(
+        &self,
+        survivor: &gpui::FocusHandle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.focus(survivor, cx);
     }
 
     /// Draw the pane again after the frame being drawn, for a change made
@@ -399,14 +425,19 @@ impl Render for Pane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (t, c) = (tokens(), colors());
         let entity = cx.entity().downgrade();
+        let root_focus = self.root_focus.clone();
         let tracker = canvas(
             move |bounds, window, cx| {
                 let pixels = f32::from(bounds.size.width);
                 let width = peers::Width::of(pixels);
-                let mut closed_menu = false;
+                // Whether focus is in the pane before a width change may take
+                // its control away: the peer list, the fingerprint's copy
+                // button, the folded gates and their menu.
+                let had_focus = root_focus.contains_focused(window, cx);
                 let changed = entity
                     .update(cx, |this, _| {
                         let mut changed = false;
+                        let folded = this.header_fit().gates == peers::Gates::Folded;
                         if (this.pane_width - pixels).abs() >= 1.0 {
                             this.pane_width = pixels;
                             changed = true;
@@ -415,9 +446,15 @@ impl Render for Pane {
                             // A narrower list starts minimised again.
                             this.width = width;
                             this.list_local = None;
-                            closed_menu = this.menu != Menu::None;
                             this.menu = Menu::None;
                             changed = true;
+                        }
+                        // Unfolding the gates takes away their menu.
+                        if folded
+                            && this.header_fit().gates != peers::Gates::Folded
+                            && this.menu == Menu::Gates
+                        {
+                            this.menu = Menu::None;
                         }
                         changed
                     })
@@ -425,18 +462,22 @@ impl Render for Pane {
                 // A view notified while the window draws gets no next frame
                 // of its own, so the pane would keep its old layout until
                 // some other event. A new width schedules the frame that
-                // shows it; an unchanged one schedules nothing.
+                // shows it; an unchanged one schedules nothing. Once that
+                // frame is drawn, focus that was in the pane and lost its
+                // control goes to the pane's ＋ or chooser.
                 if changed {
                     let entity = entity.clone();
                     window.on_next_frame(move |window, cx| {
-                        let _ = entity.update(cx, |this, cx| {
-                            // Focus left in a menu the width closed goes to
-                            // the pane's ＋ or chooser.
-                            if closed_menu && this.menu_focus.contains_focused(window, cx) {
-                                window.focus(&this.entry, cx);
-                            }
-                            cx.notify()
-                        });
+                        let _ = entity.update(cx, |_, cx| cx.notify());
+                        if had_focus {
+                            window.on_next_frame(move |window, cx| {
+                                let _ = entity.update(cx, |this, cx| {
+                                    if !this.root_focus.contains_focused(window, cx) {
+                                        this.keep_focus(&this.entry.clone(), window, cx);
+                                    }
+                                });
+                            });
+                        }
                     });
                 }
             },
@@ -445,6 +486,7 @@ impl Render for Pane {
         .absolute()
         .size_full();
         let frame = div()
+            .track_focus(&self.root_focus)
             .tab_group()
             .capture_key_down(|event: &gpui::KeyDownEvent, window, cx| {
                 if Self::is_tab(&event.keystroke) {
@@ -495,7 +537,10 @@ impl Render for Pane {
                             })
                             .focusable()
                             .tab_stop(true)
-                            .on_click(cx.listener(|this, _, _, cx| this.preview(false, cx))),
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.keep_focus(&this.entry.clone(), window, cx);
+                                this.preview(false, cx)
+                            })),
                     )
                     .child(
                         ui::text(div().min_w_0().text_color(c.muted), &t.text.meta)

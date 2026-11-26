@@ -718,7 +718,7 @@ impl Pane {
 
     pub(super) fn focus_after_connect(&self, window: &mut Window, cx: &mut Context<Self>) {
         if !matches!(self.live.form, Some(Form::Connect)) {
-            window.focus(&self.entry, cx);
+            self.keep_focus(&self.entry, window, cx);
         }
     }
 
@@ -743,10 +743,10 @@ impl Pane {
     /// pane's ＋ or chooser for a request or a disconnect.
     pub(super) fn decide(&mut self, action: Change, window: &mut Window, cx: &mut Context<Self>) {
         let stays = match &action {
-            Change::Review(..) => &self.thread_focus,
-            _ => &self.entry,
+            Change::Review(..) => self.thread_focus.clone(),
+            _ => self.entry.clone(),
         };
-        window.focus(stays, cx);
+        self.keep_focus(&stays, window, cx);
         self.change(action, cx);
     }
 
@@ -945,6 +945,7 @@ impl Pane {
         let mine = local.to_owned();
         ui::menu()
             .id("connect-panel")
+            .track_focus(&self.connect_focus)
             .when(anchored, |el| el.absolute().top(px(top)).left(px(left)))
             .w(px(t.size.connect_popover))
             .max_w(gpui::relative(0.92))
@@ -962,9 +963,9 @@ impl Pane {
                 }),
             )
             .on_mouse_down_out(cx.listener(move |pane, _, window, cx| {
-                // Focus in the closing popover's field goes back to ＋.
-                if pane.input.read(cx).focus.is_focused(window) {
-                    window.focus(&pane.entry, cx);
+                // Focus anywhere in the closing popover goes back to ＋.
+                if pane.connect_focus.contains_focused(window, cx) {
+                    pane.keep_focus(&pane.entry.clone(), window, cx);
                 }
                 pane.dismissed = Some((Menu::Connect, std::time::Instant::now()));
                 close(pane, cx)
@@ -1242,7 +1243,7 @@ impl Pane {
     }
 
     /// How the thread header fits its width now.
-    fn header_fit(&self) -> peers::HeaderFit {
+    pub(super) fn header_fit(&self) -> peers::HeaderFit {
         let list = match (self.width, self.list_minimised()) {
             (peers::Width::Narrow, _) => 0.0,
             (_, true) => tokens().size.peer_strip,
@@ -1749,7 +1750,11 @@ impl Pane {
                         "Older messages",
                         ui::Button::Secondary,
                         cx,
-                        |pane, _, cx| pane.live_older(cx),
+                        // The button goes once the oldest page is in.
+                        |pane, window, cx| {
+                            pane.keep_focus(&pane.thread_focus.clone(), window, cx);
+                            pane.live_older(cx)
+                        },
                     )));
                 }
                 if history.items.is_empty() {
@@ -1880,7 +1885,10 @@ impl Pane {
             "Retry",
             ui::Button::Secondary,
             cx,
-            |pane, _, cx| pane.live.inbox.update(cx, |inbox, cx| inbox.refresh(cx)),
+            |pane, window, cx| {
+                pane.keep_focus(&pane.entry.clone(), window, cx);
+                pane.live.inbox.update(cx, |inbox, cx| inbox.refresh(cx))
+            },
         );
         let buttons = || {
             div()
@@ -2030,7 +2038,8 @@ impl Pane {
                 "Dismiss",
                 ui::Button::Secondary,
                 cx,
-                |p, _, cx| {
+                |p, w, cx| {
+                    p.keep_focus(&p.entry.clone(), w, cx);
                     p.live.notice = None;
                     cx.notify();
                 },
@@ -2051,7 +2060,10 @@ impl Pane {
                         "Retry action",
                         ui::Button::Secondary,
                         cx,
-                        |p, _, cx| p.send_live(cx),
+                        |p, w, cx| {
+                            p.keep_focus(&p.entry.clone(), w, cx);
+                            p.send_live(cx)
+                        },
                     ));
                 }
             } else if let Some(target) = pending.action.target(&s.summary.overview) {
@@ -2060,7 +2072,10 @@ impl Pane {
                     "Show target",
                     ui::Button::Secondary,
                     cx,
-                    move |p, _, cx| p.pick(Some(target.clone()), cx),
+                    move |p, w, cx| {
+                        p.keep_focus(&p.entry.clone(), w, cx);
+                        p.pick(Some(target.clone()), cx)
+                    },
                 ));
             }
             banner = banner.child(self.live_button(
@@ -2068,7 +2083,8 @@ impl Pane {
                 "Dismiss",
                 ui::Button::Secondary,
                 cx,
-                |p, _, cx| {
+                |p, w, cx| {
+                    p.keep_focus(&p.entry.clone(), w, cx);
                     p.live.retry = None;
                     cx.notify();
                 },
