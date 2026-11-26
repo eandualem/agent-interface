@@ -18,6 +18,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import socketserver
 import sqlite3
@@ -154,15 +155,19 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
             # The size is set before the window has drawn at it.
             time.sleep(0.6)
 
-            def find(text):
+            def read():
                 assert app.poll() is None, "application exited"
                 command("import", "-window", window, str(OUTPUT / "current.png"))
                 # Controls are sparse text, not a scanned page.
                 tsv = command("tesseract", str(OUTPUT / "current.png"), "stdout", "--psm", "11", "tsv")
                 (OUTPUT / "current.tsv").write_text(tsv)
-                found = [word for word in csv.DictReader(io.StringIO(tsv), delimiter="\t")
+                return [word for word in csv.DictReader(io.StringIO(tsv), delimiter="\t")
+                        if (word.get("text") or "").strip()]
+
+            def find(text):
+                found = [word for word in read()
                          # A label can be read with a stray quote mark before it.
-                         if (word.get("text") or "").strip().lstrip("‘’'\"“”").rstrip(".,:;") == text]
+                         if word["text"].strip().lstrip("‘’'\"“”").rstrip(".,:;") == text]
                 found.sort(key=lambda word: (int(word["top"]), int(word["left"])))
                 return found[0] if found else None
 
@@ -242,12 +247,16 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
             wait_for(lambda: find("delivers"), "Ops opened with its choices in view")
             capture("waiting-incoming")
             # With the list open, the header still has room for the whole
-            # two-word name: the topmost "relay" is the header's, level with
-            # the list's PEERS label, not the list row's below it.
-            relay = wait_for(lambda: find("relay"), "the connection's name")
+            # two-word name. The words level with the list's PEERS label are
+            # the header's; read together, as OCR may join or split them, they
+            # hold the name with no ellipsis after its first word.
             label = wait_for(lambda: find("PEERS"), "the peer list")
-            assert abs(int(relay["top"]) - int(label["top"])) < 24, (
-                f"the thread header cut the connection's name: {relay}"
+            band = sorted((word for word in read()
+                           if abs(int(word["top"]) - int(label["top"])) < 24),
+                          key=lambda word: int(word["left"]))
+            header = "".join(word["text"] for word in band).lower().replace(" ", "")
+            assert "opsre" in header and not re.search(r"ops(…|\.\.\.)", header), (
+                f"the thread header cut the connection's name: {header!r}"
             )
             scroll_thread("4")
             wait_for(lambda: find("mailbox"), "the failed delivery")
