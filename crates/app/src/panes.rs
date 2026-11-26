@@ -2032,12 +2032,24 @@ mod tests {
 
     #[test]
     fn writer_failure_is_reported_without_discarding_queued_output() {
-        use std::os::unix::net::UnixStream;
-        let (stdin, peer) = UnixStream::pair().unwrap();
-        drop(peer);
+        // A client whose input is gone. A real socket or pipe would depend on
+        // no other test's process holding a copy of its other end.
+        struct Closed;
+        impl Write for Closed {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let stdin = Closed;
+        // The request goes through a sender dropped before the writer runs,
+        // so a write that unexpectedly succeeds ends the loop instead of
+        // waiting for a next request for ever.
         let (commands, requests) = mpsc::channel();
         let control = Control {
-            commands,
+            commands: mpsc::channel().0,
             pending: Mutex::new(VecDeque::new()),
         };
         let shared = Shared {
@@ -2049,14 +2061,14 @@ mod tests {
             .queue
             .push_back(Event::Output(PaneId(1), b"last frame".to_vec()));
         let (sent, received) = mpsc::channel();
-        control
-            .commands
+        commands
             .send(WriteRequest::Command {
                 line: "send-keys\n".into(),
                 owner: ReplyOwner::Input(PaneId(1)),
                 sent: Some(sent),
             })
             .unwrap();
+        drop(commands);
         write_commands(stdin, requests, &control, &shared, None);
         assert!(received.recv().unwrap().is_err());
         let state = shared.lock();
