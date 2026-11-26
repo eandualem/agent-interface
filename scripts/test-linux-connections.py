@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import socketserver
 import sqlite3
 import subprocess
@@ -171,6 +172,23 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
                 found.sort(key=lambda word: (int(word["top"]), int(word["left"])))
                 return found[0] if found else None
 
+            def header_band(step):
+                # The header row's words, read at once and again after 2 s with
+                # no input; both captures and texts are kept, so a header that
+                # is late to follow a resize shows apart from a slow reading.
+                # The second reading is the one checked.
+                texts = []
+                for when in ("a", "b"):
+                    if when == "b":
+                        time.sleep(2)
+                    band = sorted((word for word in read()
+                                   if abs(int(word["top"]) - int(label["top"])) < 24),
+                                  key=lambda word: int(word["left"]))
+                    shutil.copy(OUTPUT / "current.png", OUTPUT / f"header-{step}-{when}.png")
+                    texts.append("".join(word["text"] for word in band).lower().replace(" ", ""))
+                    print(f"header {step} {when}: {texts[-1]!r}", flush=True)
+                return texts[-1]
+
             def click(text):
                 word = wait_for(lambda: find(text), text)
                 x = int(word["left"]) + int(word["width"]) // 2
@@ -251,10 +269,7 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
             # the header's; read together, as OCR may join or split them, they
             # hold the name with no ellipsis after its first word.
             label = wait_for(lambda: find("PEERS"), "the peer list")
-            band = sorted((word for word in read()
-                           if abs(int(word["top"]) - int(label["top"])) < 24),
-                          key=lambda word: int(word["left"]))
-            header = "".join(word["text"] for word in band).lower().replace(" ", "")
+            header = header_band("rows")
             assert "opsre" in header and not re.search(r"ops(…|\.\.\.)", header), (
                 f"the thread header cut the connection's name: {header!r}"
             )
@@ -292,10 +307,7 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
             # alone, with its Review and Auto.
             command("xdotool", "windowsize", "--sync", window, "1145", "880")
             time.sleep(0.6)
-            band = sorted((word for word in read()
-                           if abs(int(word["top"]) - int(label["top"])) < 24),
-                          key=lambda word: int(word["left"]))
-            header = "".join(word["text"] for word in band).lower()
+            header = header_band("icons")
             assert (header.count("review") >= 2 and header.count("auto") >= 2
                     and "incoming" not in header and "outgoing" not in header), (
                 f"the header did not show its gates by icon alone: {header!r}"
@@ -305,10 +317,7 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
             # button, each policy read once, and keeps ⋯ at its right end.
             command("xdotool", "windowsize", "--sync", window, "1040", "880")
             time.sleep(0.6)
-            band = sorted((word for word in read()
-                           if abs(int(word["top"]) - int(label["top"])) < 24),
-                          key=lambda word: int(word["left"]))
-            header = "".join(word["text"] for word in band).lower()
+            header = header_band("folded")
             assert header.count("review") == 1 and header.count("auto") == 1, (
                 f"the header did not fold its gates at a middle width: {header!r}"
             )
@@ -329,10 +338,7 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
             wait_for(lambda: not find("Agents"), "the narrow layout")
             # The header holds the peer chooser, named for the connection,
             # and the gates folded into one button.
-            band = sorted((word for word in read()
-                           if abs(int(word["top"]) - int(label["top"])) < 24),
-                          key=lambda word: int(word["left"]))
-            header = "".join(word["text"] for word in band).lower()
+            header = header_band("narrow")
             assert "ops" in header and header.count("review") == 1, (
                 f"the narrow header lacks its chooser or folded gates: {header!r}"
             )
