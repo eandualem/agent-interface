@@ -15,13 +15,16 @@ pub(super) const LOCAL_AGENT: &str = "main";
 
 impl Pane {
     /// `peer` is the connection's shown name; `actions` whether a decision
-    /// can be sent now; `revision` which resubmission this is, when known.
+    /// can be sent now; `held` whether an open note or confirmation stays
+    /// usable, which it does while only a read is in flight; `revision`
+    /// which resubmission this is, when known.
     pub(super) fn message_card(
         &self,
         peer: &str,
         m: &api::Message,
         revision: Option<u32>,
         actions: bool,
+        held: bool,
         cx: &mut Context<Self>,
     ) -> Div {
         let (t, c) = (tokens(), colors());
@@ -172,7 +175,7 @@ impl Pane {
                         .px(px(t.space.s14))
                         .child(toggle)
                 }))
-                .child(self.review_bar(peer, m, actions, cx));
+                .child(self.review_bar(peer, m, actions, held, cx));
         }
         let mut row = ui::message_meta()
             .pt(px(t.space.s8))
@@ -211,6 +214,7 @@ impl Pane {
         peer: &str,
         m: &api::Message,
         actions: bool,
+        held: bool,
         cx: &mut Context<Self>,
     ) -> Div {
         let (t, c) = (tokens(), colors());
@@ -255,9 +259,12 @@ impl Pane {
                     ))
                 });
         }
-        // As before, the choices wait while Agent Backbone is being read.
-        if !actions {
-            return div();
+        // An open note or confirmation stays while a read is in flight, so
+        // typing is not lost; the choices themselves wait for the read.
+        match form {
+            Some(_) if !held => return div(),
+            None if !actions => return div(),
+            _ => {}
         }
         match form {
             Some(true) => {

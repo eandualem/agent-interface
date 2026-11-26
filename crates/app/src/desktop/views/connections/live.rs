@@ -1560,7 +1560,7 @@ impl Pane {
                             .preview
                             .as_ref()
                             .and_then(|sample| sample.revisions.get(&m.message_id).copied());
-                        self.message_card(name, m, revision, actions && connected, cx)
+                        self.message_card(name, m, revision, actions && connected, held, cx)
                     });
                 }
                 for (_, text) in self.live.events.iter().filter(|(g, _)| g == &id.generation) {
