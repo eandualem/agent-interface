@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Capture the Connections pane's sample data in a disposable Xvfb desktop.
 
+It visits each state the pane's design shows: a long message cut and opened,
+messages waiting for review in both directions, the revise note, a failed
+delivery, an incoming request, the connect popover, the minimised peer list
+and the narrow layout, and saves one capture of each.
+
 Run under xvfb-run + dbus-run-session as a normal user. Uses no live provider,
 real home, credentials or tmux server: the one profile it serves refuses the
 connection reads, so the pane offers its preview. The captures land beside
@@ -145,7 +150,7 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
             window = wait_for(lambda: command("xdotool", "search", "--onlyvisible", "--pid", str(app.pid), check=False),
                               "app window").splitlines()[0]
             command("xdotool", "windowactivate", "--sync", window)
-            command("xdotool", "windowsize", "--sync", window, "1280", "820")
+            command("xdotool", "windowsize", "--sync", window, "1280", "880")
             # The size is set before the window has drawn at it.
             time.sleep(0.6)
 
@@ -175,15 +180,76 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
                 time.sleep(0.5)
                 command("import", "-window", window, str(OUTPUT / f"{name}.png"))
 
+            def press(x, y):
+                command("xdotool", "mousemove", "--window", window, str(x), str(y))
+                time.sleep(0.2)
+                command("xdotool", "click", "1")
+
+            def scroll_thread():
+                # A thread opens at its start; its waiting messages are last.
+                command("xdotool", "mousemove", "--window", window, "800", "450")
+                time.sleep(0.2)
+                command("xdotool", "click", "--repeat", "15", "--delay", "30", "5")
+                time.sleep(0.5)
+
+            # Filled buttons are not read, so each wait is on plain text near
+            # what it checks, one reading at a time.
             click("Preview")
-            # A sample peer's name: the preview's note is read with stray quotes.
-            wait_for(lambda: find("maya-ops"), "sample data")
-            capture("preview")
-            click("priya-platform")
-            # Only the chosen peer's request says this. Its filled Accept
-            # button is not read as text.
-            wait_for(lambda: find("Accepting"), "the chosen peer's connection request")
-            capture("peer")
+            # The first sample connection opens with the list beside it.
+            wait_for(lambda: find("PEERS"), "the peer list")
+            wait_for(lambda: find("Relay"), "the first sample thread")
+            capture("message-cut")
+            # The first long message is cut; open it in place, then close it.
+            click("Show")
+            wait_for(lambda: find("less"), "the opened message")
+            capture("message-opened")
+            click("less")
+            wait_for(lambda: find("Show"), "the message cut again")
+            # The outgoing message waiting for review offers Ask to revise.
+            scroll_thread()
+            wait_for(lambda: find("Nothing"), "the waiting outgoing message")
+            capture("waiting-outgoing")
+            click("Ask")
+            wait_for(lambda: find("should"), "the revise note")
+            capture("revise")
+            click("Cancel")
+            wait_for(lambda: find("Ask"), "the revise note closed")
+            # The second connection has an incoming message waiting and a
+            # failed delivery.
+            click("Ops")
+            wait_for(lambda: find("mailbox"), "the failed delivery")
+            capture("failed")
+            scroll_thread()
+            wait_for(lambda: find("delivers"), "the waiting incoming message")
+            capture("waiting-incoming")
+            # The first unnamed row is the incoming request.
+            click("Unnamed")
+            wait_for(lambda: find("Declining"), "the incoming request")
+            capture("request")
+            # ＋ and the minimise button are icons, placed from the list's
+            # PEERS label: the list is 248 px, its buttons 24 px at its right.
+            label = wait_for(lambda: find("PEERS"), "the peer list")
+            left = int(label["left"]) - 16
+            middle = int(label["top"]) + int(label["height"]) // 2
+            press(left + 202, middle)
+            wait_for(lambda: find("Their"), "the connect popover")
+            command("xdotool", "type", "--delay", "20", "v1:" + "7c" * 32)
+            wait_for(lambda: find("Valid"), "the pasted ID checked")
+            capture("connect")
+            command("xdotool", "key", "Escape")
+            wait_for(lambda: not find("Their"), "the connect popover closed")
+            # Choose a connection while its name can still be read.
+            click("Ops")
+            wait_for(lambda: find("mailbox"), "the second thread again")
+            press(left + 228, middle)
+            wait_for(lambda: not find("PEERS"), "the minimised peer list")
+            capture("minimised")
+            # Narrower than 560 px of pane, a chooser in the header stands in
+            # for the list, and the footer keeps only the waiting count.
+            command("xdotool", "windowsize", "--sync", window, "780", "880")
+            time.sleep(0.6)
+            wait_for(lambda: not find("Agents"), "the narrow layout")
+            capture("narrow")
         finally:
             for process in (app, wm):
                 if process and process.poll() is None:
