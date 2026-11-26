@@ -163,10 +163,11 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-") as directory:
                 command("import", "-window", window, str(OUTPUT / f"{name}.png"))
 
             click("Preview")
-            wait_for(lambda: find("Sample"), "sample data")
+            # The preview's own button: its note is read with stray quotes.
+            wait_for(lambda: find("Exit") and find("maya-ops"), "sample data")
             capture("preview")
             click("priya-platform")
-            wait_for(lambda: find("Sample"), "sample data after choosing a peer")
+            wait_for(lambda: find("Exit"), "the preview after choosing a peer")
             capture("peer")
         finally:
             for process in (app, wm):
