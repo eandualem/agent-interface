@@ -227,6 +227,26 @@ fn resolve(overview: &api::Overview, selected: Option<Selection>) -> Option<Sele
     }
 }
 
+/// A gate's two segments: each choice, whether it is the service's current
+/// policy, and the change choosing it sends. The segments show only what
+/// the service reports, so a refused or failed change leaves them where they
+/// were and its reason shows below the thread.
+fn gate_choices(
+    generation: &str,
+    direction: Direction,
+    current: Policy,
+) -> [(Policy, bool, Option<Change>); 2] {
+    [Policy::Review, Policy::Auto].map(|choice| {
+        let change = (current != choice).then(|| {
+            Change::Gates(
+                generation.to_owned(),
+                vec![(direction, choice, request_key())],
+            )
+        });
+        (choice, current == choice, change)
+    })
+}
+
 /// The line a gate change leaves in its thread.
 fn gate_event(change: &Change) -> Option<(String, String)> {
     let Change::Gates(generation, changes) = change else {
@@ -932,28 +952,22 @@ impl Pane {
                 continue;
             }
             let mut segments = ui::segments();
-            for choice in [Policy::Review, Policy::Auto] {
-                let generation = peer.connection.generation.clone();
+            for (choice, on, change) in
+                gate_choices(&peer.connection.generation, direction, current)
+            {
                 let mut segment = ui::segment(
                     format!("gate-{direction:?}-{choice:?}"),
                     format!("{choice:?}"),
-                    current == choice,
+                    on,
                 )
                 .focusable()
                 .tab_stop(true);
                 if choice == Policy::Auto {
                     segment = segment.tooltip(|_, cx| cx.new(|_| Tip(AUTO_NOTE)).into());
                 }
-                if actions && current != choice {
-                    segment = segment.on_click(cx.listener(move |p, _, _, cx| {
-                        p.change(
-                            Change::Gates(
-                                generation.clone(),
-                                vec![(direction, choice, request_key())],
-                            ),
-                            cx,
-                        )
-                    }));
+                if let Some(change) = change.filter(|_| actions) {
+                    segment = segment
+                        .on_click(cx.listener(move |p, _, _, cx| p.change(change.clone(), cx)));
                 }
                 segments = segments.child(segment);
             }
@@ -1706,6 +1720,50 @@ fn revocation_note(peer: &api::Peer) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_gate_segment_shows_the_service_policy_and_sends_one_change() {
+        let [review, auto] = gate_choices("gen_1", Direction::Outgoing, Policy::Review);
+        assert!(review.1 && review.2.is_none());
+        assert!(!auto.1);
+        let Some(Change::Gates(generation, changes)) = auto.2 else {
+            panic!("choosing Auto sends a gate change");
+        };
+        assert_eq!(generation, "gen_1");
+        assert!(matches!(
+            changes.as_slice(),
+            [(Direction::Outgoing, Policy::Auto, key)] if key.len() == 32
+        ));
+        // Until the service reports the new policy, the segments stay put;
+        // a refused change is never shown as made.
+        let refused = Snapshot {
+            summary: Arc::new(Summary::from_overview(api::Overview {
+                local_id: "peer_local".into(),
+                pending_reviews: 0,
+                invitations: vec![],
+                connections: vec![api::Peer {
+                    connection: api::Generation {
+                        peer_id: "peer_a".into(),
+                        generation: "gen_1".into(),
+                    },
+                    display_name: None,
+                    state: "connected".into(),
+                    gates: api::Gates {
+                        incoming: Policy::Review,
+                        outgoing: Policy::Review,
+                    },
+                    revocation_failure: None,
+                }],
+            })),
+            selection: None,
+            history: None,
+        };
+        let change = Change::Gates(generation, changes);
+        assert!(change.still_pending(&refused));
+        assert!(gate_event(&change).is_some_and(|(g, text)| {
+            g == "gen_1" && text.ends_with("Outgoing gate set to Auto")
+        }));
+    }
 
     #[test]
     fn request_keys_are_the_uuid_v7_agent_backbone_accepts() {
