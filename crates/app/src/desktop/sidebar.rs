@@ -90,14 +90,18 @@ fn landing_line(vertical: bool, after: bool) -> gpui::Div {
 }
 
 /// Begin a drag: the copy that follows the pointer, and no landing left
-/// over from a drag released away from every row or slot.
+/// over from a drag released away from every row or slot. Until the next
+/// press, the press is a drag, not a click (see `dragged_since_press`).
 fn start_drag<T: Clone + Render>(
     cx: &Context<Browser>,
 ) -> impl Fn(&T, gpui::Point<gpui::Pixels>, &mut Window, &mut gpui::App) -> gpui::Entity<T> + 'static
 {
     let browser = cx.entity().downgrade();
     move |dragged, _, _, cx| {
-        let _ = browser.update(cx, |browser, _| browser.reorder_target = None);
+        let _ = browser.update(cx, |browser, _| {
+            browser.reorder_target = None;
+            browser.dragged_since_press = true;
+        });
         cx.new(|_| dragged.clone())
     }
 }
@@ -190,18 +194,23 @@ fn tab_row_draggable(editing: bool, save_failed: bool) -> bool {
     !editing && !save_failed
 }
 
-/// Whether a drop on `bounds` at `pointer` lands after it: past the middle,
+/// Where a drop on `bounds` at `pointer` lands: after it past its middle,
 /// across for a workspace slot (`vertical` line) and down for a tab row.
-fn lands_after(
+/// None outside the part of it its list shows (`visible`), where a drop
+/// cannot land.
+fn landing_at(
     bounds: gpui::Bounds<gpui::Pixels>,
+    visible: gpui::Bounds<gpui::Pixels>,
     pointer: gpui::Point<gpui::Pixels>,
     vertical: bool,
-) -> bool {
-    if vertical {
-        pointer.x > bounds.center().x
-    } else {
-        pointer.y > bounds.center().y
-    }
+) -> Option<bool> {
+    (bounds.contains(&pointer) && visible.contains(&pointer)).then(|| {
+        if vertical {
+            pointer.x > bounds.center().x
+        } else {
+            pointer.y > bounds.center().y
+        }
+    })
 }
 
 impl Browser {
@@ -283,8 +292,13 @@ impl Browser {
         vertical: bool,
         cx: &mut Context<Self>,
     ) {
-        let landing = if bounds.contains(&position) {
-            Some((target.to_owned(), lands_after(bounds, position, vertical)))
+        let visible = if vertical {
+            self.workspaces_scroll.bounds()
+        } else {
+            self.tabs_scroll.bounds()
+        };
+        let landing = if let Some(after) = landing_at(bounds, visible, position, vertical) {
+            Some((target.to_owned(), after))
         } else if self
             .reorder_target
             .as_ref()
@@ -675,14 +689,8 @@ impl Browser {
                     cx.listener(move |browser, event: &gpui::ClickEvent, window, cx| {
                         cx.stop_propagation();
                         // The row owns the drag, so GPUI holds back only the
-                        // row's click after one. This name's click comes first,
-                        // while the drag is still held; a press released past
-                        // GPUI's 2 px drag threshold, as after Escape, is a
-                        // drag too. Neither selects anything.
-                        if cx.has_active_drag()
-                            || matches!(event, gpui::ClickEvent::Mouse(click)
-                                if (click.up.position - click.down.position).magnitude() > 2.0)
-                        {
+                        // row's click after one, not this name's.
+                        if browser.dragged_since_press {
                             return;
                         }
                         let active = browser.layout.as_ref().is_some_and(|layout| {
@@ -803,6 +811,9 @@ impl Browser {
                                             ui::icon_button(SharedString::from(format!("tab-options-{id}")), "ellipsis")
                                                 .on_click(cx.listener(move |browser, event: &gpui::ClickEvent, window, cx| {
                                                     cx.stop_propagation();
+                                                    if browser.dragged_since_press {
+                                                        return;
+                                                    }
                                                     browser.open_tab_menu(options_origin.as_ref(), &options_id, event.position(), window, cx);
                                                 })),
                                         ),
@@ -1752,7 +1763,7 @@ mod tests {
         assert!(reorder_tab_proposal(&layout, &space.id, third, first, false).is_none());
     }
 
-    use super::{Reorder, lands_after, reorder_workspace_proposal, tab_row_draggable};
+    use super::{Reorder, landing_at, reorder_workspace_proposal, tab_row_draggable};
 
     fn library(workspaces: &[(&str, &[&str])]) -> tempfile::TempDir {
         let directory = tempfile::tempdir().unwrap();
@@ -1802,16 +1813,31 @@ mod tests {
     }
 
     #[test]
-    fn a_drop_lands_after_an_item_past_its_middle() {
+    fn a_drop_lands_after_an_item_past_its_middle_and_only_where_its_list_shows_it() {
         let bounds = gpui::Bounds::new(
             gpui::point(gpui::px(10.), gpui::px(100.)),
             gpui::size(gpui::px(40.), gpui::px(30.)),
         );
+        let list = gpui::Bounds::new(
+            gpui::point(gpui::px(0.), gpui::px(0.)),
+            gpui::size(gpui::px(200.), gpui::px(400.)),
+        );
         let at = |x: f32, y: f32| gpui::point(gpui::px(x), gpui::px(y));
-        assert!(!lands_after(bounds, at(45., 105.), false));
-        assert!(lands_after(bounds, at(15., 125.), false));
-        assert!(!lands_after(bounds, at(15., 125.), true));
-        assert!(lands_after(bounds, at(45., 105.), true));
+        assert_eq!(landing_at(bounds, list, at(45., 105.), false), Some(false));
+        assert_eq!(landing_at(bounds, list, at(15., 125.), false), Some(true));
+        assert_eq!(landing_at(bounds, list, at(15., 125.), true), Some(false));
+        assert_eq!(landing_at(bounds, list, at(45., 105.), true), Some(true));
+        assert_eq!(landing_at(bounds, list, at(5., 105.), false), None);
+        // The row's top is scrolled under the section header: no landing there.
+        let scrolled = gpui::Bounds::new(
+            gpui::point(gpui::px(0.), gpui::px(110.)),
+            gpui::size(gpui::px(200.), gpui::px(290.)),
+        );
+        assert_eq!(landing_at(bounds, scrolled, at(15., 105.), false), None);
+        assert_eq!(
+            landing_at(bounds, scrolled, at(15., 125.), false),
+            Some(true)
+        );
     }
 
     /// Save `change` to the library as another save would, and return its result.

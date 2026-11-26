@@ -145,6 +145,10 @@ with tempfile.TemporaryDirectory(prefix="agent-interface-reorder-") as directory
             drag(centre(banana), centre(cherry), back=centre(banana))
             time.sleep(1)
             assert tab_order() == ["Apple", "Banana", "Cherry"], stored()
+            # Nor does one let go with Escape and released where it was pressed.
+            drag(centre(banana), centre(cherry), escape=True, back=centre(banana))
+            time.sleep(1)
+            assert tab_order() == ["Apple", "Banana", "Cherry"], stored()
 
             # Cherry above Apple: release in the upper part of Apple's row.
             drag(centre(cherry), above_apple, capture="tab-drag-held.png")
@@ -181,6 +185,7 @@ with tempfile.TemporaryDirectory(prefix="agent-interface-reorder-") as directory
             assert focus(saved) == focus(model), saved
             (OUTPUT / "result.json").write_text(json.dumps({"checks": [
                 "Escape cancels a drag", "drag back onto its own name selects nothing",
+                "Escape and release at the press point selects nothing",
                 "tab dragged above another", "workspace dragged before another",
                 "order stored after quit", "selection unchanged", "pane focus unchanged"]}, indent=2) + "\n")
             print("Linux reorder smoke passed: tab and workspace drags stored in layouts.db")
