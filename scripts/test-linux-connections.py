@@ -212,7 +212,8 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
             click("Ask")
             wait_for(lambda: find("should"), "the revise note")
             capture("revise")
-            click("Cancel")
+            # Its Cancel is below the fold; Escape in the note closes it.
+            command("xdotool", "key", "Escape")
             wait_for(lambda: find("Ask"), "the revise note closed")
             # The second connection has an incoming message waiting and a
             # failed delivery.
@@ -246,7 +247,7 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
             capture("minimised")
             # Narrower than 560 px of pane, a chooser in the header stands in
             # for the list, and the footer keeps only the waiting count.
-            command("xdotool", "windowsize", "--sync", window, "780", "880")
+            command("xdotool", "windowsize", "--sync", window, "700", "880")
             time.sleep(0.6)
             wait_for(lambda: not find("Agents"), "the narrow layout")
             capture("narrow")
