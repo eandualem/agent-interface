@@ -1779,7 +1779,10 @@ impl Pane {
             main = main.child(self.connect_panel(&local, can_send, cx));
         }
         view = view.child(main).child(selection::events(cx));
-        if let Some(error) = &self.live.status {
+        // The preview's records never reach Agent Backbone, so its state
+        // and refusals are not shown over them.
+        if preview {
+        } else if let Some(error) = &self.live.status {
             view = view.child(band(error.clone()).child(refresh));
         } else if let Some(notice) = &self.live.notice {
             view = view.child(band(notice.clone()).child(self.live_button(
@@ -1793,7 +1796,8 @@ impl Pane {
                 },
             )));
         }
-        if let Some(pending) = &self.live.retry
+        if !preview
+            && let Some(pending) = &self.live.retry
             && let Some(error) = &pending.error
         {
             let mut banner = band(error.clone());
