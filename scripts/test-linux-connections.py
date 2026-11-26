@@ -280,6 +280,11 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
                 f"the thread header did not show both gates with their words: {header!r}"
             )
             capture("gates-rows")
+            # One Tab moves keyboard focus to the next control, which draws
+            # its focus ring; kept for a reader to look at, not checked.
+            command("xdotool", "key", "Tab")
+            time.sleep(0.5)
+            capture("focus-ring")
             scroll_thread("4")
             wait_for(lambda: find("mailbox"), "the failed delivery")
             capture("failed")

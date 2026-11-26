@@ -278,6 +278,34 @@ fn revise_note(change: &Change) -> Option<(String, (String, String))> {
     Some((m.message_id.clone(), (note.clone(), at)))
 }
 
+/// One gate choice: a radio button whose accessible name carries its
+/// direction, also when only an icon labels the gate.
+fn gate_segment(
+    direction: Direction,
+    label: &str,
+    choice: Policy,
+    on: bool,
+) -> gpui::Stateful<Div> {
+    ui::segment(
+        format!("gate-{direction:?}-{choice:?}"),
+        format!("{choice:?}"),
+        on,
+    )
+    .role(gpui::accesskit::Role::RadioButton)
+    .aria_label(format!("{label}: {choice:?}"))
+    .aria_toggled(if on {
+        gpui::accesskit::Toggled::True
+    } else {
+        gpui::accesskit::Toggled::False
+    })
+    .focusable()
+    .tab_stop(true)
+    .focus_visible(|el| {
+        el.border(px(tokens().size.focus_ring))
+            .border_color(colors().focus)
+    })
+}
+
 /// A gate's two segments: each choice, whether it is the service's current
 /// policy, and the change choosing it sends. The segments show only what
 /// the service reports, so a refused or failed change leaves them where they
@@ -1259,26 +1287,7 @@ impl Pane {
             for (choice, on, change) in
                 gate_choices(&peer.connection.generation, direction, current)
             {
-                let mut segment = ui::segment(
-                    format!("gate-{direction:?}-{choice:?}"),
-                    format!("{choice:?}"),
-                    on,
-                )
-                // Its name carries the direction, also when only an icon
-                // labels the gate.
-                .role(gpui::accesskit::Role::RadioButton)
-                .aria_label(format!("{label}: {choice:?}"))
-                .aria_toggled(if on {
-                    gpui::accesskit::Toggled::True
-                } else {
-                    gpui::accesskit::Toggled::False
-                })
-                .focusable()
-                .tab_stop(true)
-                .focus_visible(|el| {
-                    el.border(px(tokens().size.focus_ring))
-                        .border_color(colors().focus)
-                });
+                let mut segment = gate_segment(direction, label, choice, on);
                 if choice == Policy::Auto {
                     segment = segment.tooltip(|_, cx| cx.new(|_| Tip(AUTO_NOTE.into())).into());
                 }
@@ -2230,6 +2239,22 @@ fn revocation_note(peer: &api::Peer) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_gate_segment_is_a_named_radio_button() {
+        use gpui::{Element, accesskit};
+        let segment = gate_segment(Direction::Incoming, "Incoming", Policy::Review, true);
+        assert_eq!(segment.a11y_role(), Some(accesskit::Role::RadioButton));
+        let mut node = accesskit::Node::new(accesskit::Role::RadioButton);
+        segment.write_a11y_info(&mut node);
+        assert_eq!(node.label(), Some("Incoming: Review"));
+        assert_eq!(node.toggled(), Some(accesskit::Toggled::True));
+        let mut node = accesskit::Node::new(accesskit::Role::RadioButton);
+        gate_segment(Direction::Outgoing, "Outgoing", Policy::Auto, false)
+            .write_a11y_info(&mut node);
+        assert_eq!(node.label(), Some("Outgoing: Auto"));
+        assert_eq!(node.toggled(), Some(accesskit::Toggled::False));
+    }
 
     #[test]
     fn a_gate_segment_shows_the_service_policy_and_sends_one_change() {
