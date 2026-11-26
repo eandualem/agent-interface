@@ -192,8 +192,9 @@ pub(super) fn cut_label(more: usize, open: bool) -> String {
 pub(super) enum IdCheck {
     /// Nothing typed yet.
     Empty,
-    /// The ID as Agent Backbone will take it, and the line that confirms it.
-    Valid { id: String, note: String },
+    /// The ID as Agent Backbone will take it, and its last eight hex
+    /// characters to confirm it by.
+    Valid { id: String, ending: String },
     /// This profile's own ID, or a malformed one: the reason.
     Invalid(&'static str),
 }
@@ -217,8 +218,8 @@ pub(super) fn check_id(input: &str, local: &str) -> IdCheck {
     if id == local {
         return IdCheck::Invalid("This is this profile’s own ID");
     }
-    let note = format!("Valid ID, ending …{}", &hex[hex.len() - 8..]);
-    IdCheck::Valid { id, note }
+    let ending = format!("…{}", &hex[hex.len() - 8..]);
+    IdCheck::Valid { id, ending }
 }
 
 /// A review decision the person can take on a waiting message.
@@ -439,7 +440,7 @@ mod tests {
             check_id(&format!(" {}\n{} ", &other[..20], &other[20..]), &local),
             IdCheck::Valid {
                 id: other.clone(),
-                note: "Valid ID, ending …7ad02815".into()
+                ending: "…7ad02815".into()
             }
         );
         assert_eq!(

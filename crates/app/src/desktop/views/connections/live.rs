@@ -760,14 +760,19 @@ impl Pane {
         let check = rules::check_id(self.input.read(cx).value(), local);
         let status = match &check {
             rules::IdCheck::Empty => None,
-            rules::IdCheck::Valid { note, .. } => Some(
+            rules::IdCheck::Valid { ending, .. } => Some(
                 ui::text(
                     div().flex().items_center().gap(px(t.space.s4)),
                     &t.text.meta,
                 )
                 .text_color(c.muted)
                 .child(ui::icon("check", t.size.icon - 2.0, c.ok))
-                .child(note.clone()),
+                .child("Valid ID, ending")
+                .child(
+                    ui::text(div().font_family(t.font.mono.clone()), &t.text.key)
+                        .text_color(c.text_2)
+                        .child(ending.clone()),
+                ),
             ),
             rules::IdCheck::Invalid(reason) => {
                 Some(ui::text(div().text_color(c.attention_text), &t.text.meta).child(*reason))
