@@ -146,7 +146,6 @@ pub(super) enum Form {
     Decline(api::Message),
     Revise(api::Message),
     Disconnect(String),
-    Gate(String, api::Gates, api::Gates),
 }
 
 struct Snapshot {
@@ -320,6 +319,14 @@ impl Pane {
         }
     }
 
+    /// When the shown records were read from Agent Backbone, for the view's
+    /// header; nothing in the preview or before the first read.
+    pub(super) fn read_at(&self) -> Option<String> {
+        let at = self.live.read_at.as_ref()?;
+        (self.preview.is_none() && self.live.stream_ok && self.live.snapshot.is_some())
+            .then(|| format!("live from Agent Backbone · read {at}"))
+    }
+
     pub(in crate::desktop) fn pick_peer(&mut self, target: Selection, cx: &mut Context<Self>) {
         if self.preview.is_some() {
             self.preview(false, cx);
@@ -369,8 +376,7 @@ impl Pane {
                                     p.connection.generation == id && p.state == "connected"
                                 })
                             };
-                            if matches!(&live.form,Some(Form::Gate(id,original,_)) if !snapshot.summary.overview.connections.iter().any(|p| &p.connection.generation==id && &p.gates==original))
-                                || matches!(&live.form, Some(Form::Gate(id, ..) | Form::Disconnect(id)) if !connected(id))
+                            if matches!(&live.form, Some(Form::Disconnect(id)) if !connected(id))
                                 || matches!(&live.form, Some(Form::Decline(m) | Form::Revise(m)) if !connected(&m.connection.generation))
                             {
                                 live.form = None;
@@ -412,6 +418,7 @@ impl Pane {
         self.live.form = None;
         self.show_thread = self.live.selected.is_some();
         self.copied = None;
+        self.menu_open = false;
         self.refresh_live(cx);
         cx.notify();
     }
@@ -643,88 +650,6 @@ impl Pane {
                 "Disconnect? Delivery stops here at once; the other profile confirms when it next connects.".to_owned(),
                 Change::Disconnect(id.clone()),
             ),
-            Form::Gate(id, original, draft) => {
-                let mut menu = ui::menu()
-                    .min_w_0()
-                    .max_w_full()
-                    .gap(px(t.space.s8))
-                    .child(ui::menu_heading("Delivery gate"));
-                for d in [Direction::Incoming, Direction::Outgoing] {
-                    let original_policy = match d {
-                        Direction::Incoming => original.incoming,
-                        Direction::Outgoing => original.outgoing,
-                    };
-                    let name = match d {
-                        Direction::Incoming => "↙ Incoming",
-                        Direction::Outgoing => "↗ Outgoing",
-                    };
-                    if original_policy == Policy::Unknown {
-                        menu = menu.child(format!("{name} · unknown to this version"));
-                        continue;
-                    }
-                    let mut row = ui::segments();
-                    for choice in [Policy::Review, Policy::Auto] {
-                        let id = id.clone();
-                        let original = *original;
-                        let mut next = *draft;
-                        let current = match d {
-                            Direction::Incoming => &mut next.incoming,
-                            Direction::Outgoing => &mut next.outgoing,
-                        };
-                        let selected = *current == choice;
-                        *current = choice;
-                        row = row.child(
-                            ui::segment(format!("gate-{d:?}-{choice:?}"), format!("{choice:?}"), selected)
-                                .focusable()
-                                .tab_stop(true)
-                                .on_click(cx.listener(move |p, _, _, cx| {
-                                    p.live.form = Some(Form::Gate(id.clone(), original, next));
-                                    cx.notify();
-                                })),
-                        );
-                    }
-                    menu = menu.child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .items_center()
-                            .justify_between()
-                            .gap(px(t.space.s8))
-                            .child(name)
-                            .child(row),
-                    );
-                }
-                let buttons = div().flex().flex_wrap().gap(px(t.space.s8));
-                if original == draft {
-                    return menu.child(buttons.child(cancel));
-                }
-                let changes = [
-                    (Direction::Incoming, original.incoming, draft.incoming),
-                    (Direction::Outgoing, original.outgoing, draft.outgoing),
-                ]
-                .into_iter()
-                .filter(|(_, a, b)| a != b)
-                .map(|(d, _, p)| (d, p, request_key()))
-                .collect();
-                let action = Change::Gates(id.clone(), changes);
-                let automatic = draft.incoming == Policy::Auto || draft.outgoing == Policy::Auto;
-                let apply = self.live_button(
-                    "apply-live-gate",
-                    "Apply gate",
-                    ui::Button::Primary,
-                    cx,
-                    move |pane, _, cx| pane.change(action.clone(), cx),
-                );
-                return menu
-                    .when(automatic, |el| {
-                        el.child(
-                            ui::text(div().text_color(c.muted), &t.text.meta).child(
-                                "Future messages on an Auto direction skip review. Already-waiting messages stay in review.",
-                            ),
-                        )
-                    })
-                    .child(buttons.child(apply).child(cancel));
-            }
         };
         strip(prompt)
             .child(self.live_button(
@@ -913,32 +838,177 @@ impl Pane {
             .on_click(cx.listener(|p, _, _, cx| p.pick(None, cx)))
     }
 
-    /// The thread's top line: a way back on a narrow tile, the peer's mark
-    /// and name, its state, and any controls.
-    fn live_header(&self, name: &str, state: Option<Div>, cx: &Context<Self>) -> Div {
+    /// The thread's 48 px top line: a way back on a narrow tile, the peer's
+    /// mark, name and state, its short fingerprint with a copy button, then
+    /// any controls at the right.
+    fn live_header(
+        &self,
+        name: Option<&str>,
+        peer_id: &str,
+        state: Option<Div>,
+        controls: Option<Div>,
+        cx: &Context<Self>,
+    ) -> Div {
         let (t, c) = (tokens(), colors());
+        let copy = ui::interaction_icon_button("copy-peer-id", "copy", "Copy its connection ID")
+            .tab_stop(true)
+            .when(self.copied.as_deref() == Some("copy-peer-id"), |el| {
+                el.child(ui::icon("check", t.size.icon - 1.0, c.ok))
+            });
+        let id = peer_id.to_owned();
         div()
             .flex()
             .flex_shrink_0()
-            .flex_wrap()
             .items_center()
-            .gap(px(t.space.s8))
-            .px(px(t.space.s12))
-            .py(px(t.space.s8))
+            .gap(px(t.space.s10))
+            .h(px(t.size.peer_header))
+            .pl(px(t.space.s20))
+            .pr(px(t.space.s14))
             .border_b(px(t.size.hairline))
             .border_color(c.line)
+            .whitespace_nowrap()
             .when(self.compact, |el| el.child(self.back_button(cx)))
-            .child(ui::profile_mark(name, t.size.view_tile))
+            .child(peer_mark(name, t.size.view_tile - t.space.s4))
             .child(
-                div()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
-                    .font_weight(t.text.row_selected.weight())
-                    .child(name.to_owned()),
+                ui::text(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .text_color(c.text),
+                    &t.text.workspace,
+                )
+                .font_weight(t.text.row_selected.weight())
+                .child(rules::display_name(name).to_owned()),
             )
             .children(state)
+            .child(
+                ui::text(
+                    div().flex_shrink_0().font_family(t.font.mono.clone()),
+                    &t.text.key,
+                )
+                .text_color(c.muted)
+                .child(rules::fingerprint(peer_id)),
+            )
+            .child(copy.on_click(
+                cx.listener(move |p, _, _, cx| p.copy("copy-peer-id".into(), id.clone(), cx)),
+            ))
+            .child(div().flex_1())
+            .children(controls)
+    }
+
+    /// Both gates as Review and Auto, each applied as it is chosen, then the
+    /// ⋯ menu with Disconnect.
+    fn peer_controls(&self, peer: &api::Peer, actions: bool, cx: &Context<Self>) -> Div {
+        let (t, c) = (tokens(), colors());
+        let mut controls = div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s6));
+        for (direction, icon, label, current) in [
+            (
+                Direction::Incoming,
+                "arrow-down-left",
+                "Incoming",
+                peer.gates.incoming,
+            ),
+            (
+                Direction::Outgoing,
+                "arrow-up-right",
+                "Outgoing",
+                peer.gates.outgoing,
+            ),
+        ] {
+            controls = controls.child(
+                ui::text(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(t.space.s6))
+                        .when(direction == Direction::Outgoing, |el| el.ml(px(t.space.s6)))
+                        .text_color(c.muted),
+                    &t.text.meta,
+                )
+                .child(ui::icon(icon, t.size.icon - 2.0, c.muted))
+                .child(label),
+            );
+            if current == Policy::Unknown {
+                controls = controls.child(ui::tag("unknown to this version", ui::Tone::Quiet));
+                continue;
+            }
+            let mut segments = ui::segments();
+            for choice in [Policy::Review, Policy::Auto] {
+                let generation = peer.connection.generation.clone();
+                let mut segment = ui::segment(
+                    format!("gate-{direction:?}-{choice:?}"),
+                    format!("{choice:?}"),
+                    current == choice,
+                )
+                .focusable()
+                .tab_stop(true);
+                if choice == Policy::Auto {
+                    segment = segment.tooltip(|_, cx| cx.new(|_| Tip(AUTO_NOTE)).into());
+                }
+                if actions && current != choice {
+                    segment = segment.on_click(cx.listener(move |p, _, _, cx| {
+                        p.change(
+                            Change::Gates(
+                                generation.clone(),
+                                vec![(direction, choice, request_key())],
+                            ),
+                            cx,
+                        )
+                    }));
+                }
+                segments = segments.child(segment);
+            }
+            controls = controls.child(
+                segments
+                    .border(px(t.size.hairline))
+                    .border_color(c.line_strong),
+            );
+        }
+        let generation = peer.connection.generation.clone();
+        let mut more = div().relative().ml(px(t.space.s4)).child(
+            ui::interaction_icon_button("peer-more", "ellipsis", "More for this connection")
+                .tab_stop(true)
+                .on_click(cx.listener(|p, _, _, cx| {
+                    p.menu_open = !p.menu_open;
+                    cx.notify();
+                })),
+        );
+        if self.menu_open && actions {
+            more = more.child(
+                gpui::deferred(
+                    ui::menu()
+                        .absolute()
+                        .top(px(t.size.icon_button + t.space.s4))
+                        .right_0()
+                        .on_mouse_down_out(cx.listener(|p, _, _, cx| {
+                            p.menu_open = false;
+                            cx.notify();
+                        }))
+                        .child(
+                            ui::menu_item(
+                                "peer-disconnect",
+                                Some(ui::icon("link-2-off", t.size.icon, c.attention_text)),
+                                "Disconnect",
+                                None,
+                            )
+                            .text_color(c.attention_text)
+                            .on_click(cx.listener(
+                                move |p, _, w, cx| {
+                                    p.menu_open = false;
+                                    p.show_form(Form::Disconnect(generation.clone()), w, cx)
+                                },
+                            )),
+                        ),
+                )
+                .with_priority(1),
+            );
+        }
+        controls.child(more)
     }
 
     fn live_thread(&self, snapshot: &Snapshot, actions: bool, cx: &mut Context<Self>) -> Div {
@@ -1071,7 +1141,13 @@ impl Pane {
                 );
                 card = card.items_center();
                 column
-                    .child(self.live_header(&name, Some(state), cx))
+                    .child(self.live_header(
+                        r.display_name.as_deref(),
+                        &r.peer_id,
+                        Some(state),
+                        None,
+                        cx,
+                    ))
                     .child(card)
             }
             Some(Selection::Peer(id)) => {
@@ -1085,8 +1161,6 @@ impl Pane {
                     return empty("No longer listed", "Choose another peer.");
                 };
                 let name = rules::display_name(peer.display_name.as_deref());
-                let gates = peer.gates;
-                let gate_label = format!("↙ {:?} · ↗ {:?}", gates.incoming, gates.outgoing);
                 let connected = peer.state == "connected";
                 let state = if connected {
                     ui::tag("Connected", ui::Tone::Done)
@@ -1095,40 +1169,14 @@ impl Pane {
                 } else {
                     ui::tag(link_status(peer), ui::Tone::Quiet)
                 };
-                let mut controls = div()
-                    .ml_auto()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(px(t.space.s6));
-                let editable =
-                    gates.incoming != Policy::Unknown || gates.outgoing != Policy::Unknown;
-                if actions && connected && editable {
-                    let generation = id.generation.clone();
-                    controls = controls.child(self.live_button(
-                        "peer-gates",
-                        format!("{gate_label} ⌄"),
-                        ui::Button::Secondary,
-                        cx,
-                        move |p, w, cx| {
-                            p.show_form(Form::Gate(generation.clone(), gates, gates), w, cx)
-                        },
-                    ));
-                } else {
-                    controls = controls.child(ui::tag(gate_label, ui::Tone::Quiet));
-                }
-                if actions && connected {
-                    let disconnect = id.generation.clone();
-                    controls = controls.child(self.live_button(
-                        "peer-disconnect",
-                        "Disconnect",
-                        ui::Button::Danger,
-                        cx,
-                        move |p, w, cx| p.show_form(Form::Disconnect(disconnect.clone()), w, cx),
-                    ));
-                }
-                let mut column =
-                    column.child(self.live_header(name, Some(state), cx).child(controls));
+                let controls = connected.then(|| self.peer_controls(peer, actions, cx));
+                let mut column = column.child(self.live_header(
+                    peer.display_name.as_deref(),
+                    &id.peer_id,
+                    Some(state),
+                    controls,
+                    cx,
+                ));
                 // An open form stays usable while only a read is in flight: the
                 // service checks each change, and the next read reconciles it.
                 let held = connected
@@ -1136,7 +1184,7 @@ impl Pane {
                     && !self.live.sending
                     && self.live.status.is_none()
                     && self.live.retry.is_none();
-                if held && matches!(self.live.form, Some(Form::Gate(..) | Form::Disconnect(_))) {
+                if held && matches!(self.live.form, Some(Form::Disconnect(_))) {
                     column = column.child(
                         div()
                             .px(px(t.space.s12))
@@ -1590,6 +1638,40 @@ fn band(message: String) -> Div {
             )
             .child(message),
         )
+}
+
+const AUTO_NOTE: &str =
+    "Future messages on an Auto direction skip review. Already-waiting messages stay in review.";
+
+/// A line of help shown on hover.
+struct Tip(&'static str);
+
+impl Render for Tip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        ui::menu()
+            .max_w(px(tokens().size.connect_popover))
+            .child(self.0)
+    }
+}
+
+/// A connection's mark: its name's first letter, or a dashed tile with a
+/// link when it has no name.
+pub(super) fn peer_mark(name: Option<&str>, size: f32) -> Div {
+    let (t, c) = (tokens(), colors());
+    match name.map(str::trim).filter(|name| !name.is_empty()) {
+        Some(name) => ui::profile_mark(name, size),
+        None => div()
+            .flex_shrink_0()
+            .size(px(size))
+            .rounded(px(size * ui::PROFILE_MARK_ROUND))
+            .border(px(t.size.hairline))
+            .border_dashed()
+            .border_color(c.faint)
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(ui::icon("link-2", size / 2.0, c.muted)),
+    }
 }
 
 /// Something that happened in a thread, centred on one muted line.

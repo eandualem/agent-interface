@@ -35,6 +35,8 @@ pub(super) struct Pane {
     /// The pane's width, for the cards' share of the column.
     narrow: bool,
     show_thread: bool,
+    /// The thread header's ⋯ menu is open.
+    menu_open: bool,
     /// What was copied last, shown as Copied for a moment.
     copied: Option<SharedString>,
     /// Messages whose whole body is open.
@@ -96,6 +98,7 @@ impl Pane {
             compact: false,
             narrow: false,
             show_thread: false,
+            menu_open: false,
             copied: None,
             expanded: HashSet::new(),
             notes: HashMap::new(),
@@ -371,7 +374,18 @@ impl Render for Pane {
             .flex_col()
             .bg(c.surface)
             .child(tracker)
-            .child(ui::view_header("link-2", "Connections"));
+            .child(
+                ui::view_header("link-2", "Connections")
+                    .child(div().flex_1())
+                    .children(self.read_at().map(|read| {
+                        ui::text(
+                            div().flex().items_center().gap(px(t.space.s6)),
+                            &t.text.meta,
+                        )
+                        .child(ui::dot(c.ok))
+                        .child(read)
+                    })),
+            );
         let frame = frame.when(self.preview.is_some(), |el| {
             el.child(
                 div()
