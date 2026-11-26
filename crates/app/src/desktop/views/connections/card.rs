@@ -38,7 +38,11 @@ impl Pane {
         let mut card = div()
             .flex_shrink_0()
             .min_w_0()
-            .w(relative(if self.narrow { 0.92 } else { 0.9 }))
+            .w(relative(if self.width == peers::Width::Narrow {
+                0.92
+            } else {
+                0.9
+            }))
             .flex()
             .flex_col()
             .overflow_hidden()

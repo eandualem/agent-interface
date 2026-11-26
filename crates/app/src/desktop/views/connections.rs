@@ -17,6 +17,7 @@ use std::{
 mod card;
 mod live;
 mod model;
+mod peers;
 // The ID check and fingerprint are drawn from in the next steps.
 #[allow(dead_code)]
 mod rules;
@@ -31,12 +32,14 @@ pub(super) struct Pane {
     needs_you: bool,
     filter: Entity<NameField>,
     input: Entity<NameField>,
-    compact: bool,
-    /// The pane's width, for the cards' share of the column.
-    narrow: bool,
-    show_thread: bool,
-    /// The thread header's ⋯ menu is open.
-    menu_open: bool,
+    width: peers::Width,
+    /// The key this workspace's peer list choice is saved under.
+    list_key: Option<String>,
+    /// This pane's own choice, made below the wide width.
+    list_local: Option<bool>,
+    /// This profile's name, for the bottom of the peer list.
+    profile_name: Option<String>,
+    menu: Menu,
     /// What was copied last, shown as Copied for a moment.
     copied: Option<SharedString>,
     /// Messages whose whole body is open.
@@ -44,6 +47,18 @@ pub(super) struct Pane {
     /// The notes this pane sent back with a message, and when, by message.
     notes: HashMap<String, (String, String)>,
     _subscriptions: [Subscription; 2],
+}
+
+/// Which of the pane's small menus is open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Menu {
+    None,
+    /// The thread header's ⋯.
+    More,
+    /// The narrow header's folded gates.
+    Gates,
+    /// The narrow header's peer chooser.
+    Peers,
 }
 
 impl Selectable for Pane {
@@ -95,10 +110,11 @@ impl Pane {
             needs_you: false,
             filter,
             input,
-            compact: false,
-            narrow: false,
-            show_thread: false,
-            menu_open: false,
+            width: peers::Width::Wide,
+            list_key: None,
+            list_local: None,
+            profile_name: None,
+            menu: Menu::None,
             copied: None,
             expanded: HashSet::new(),
             notes: HashMap::new(),
@@ -112,6 +128,13 @@ impl Pane {
 
     pub(super) fn focus_entry(&self, window: &mut Window, cx: &mut gpui::App) {
         window.focus(&self.entry, cx);
+    }
+
+    /// Where this pane is: its workspace, that workspace's profile and the
+    /// profile's name, which decide where its peer list choice is saved.
+    pub(super) fn place(&mut self, profile: Option<&str>, workspace: &str, name: Option<&str>) {
+        self.list_key = Some(peers::list_key(profile, workspace));
+        self.profile_name = name.map(str::to_owned);
     }
 
     /// Open or close the preview. Its records are new each time it opens.
@@ -176,113 +199,6 @@ impl Pane {
 
 use crate::desktop::peer_inbox;
 
-impl Pane {
-    /// The peer column: its title and ＋, the All / Needs you choice, the
-    /// search field and the rows.
-    fn rail_frame(
-        &self,
-        rows: gpui::Stateful<Div>,
-        entry: bool,
-        cx: &Context<Self>,
-        connect: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
-    ) -> Div {
-        let (t, c) = (tokens(), colors());
-        let plus = ui::interaction_icon_button("connect-peer", "plus", "Connect a profile")
-            .tab_stop(true)
-            .on_click(cx.listener(move |this, _, window, cx| connect(this, window, cx)));
-        let plus = if entry {
-            plus.track_focus(&self.entry)
-        } else {
-            plus
-        };
-        let mut segments = ui::segments();
-        for (needs, label) in [(false, "All"), (true, "Needs you")] {
-            segments = segments.child(
-                ui::segment(format!("filter-{needs}"), label, self.needs_you == needs)
-                    .flex_1()
-                    .justify_center()
-                    .focusable()
-                    .tab_stop(true)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.needs_you = needs;
-                        cx.notify();
-                    })),
-            );
-        }
-        div()
-            .min_h_0()
-            .bg(c.panel)
-            .flex()
-            .flex_col()
-            .gap(px(t.space.s8))
-            .p(px(t.space.s8))
-            .when(!self.compact, |el| {
-                el.w(px(t.size.connections_rail))
-                    .flex_shrink_0()
-                    .border_r(px(t.size.hairline))
-                    .border_color(c.line)
-            })
-            .when(self.compact, |el| el.flex_1())
-            .child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .items_center()
-                    .pl(px(t.space.s4))
-                    .child(ui::text(div().text_color(c.muted), &t.text.label).child("PEERS"))
-                    .child(plus),
-            )
-            .child(segments)
-            .child(ui::filter_frame().child(hinted(&self.filter, "Filter peers", cx)))
-            .child(rows)
-    }
-}
-
-/// A peer's row: its status mark, its name and a short trailing label.
-fn peer_row(
-    id: String,
-    selected: bool,
-    name: String,
-    mark: &'static str,
-    label: String,
-    color: gpui::Rgba,
-) -> gpui::Stateful<Div> {
-    let (t, c) = (tokens(), colors());
-    ui::row(id, selected)
-        .focusable()
-        .tab_stop(true)
-        .child(
-            div()
-                .flex_shrink_0()
-                .w(px(t.size.icon))
-                .flex()
-                .justify_center()
-                .child(
-                    div()
-                        .text_color(color)
-                        .when(mark == "!", |el| {
-                            el.rounded_full()
-                                .bg(c.attention)
-                                .text_color(c.on_attention)
-                                .size(px(t.size.icon))
-                                .flex()
-                                .justify_center()
-                                .items_center()
-                        })
-                        .child(mark),
-                ),
-        )
-        .child(
-            div()
-                .min_w_0()
-                .flex_1()
-                .overflow_hidden()
-                .text_ellipsis()
-                .child(name),
-        )
-        .child(ui::text(div().text_color(color), &t.text.meta).child(label))
-}
-
 /// The quiet line a list shows when nothing is in it.
 fn no_rows(text: &'static str) -> Div {
     let (t, c) = (tokens(), colors());
@@ -339,13 +255,13 @@ impl Render for Pane {
         let entity = cx.entity().downgrade();
         let tracker = canvas(
             move |bounds, _, cx| {
-                let width = f32::from(bounds.size.width);
-                let compact = width < tokens().size.connections_split;
-                let narrow = width < tokens().size.connections_narrow;
+                let width = peers::Width::of(f32::from(bounds.size.width));
                 let _ = entity.update(cx, |this, cx| {
-                    if this.compact != compact || this.narrow != narrow {
-                        this.compact = compact;
-                        this.narrow = narrow;
+                    if this.width != width {
+                        // A narrower list starts minimised again.
+                        this.width = width;
+                        this.list_local = None;
+                        this.menu = Menu::None;
                         cx.notify();
                     }
                 });

@@ -225,8 +225,7 @@ composer = 14.0             # the message box in a conversation
 # ---------------------------------------------------------------- sizes
 
 [size]
-connections_rail = 218.0
-connections_split = 640.0
+connections_split = 720.0   # under it, the Connections peer list starts minimised
 connections_narrow = 560.0  # under it, cards widen and the peer list folds into the header
 peer_row = 44.0             # a row of the Connections peer list
 peer_strip = 48.0           # the minimised peer list

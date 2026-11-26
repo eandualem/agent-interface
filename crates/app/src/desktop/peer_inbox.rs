@@ -43,7 +43,7 @@ fn overview_failure(error: Error) -> String {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Selection {
     Request(String),
     Peer(api::Generation),

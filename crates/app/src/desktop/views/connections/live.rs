@@ -257,7 +257,7 @@ struct PendingRetry {
 
 pub(super) struct Live {
     connection: Connection,
-    selected: Option<Selection>,
+    pub(super) selected: Option<Selection>,
     snapshot: Option<Snapshot>,
     stream_ok: bool,
     reading: bool,
@@ -416,9 +416,8 @@ impl Pane {
         self.live.oldest = None;
         self.live.selected = target;
         self.live.form = None;
-        self.show_thread = self.live.selected.is_some();
         self.copied = None;
-        self.menu_open = false;
+        self.menu = Menu::None;
         self.refresh_live(cx);
         cx.notify();
     }
@@ -694,7 +693,7 @@ impl Pane {
             .left(px(t.space.s8))
             .max_h(gpui::relative(0.94))
             .overflow_y_scroll()
-            .w(px(t.size.connections_rail * 2.0))
+            .w(px(t.size.connect_popover))
             .max_w(gpui::relative(0.92))
             .gap(px(t.space.s8))
             .child(
@@ -815,27 +814,21 @@ impl Pane {
         .detach();
     }
 
-    /// On a narrow tile, a thread without its header still offers the way back.
-    fn back_bar(&self, cx: &Context<Self>) -> Option<Div> {
+    /// Under the narrow width, a thread with no peer still offers the
+    /// chooser.
+    fn chooser_bar(&self, s: &Summary, cx: &Context<Self>) -> Option<Div> {
         let (t, c) = (tokens(), colors());
-        self.compact.then(|| {
+        (self.width == peers::Width::Narrow).then(|| {
             div()
                 .flex()
                 .flex_shrink_0()
-                .px(px(t.space.s12))
-                .py(px(t.space.s8))
+                .items_center()
+                .h(px(t.size.peer_header))
+                .px(px(t.space.s14))
                 .border_b(px(t.size.hairline))
                 .border_color(c.line)
-                .child(self.back_button(cx))
+                .child(self.peer_chooser(s, None, "Choose a peer", cx))
         })
-    }
-
-    fn back_button(&self, cx: &Context<Self>) -> gpui::Stateful<Div> {
-        ui::back_button("peer-back", "All")
-            .focusable()
-            .tab_stop(true)
-            .track_focus(&self.entry)
-            .on_click(cx.listener(|p, _, _, cx| p.pick(None, cx)))
     }
 
     /// The thread's 48 px top line: a way back on a narrow tile, the peer's
@@ -843,6 +836,7 @@ impl Pane {
     /// any controls at the right.
     fn live_header(
         &self,
+        s: &Summary,
         name: Option<&str>,
         peer_id: &str,
         state: Option<Div>,
@@ -867,20 +861,25 @@ impl Pane {
             .border_b(px(t.size.hairline))
             .border_color(c.line)
             .whitespace_nowrap()
-            .when(self.compact, |el| el.child(self.back_button(cx)))
-            .child(peer_mark(name, t.size.view_tile - t.space.s4))
-            .child(
-                ui::text(
-                    div()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .text_color(c.text),
-                    &t.text.workspace,
-                )
-                .font_weight(t.text.row_selected.weight())
-                .child(rules::display_name(name).to_owned()),
-            )
+            .map(|el| {
+                if self.width == peers::Width::Narrow {
+                    el.child(self.peer_chooser(s, name, rules::display_name(name), cx))
+                } else {
+                    el.child(peer_mark(name, t.size.view_tile - t.space.s4))
+                        .child(
+                            ui::text(
+                                div()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .text_color(c.text),
+                                &t.text.workspace,
+                            )
+                            .font_weight(t.text.row_selected.weight())
+                            .child(rules::display_name(name).to_owned()),
+                        )
+                }
+            })
             .children(state)
             .child(
                 ui::text(
@@ -897,15 +896,10 @@ impl Pane {
             .children(controls)
     }
 
-    /// Both gates as Review and Auto, each applied as it is chosen, then the
-    /// ⋯ menu with Disconnect.
-    fn peer_controls(&self, peer: &api::Peer, actions: bool, cx: &Context<Self>) -> Div {
+    /// Each gate's label and its Review and Auto segments.
+    fn gate_rows(&self, peer: &api::Peer, actions: bool, cx: &Context<Self>) -> Div {
         let (t, c) = (tokens(), colors());
-        let mut controls = div()
-            .flex()
-            .flex_shrink_0()
-            .items_center()
-            .gap(px(t.space.s6));
+        let mut controls = div().flex().items_center().gap(px(t.space.s6));
         for (direction, icon, label, current) in [
             (
                 Direction::Incoming,
@@ -969,16 +963,84 @@ impl Pane {
                     .border_color(c.line_strong),
             );
         }
+        controls
+    }
+
+    /// Both gates as Review and Auto, each applied as it is chosen, then the
+    /// ⋯ menu with Disconnect.
+    fn peer_controls(&self, peer: &api::Peer, actions: bool, cx: &Context<Self>) -> Div {
+        let (t, c) = (tokens(), colors());
+        let mut controls = div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s6));
+        if self.width == peers::Width::Narrow {
+            // Narrow: both gates fold into one button that opens them.
+            let letter = |policy: Policy| match policy {
+                Policy::Review => "Review",
+                Policy::Auto => "Auto",
+                Policy::Unknown => "?",
+            };
+            let mut gates = div().relative().child(
+                ui::button(
+                    "folded-gates",
+                    format!(
+                        "↙ {} · ↗ {}",
+                        letter(peer.gates.incoming),
+                        letter(peer.gates.outgoing)
+                    ),
+                    ui::Button::Secondary,
+                )
+                .h(px(t.size.icon_button))
+                .px(px(t.space.s8))
+                .child(ui::icon("chevron-down", t.size.icon - 2.0, c.muted))
+                .focusable()
+                .tab_stop(true)
+                .on_click(cx.listener(|p, _, _, cx| {
+                    p.menu = if p.menu == Menu::Gates {
+                        Menu::None
+                    } else {
+                        Menu::Gates
+                    };
+                    cx.notify();
+                })),
+            );
+            if self.menu == Menu::Gates {
+                gates = gates.child(
+                    gpui::deferred(
+                        ui::menu()
+                            .absolute()
+                            .top(px(t.size.icon_button + t.space.s4))
+                            .right_0()
+                            .gap(px(t.space.s8))
+                            .on_mouse_down_out(cx.listener(|p, _, _, cx| {
+                                p.menu = Menu::None;
+                                cx.notify();
+                            }))
+                            .child(self.gate_rows(peer, actions, cx).flex_col().items_start()),
+                    )
+                    .with_priority(1),
+                );
+            }
+            controls = controls.child(gates);
+        } else {
+            controls = controls.child(self.gate_rows(peer, actions, cx));
+        }
         let generation = peer.connection.generation.clone();
         let mut more = div().relative().ml(px(t.space.s4)).child(
             ui::interaction_icon_button("peer-more", "ellipsis", "More for this connection")
                 .tab_stop(true)
                 .on_click(cx.listener(|p, _, _, cx| {
-                    p.menu_open = !p.menu_open;
+                    p.menu = if p.menu == Menu::More {
+                        Menu::None
+                    } else {
+                        Menu::More
+                    };
                     cx.notify();
                 })),
         );
-        if self.menu_open && actions {
+        if self.menu == Menu::More && actions {
             more = more.child(
                 gpui::deferred(
                     ui::menu()
@@ -986,7 +1048,7 @@ impl Pane {
                         .top(px(t.size.icon_button + t.space.s4))
                         .right_0()
                         .on_mouse_down_out(cx.listener(|p, _, _, cx| {
-                            p.menu_open = false;
+                            p.menu = Menu::None;
                             cx.notify();
                         }))
                         .child(
@@ -999,7 +1061,7 @@ impl Pane {
                             .text_color(c.attention_text)
                             .on_click(cx.listener(
                                 move |p, _, w, cx| {
-                                    p.menu_open = false;
+                                    p.menu = Menu::None;
                                     p.show_form(Form::Disconnect(generation.clone()), w, cx)
                                 },
                             )),
@@ -1047,7 +1109,7 @@ impl Pane {
                 .min_h_0()
                 .flex()
                 .flex_col()
-                .children(self.back_bar(cx))
+                .children(self.chooser_bar(&snapshot.summary, cx))
                 .child(div().flex_1().min_h_0().child(ui::empty_state(
                     ui::empty_tile("link-2", c.selected, c.muted),
                     title,
@@ -1142,6 +1204,7 @@ impl Pane {
                 card = card.items_center();
                 column
                     .child(self.live_header(
+                        &snapshot.summary,
                         r.display_name.as_deref(),
                         &r.peer_id,
                         Some(state),
@@ -1171,6 +1234,7 @@ impl Pane {
                 };
                 let controls = connected.then(|| self.peer_controls(peer, actions, cx));
                 let mut column = column.child(self.live_header(
+                    &snapshot.summary,
                     peer.display_name.as_deref(),
                     &id.peer_id,
                     Some(state),
@@ -1257,95 +1321,6 @@ impl Pane {
                 column.child(body)
             }
         }
-    }
-
-    /// The peer column for the service's invitations and connections.
-    fn live_rail(&self, s: &Snapshot, cx: &Context<Self>) -> Div {
-        let c = colors();
-        let mut rows = div()
-            .id("live-peers")
-            .min_h_0()
-            .flex_1()
-            .overflow_y_scroll();
-        let query = self.filter.read(cx).value().trim().to_lowercase();
-        let mut shown = 0;
-        let mut add = |rows: gpui::Stateful<Div>,
-                       selection: Selection,
-                       name: Option<&str>,
-                       peer: &str,
-                       (mark, label, color): (&'static str, String, gpui::Rgba),
-                       needs: bool| {
-            let name = name.unwrap_or(peer);
-            if (self.needs_you && !needs)
-                || !(name.to_lowercase().contains(&query) || peer.to_lowercase().contains(&query))
-            {
-                return rows;
-            }
-            shown += 1;
-            let id = match &selection {
-                Selection::Peer(g) => format!("peer-{}", g.generation),
-                Selection::Request(r) => format!("invite-{r}"),
-            };
-            let selected = self.live.selected.as_ref() == Some(&selection);
-            rows.child(
-                peer_row(id, selected, name.to_owned(), mark, label, color)
-                    .on_click(cx.listener(move |p, _, _, cx| p.pick(Some(selection.clone()), cx))),
-            )
-        };
-        for r in &s.summary.overview.invitations {
-            if r.state == "accepted" {
-                continue;
-            }
-            let incoming = r.direction == Direction::Incoming;
-            let status = match (incoming, r.state.as_str()) {
-                (true, "pending") => ("!", "request".into(), c.attention_text),
-                (false, "declined") => ("!", "declined".into(), c.attention_text),
-                (false, "pending") => ("◷", "pending".into(), c.accent_text),
-                (_, state) => ("·", state.replace('_', " "), c.muted),
-            };
-            let needs = status.0 == "!";
-            rows = add(
-                rows,
-                Selection::Request(r.request_id.clone()),
-                r.display_name.as_deref(),
-                &r.peer_id,
-                status,
-                needs,
-            );
-        }
-        for p in &s.summary.overview.connections {
-            let count = s.summary.count(&p.connection.generation);
-            let letter = |policy: Policy| match policy {
-                Policy::Review => "R",
-                Policy::Auto => "A",
-                Policy::Unknown => "?",
-            };
-            let status = if count > 0 {
-                ("!", format!("{count} review"), c.attention_text)
-            } else if p.state == "connected" {
-                (
-                    "●",
-                    format!("{}/{}", letter(p.gates.incoming), letter(p.gates.outgoing)),
-                    c.ok,
-                )
-            } else if p.state == "revocation_pending" {
-                ("⊘", "stopped".into(), c.muted)
-            } else {
-                ("○", p.state.replace('_', " "), c.muted)
-            };
-            rows = add(
-                rows,
-                Selection::Peer(p.connection.clone()),
-                p.display_name.as_deref(),
-                &p.connection.peer_id,
-                status,
-                count > 0,
-            );
-        }
-        if shown == 0 {
-            rows = rows.child(no_rows("No matching peers"));
-        }
-        self.rail_frame(rows, true, cx, |p, w, cx| p.show_form(Form::Connect, w, cx))
     }
 
     /// The preview's records as a read of the service would give them.
@@ -1478,10 +1453,14 @@ impl Pane {
                     ))),
             ));
         } else {
-            if !self.compact || !self.show_thread {
-                main = main.child(self.live_rail(s, cx));
+            if self.width != peers::Width::Narrow {
+                main = main.child(if self.list_minimised() {
+                    self.peer_strip(&s.summary, cx)
+                } else {
+                    self.peer_list(&s.summary, cx)
+                });
             }
-            if !self.compact || self.show_thread {
+            {
                 main = main.child(loop {
                     // As in a reader: a block that changed after earlier ones
                     // were drawn clears the selection, so draw them again.
