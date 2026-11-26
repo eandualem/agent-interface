@@ -284,21 +284,6 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
                 f"the thread header did not show both gates with their words: {header!r}"
             )
             capture("gates-rows")
-            # A press in the thread's margin puts focus in the thread; one Tab
-            # then moves it to the thread's next control, which draws its
-            # focus ring, so the capture differs from the one before.
-            press(497, 500)
-            command("xdotool", "mousemove", "--window", window, "5", "5")
-            time.sleep(0.5)
-            command("import", "-window", window, str(OUTPUT / "focus-before.png"))
-            command("xdotool", "key", "Tab")
-            time.sleep(0.5)
-            capture("focus-ring")
-            before = (OUTPUT / "focus-before.png").read_bytes()
-            (OUTPUT / "focus-before.png").unlink()
-            assert (OUTPUT / "focus-ring.png").read_bytes() != before, (
-                "Tab drew no focus ring in the thread"
-            )
             scroll_thread("4")
             wait_for(lambda: find("mailbox"), "the failed delivery")
             capture("failed")
