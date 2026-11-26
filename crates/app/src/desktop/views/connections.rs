@@ -18,8 +18,6 @@ mod card;
 mod live;
 mod model;
 mod peers;
-// The ID check and fingerprint are drawn from in the next steps.
-#[allow(dead_code)]
 mod rules;
 
 pub(super) struct Pane {
