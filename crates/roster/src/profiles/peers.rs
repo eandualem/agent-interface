@@ -67,6 +67,16 @@ pub struct Peer {
     pub state: String,
     /// Current delivery policy in both directions.
     pub gates: Gates,
+    /// The relay's lasting refusal of a local disconnect, only while the
+    /// state is `revocation_pending`.
+    pub revocation_failure: Option<RevocationFailure>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+/// Why the relay refused to carry a disconnect to the other profile.
+pub struct RevocationFailure {
+    /// Verbatim relay refusal code.
+    pub code: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]

@@ -1511,6 +1511,8 @@ lost response reuses the same request key and body. Incoming messages can be
 passed or declined. Outgoing drafts can also be returned to the local agent
 with a revision note. After a local disconnect the thread reads "Stopped
 here, remote confirmation pending" until the peer acknowledges the revocation.
+If the relay refuses the revocation for good, the thread says so with the
+relay's code, because the peer may then never learn of the disconnect.
 History pagination uses the service cursor. When reads
 fail the pane retains the last snapshot and pauses changes. The separate sample
 preview uses in-memory records and decisions which expire when the person exits.
