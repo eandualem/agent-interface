@@ -289,7 +289,7 @@ fn gate_choices(
 }
 
 /// The line a gate change leaves in its thread.
-fn gate_event(change: &Change) -> Option<(String, String)> {
+fn gate_event(change: &Change) -> Option<GateEvent> {
     let Change::Gates(generation, changes) = change else {
         return None;
     };
@@ -306,8 +306,20 @@ fn gate_event(change: &Change) -> Option<(String, String)> {
         })
         .collect::<Vec<_>>()
         .join(" · ");
-    let at = chrono::Local::now().format("%H:%M");
-    Some((generation.clone(), format!("{at} · {text}")))
+    let now = chrono::Local::now();
+    Some(GateEvent {
+        generation: generation.clone(),
+        at: now.timestamp_millis() as f64 / 1000.0,
+        text: format!("{} · {text}", now.format("%H:%M")),
+    })
+}
+
+/// A gate change made in this pane, shown in its thread at its time.
+struct GateEvent {
+    generation: String,
+    /// Seconds since the epoch.
+    at: f64,
+    text: String,
 }
 
 struct PendingRetry {
@@ -333,7 +345,7 @@ pub(super) struct Live {
     oldest: Option<String>,
     pub(super) form: Option<Form>,
     /// Gate changes made in this pane, by generation, for their thread.
-    events: Vec<(String, String)>,
+    events: Vec<GateEvent>,
     inbox: Entity<Inbox>,
     _events: Subscription,
 }
@@ -626,6 +638,18 @@ impl Pane {
         cx.notify();
     }
 
+    /// Once the connect popover has closed, put focus back on ＋, which
+    /// opened it, so the keyboard does not lose its place.
+    pub(super) fn connecting(&self) -> bool {
+        matches!(self.live.form, Some(Form::Connect))
+    }
+
+    pub(super) fn focus_after_connect(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.live.form, Some(Form::Connect)) {
+            window.focus(&self.entry, cx);
+        }
+    }
+
     /// This profile's connection ID, from the records shown.
     fn local_id(&self) -> Option<String> {
         match &self.preview {
@@ -785,7 +809,10 @@ impl Pane {
                 "Send request",
                 ui::Button::Primary,
                 cx,
-                |pane, _, cx| pane.submit_live_form(cx),
+                |pane, window, cx| {
+                    pane.submit_live_form(cx);
+                    pane.focus_after_connect(window, cx);
+                },
             )
         } else {
             ui::button("live-submit", "Send request", ui::Button::Primary).opacity(0.35)
@@ -814,12 +841,15 @@ impl Pane {
             .overflow_y_scroll()
             .p(px(t.space.s14))
             .gap(px(t.space.s12))
-            .on_key_down(cx.listener(move |pane, event: &gpui::KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" {
-                    cx.stop_propagation();
-                    close(pane, cx);
-                }
-            }))
+            .on_key_down(
+                cx.listener(move |pane, event: &gpui::KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "escape" {
+                        cx.stop_propagation();
+                        close(pane, cx);
+                        pane.focus_after_connect(window, cx);
+                    }
+                }),
+            )
             .on_mouse_down_out(cx.listener(move |pane, _, _, cx| close(pane, cx)))
             .child(
                 div()
@@ -862,7 +892,10 @@ impl Pane {
                         "Cancel",
                         ui::Button::Secondary,
                         cx,
-                        move |pane, _, cx| close(pane, cx),
+                        move |pane, window, cx| {
+                            close(pane, cx);
+                            pane.focus_after_connect(window, cx);
+                        },
                     )),
             )
             .child(
@@ -1534,7 +1567,22 @@ impl Pane {
                 }
                 let now = Local::now();
                 let mut day: Option<Local> = None;
+                // Gate changes made here sit among the messages by time.
+                let mut events = self
+                    .live
+                    .events
+                    .iter()
+                    .filter(|e| e.generation == id.generation)
+                    .peekable();
                 for m in &history.items {
+                    let sent = epoch(&m.submitted_at).unwrap_or(f64::MAX);
+                    while let Some(gate) = events.next_if(|e| e.at < sent) {
+                        body = body.child(event(
+                            "sliders-horizontal",
+                            gate.text.clone(),
+                            String::new(),
+                        ));
+                    }
                     if let Some(at) = epoch(&m.submitted_at).and_then(Local::at)
                         && let Some(now) = &now
                         && !day.is_some_and(|d| d.same_day(&at))
@@ -1563,8 +1611,12 @@ impl Pane {
                         self.message_card(name, m, revision, actions && connected, held, cx)
                     });
                 }
-                for (_, text) in self.live.events.iter().filter(|(g, _)| g == &id.generation) {
-                    body = body.child(event("sliders-horizontal", text.clone(), String::new()));
+                for gate in events {
+                    body = body.child(event(
+                        "sliders-horizontal",
+                        gate.text.clone(),
+                        String::new(),
+                    ));
                 }
                 if !connected {
                     body = body.child(event("link-2-off", link_status(peer), String::new()));
@@ -1999,8 +2051,8 @@ mod tests {
         };
         let change = Change::Gates(generation, changes);
         assert!(change.still_pending(&refused));
-        assert!(gate_event(&change).is_some_and(|(g, text)| {
-            g == "gen_1" && text.ends_with("Outgoing gate set to Auto")
+        assert!(gate_event(&change).is_some_and(|e| {
+            e.generation == "gen_1" && e.text.ends_with("Outgoing gate set to Auto")
         }));
     }
 

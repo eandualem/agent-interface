@@ -86,19 +86,28 @@ impl Pane {
                 cx.notify();
             }
         });
-        let editor_keys =
-            cx.subscribe_in(
-                &input,
-                window,
-                |this, _, event: &NameEvent, _, cx| match event {
-                    NameEvent::Cancel => {
-                        this.live.form = None;
-                        cx.notify();
+        let editor_keys = cx.subscribe_in(
+            &input,
+            window,
+            |this, _, event: &NameEvent, window, cx| match event {
+                NameEvent::Cancel => {
+                    let connect = this.connecting();
+                    this.live.form = None;
+                    if connect {
+                        this.focus_after_connect(window, cx);
                     }
-                    NameEvent::Save => this.submit_live_form(cx),
-                    NameEvent::Changed(_) => cx.notify(),
-                },
-            );
+                    cx.notify();
+                }
+                NameEvent::Save => {
+                    let connect = this.connecting();
+                    this.submit_live_form(cx);
+                    if connect {
+                        this.focus_after_connect(window, cx);
+                    }
+                }
+                NameEvent::Changed(_) => cx.notify(),
+            },
+        );
         Self {
             live: live::Live::new(connection, cx),
             preview: None,
