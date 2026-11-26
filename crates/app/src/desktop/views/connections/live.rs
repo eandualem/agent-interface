@@ -1086,6 +1086,9 @@ impl Pane {
                             .is_some()
                             .then(|| ui::mono(id.peer_id.clone()).text_color(c.muted)),
                     )
+                    .children(revocation_note(peer).map(|note| {
+                        ui::text(div().text_color(c.attention_text), &t.text.meta).child(note)
+                    }))
                     .child(meta(format!(
                         "Left: {name} (external · available to main) · Right: main"
                     )));
@@ -1633,13 +1636,21 @@ fn clock(stamp: &str) -> String {
 // and may never learn of it once the relay has refused the revocation.
 fn link_status(peer: &api::Peer) -> String {
     match (peer.state.as_str(), &peer.revocation_failure) {
-        ("revocation_pending", Some(failure)) => format!(
-            "Stopped here; the relay refused the revocation ({}), so the other side may not learn of it",
-            failure.code
-        ),
+        ("revocation_pending", Some(_)) => "Stopped here, relay refused the disconnect".into(),
         ("revocation_pending", None) => "Stopped here, remote confirmation pending".into(),
         (s, _) => s.replace('_', " "),
     }
+}
+
+// The full reason, shown below the header where it can wrap.
+fn revocation_note(peer: &api::Peer) -> Option<String> {
+    let failure = peer.revocation_failure.as_ref()?;
+    (peer.state == "revocation_pending").then(|| {
+        format!(
+            "The relay refused the disconnect ({}), so the other side may not learn of it.",
+            failure.code
+        )
+    })
 }
 
 #[cfg(test)]
@@ -1673,8 +1684,15 @@ mod tests {
         .unwrap();
         assert_eq!(
             link_status(&refused),
-            "Stopped here; the relay refused the revocation (generation_mismatch), so the other side may not learn of it"
+            "Stopped here, relay refused the disconnect"
         );
+        assert_eq!(
+            revocation_note(&refused).as_deref(),
+            Some(
+                "The relay refused the disconnect (generation_mismatch), so the other side may not learn of it."
+            )
+        );
+        assert_eq!(revocation_note(&peer("disconnect_requested")), None);
     }
 
     #[test]
