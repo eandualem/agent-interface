@@ -197,6 +197,9 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
             # A click while the pane is still settling can be lost, so press
             # Preview again until the sample's peer list shows.
             for attempt in range(4):
+                # A press that took effect late needs no second one.
+                if attempt and find("PEERS"):
+                    break
                 click("Preview")
                 try:
                     # The first sample connection opens with the list beside it.
@@ -218,6 +221,8 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
             wait_for(lambda: find("Nothing"), "the waiting outgoing message")
             capture("waiting-outgoing")
             click("Ask")
+            # The note opens under the card's last line.
+            scroll_thread()
             wait_for(lambda: find("should"), "the revise note")
             capture("revise")
             # Its Cancel is below the fold; Escape in the note closes it.
