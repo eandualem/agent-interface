@@ -182,7 +182,8 @@ fn open_fence(text: &str) -> Option<String> {
             continue;
         };
         let run = line.chars().take_while(|&c| c == mark).count();
-        if run < 3 {
+        // A backtick line with more backticks after its run is inline code.
+        if run < 3 || (mark == '`' && line[run..].contains('`')) {
             continue;
         }
         match open {
@@ -451,6 +452,7 @@ mod tests {
         assert_eq!(open_fence("````md\n```\nnot closed"), Some("````".into()));
         assert_eq!(open_fence("~~~\n```\n~~~"), None);
         assert_eq!(open_fence("```rust\nlet x = 1;\n```"), None);
+        assert_eq!(open_fence("```inline``` text\nmore"), None);
         // A cut on the budget ends on a word of its own line, with the mark.
         let lines = format!("{}\n{}", "short line", "word ".repeat(150));
         let (shown, _) = cut(&lines).unwrap();
