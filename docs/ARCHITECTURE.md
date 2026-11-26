@@ -1524,6 +1524,11 @@ relay's code, because the peer may then never learn of the disconnect.
 History pagination uses the service cursor. When reads
 fail the pane retains the last snapshot and pauses changes. The separate sample
 preview uses in-memory records and decisions which expire when the person exits.
+They are held in the service's own record shapes, so the preview is drawn by
+the same code as the live pane. Whether a workspace's peer list is minimised is
+saved in `settings.toml` under `[connections]`, keyed by profile and workspace
+ID, or by the workspace ID alone when there is no profile; only a choice made
+at the wide width is saved, so a narrow Connections pane never overwrites it.
 Neither path sends keystrokes to a terminal.
 
 ### Bound native Policies

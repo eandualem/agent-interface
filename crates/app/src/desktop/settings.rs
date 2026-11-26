@@ -60,6 +60,9 @@ static SETUP_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool
 static SETUP_PROFILE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 static SETUP_REQUEST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 static SETUP_IDENTITY: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
+static PEER_LISTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+/// At most this many minimised peer lists are kept, so the file stays small.
+const MAX_PEER_LISTS: usize = 512;
 
 /// How panes show their header now.
 pub fn pane_headers() -> PaneHeaders {
@@ -96,6 +99,9 @@ pub struct Settings {
     pub setup_request: Option<String>,
     /// The Git name and email typed for that request, set once it is made.
     pub setup_identity: Option<(String, String)>,
+    /// The workspaces whose Connections peer list was minimised, each by
+    /// its profile and workspace (see `views::connections`).
+    pub minimised_peer_lists: Vec<String>,
 }
 
 impl Default for Settings {
@@ -114,6 +120,7 @@ impl Default for Settings {
             setup_profile: None,
             setup_request: None,
             setup_identity: None,
+            minimised_peer_lists: Vec::new(),
         }
     }
 }
@@ -202,6 +209,24 @@ impl Settings {
             };
             settings.setup_identity = text("git_name").zip(text("git_email"));
         }
+        if let Some(lists) = table
+            .get("connections")
+            .and_then(|connections| connections.get("minimised"))
+            .and_then(toml::Value::as_array)
+        {
+            let mut keys: Vec<String> = lists
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .filter(|key| {
+                    !key.is_empty() && key.len() <= 256 && !key.chars().any(char::is_control)
+                })
+                .map(str::to_owned)
+                .take(MAX_PEER_LISTS)
+                .collect();
+            keys.sort();
+            keys.dedup();
+            settings.minimised_peer_lists = keys;
+        }
         if let Some(shortcuts) = table.get("shortcuts").and_then(toml::Value::as_table) {
             settings.shortcuts = super::shortcuts::Bindings::from_entries(
                 shortcuts
@@ -264,6 +289,15 @@ impl Settings {
                 ));
             }
         }
+        if !self.minimised_peer_lists.is_empty() {
+            let keys = self
+                .minimised_peer_lists
+                .iter()
+                .map(|key| toml::Value::String(key.clone()).to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            text.push_str(&format!("\n[connections]\nminimised = [{keys}]\n"));
+        }
         let changed = self.shortcuts.changed();
         if !changed.is_empty() {
             text.push_str("\n[shortcuts]\n");
@@ -295,6 +329,9 @@ impl Settings {
         *SETUP_IDENTITY
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.setup_identity.clone();
+        *PEER_LISTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.minimised_peer_lists.clone();
     }
 
     /// The settings windows are drawing with now.
@@ -322,7 +359,37 @@ impl Settings {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone(),
+            minimised_peer_lists: PEER_LISTS
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
         }
+    }
+}
+
+/// Whether the Connections peer list saved as `key` is minimised.
+pub fn peer_list_minimised(key: &str) -> bool {
+    PEER_LISTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .binary_search_by(|saved| saved.as_str().cmp(key))
+        .is_ok()
+}
+
+/// Remember whether the peer list `key` is minimised, without saving it.
+pub fn set_peer_list_minimised(key: &str, minimised: bool) {
+    let mut keys = PEER_LISTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match (
+        keys.binary_search_by(|saved| saved.as_str().cmp(key)),
+        minimised,
+    ) {
+        (Err(at), true) if keys.len() < MAX_PEER_LISTS => keys.insert(at, key.to_owned()),
+        (Ok(at), false) => {
+            keys.remove(at);
+        }
+        _ => {}
     }
 }
 
@@ -642,6 +709,7 @@ mod tests {
             setup_profile: Some("0123abcd".into()),
             setup_request: Some("89ef4567".into()),
             setup_identity: Some(("Sam O'Brien \"ops\"".into(), "sam@example.com".into())),
+            minimised_peer_lists: vec!["0123abcd/4c1f0e9a2b3d".into(), "5d6e7f8a9b0c".into()],
         };
         assert_eq!(Settings::parse(&light.to_toml()), light);
         let partial = Settings {
@@ -656,6 +724,14 @@ mod tests {
         };
         applied.apply();
         assert_eq!(Settings::current(), applied);
+        assert!(peer_list_minimised("5d6e7f8a9b0c"));
+        assert!(!peer_list_minimised("0123abcd/ffffffffffff"));
+        set_peer_list_minimised("0123abcd/ffffffffffff", true);
+        set_peer_list_minimised("5d6e7f8a9b0c", false);
+        assert_eq!(
+            Settings::current().minimised_peer_lists,
+            ["0123abcd/4c1f0e9a2b3d", "0123abcd/ffffffffffff"]
+        );
         Settings::default().apply();
         assert_eq!(Settings::current(), Settings::default());
         assert_eq!(Settings::parse("not toml ["), Settings::default());

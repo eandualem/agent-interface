@@ -225,8 +225,16 @@ composer = 14.0             # the message box in a conversation
 # ---------------------------------------------------------------- sizes
 
 [size]
-connections_rail = 218.0
-connections_split = 640.0
+connections_split = 720.0   # under it, the Connections peer list starts minimised
+connections_narrow = 560.0  # under it, cards widen and the peer list folds into the header
+peer_row = 44.0             # a row of the Connections peer list
+peer_strip = 48.0           # the minimised peer list
+peer_list = 248.0           # the open peer list
+peer_header = 48.0          # a Connections thread's header
+message_avatar = 18.0       # the avatar in a peer message's header
+review_strip = 30.0         # "Waiting for your review" atop a card
+connect_popover = 348.0     # the Connect a profile popover
+request_card = 480.0        # the incoming-request card
 titlebar = 44.0             # top of the panel, beside the window controls
 window_controls_x = 16.0    # where macOS draws the window controls
 window_controls_y = 16.0

@@ -43,7 +43,7 @@ fn overview_failure(error: Error) -> String {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Selection {
     Request(String),
     Peer(api::Generation),
@@ -57,10 +57,12 @@ pub(super) struct Summary {
 impl Summary {
     #[cfg(test)]
     pub(super) fn from_overview(overview: api::Overview) -> Self {
-        Self {
-            overview,
-            counts: HashMap::new(),
-        }
+        Self::with_counts(overview, HashMap::new())
+    }
+
+    /// A summary from records already at hand, such as the pane's preview.
+    pub(super) fn with_counts(overview: api::Overview, counts: HashMap<String, usize>) -> Self {
+        Self { overview, counts }
     }
 
     fn read(c: &Connection) -> Result<Self, Error> {

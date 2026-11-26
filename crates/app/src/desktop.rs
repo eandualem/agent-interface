@@ -3400,6 +3400,20 @@ impl Render for Browser {
                     ),
                     None => views::ViewPane::new(view, directory, folders, window, cx),
                 });
+                if let Some(space) = self
+                    .layout
+                    .as_ref()
+                    .and_then(|layout| layout.model().workspace_for_pane(&id))
+                {
+                    let name = self
+                        .workspace_profiles
+                        .profile_name(space)
+                        .map(str::to_owned);
+                    let (profile, workspace) = (space.profile_id.clone(), space.id.clone());
+                    pane.update(cx, |pane, cx| {
+                        pane.place_connections(profile.as_deref(), &workspace, name.as_deref(), cx)
+                    });
+                }
                 if let Some(section) = self.opening_sections.remove(&id)
                     && reports
                 {

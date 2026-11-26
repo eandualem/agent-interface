@@ -326,6 +326,20 @@ impl ViewPane {
             pane.update(cx, |p, cx| p.pick_peer(selection, cx));
         }
     }
+    /// Tell a Connections pane which workspace and profile it is in, for
+    /// its saved peer list choice and this profile's name.
+    pub(super) fn place_connections(
+        &self,
+        profile: Option<&str>,
+        workspace: &str,
+        name: Option<&str>,
+        cx: &mut gpui::App,
+    ) {
+        if let Some(pane) = &self.connections {
+            pane.update(cx, |pane, _| pane.place(profile, workspace, name));
+        }
+    }
+
     pub(super) fn connection_attention(&self, cx: &gpui::App) -> bool {
         self.connections
             .as_ref()

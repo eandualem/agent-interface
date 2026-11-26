@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Capture the Connections pane's sample data in a disposable Xvfb desktop.
 
+It visits each state the pane's design shows: a long message cut and opened,
+messages waiting for review in both directions, the revise note, a failed
+delivery, an incoming request, the connect popover, the minimised peer list
+and the narrow layout, and saves one capture of each.
+
 Run under xvfb-run + dbus-run-session as a normal user. Uses no live provider,
 real home, credentials or tmux server: the one profile it serves refuses the
 connection reads, so the pane offers its preview. The captures land beside
@@ -13,7 +18,9 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shlex
+import shutil
 import socketserver
 import sqlite3
 import subprocess
@@ -30,9 +37,9 @@ for earlier in OUTPUT.glob("*.png"):
 PROFILE = "0a1b2c3d4e5f"
 
 
-def wait_for(check, label):
+def wait_for(check, label, seconds=120):
     # One reading may take most of a minute on a constrained runner.
-    deadline = time.monotonic() + 120
+    deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         result = check()
         if result:
@@ -145,20 +152,42 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
             window = wait_for(lambda: command("xdotool", "search", "--onlyvisible", "--pid", str(app.pid), check=False),
                               "app window").splitlines()[0]
             command("xdotool", "windowactivate", "--sync", window)
-            command("xdotool", "windowsize", "--sync", window, "1280", "820")
+            command("xdotool", "windowsize", "--sync", window, "1280", "880")
             # The size is set before the window has drawn at it.
             time.sleep(0.6)
 
-            def find(text):
+            def read():
                 assert app.poll() is None, "application exited"
                 command("import", "-window", window, str(OUTPUT / "current.png"))
                 # Controls are sparse text, not a scanned page.
                 tsv = command("tesseract", str(OUTPUT / "current.png"), "stdout", "--psm", "11", "tsv")
                 (OUTPUT / "current.tsv").write_text(tsv)
-                found = [word for word in csv.DictReader(io.StringIO(tsv), delimiter="\t")
-                         if (word.get("text") or "").strip().rstrip(".,:;") == text]
+                return [word for word in csv.DictReader(io.StringIO(tsv), delimiter="\t")
+                        if (word.get("text") or "").strip()]
+
+            def find(text):
+                found = [word for word in read()
+                         # A label can be read with a stray quote mark before it.
+                         if word["text"].strip().lstrip("‘’'\"“”").rstrip(".,:;") == text]
                 found.sort(key=lambda word: (int(word["top"]), int(word["left"])))
                 return found[0] if found else None
+
+            def header_band(step):
+                # The header row's words, read at once and again after 2 s with
+                # no input; both captures and texts are kept, so a header that
+                # is late to follow a resize shows apart from a slow reading.
+                # The second reading is the one checked.
+                texts = []
+                for when in ("a", "b"):
+                    if when == "b":
+                        time.sleep(2)
+                    band = sorted((word for word in read()
+                                   if abs(int(word["top"]) - int(label["top"])) < 24),
+                                  key=lambda word: int(word["left"]))
+                    shutil.copy(OUTPUT / "current.png", OUTPUT / f"header-{step}-{when}.png")
+                    texts.append("".join(word["text"] for word in band).lower().replace(" ", ""))
+                    print(f"header {step} {when}: {texts[-1]!r}", flush=True)
+                return texts[-1]
 
             def click(text):
                 word = wait_for(lambda: find(text), text)
@@ -175,15 +204,149 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
                 time.sleep(0.5)
                 command("import", "-window", window, str(OUTPUT / f"{name}.png"))
 
-            click("Preview")
-            # A sample peer's name: the preview's note is read with stray quotes.
-            wait_for(lambda: find("maya-ops"), "sample data")
-            capture("preview")
-            click("priya-platform")
-            # Only the chosen peer's request says this. Its filled Accept
-            # button is not read as text.
-            wait_for(lambda: find("Accepting"), "the chosen peer's connection request")
-            capture("peer")
+            def press(x, y):
+                command("xdotool", "mousemove", "--window", window, str(x), str(y))
+                time.sleep(0.2)
+                command("xdotool", "click", "1")
+
+            def scroll_thread(button="5"):
+                # Wheel down (5) or up (4) over the thread.
+                command("xdotool", "mousemove", "--window", window, "800", "450")
+                time.sleep(0.2)
+                command("xdotool", "click", "--repeat", "15", "--delay", "30", button)
+                time.sleep(0.5)
+
+            # Filled buttons are not read, so each wait is on plain text near
+            # what it checks, one reading at a time.
+            # A click while the pane is still settling can be lost, so press
+            # Preview again until the sample's peer list shows.
+            for attempt in range(4):
+                # A press that took effect late needs no second one.
+                if attempt and find("PEERS"):
+                    break
+                click("Preview")
+                try:
+                    # The first sample connection opens with the list beside it.
+                    wait_for(lambda: find("PEERS"), "the peer list", 15)
+                    break
+                except AssertionError:
+                    if attempt == 3:
+                        raise
+            # A thread opens on the message waiting for the person, its
+            # choices in view: Ask to revise is the first one read, as the
+            # filled Pass through is not.
+            wait_for(lambda: find("Ask"), "the first thread opened with its choices in view")
+            capture("thread-open")
+            scroll_thread("4")
+            wait_for(lambda: find("Relay"), "the first sample thread")
+            capture("message-cut")
+            # The first long message is cut; open it in place, then close it.
+            click("Show")
+            wait_for(lambda: find("less"), "the opened message")
+            capture("message-opened")
+            click("less")
+            wait_for(lambda: find("Show"), "the message cut again")
+            # The outgoing message waiting for review offers Ask to revise.
+            scroll_thread()
+            wait_for(lambda: find("Nothing"), "the waiting outgoing message")
+            capture("waiting-outgoing")
+            click("Ask")
+            # The note opens under the card's last line.
+            scroll_thread()
+            wait_for(lambda: find("should"), "the revise note")
+            capture("revise")
+            # Its Cancel is below the fold; Escape in the note closes it.
+            command("xdotool", "key", "Escape")
+            # Focus returns to Ask to revise, whose focus ring keeps it from
+            # being read; the note's own line going and the pass note
+            # showing say the note closed.
+            wait_for(lambda: not find("should"), "the revise note closed")
+            wait_for(lambda: find("Pass"), "the waiting card's choices again")
+            # The second connection has an incoming message waiting and a
+            # failed delivery.
+            click("Ops")
+            # The pass note sits in the waiting card's choices.
+            wait_for(lambda: find("delivers"), "Ops opened with its choices in view")
+            capture("waiting-incoming")
+            # With the list open, the header still has room for the whole
+            # two-word name. The words level with the list's PEERS label are
+            # the header's; read together, as OCR may join or split them, they
+            # hold the name with no ellipsis after its first word.
+            label = wait_for(lambda: find("PEERS"), "the peer list")
+            header = header_band("rows")
+            assert "opsre" in header and not re.search(r"ops(…|\.\.\.)", header), (
+                f"the thread header cut the connection's name: {header!r}"
+            )
+            # At this width both gates show as rows, each with its Review and
+            # Auto, not folded into one button.
+            assert (header.count("review") >= 2 and header.count("auto") >= 2
+                    and "incoming" in header and "outgoing" in header), (
+                f"the thread header did not show both gates with their words: {header!r}"
+            )
+            capture("gates-rows")
+            scroll_thread("4")
+            wait_for(lambda: find("mailbox"), "the failed delivery")
+            capture("failed")
+            # The first unnamed row is the incoming request.
+            click("Unnamed")
+            wait_for(lambda: find("Declining"), "the incoming request")
+            capture("request")
+            # ＋ and the minimise button are icons, placed from the list's
+            # PEERS label: the list is 248 px, its buttons 24 px at its right.
+            label = wait_for(lambda: find("PEERS"), "the peer list")
+            left = int(label["left"]) - 16
+            middle = int(label["top"]) + int(label["height"]) // 2
+            press(left + 202, middle)
+            wait_for(lambda: find("Their"), "the connect popover")
+            command("xdotool", "type", "--delay", "20", "v1:" + "7c" * 32)
+            wait_for(lambda: find("Valid"), "the pasted ID checked")
+            capture("connect")
+            command("xdotool", "key", "Escape")
+            wait_for(lambda: not find("Their"), "the connect popover closed")
+            # Choose a connection while its name can still be read.
+            click("Ops")
+            wait_for(lambda: find("delivers"), "the second thread again")
+            # A thread of about 650 px (the window less 495 px of panel and
+            # list) keeps both gates as rows, each shown by its direction icon
+            # alone, with its Review and Auto.
+            command("xdotool", "windowsize", "--sync", window, "1145", "880")
+            time.sleep(0.6)
+            header = header_band("icons")
+            assert (header.count("review") >= 2 and header.count("auto") >= 2
+                    and "incoming" not in header and "outgoing" not in header), (
+                f"the header did not show its gates by icon alone: {header!r}"
+            )
+            capture("gates-icons")
+            # Narrower, with the list open, the header folds its gates into one
+            # button, each policy read once, and keeps ⋯ at its right end.
+            command("xdotool", "windowsize", "--sync", window, "1040", "880")
+            time.sleep(0.6)
+            header = header_band("folded")
+            assert header.count("review") == 1 and header.count("auto") == 1, (
+                f"the header did not fold its gates at a middle width: {header!r}"
+            )
+            capture("gates-folded")
+            press(1040 - 35, middle)
+            wait_for(lambda: find("Disconnect"), "the header's ⋯ menu at a middle width")
+            capture("middle")
+            command("xdotool", "key", "Escape")
+            command("xdotool", "windowsize", "--sync", window, "1280", "880")
+            time.sleep(0.6)
+            press(left + 228, middle)
+            wait_for(lambda: not find("PEERS"), "the minimised peer list")
+            capture("minimised")
+            # Narrower than 560 px of pane, a chooser in the header stands in
+            # for the list, and the footer keeps only the waiting count.
+            command("xdotool", "windowsize", "--sync", window, "700", "880")
+            time.sleep(0.6)
+            wait_for(lambda: not find("Agents"), "the narrow layout")
+            # The header holds the peer chooser, named for the connection,
+            # and the gates folded into one button.
+            header = header_band("narrow")
+            assert "ops" in header and header.count("review") == 1, (
+                f"the narrow header lacks its chooser or folded gates: {header!r}"
+            )
+            capture("narrow")
         finally:
             for process in (app, wm):
                 if process and process.poll() is None:
