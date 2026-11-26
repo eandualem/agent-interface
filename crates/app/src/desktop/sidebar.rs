@@ -89,6 +89,19 @@ fn landing_line(vertical: bool, after: bool) -> gpui::Div {
     }
 }
 
+/// Begin a drag: the copy that follows the pointer, and no landing left
+/// over from a drag released away from every row or slot.
+fn start_drag<T: Clone + Render>(
+    cx: &Context<Browser>,
+) -> impl Fn(&T, gpui::Point<gpui::Pixels>, &mut Window, &mut gpui::App) -> gpui::Entity<T> + 'static
+{
+    let browser = cx.entity().downgrade();
+    move |dragged, _, _, cx| {
+        let _ = browser.update(cx, |browser, _| browser.reorder_target = None);
+        cx.new(|_| dragged.clone())
+    }
+}
+
 fn reorder_tab_proposal(
     layout: &crate::library::WindowLayout,
     workspace: &str,
@@ -249,9 +262,15 @@ impl Browser {
     }
 
     /// When a save finishes, the drop made during it: applied after a save
-    /// that succeeded, discarded after one that failed.
-    pub(super) fn finish_queued_reorder(&mut self, saved: bool) -> Option<Reorder> {
-        self.queued_reorder.take().filter(|_| saved)
+    /// that was stored, discarded after one that failed (`None`) or
+    /// conflicted, so its notice that the edit was not saved stays shown.
+    pub(super) fn finish_queued_reorder(
+        &mut self,
+        saved: Option<&agent_interface_store::Reconciliation>,
+    ) -> Option<Reorder> {
+        self.queued_reorder
+            .take()
+            .filter(|_| saved.is_some_and(|result| !result.conflict))
     }
 
     /// Where a drag over `target` would land: before it, or after it when the
@@ -709,7 +728,7 @@ impl Browser {
                     .relative()
                     .group(group.clone())
                     .when(tab_row_draggable(editing, self.save_failed), |el| {
-                        el.on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
+                        el.on_drag(dragged, start_drag(cx))
                             .on_drag_move(cx.listener(
                                 move |browser, event: &gpui::DragMoveEvent<TabDrag>, _, cx| {
                                     if event.drag(cx).browser == cx.entity_id() {
@@ -1591,7 +1610,7 @@ impl Browser {
                     .when(current, |el| el.bg(c.accent_soft))
                     .when(!current, |el| el.hover(|el| el.bg(colors().hover)))
                     .when(!self.save_failed, |el| {
-                        el.on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
+                        el.on_drag(dragged, start_drag(cx))
                             .on_drag_move(cx.listener(
                                 move |browser,
                                       event: &gpui::DragMoveEvent<WorkspaceDrag>,
@@ -1729,6 +1748,8 @@ mod tests {
         assert!(reorder_tab_proposal(&layout, &space.id, "removed", second, false).is_none());
         assert!(reorder_tab_proposal(&layout, "other-workspace", first, third, false).is_none());
         assert!(reorder_tab_proposal(&layout, &space.id, first, "removed", false).is_none());
+        // Third is already just before First: dropping it there changes nothing.
+        assert!(reorder_tab_proposal(&layout, &space.id, third, first, false).is_none());
     }
 
     use super::{Reorder, lands_after, reorder_workspace_proposal, tab_row_draggable};
@@ -1793,13 +1814,23 @@ mod tests {
         assert!(lands_after(bounds, at(45., 105.), true));
     }
 
+    /// Save `change` to the library as another save would, and return its result.
+    fn save_change(
+        library: &mut agent_interface_store::Store,
+        change: impl FnOnce(&mut agent_interface_core::Layout),
+    ) -> agent_interface_store::Reconciliation {
+        let mut base = library.load().unwrap();
+        let mut changed = base.model().clone();
+        change(&mut changed);
+        library.save(&mut base, &changed).unwrap()
+    }
+
     #[test]
-    fn a_tab_dropped_during_a_save_lands_after_it_unless_it_fails_or_the_tab_is_gone() {
-        let directory = library(&[("Work", &["First", "Second", "Third"])]);
+    fn a_drop_made_during_a_save_lands_after_it_unless_it_fails_conflicts_or_is_gone() {
+        let directory = library(&[("Work", &["First", "Second", "Third"]), ("Other", &[])]);
+        let mut library = store(directory.path());
         let mut browser = super::Browser {
-            layout: Some(crate::library::WindowLayout::new(
-                store(directory.path()).load().unwrap(),
-            )),
+            layout: Some(crate::library::WindowLayout::new(library.load().unwrap())),
             directory: Some(directory.path().to_owned()),
             ..Default::default()
         };
@@ -1815,49 +1846,79 @@ mod tests {
             after: true,
         };
         // First after Third, dropped while a save runs: kept, nothing saved.
-        let first_after_third = drop(0, 2);
         browser.saving = true;
-        assert!(browser.reorder_proposal(first_after_third).is_none());
+        assert!(browser.reorder_proposal(drop(0, 2)).is_none());
         assert!(browser.queued_reorder.is_some());
-        // The save finishes: the drop is applied to the layout it left.
+        // That save is stored: the drop is applied to the layout it left.
+        let stored = save_change(&mut library, |layout| {
+            layout.workspaces[0].name = "Working".into()
+        });
+        assert!(!stored.conflict);
         browser.saving = false;
-        let queued = browser.finish_queued_reorder(true).unwrap();
+        browser.layout = Some(crate::library::WindowLayout::new(library.load().unwrap()));
+        let queued = browser.finish_queued_reorder(Some(&stored)).unwrap();
         let (mut base, proposed) = browser.reorder_proposal(queued).unwrap();
-        let mut library = store(directory.path());
         assert!(!library.save(&mut base, &proposed).unwrap().conflict);
         let saved = library.load().unwrap();
         assert_eq!(tab_names(saved.model()), ["Second", "Third", "First"]);
         assert_eq!(saved.model().workspace().unwrap().selected, space.selected);
         browser.layout = Some(crate::library::WindowLayout::new(saved));
 
-        // A drop made during a save that fails is discarded.
-        let second_after_first = drop(1, 0);
+        // A workspace dropped during a save is applied the same way.
         browser.saving = true;
-        assert!(browser.reorder_proposal(second_after_first).is_none());
+        let other_first = Reorder::Workspace {
+            source: model.workspaces[1].id.clone(),
+            destination: model.workspaces[0].id.clone(),
+            after: false,
+        };
+        assert!(browser.reorder_proposal(other_first).is_none());
         browser.saving = false;
-        assert!(browser.finish_queued_reorder(false).is_none());
+        let queued = browser.finish_queued_reorder(Some(&stored)).unwrap();
+        let (_, proposed) = browser.reorder_proposal(queued).unwrap();
+        assert_eq!(workspace_names(&proposed), ["Other", "Working"]);
+
+        // A drop made during a save that fails is discarded.
+        browser.saving = true;
+        assert!(browser.reorder_proposal(drop(1, 0)).is_none());
+        browser.saving = false;
+        assert!(browser.finish_queued_reorder(None).is_none());
+        assert!(browser.queued_reorder.is_none());
+        // So is one made during a save that conflicts: the window's notice
+        // that its edit was not saved stays, and no further save hides it.
+        browser.saving = true;
+        assert!(browser.reorder_proposal(drop(1, 0)).is_none());
+        let mut stale = library.load().unwrap();
+        let latest = save_change(&mut library, |layout| {
+            layout.workspaces[0].tabs.rotate_right(1)
+        });
+        assert!(!latest.conflict);
+        let mut mine = stale.model().clone();
+        mine.workspaces[0].tabs.swap(0, 1);
+        let conflicted = library.save(&mut stale, &mine).unwrap();
+        assert!(conflicted.conflict);
+        browser.saving = false;
+        assert!(browser.finish_queued_reorder(Some(&conflicted)).is_none());
         assert!(browser.queued_reorder.is_none());
         // After a failed save waiting for Retry, a drop does nothing.
+        browser.layout = Some(crate::library::WindowLayout::new(library.load().unwrap()));
         browser.save_failed = true;
         assert!(browser.reorder_proposal(drop(1, 0)).is_none());
         assert!(browser.queued_reorder.is_none());
         browser.save_failed = false;
 
         // The running save removed the dropped tab: nothing happens.
-        let second_after_third = drop(1, 2);
         browser.saving = true;
-        assert!(browser.reorder_proposal(second_after_third).is_none());
-        let mut base = library.load().unwrap();
-        let mut removed = base.model().clone();
+        assert!(browser.reorder_proposal(drop(1, 2)).is_none());
         let second = tab(1);
-        removed.workspaces[0].tabs.retain(|tab| tab.id != second);
-        assert!(!library.save(&mut base, &removed).unwrap().conflict);
+        let removed = save_change(&mut library, |layout| {
+            layout.workspaces[0].tabs.retain(|tab| tab.id != second)
+        });
         browser.apply(crate::library::Update {
             document: Some(library.load().unwrap()),
             error: None,
         });
         browser.saving = false;
-        let queued = browser.finish_queued_reorder(true).unwrap();
+        let queued = browser.finish_queued_reorder(Some(&removed)).unwrap();
         assert!(browser.reorder_proposal(queued).is_none());
     }
 

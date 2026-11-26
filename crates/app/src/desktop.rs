@@ -1763,13 +1763,13 @@ impl Browser {
                             browser.bind_workspace(item, connection, &name, cx);
                         }
                         browser.first_open_saved(!result.conflict, cx);
-                        if let Some(reorder) = browser.finish_queued_reorder(true) {
+                        if let Some(reorder) = browser.finish_queued_reorder(Some(&result)) {
                             browser.drop_reorder(reorder, cx);
                         }
                     }
                     Err(error) => {
                         // A drop made during the failed save is not applied.
-                        browser.finish_queued_reorder(false);
+                        browser.finish_queued_reorder(None);
                         browser.save_failed = true;
                         browser.pending_save = Some((base, local));
                         // The status bar leads with "Changes not saved".

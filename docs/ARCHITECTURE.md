@@ -118,7 +118,8 @@ Tabs and workspaces are reordered by dragging their rows and switcher slots in
 slot under the pointer shows where a release lands, and Escape ends the drag
 with nothing changed. A drop saves through the same save worker. A drop made
 while another save runs is kept by id and applied to the layout that save
-leaves, or discarded if that save fails.
+leaves, or discarded if that save fails or conflicts, so the notice that the
+edit was not saved stays shown.
 
 ## Output, drawing and input
 

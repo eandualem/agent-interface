@@ -8,6 +8,7 @@ import csv
 import io
 import json
 import os
+import re
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -152,12 +153,16 @@ with tempfile.TemporaryDirectory(prefix="agent-interface-reorder-") as directory
 
             # The second workspace slot before the first: release on the left
             # half of the first slot. Slots sit in the switcher row above the
-            # status row, from the panel's left edge.
+            # status row, from the panel's left edge. With client-side
+            # decorations the X window also holds the shadow GTK_FRAME_EXTENTS
+            # names (left, right, top, bottom), so the content starts inside it.
             space, size = TOKENS["space"], TOKENS["size"]
             height = int(dict(line.split("=", 1) for line in
                               command("xdotool", "getwindowgeometry", "--shell", window).splitlines())["HEIGHT"])
-            slot_y = height - round(size["status_row"] + size["slot_row"] / 2)
-            first = round(space["s10"] + size["slot"] / 2)
+            extents = re.findall(r"\d+", command("xprop", "-id", window, "_GTK_FRAME_EXTENTS", check=False).split("=")[-1])
+            left, _, _, bottom = (int(value) for value in extents) if len(extents) == 4 else (0, 0, 0, 0)
+            slot_y = height - bottom - round(size["status_row"] + size["slot_row"] / 2)
+            first = left + round(space["s10"] + size["slot"] / 2)
             second = round(first + size["slot"] + space["s4"])
             drag((second, slot_y), (first - round(size["slot"] / 4), slot_y), capture="workspace-drag-held.png")
             wait_for(lambda: [w["name"] for w in stored()["workspaces"]] == ["Beta", "Alpha"], "workspace order saved")
