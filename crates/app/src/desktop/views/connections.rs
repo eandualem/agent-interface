@@ -27,6 +27,14 @@ pub(super) struct Pane {
     entry: gpui::FocusHandle,
     thread_focus: gpui::FocusHandle,
     thread_scroll: gpui::ScrollHandle,
+    /// The open menu's frame, and the ⋯ and folded gates buttons that open
+    /// a menu; the chooser and ＋ use `entry`.
+    menu_focus: gpui::FocusHandle,
+    more_focus: gpui::FocusHandle,
+    gates_focus: gpui::FocusHandle,
+    /// The menu a press outside just closed, so the press on its own button
+    /// does not open it again.
+    dismissed: Option<(Menu, std::time::Instant)>,
     /// The next drawn thread scrolls to what waits on the person.
     scroll_on_open: std::cell::Cell<bool>,
     selection: RefCell<Selection>,
@@ -60,6 +68,9 @@ enum Menu {
     Gates,
     /// The narrow header's peer chooser.
     Peers,
+    /// The connect popover, which is a form rather than a menu; named only
+    /// when a press outside closed it.
+    Connect,
 }
 
 impl Selectable for Pane {
@@ -117,6 +128,10 @@ impl Pane {
             entry: cx.focus_handle().tab_stop(true),
             thread_focus: cx.focus_handle(),
             thread_scroll: gpui::ScrollHandle::new(),
+            menu_focus: cx.focus_handle(),
+            more_focus: cx.focus_handle().tab_stop(true),
+            gates_focus: cx.focus_handle().tab_stop(true),
+            dismissed: None,
             scroll_on_open: std::cell::Cell::new(false),
             selection: RefCell::default(),
             needs_you: false,
@@ -155,8 +170,8 @@ impl Pane {
         self.needs_you = false;
         self.expanded.clear();
         self.notes.clear();
-        // Gate changes belong to the records they were made on.
-        self.live.events.clear();
+        // The preview's gate changes go with its records; the live ones stay.
+        self.live.events.retain(|e| !e.preview);
         self.filter.update(cx, |field, cx| field.clear(cx));
         let first = self.preview.as_ref().and_then(|sample| {
             sample
@@ -166,6 +181,50 @@ impl Pane {
                 .map(|p| peer_inbox::Selection::Peer(p.connection.clone()))
         });
         self.pick(first, cx);
+    }
+
+    /// Whether a press outside `menu` closed it a moment ago, which the same
+    /// press then reaches its button as a click.
+    fn just_dismissed(&mut self, menu: Menu) -> bool {
+        self.dismissed
+            .take()
+            .is_some_and(|(closed, at)| closed == menu && at.elapsed() < Duration::from_millis(400))
+    }
+
+    /// A menu's button: open the menu with focus in it, or close it.
+    fn toggle_menu(&mut self, menu: Menu, window: &mut Window, cx: &mut Context<Self>) {
+        if self.menu == menu || self.just_dismissed(menu) {
+            self.menu = Menu::None;
+        } else {
+            self.menu = menu;
+            window.focus(&self.menu_focus, cx);
+        }
+        cx.notify();
+    }
+
+    /// A menu's frame: it takes focus when it opens, Escape closes it and
+    /// returns focus to its button, and a press outside closes it.
+    fn menu_frame(&self, cx: &Context<Self>) -> Div {
+        ui::menu()
+            .track_focus(&self.menu_focus)
+            .on_key_down(cx.listener(|pane, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" {
+                    cx.stop_propagation();
+                    let button = match pane.menu {
+                        Menu::More => &pane.more_focus,
+                        Menu::Gates => &pane.gates_focus,
+                        _ => &pane.entry,
+                    };
+                    window.focus(button, cx);
+                    pane.menu = Menu::None;
+                    cx.notify();
+                }
+            }))
+            .on_mouse_down_out(cx.listener(|pane, _, _, cx| {
+                pane.dismissed = Some((pane.menu, std::time::Instant::now()));
+                pane.menu = Menu::None;
+                cx.notify();
+            }))
     }
 
     /// Copy `text` and show Copied on the control `key` for a moment.

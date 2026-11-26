@@ -268,6 +268,16 @@ fn resolve(overview: &api::Overview, selected: Option<Selection>) -> Option<Sele
     }
 }
 
+/// A revise decision's note and when it was sent, by message, for the
+/// event line that replaces the message's card.
+fn revise_note(change: &Change) -> Option<(String, (String, String))> {
+    let Change::Review(m, DecisionKind::Revise(note)) = change else {
+        return None;
+    };
+    let at = chrono::Local::now().format("%H:%M").to_string();
+    Some((m.message_id.clone(), (note.clone(), at)))
+}
+
 /// A gate's two segments: each choice, whether it is the service's current
 /// policy, and the change choosing it sends. The segments show only what
 /// the service reports, so a refused or failed change leaves them where they
@@ -308,6 +318,7 @@ fn gate_event(change: &Change) -> Option<GateEvent> {
         .join(" · ");
     let now = chrono::Local::now();
     Some(GateEvent {
+        preview: false,
         generation: generation.clone(),
         at: now.timestamp_millis() as f64 / 1000.0,
         text: format!("{} · {text}", now.format("%H:%M")),
@@ -316,6 +327,8 @@ fn gate_event(change: &Change) -> Option<GateEvent> {
 
 /// A gate change made in this pane, shown in its thread at its time.
 pub(super) struct GateEvent {
+    /// Made on the preview's records, which keep their own.
+    pub(super) preview: bool,
     generation: String,
     /// Seconds since the epoch.
     at: f64,
@@ -526,8 +539,12 @@ impl Pane {
         if !action.belongs_to(self.live.selected.as_ref()) {
             return;
         }
-        if let Some(event) = gate_event(&action) {
+        if let Some(mut event) = gate_event(&action) {
+            event.preview = true;
             self.live.events.push(event);
+        }
+        if let Some((message, note)) = revise_note(&action) {
+            self.notes.insert(message, note);
         }
         match action {
             Change::Invite(id) => sample.invite(&id),
@@ -585,6 +602,7 @@ impl Pane {
                 .map(|snapshot| &snapshot.summary.overview),
         );
         let event = gate_event(&change);
+        let note = revise_note(&change);
         let invite = matches!(change, Change::Invite(_));
         self.live.sending = true;
         self.live.form = None;
@@ -599,6 +617,8 @@ impl Pane {
                 match result {
                     Ok(()) => {
                         pane.live.events.extend(event);
+                        // The note is kept once the service has taken it.
+                        pane.notes.extend(note);
                         pane.live.retry = None;
                         pane.live.status = None;
                         pane.live.inbox.update(cx, |inbox, cx| inbox.refresh(cx));
@@ -682,8 +702,6 @@ impl Pane {
                 }
             }
             Some(Form::Revise(m)) => {
-                let at = chrono::Local::now().format("%H:%M").to_string();
-                self.notes.insert(m.message_id.clone(), (value.clone(), at));
                 let m = m.clone();
                 self.change(Change::Review(Box::new(m), DecisionKind::Revise(value)), cx)
             }
@@ -774,7 +792,13 @@ impl Pane {
 
     /// ＋'s popover: paste another profile's ID, checked as it is typed, or
     /// copy this one's to send them.
-    fn connect_panel(&self, local: &str, actions: bool, cx: &Context<Self>) -> gpui::Stateful<Div> {
+    fn connect_panel(
+        &self,
+        local: &str,
+        actions: bool,
+        anchored: bool,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<Div> {
         let (t, c) = (tokens(), colors());
         let meta =
             |text: &'static str| ui::text(div().text_color(c.muted), &t.text.meta).child(text);
@@ -818,7 +842,9 @@ impl Pane {
         } else {
             ui::button("live-submit", "Send request", ui::Button::Primary).opacity(0.35)
         };
+        // Under ＋ in the list or the strip; elsewhere, centred near the top.
         let (left, top) = match (self.width, self.list_minimised()) {
+            _ if !anchored => (0.0, 0.0),
             (peers::Width::Narrow, _) => (t.space.s8, t.space.s8),
             (_, true) => (
                 t.size.peer_strip + t.space.s4,
@@ -833,9 +859,7 @@ impl Pane {
         let mine = local.to_owned();
         ui::menu()
             .id("connect-panel")
-            .absolute()
-            .top(px(top))
-            .left(px(left))
+            .when(anchored, |el| el.absolute().top(px(top)).left(px(left)))
             .w(px(t.size.connect_popover))
             .max_w(gpui::relative(0.92))
             .max_h(gpui::relative(0.94))
@@ -851,7 +875,10 @@ impl Pane {
                     }
                 }),
             )
-            .on_mouse_down_out(cx.listener(move |pane, _, _, cx| close(pane, cx)))
+            .on_mouse_down_out(cx.listener(move |pane, _, _, cx| {
+                pane.dismissed = Some((Menu::Connect, std::time::Instant::now()));
+                close(pane, cx)
+            }))
             .child(
                 div()
                     .flex()
@@ -1025,7 +1052,7 @@ impl Pane {
                 .px(px(t.space.s14))
                 .border_b(px(t.size.hairline))
                 .border_color(c.line)
-                .child(self.peer_chooser(s, None, "Choose a peer", cx))
+                .child(self.peer_chooser(s, None, "Choose a peer", None, cx))
         })
     }
 
@@ -1063,15 +1090,22 @@ impl Pane {
             .whitespace_nowrap()
             .map(|el| {
                 if self.width == peers::Width::Narrow {
-                    el.child(self.peer_chooser(s, name, rules::display_name(name), cx))
+                    el.child(self.peer_chooser(
+                        s,
+                        name,
+                        rules::display_name(name),
+                        Some(peer_id),
+                        cx,
+                    ))
                 } else {
                     el.child(peer_mark(name, t.size.view_tile - t.space.s4))
                         .child(
                             ui::text(
-                                // Measured on one line, so a name with a space
-                                // is cut only when the header is full.
+                                // The name keeps its width, up to a limit,
+                                // and the fingerprint gives way first.
                                 div()
-                                    .min_w_0()
+                                    .flex_shrink_0()
+                                    .max_w(px(t.size.peer_list - t.size.view_tile * 2.0))
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .text_ellipsis()
@@ -1087,13 +1121,18 @@ impl Pane {
             .when(self.width != peers::Width::Narrow, |el| {
                 el.child(
                     ui::text(
-                        div().flex_shrink_0().font_family(t.font.mono.clone()),
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .font_family(t.font.mono.clone()),
                         &t.text.key,
                     )
                     .text_color(c.muted)
                     .child(rules::fingerprint(peer_id)),
                 )
-                .child(copy.on_click(
+                .child(copy.flex_shrink_0().on_click(
                     cx.listener(move |p, _, _, cx| p.copy("copy-peer-id".into(), id.clone(), cx)),
                 ))
             })
@@ -1148,7 +1187,7 @@ impl Pane {
                 .focusable()
                 .tab_stop(true);
                 if choice == Policy::Auto {
-                    segment = segment.tooltip(|_, cx| cx.new(|_| Tip(AUTO_NOTE)).into());
+                    segment = segment.tooltip(|_, cx| cx.new(|_| Tip(AUTO_NOTE.into())).into());
                 }
                 if let Some(change) = change.filter(|_| actions) {
                     segment = segment
@@ -1204,29 +1243,17 @@ impl Pane {
                 .child(ui::icon("arrow-up-right", t.size.icon - 2.0, c.muted))
                 .child(letter(peer.gates.outgoing))
                 .child(ui::icon("chevron-down", t.size.icon - 2.0, c.muted))
-                .focusable()
-                .tab_stop(true)
-                .on_click(cx.listener(|p, _, _, cx| {
-                    p.menu = if p.menu == Menu::Gates {
-                        Menu::None
-                    } else {
-                        Menu::Gates
-                    };
-                    cx.notify();
-                })),
+                .track_focus(&self.gates_focus)
+                .on_click(cx.listener(|p, _, w, cx| p.toggle_menu(Menu::Gates, w, cx))),
             );
             if self.menu == Menu::Gates {
                 gates = gates.child(
                     gpui::deferred(
-                        ui::menu()
+                        self.menu_frame(cx)
                             .absolute()
                             .top(px(t.size.icon_button + t.space.s4))
                             .right_0()
                             .gap(px(t.space.s8))
-                            .on_mouse_down_out(cx.listener(|p, _, _, cx| {
-                                p.menu = Menu::None;
-                                cx.notify();
-                            }))
                             .child(self.gate_rows(peer, actions, cx).flex_col().items_start()),
                     )
                     .with_priority(1),
@@ -1239,27 +1266,16 @@ impl Pane {
         let generation = peer.connection.generation.clone();
         let mut more = div().relative().ml(px(t.space.s4)).child(
             ui::interaction_icon_button("peer-more", "ellipsis", "More for this connection")
-                .tab_stop(true)
-                .on_click(cx.listener(|p, _, _, cx| {
-                    p.menu = if p.menu == Menu::More {
-                        Menu::None
-                    } else {
-                        Menu::More
-                    };
-                    cx.notify();
-                })),
+                .track_focus(&self.more_focus)
+                .on_click(cx.listener(|p, _, w, cx| p.toggle_menu(Menu::More, w, cx))),
         );
         if self.menu == Menu::More && actions {
             more = more.child(
                 gpui::deferred(
-                    ui::menu()
+                    self.menu_frame(cx)
                         .absolute()
                         .top(px(t.size.icon_button + t.space.s4))
                         .right_0()
-                        .on_mouse_down_out(cx.listener(|p, _, _, cx| {
-                            p.menu = Menu::None;
-                            cx.notify();
-                        }))
                         .child(
                             ui::menu_item(
                                 "peer-disconnect",
@@ -1267,6 +1283,8 @@ impl Pane {
                                 "Disconnect",
                                 None,
                             )
+                            .focusable()
+                            .tab_stop(true)
                             .text_color(c.attention_text)
                             .on_click(cx.listener(
                                 move |p, _, w, cx| {
@@ -1588,7 +1606,9 @@ impl Pane {
                     .live
                     .events
                     .iter()
-                    .filter(|e| e.generation == id.generation)
+                    .filter(|e| {
+                        e.generation == id.generation && e.preview == self.preview.is_some()
+                    })
                     .peekable();
                 for m in &history.items {
                     let sent = epoch(&m.submitted_at).unwrap_or(f64::MAX);
@@ -1635,10 +1655,17 @@ impl Pane {
                 }
                 // A thread opens on its first message waiting for the person,
                 // with its choices in view, else on its latest message.
-                if self.scroll_on_open.take() {
-                    match waiting_at {
-                        Some(row) => self.thread_scroll.scroll_to_item(row),
-                        None => self.thread_scroll.scroll_to_bottom(),
+                // A thread drawn for the first time has no size yet to scroll
+                // within, so it waits one frame.
+                if self.scroll_on_open.get() {
+                    if self.thread_scroll.bounds().size.height > px(0.0) {
+                        self.scroll_on_open.set(false);
+                        match waiting_at {
+                            Some(row) => self.thread_scroll.scroll_to_item(row),
+                            None => self.thread_scroll.scroll_to_bottom(),
+                        }
+                    } else {
+                        cx.notify();
                     }
                 }
                 for gate in events {
@@ -1806,7 +1833,24 @@ impl Pane {
             }
         }
         if matches!(self.live.form, Some(Form::Connect)) {
-            main = main.child(self.connect_panel(&local, can_send, cx));
+            // ＋ is drawn only beside a list or strip; otherwise the popover
+            // opens centred near the top of the pane.
+            let anchored = listed && self.width != peers::Width::Narrow;
+            let panel = self.connect_panel(&local, can_send, anchored, cx);
+            main = main.child(if anchored {
+                panel.into_any_element()
+            } else {
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .pt(px(t.space.s24))
+                    .child(panel)
+                    .into_any_element()
+            });
         }
         view = view.child(main).child(selection::events(cx));
         // The preview's records never reach Agent Backbone, so its state
@@ -1826,9 +1870,13 @@ impl Pane {
                 },
             )));
         }
+        // A lost decision on a message in the shown thread is offered again
+        // on that message's card only.
         if !preview
             && let Some(pending) = &self.live.retry
             && let Some(error) = &pending.error
+            && !(matches!(pending.action, Change::Review(..))
+                && pending.action.belongs_to(self.live.selected.as_ref()))
         {
             let mut banner = band(error.clone());
             if pending.action.belongs_to(self.live.selected.as_ref()) {
@@ -1902,9 +1950,9 @@ impl Pane {
                 }),
             );
         // The count opens the next peer waiting on the person.
-        if let Some(next) =
-            peers::next_waiting(&peers::entries(&s.summary), self.live.selected.as_ref())
-            && !count.is_empty()
+        let next = peers::next_waiting(&peers::entries(&s.summary), self.live.selected.as_ref());
+        if !count.is_empty()
+            && let Some(next) = next
         {
             footer = footer.child(
                 ui::text(
@@ -1920,6 +1968,15 @@ impl Pane {
                 )
                 .child(count)
                 .on_click(cx.listener(move |p, _, _, cx| p.pick(Some(next.clone()), cx))),
+            );
+        } else if !count.is_empty() {
+            // Nothing listed to open, but the count still says what waits.
+            footer = footer.child(
+                ui::text(
+                    div().flex_shrink_0().text_color(c.accent_text),
+                    &t.text.meta,
+                )
+                .child(count),
             );
         }
         view.child(footer)
@@ -1958,13 +2015,13 @@ const AUTO_NOTE: &str =
     "Future messages on an Auto direction skip review. Already-waiting messages stay in review.";
 
 /// A line of help shown on hover.
-struct Tip(&'static str);
+pub(super) struct Tip(pub(super) SharedString);
 
 impl Render for Tip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         ui::menu()
             .max_w(px(tokens().size.connect_popover))
-            .child(self.0)
+            .child(self.0.clone())
     }
 }
 
@@ -2104,10 +2161,10 @@ mod tests {
             assert!(text.ends_with(&name), "{text}");
             assert!(!text.contains(&generation) && !text.contains(&peer.connection.peer_id));
         }
-        let unnamed = format!("v1:466836eb{}3c5b", "0".repeat(52));
+        let unnamed = format!("v1:a1b2c3d4{}9e8f", "0".repeat(52));
         assert_eq!(
             Change::Invite(unnamed.clone()).description(None),
-            "Connection request to Unnamed profile 466836eb…3c5b"
+            "Connection request to Unnamed profile a1b2c3d4…9e8f"
         );
         assert_eq!(
             Change::Disconnect(generation).description(None),

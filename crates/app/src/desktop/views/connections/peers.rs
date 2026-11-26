@@ -2,7 +2,7 @@
 //! you choice, a filter, and this profile pinned at the bottom. Minimised, it
 //! is a strip of marks; under [`NARROW`] px of pane width a chooser in the
 //! thread header stands in for it.
-use super::live::{Form, peer_mark};
+use super::live::{Form, Tip, peer_mark};
 use super::rules;
 use super::*;
 use crate::desktop::peer_inbox::{Selection, Summary};
@@ -203,7 +203,16 @@ impl Pane {
         ui::interaction_icon_button("connect-peer", "plus", "Connect a profile")
             .tab_stop(true)
             .track_focus(&self.entry)
-            .on_click(cx.listener(|p, _, w, cx| p.show_form(Form::Connect, w, cx)))
+            .on_click(cx.listener(|p, _, w, cx| {
+                // ＋ closes its own popover, also when a press outside the
+                // popover has just closed it.
+                if p.connecting() || p.just_dismissed(Menu::Connect) {
+                    p.live.form = None;
+                    cx.notify();
+                } else {
+                    p.show_form(Form::Connect, w, cx)
+                }
+            }))
     }
 
     /// The open list, 248 px wide.
@@ -467,8 +476,17 @@ impl Pane {
                 Selection::Request(r) => format!("strip-{r}"),
             };
             let selection = entry.selection.clone();
+            // The strip shows only marks, so each says whose it is on hover.
+            let mut tip = rules::display_name(entry.name.as_deref()).to_owned();
+            if entry.name.as_deref().is_none_or(|n| n.trim().is_empty()) {
+                tip = format!("{tip} {}", rules::fingerprint(&entry.peer_id));
+            }
+            if let Some((label, _)) = &entry.badge {
+                tip = format!("{tip} · {label}");
+            }
             marks = marks.child(
                 mark_button(id, selected)
+                    .tooltip(move |_, cx| cx.new(|_| Tip(tip.clone().into())).into())
                     .child(peer_mark(
                         entry.name.as_deref(),
                         t.size.view_tile - t.space.s4,
@@ -503,9 +521,18 @@ impl Pane {
             .unwrap_or("This profile")
             .to_owned();
         let local = s.overview.local_id.clone();
+        let copied = self.copied.as_deref() == Some("strip-local");
+        let tip: SharedString = format!("{name}: copy this profile's connection ID").into();
         strip.child(marks).child(
             mark_button("strip-local", false)
-                .child(ui::profile_mark(&name, t.size.view_tile - t.space.s4))
+                .tooltip(move |_, cx| cx.new(|_| Tip(tip.clone())).into())
+                .map(|el| {
+                    if copied {
+                        el.child(ui::icon("check", t.size.icon, c.ok))
+                    } else {
+                        el.child(ui::profile_mark(&name, t.size.view_tile - t.space.s4))
+                    }
+                })
                 .on_click(
                     cx.listener(move |p, _, _, cx| p.copy("strip-local".into(), local.clone(), cx)),
                 ),
@@ -519,6 +546,7 @@ impl Pane {
         s: &Summary,
         name: Option<&str>,
         label: &str,
+        peer_id: Option<&str>,
         cx: &Context<Self>,
     ) -> Div {
         let (t, c) = (tokens(), colors());
@@ -540,8 +568,9 @@ impl Pane {
                 .border_color(c.line_strong)
                 .bg(c.field)
                 .cursor_pointer()
-                .focusable()
-                .tab_stop(true)
+                // ＋ is not drawn this narrow, so the chooser takes the
+                // pane's first focus and gets it back when a menu closes.
+                .track_focus(&self.entry)
                 .hover(|el| el.bg(colors().hover))
                 .child(peer_mark(name, t.size.message_avatar))
                 .child(
@@ -556,27 +585,30 @@ impl Pane {
                     )
                     .child(label.to_owned()),
                 )
+                // An unnamed connection is told apart by its fingerprint.
+                .children(
+                    peer_id
+                        .filter(|_| rules::display_name(name) == "Unnamed profile")
+                        .map(|id| {
+                            ui::text(
+                                div().flex_shrink_0().font_family(t.font.mono.clone()),
+                                &t.text.key,
+                            )
+                            .text_color(c.muted)
+                            .child(rules::fingerprint(id))
+                        }),
+                )
                 .when(waiting, |el| el.child(ui::dot(c.accent)))
                 .child(ui::icon("chevron-down", t.size.icon - 2.0, c.muted))
-                .on_click(cx.listener(|p, _, _, cx| {
-                    p.menu = if p.menu == Menu::Peers {
-                        Menu::None
-                    } else {
-                        Menu::Peers
-                    };
-                    cx.notify();
-                })),
+                .on_click(cx.listener(|p, _, w, cx| p.toggle_menu(Menu::Peers, w, cx))),
         );
         if self.menu == Menu::Peers {
-            let mut menu = ui::menu()
+            let mut menu = self
+                .menu_frame(cx)
                 .absolute()
                 .top(px(t.size.button + t.space.s4))
                 .left_0()
-                .w(px(t.size.peer_list))
-                .on_mouse_down_out(cx.listener(|p, _, _, cx| {
-                    p.menu = Menu::None;
-                    cx.notify();
-                }));
+                .w(px(t.size.peer_list));
             for entry in entries(s) {
                 let selection = entry.selection.clone();
                 let id = match &entry.selection {
@@ -611,7 +643,12 @@ impl Pane {
                         )
                         .child(label)
                     }))
-                    .on_click(cx.listener(move |p, _, _, cx| p.pick(Some(selection.clone()), cx))),
+                    .focusable()
+                    .tab_stop(true)
+                    .on_click(cx.listener(move |p, _, w, cx| {
+                        w.focus(&p.entry, cx);
+                        p.pick(Some(selection.clone()), cx)
+                    })),
                 );
             }
             menu = menu.child(ui::menu_rule()).child(
@@ -621,6 +658,8 @@ impl Pane {
                     "Connect a profile",
                     None,
                 )
+                .focusable()
+                .tab_stop(true)
                 .on_click(cx.listener(|p, _, w, cx| {
                     p.menu = Menu::None;
                     p.show_form(Form::Connect, w, cx)
@@ -726,12 +765,12 @@ mod tests {
             Some((Badge::Failed, false))
         );
         assert_eq!(
-            badge(Some("CoolAI"), "1 to review"),
+            badge(Some("Harbor"), "1 to review"),
             Some((Badge::Waiting, true))
         );
         let unnamed = rows.iter().find(|e| e.name.is_none()).unwrap();
         assert!(unnamed.matches(&rules::fingerprint(&unnamed.peer_id)[..8]));
-        assert!(rows.iter().any(|e| e.matches("coolai")));
+        assert!(rows.iter().any(|e| e.matches("harbor")));
         assert_eq!(rows.iter().filter(|e| e.needs).count(), 3);
         assert_eq!(badge(None, "stopped"), Some((Badge::Quiet, false)));
         let mut refused = sample.overview.clone();
