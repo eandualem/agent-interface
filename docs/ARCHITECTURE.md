@@ -113,6 +113,14 @@ entities. A changed tab or tree, in the shown tab or the one the pane came
 from, cancels an in-progress drag; persistence keeps the existing schema and
 conflict rules.
 
+Tabs and workspaces are reordered by dragging their rows and switcher slots in
+`app::desktop::sidebar`; `core` moves a workspace by id. A line on the row or
+slot under the pointer shows where a release lands, and Escape ends the drag
+with nothing changed. A drop saves through the same save worker. A drop made
+while another save runs is kept by id and applied to the layout that save
+leaves, or discarded if that save fails or conflicts, so the notice that the
+edit was not saved stays shown.
+
 ## Output, drawing and input
 
 A background reader decodes tmux control messages into pane output, command
@@ -1669,8 +1677,9 @@ updates, while focus changes within the same workspace remain valid. Attachment
 and terminal openers also capture the pane origin before their own refresh; a
 nested refresh cannot turn an earlier bound action into a lookup on another source.
 Sidebar workspace/tab choices, menu openers, pane focus and tmux window controls
-retain their rendered origin. Reorder and resize gestures reject binding or
-connection changes even when saved IDs and tree contents remain unchanged;
+retain their rendered origin. Tab reorder and resize gestures reject binding or
+connection changes even when saved IDs and tree contents remain unchanged; a
+workspace move checks only that both workspaces still exist;
 retired terminal entities cannot receive window-selection callbacks. Workspace
 menus also retain an opening generation, so an old action cannot consume or
 replace a newer menu. The unavailable-profile retry button retains its displayed

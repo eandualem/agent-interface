@@ -468,6 +468,26 @@ impl Layout {
         true
     }
 
+    /// Move a workspace to just before or after another, by id. The
+    /// selection stays where it is. Missing ids, a workspace dropped on itself
+    /// and a move that leaves the order as it was do nothing.
+    pub fn move_workspace(&mut self, source: &str, destination: &str, after: bool) -> bool {
+        if source == destination || !self.workspaces.iter().any(|space| space.id == destination) {
+            return false;
+        }
+        let Some(from) = self.workspaces.iter().position(|space| space.id == source) else {
+            return false;
+        };
+        let space = self.workspaces.remove(from);
+        let to = self
+            .workspaces
+            .iter()
+            .position(|space| space.id == destination)
+            .map_or(from, |index| index + usize::from(after));
+        self.workspaces.insert(to, space);
+        to != from
+    }
+
     /// Move the selected tab to another workspace and select it there. Retain
     /// its complete tree and focus; the source selects its first remaining tab.
     /// Missing/current destinations, different profile bindings and empty sources do nothing.
@@ -1246,6 +1266,45 @@ mod tests {
         assert!(!model.show_view(&tab, &destination, usage));
         assert!(model.open_terminal());
         assert!(model.pane().unwrap().runs_terminal());
+    }
+
+    #[test]
+    fn a_workspace_moves_before_or_after_another_and_the_selection_stays() {
+        let mut model = Layout::initial("/tmp".into());
+        model.add_workspace("Second".into());
+        model.add_workspace("Third".into());
+        let ids: Vec<String> = model
+            .workspaces
+            .iter()
+            .map(|space| space.id.clone())
+            .collect();
+        let order = |model: &Layout| -> Vec<String> {
+            model
+                .workspaces
+                .iter()
+                .map(|space| space.id.clone())
+                .collect()
+        };
+        let selected = model.selected.clone();
+        assert!(model.move_workspace(&ids[0], &ids[2], true));
+        assert_eq!(
+            order(&model),
+            [ids[1].as_str(), ids[2].as_str(), ids[0].as_str()]
+        );
+        assert!(model.move_workspace(&ids[0], &ids[1], false));
+        assert_eq!(order(&model), ids);
+        assert!(model.move_workspace(&ids[2], &ids[1], false));
+        assert_eq!(
+            order(&model),
+            [ids[0].as_str(), ids[2].as_str(), ids[1].as_str()]
+        );
+        assert_eq!(model.selected, selected);
+        let before = model.clone();
+        assert!(!model.move_workspace(&ids[0], &ids[2], false));
+        assert!(!model.move_workspace(&ids[0], &ids[0], true));
+        assert!(!model.move_workspace("missing", &ids[0], false));
+        assert!(!model.move_workspace(&ids[0], "missing", true));
+        assert_eq!(model, before);
     }
 
     #[test]

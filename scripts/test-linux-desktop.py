@@ -191,3 +191,11 @@ if not (args.no_compositor or args.light):
         "dbus-run-session", "--", sys.executable,
         str(ROOT / "scripts/test-linux-connections.py"),
     ], check=True)
+
+# The panel's drag reordering, in its own fresh desktop.
+if not (args.no_compositor or args.light):
+    subprocess.run([
+        "xvfb-run", "-a", "-s", "-screen 0 1440x900x24",
+        "dbus-run-session", "--", sys.executable,
+        str(ROOT / "scripts/test-linux-reorder.py"),
+    ], check=True)
