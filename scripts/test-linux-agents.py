@@ -383,7 +383,7 @@ with tempfile.TemporaryDirectory(prefix="agents-smoke-", dir="/tmp") as director
                 command("xdotool", "key", "Down")
                 time.sleep(0.3)
             # The member is chosen: its row says what Enter does.
-            member = in_pane("coordinator")
+            member = wait_for(lambda: in_pane("coordinator"), "the swarm member's row")
 
             def chosen():
                 return any(abs(int(word["top"]) - int(member["top"])) < int(member["height"])

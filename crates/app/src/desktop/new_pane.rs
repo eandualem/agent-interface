@@ -1655,6 +1655,7 @@ impl NewPane {
             .child(
                 fill()
                     .overflow_hidden()
+                    .whitespace_nowrap()
                     .text_ellipsis()
                     .text_color(if review.running { c.text } else { c.muted })
                     .child(review.reviewer.clone()),
@@ -1672,6 +1673,7 @@ impl NewPane {
                 .child(
                     fill()
                         .overflow_hidden()
+                        .whitespace_nowrap()
                         .text_ellipsis()
                         .text_color(c.text_2)
                         .child(label.clone()),
@@ -1686,7 +1688,8 @@ impl NewPane {
                 expanded,
             } => {
                 let key = agent_groups::swarm_key(initiator, name);
-                let right = if *expanded || *listed == 0 {
+                // A filter never folds, so it shows no chevron.
+                let right = if *expanded || *listed == 0 || !self.query.is_empty() {
                     meta("open all as a tab", c.muted).into_any_element()
                 } else {
                     chevron(format!("new-pane-swarm-{}-{key}", self.pane), false)
