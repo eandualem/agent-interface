@@ -446,9 +446,17 @@ pub fn font_size() -> f32 {
 /// test that saves the current settings never replaces the person's file.
 pub fn path() -> Option<PathBuf> {
     if cfg!(test) {
-        let tests =
-            std::env::temp_dir().join(format!("agent-interface-tests-{}", std::process::id()));
-        return Some(tests.join("agent-interface/settings.toml"));
+        // A new private folder per test process, so no run reads another's files.
+        static TESTS: std::sync::LazyLock<Option<PathBuf>> = std::sync::LazyLock::new(|| {
+            tempfile::Builder::new()
+                .prefix("agent-interface-tests-")
+                .tempdir()
+                .ok()
+                .map(tempfile::TempDir::keep)
+        });
+        return TESTS
+            .as_ref()
+            .map(|tests| tests.join("agent-interface/settings.toml"));
     }
     path_from(
         std::env::var_os("XDG_CONFIG_HOME"),
@@ -608,7 +616,14 @@ mod tests {
 
     #[test]
     fn tests_never_save_over_the_persons_settings() {
-        assert!(path().unwrap().starts_with(std::env::temp_dir()));
+        let settings = path().unwrap();
+        assert!(settings.starts_with(std::env::temp_dir()));
+        // The themes folder sits beside the settings file, as seen.json does.
+        assert!(
+            super::super::themes::dir()
+                .unwrap()
+                .starts_with(settings.parent().unwrap())
+        );
     }
 
     #[test]
