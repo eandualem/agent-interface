@@ -11,5 +11,7 @@
   "state": "revoked",
   "receipt": {
     "kind": "missing"
-  }
+  },
+  "revision": 1,
+  "local_agent": "main"
 }

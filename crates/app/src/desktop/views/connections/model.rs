@@ -2,20 +2,20 @@
 //! preview is drawn by the live pane's code. Its actions change only these
 //! records, in this pane, and are gone when the preview closes.
 use agent_interface_roster::profiles::peers as api;
-use api::{Direction, Policy};
+use api::{Direction, EventKind, Policy};
 use std::collections::HashMap;
 
 /// This profile's ID in the preview.
 pub(super) const LOCAL_ID: &str =
     "v1:49d0fa9e42cbf1bcb24f4a7cb29dcac9181d9a2f8f26ce13ddafd2f5e5efd177";
 
-/// A sample service: an overview, every message, and which resubmission a
-/// message is, which Agent Backbone does not report yet.
+/// A sample service: an overview, every message, and each connection's
+/// events by generation.
 pub(super) struct Sample {
     pub overview: api::Overview,
     messages: Vec<api::Message>,
-    pub revisions: HashMap<String, u32>,
-    /// The next ID a request or connection made in the preview takes, so
+    events: Vec<(String, api::Event)>,
+    /// The next ID a request, connection or event made in the preview takes, so
     /// none repeats after another is removed.
     next: u32,
 }
@@ -79,9 +79,13 @@ impl Sample {
                 state: state.into(),
                 generation: None,
             };
+        use Direction::{Incoming, Outgoing};
         let mut serial = 0u32;
         let mut message = |peer: &str, n, direction, minutes: i64, text: &str, state: &str| {
             serial += 1;
+            let decided = matches!(state, "passed" | "declined" | "revision_requested");
+            // An incoming message names its agent once it is handed over.
+            let handed = direction == Outgoing || state == "passed";
             api::Message {
                 connection: generation(peer, n),
                 message_id: format!("{serial:032x}"),
@@ -92,9 +96,11 @@ impl Sample {
                 state: state.into(),
                 receipt: api::Receipt::Missing,
                 upload_failure: None,
+                revision: (direction == Outgoing).then_some(1),
+                local_agent: handed.then(|| "main".into()),
+                decided_at: decided.then(|| ago(minutes - 1)),
             }
         };
-        use Direction::{Incoming, Outgoing};
         let mut delivered = message(
             HARBOR,
             1,
@@ -127,11 +133,12 @@ impl Sample {
             "Can you restart the staging runner now?",
             "declined",
         );
+        // The person's decline is its receipt, at the same time.
         declined.receipt = api::Receipt::Confirmed {
             outcome: "declined".into(),
-            recorded_at: ago(60 * 26 - 3),
+            recorded_at: declined.decided_at.clone().unwrap_or_default(),
         };
-        let messages = vec![
+        let mut messages = vec![
             declined,
             delivered,
             message(
@@ -188,7 +195,54 @@ impl Sample {
                 "uploaded",
             ),
         ];
-        let revisions = HashMap::from([(messages[5].message_id.clone(), 2)]);
+        // The waiting draft revises the one sent back before it.
+        messages[5].revision = Some(2);
+        let event = |id, minutes, kind| api::Event {
+            id,
+            at: ago(minutes),
+            kind,
+        };
+        let events = vec![
+            (
+                generation(HARBOR, 1).generation,
+                event(1, 45, EventKind::Connected),
+            ),
+            (
+                generation(HARBOR, 1).generation,
+                event(
+                    2,
+                    25,
+                    EventKind::RevisionRequested {
+                        message_id: messages[4].message_id.clone(),
+                        note: "Answer the relay question first.".into(),
+                    },
+                ),
+            ),
+            (
+                generation(OPS, 2).generation,
+                event(3, 60 * 27, EventKind::Connected),
+            ),
+            (
+                generation(OPS, 2).generation,
+                event(
+                    4,
+                    60 * 26 + 30,
+                    EventKind::GateChanged {
+                        direction: Incoming,
+                        from: Policy::Review,
+                        to: Policy::Auto,
+                    },
+                ),
+            ),
+            (
+                generation(OLD, 3).generation,
+                event(5, 60 * 48, EventKind::Connected),
+            ),
+            (
+                generation(OLD, 3).generation,
+                event(6, 60 * 2, EventKind::DisconnectRequested),
+            ),
+        ];
         let mut sample = Self {
             overview: api::Overview {
                 local_id: LOCAL_ID.into(),
@@ -226,7 +280,7 @@ impl Sample {
                 pending_reviews: 0,
             },
             messages,
-            revisions,
+            events,
             next: 0x400,
         };
         sample.count();
@@ -254,7 +308,7 @@ impl Sample {
     }
 
     /// One generation's whole history, oldest first.
-    pub(super) fn history(&self, generation: &api::Generation) -> api::Page<api::Message> {
+    pub(super) fn history(&self, generation: &api::Generation) -> api::History {
         let mut items: Vec<_> = self
             .messages
             .iter()
@@ -262,7 +316,28 @@ impl Sample {
             .cloned()
             .collect();
         items.sort_by(|a, b| a.submitted_at.cmp(&b.submitted_at));
-        api::Page { items, older: None }
+        let mut events: Vec<_> = self
+            .events
+            .iter()
+            .filter(|(g, _)| g == &generation.generation)
+            .map(|(_, e)| e.clone())
+            .collect();
+        events.sort_by(|a, b| a.at.cmp(&b.at));
+        api::History {
+            items,
+            older: None,
+            events,
+        }
+    }
+
+    fn record(&mut self, generation: &str, kind: EventKind) {
+        self.next += 1;
+        let event = api::Event {
+            id: self.next.into(),
+            at: ago(0),
+            kind,
+        };
+        self.events.push((generation.to_owned(), event));
     }
 
     /// Pass, decline or send back a waiting message, as the service would.
@@ -274,19 +349,35 @@ impl Sample {
         else {
             return;
         };
-        m.state = match (decision, m.direction) {
+        m.state = match (&decision, m.direction) {
             (Decision::Pass, Direction::Incoming) => "passed",
             (Decision::Pass, Direction::Outgoing) => "uploaded",
             (Decision::Decline, _) => "declined",
-            (Decision::Revise, Direction::Outgoing) => "revision_requested",
-            (Decision::Revise, Direction::Incoming) => return,
+            (Decision::Revise(_), Direction::Outgoing) => "revision_requested",
+            (Decision::Revise(_), Direction::Incoming) => return,
         }
         .into();
+        let now = ago(0);
+        m.decided_at = Some(now.clone());
+        // Only a message passed through is handed to an agent.
+        if m.direction == Direction::Incoming && m.state == "passed" {
+            m.local_agent = Some("main".into());
+        }
         if m.state == "declined" && m.direction == Direction::Incoming {
             m.receipt = api::Receipt::Confirmed {
                 outcome: "declined".into(),
-                recorded_at: ago(0),
+                recorded_at: now,
             };
+        }
+        let generation = m.connection.generation.clone();
+        if let Decision::Revise(note) = decision {
+            self.record(
+                &generation,
+                EventKind::RevisionRequested {
+                    message_id: message.into(),
+                    note,
+                },
+            );
         }
         self.count();
     }
@@ -298,9 +389,20 @@ impl Sample {
             .iter_mut()
             .find(|p| p.connection.generation == generation)
         {
-            match direction {
-                Direction::Incoming => p.gates.incoming = policy,
-                Direction::Outgoing => p.gates.outgoing = policy,
+            let gate = match direction {
+                Direction::Incoming => &mut p.gates.incoming,
+                Direction::Outgoing => &mut p.gates.outgoing,
+            };
+            let from = std::mem::replace(gate, policy);
+            if from != policy {
+                self.record(
+                    generation,
+                    EventKind::GateChanged {
+                        direction,
+                        from,
+                        to: policy,
+                    },
+                );
             }
         }
     }
@@ -313,6 +415,7 @@ impl Sample {
             .find(|p| p.connection.generation == generation)
         {
             p.state = "revocation_pending".into();
+            self.record(generation, EventKind::DisconnectRequested);
         }
         self.count();
     }
@@ -334,6 +437,7 @@ impl Sample {
         }
         self.next += 1;
         let generation = format!("{:032x}", self.next);
+        self.record(&generation, EventKind::Connected);
         let r = &mut self.overview.invitations[at];
         r.state = "accepted".into();
         r.generation = Some(generation.clone());
@@ -369,11 +473,12 @@ impl Sample {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(super) enum Decision {
     Pass,
     Decline,
-    Revise,
+    /// Send an outgoing draft back with this note.
+    Revise(String),
 }
 
 #[cfg(test)]
@@ -395,15 +500,65 @@ mod tests {
         assert_eq!(sample.overview.pending_reviews, 2);
         let incoming = waiting(&sample, Direction::Incoming);
         // Only an outgoing message can be sent back.
-        sample.review(&incoming, Decision::Revise);
+        sample.review(&incoming, Decision::Revise("note".into()));
         assert_eq!(sample.overview.pending_reviews, 2);
         sample.review(&incoming, Decision::Pass);
         assert_eq!(sample.overview.pending_reviews, 1);
         let outgoing = waiting(&sample, Direction::Outgoing);
-        sample.review(&outgoing, Decision::Revise);
+        sample.review(&outgoing, Decision::Revise("Name the relay.".into()));
         let m = sample.messages.iter().find(|m| m.message_id == outgoing);
         assert_eq!(m.unwrap().state, "revision_requested");
+        assert!(m.unwrap().decided_at.is_some());
         assert_eq!(sample.overview.pending_reviews, 0);
+        // Sending a draft back leaves its note in the thread, as the service does.
+        let history = sample.history(&m.unwrap().connection);
+        assert!(history.events.iter().any(|e| e.kind
+            == EventKind::RevisionRequested {
+                message_id: outgoing.clone(),
+                note: "Name the relay.".into()
+            }));
+    }
+
+    #[test]
+    fn the_preview_records_its_changes_as_events() {
+        let mut sample = Sample::new();
+        let peer = sample.overview.connections[0].clone();
+        let kinds = |sample: &Sample| -> Vec<EventKind> {
+            sample
+                .history(&peer.connection)
+                .events
+                .into_iter()
+                .map(|e| e.kind)
+                .collect()
+        };
+        let before = kinds(&sample).len();
+        let generation = &peer.connection.generation;
+        // Choosing the policy already set changes nothing.
+        sample.set_gate(generation, Direction::Incoming, peer.gates.incoming);
+        sample.set_gate(generation, Direction::Incoming, Policy::Auto);
+        sample.disconnect(generation);
+        assert_eq!(
+            kinds(&sample)[before..],
+            [
+                EventKind::GateChanged {
+                    direction: Direction::Incoming,
+                    from: Policy::Review,
+                    to: Policy::Auto
+                },
+                EventKind::DisconnectRequested
+            ]
+        );
+        let request = sample.overview.invitations[0].request_id.clone();
+        sample.answer(&request, true);
+        let new = sample
+            .overview
+            .connections
+            .last()
+            .unwrap()
+            .connection
+            .clone();
+        let events = sample.history(&new).events;
+        assert!(matches!(events.as_slice(), [e] if e.kind == EventKind::Connected));
     }
 
     #[test]

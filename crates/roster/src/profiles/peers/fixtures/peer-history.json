@@ -13,7 +13,9 @@
       "state": "pending_review",
       "receipt": {
         "kind": "missing"
-      }
+      },
+      "revision": 1,
+      "local_agent": "main"
     },
     {
       "connection": {
@@ -28,7 +30,8 @@
       "state": "delivery_uncertain",
       "receipt": {
         "kind": "uncertain"
-      }
+      },
+      "local_agent": "main"
     },
     {
       "connection": {
@@ -45,7 +48,10 @@
         "kind": "confirmed",
         "outcome": "delivered",
         "recorded_at": "2026-11-21T12:02:10Z"
-      }
+      },
+      "revision": 1,
+      "local_agent": "main",
+      "decided_at": "2026-11-21T12:02:05Z"
     },
     {
       "connection": {
@@ -62,7 +68,10 @@
         "kind": "confirmed",
         "outcome": "declined",
         "recorded_at": "2026-11-21T12:03:10Z"
-      }
+      },
+      "revision": 1,
+      "local_agent": "main",
+      "decided_at": "2026-11-21T12:03:05Z"
     }
   ],
   "older": "p1-example-cursor"

@@ -34,6 +34,11 @@ pub(super) fn clock(stamp: &str) -> String {
         .unwrap_or_else(|_| stamp.to_owned())
 }
 
+/// Which revision `m` is, when it is a later draft: a first draft has no pill.
+pub(super) fn revision(m: &api::Message) -> Option<u32> {
+    m.revision.filter(|&n| n > 1)
+}
+
 /// The state line for `m`, whose local agent is `local`. A message waiting
 /// for review has none: its card says so instead.
 pub(super) fn state_line(m: &api::Message, local: &str) -> Option<StateLine> {
@@ -42,6 +47,12 @@ pub(super) fn state_line(m: &api::Message, local: &str) -> Option<StateLine> {
     if m.state == "pending_review" {
         return None;
     }
+    // When the person decided, before the line's own ending.
+    let decided = m
+        .decided_at
+        .as_deref()
+        .map(|at| format!(" {}", clock(at)))
+        .unwrap_or_default();
     if let Receipt::Confirmed {
         outcome,
         recorded_at,
@@ -55,7 +66,11 @@ pub(super) fn state_line(m: &api::Message, local: &str) -> Option<StateLine> {
             "declined" if !incoming => {
                 return Some(line("x", format!("They declined it {at}"), Attention));
             }
-            "declined" => return Some(line("x", format!("You declined it {at}"), Muted)),
+            // The person's decline is recorded as its receipt, at one time.
+            "declined" => {
+                let at = m.decided_at.as_deref().map_or(at, clock);
+                return Some(line("x", format!("You declined it {at}"), Muted));
+            }
             _ => {}
         }
     }
@@ -65,11 +80,15 @@ pub(super) fn state_line(m: &api::Message, local: &str) -> Option<StateLine> {
         "delivered" => line("check-check", "Delivered", Ok),
         "passed" if incoming => line(
             "check",
-            format!("You passed it through · {local} has it"),
+            format!("You passed it through{decided} · {local} has it"),
             Ok,
         ),
-        "passed" => line("check", "You passed it through · sending", Muted),
-        "declined" => line("x", "You declined it", Muted),
+        "passed" => line(
+            "check",
+            format!("You passed it through{decided} · sending"),
+            Muted,
+        ),
+        "declined" => line("x", format!("You declined it{decided}"), Muted),
         "revision_requested" => line(
             "corner-down-left",
             format!("Sent back to {local} to revise"),
@@ -303,6 +322,9 @@ mod tests {
             state: state.into(),
             receipt,
             upload_failure: None,
+            revision: None,
+            local_agent: None,
+            decided_at: None,
         }
     }
 
@@ -380,6 +402,42 @@ mod tests {
             says(&message(Outgoing, "some_new_state", Missing)).1,
             "Some new state"
         );
+    }
+
+    #[test]
+    fn a_decision_line_says_when_the_person_decided() {
+        let at = "2026-11-21T12:05:00Z";
+        let mut m = message(Direction::Incoming, "passed", Receipt::Missing);
+        m.decided_at = Some(at.into());
+        let line = state_line(&m, "worker").unwrap();
+        assert_eq!(
+            line.text,
+            format!("You passed it through {} · worker has it", clock(at))
+        );
+        let mut m = message(Direction::Outgoing, "declined", Receipt::Missing);
+        m.decided_at = Some(at.into());
+        assert_eq!(says(&m).1, format!("You declined it {}", clock(at)));
+        // An incoming decline is its receipt; the decision time is said.
+        let mut m = message(
+            Direction::Incoming,
+            "declined",
+            Receipt::Confirmed {
+                outcome: "declined".into(),
+                recorded_at: "2026-11-21T12:09:00Z".into(),
+            },
+        );
+        m.decided_at = Some(at.into());
+        assert_eq!(says(&m).1, format!("You declined it {}", clock(at)));
+    }
+
+    #[test]
+    fn only_a_later_draft_shows_its_revision() {
+        let mut m = message(Direction::Outgoing, "revoked", Receipt::Missing);
+        assert_eq!(revision(&m), None);
+        m.revision = Some(1);
+        assert_eq!(revision(&m), None);
+        m.revision = Some(2);
+        assert_eq!(revision(&m), Some(2));
     }
 
     #[test]

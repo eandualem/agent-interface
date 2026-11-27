@@ -111,7 +111,8 @@
       "state": "passed",
       "receipt": {
         "kind": "missing"
-      }
+      },
+      "decided_at": "2026-11-21T12:05:00Z"
     }
   },
   "decline_message": {
@@ -133,7 +134,8 @@
         "kind": "confirmed",
         "outcome": "declined",
         "recorded_at": "2026-11-21T12:10:00Z"
-      }
+      },
+      "decided_at": "2026-11-21T12:10:00Z"
     }
   },
   "revise": {
@@ -154,7 +156,10 @@
       "state": "revision_requested",
       "receipt": {
         "kind": "missing"
-      }
+      },
+      "revision": 1,
+      "local_agent": "main",
+      "decided_at": "2026-11-21T12:05:00Z"
     }
   },
   "disconnect_requested": {
@@ -207,7 +212,10 @@
       "state": "passed",
       "receipt": {
         "kind": "missing"
-      }
+      },
+      "revision": 1,
+      "local_agent": "main",
+      "decided_at": "2026-11-21T12:05:00Z"
     }
   },
   "decline_outgoing": {
@@ -227,7 +235,10 @@
       "state": "declined",
       "receipt": {
         "kind": "missing"
-      }
+      },
+      "revision": 1,
+      "local_agent": "main",
+      "decided_at": "2026-11-21T12:05:00Z"
     }
   }
 }
