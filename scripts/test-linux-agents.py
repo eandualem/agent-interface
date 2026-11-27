@@ -285,7 +285,7 @@ with tempfile.TemporaryDirectory(prefix="agents-smoke-", dir="/tmp") as director
             # Folded: one list, no machine sections, the offline agent on
             # another machine last, nothing under lead shown.
             heading = wait_for(lambda: find("AGENTS"), "the agents section")
-            lead = wait_for(lambda: find("lead"), "lead's row")
+            wait_for(lambda: find("lead"), "lead's row")
             away = wait_for(lambda: find("away"), "the offline agent on another machine")
             quiet = wait_for(lambda: find("quiet"), "an idle agent here")
             assert int(away["top"]) > int(quiet["top"]), "the offline remote agent is not sorted last"
@@ -299,10 +299,19 @@ with tempfile.TemporaryDirectory(prefix="agents-smoke-", dir="/tmp") as director
             # its AGENTS label, which follows the section's padding and arrow.
             panel_left = int(heading["left"]) - (token("space", "s10") + token("size", "icon")
                                                  + token("space", "s4"))
-            chevron = (round(panel_left + token("size", "panel_width") - token("space", "s8")
-                             - token("space", "s10") - token("size", "icon_button") / 2),
-                       int(lead["top"]) + int(lead["height"]) // 2)
-            press(*chevron)
+            panel_right = panel_left + token("size", "panel_width")
+            chevron_x = round(panel_right - token("space", "s8") - token("space", "s10")
+                              - token("size", "icon_button") / 2)
+
+            def chevron(name):
+                # The section grows upward as rows open under an agent, so
+                # the row is read again before each press, from the panel's
+                # words only.
+                row = wait_for(lambda: next((word for word in found(name)
+                                             if int(word["left"]) < panel_right), None), f"{name}'s row")
+                return chevron_x, int(row["top"]) + int(row["height"]) // 2
+
+            press(*chevron("lead"))
             # Reviews, the browser by its host, and members by short name.
             wait_for(lambda: find("gemini-4-neon") or find("high"), "lead's running reviews")
             wait_for(lambda: find("github.com"), "lead's browser by its host")
@@ -311,7 +320,7 @@ with tempfile.TemporaryDirectory(prefix="agents-smoke-", dir="/tmp") as director
             # The list holds nine rows and scrolls; the first swarm is in view.
             wait_for(lambda: find("detach"), "the first swarm")
             capture("tree-open")
-            press(*chevron)
+            press(*chevron("lead"))
             wait_for(lambda: not find("coordinator"), "lead folded again")
             capture("tree-refolded")
 
