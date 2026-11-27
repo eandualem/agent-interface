@@ -320,8 +320,16 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             wx, wy, _, _ = geometry(window)
             views = [geometry(xid) for xid in all_app_windows() - native_xids]
             vx, vy, vw, vh = max(views, key=lambda view: view[2] * view[3])
-            radius = round(TOKENS['radius']['pane'] * display_scale)
-            hairline = max(1, round(TOKENS['size']['hairline'] * display_scale))
+            # The native interface is drawn at its own scale, which need not
+            # follow the display's DPI as WebKit does (under this X server it
+            # stays at the interface size). Read it from where the web view
+            # starts: the panel, the gap and the card's border in from the
+            # window's left edge, in interface units.
+            inset = TOKENS['size']['panel_width'] + TOKENS['size']['pane_gap'] + TOKENS['size']['hairline']
+            interface_scale = round((vx - wx) / inset * 4) / 4
+            assert interface_scale > 0, f'the web view starts at {vx - wx} px, left of the panel'
+            radius = round(TOKENS['radius']['pane'] * interface_scale)
+            hairline = max(1, round(TOKENS['size']['hairline'] * interface_scale))
             # Down the middle of the view from its bottom edge: the strip
             # of one colour is the card's surface, which ends at its border.
             bottom = vy - wy + vh
@@ -334,7 +342,8 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             assert strip < len(colours), (
                 f'no pane border within {len(colours)} px under the web view')
             assert strip + hairline >= radius - 1, (
-                f'the web view ends {strip + hairline} px above its pane\'s bottom, under one radius ({radius} px)')
+                f'the web view ends {strip + hairline} px above its pane\'s bottom, under one radius '
+                f'({radius} px at interface scale {interface_scale})')
             for side, left in (('left', vx - wx - radius), ('right', vx - wx + vw - 3 * radius)):
                 command('convert', str(OUTPUT / 'document.png'), '-crop',
                         f'{4 * radius}x{4 * radius}+{max(left, 0)}+{vy - wy + vh - 2 * radius}',
