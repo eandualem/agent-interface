@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod adoption;
+mod agent_browser;
 pub mod artifacts;
 pub mod code_figures;
 pub mod desktop;

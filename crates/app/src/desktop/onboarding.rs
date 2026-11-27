@@ -516,7 +516,7 @@ impl Onboarding {
                 ))
                 .into_any_element();
             return Some((
-                "Your guide couldn\u{2019}t open".into(),
+                "Your orchestrator couldn\u{2019}t open".into(),
                 (*reason).into(),
                 body,
             ));

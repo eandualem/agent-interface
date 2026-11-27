@@ -275,7 +275,7 @@ library directly.
 First run is the person's first profile. A profile is where agents, sign-ins,
 skills and policies live, so first run makes one with New profile's own screens
 and asks for nothing it can check or default instead. On a ready computer it
-takes two presses: Continue on the name, then Start on the guide.
+takes two presses: Continue on the name, then Start on the orchestrator.
 
 It opens with a scene of about five seconds, played once: the app's face
 laughs, looks around and winks into the icon, with the same keyframes as the
@@ -343,15 +343,16 @@ has. The workspace window then binds the library's untouched starting
 workspace to the profile (a new workspace when the library already holds
 more), as soon as its library has loaded.
 
-The guide's screen (`profile_management/choices.rs` in guide mode) has its
+The orchestrator's screen (`profile_management/choices.rs` in guide mode) has its
 name, the tool it runs in and Start. Each tool card says whether that tool is
 signed in in the profile, will ask for sign-in when it starts, or needs installing.
 Install uses the tool's official installer and the login shell's PATH. The first choice is a signed-in tool, else an installed one.
-Folder, instructions, model, greeting and orchestrator sit under More options. The
-guide starts as `guide`, working in `~/Agents/guide`, which setup creates
+Folder, instructions, model, greeting and orchestrator sit under More options; the
+orchestrator switch starts on for a profile's first agent. The
+orchestrator starts as `orchestrator`, working in `~/Agents/orchestrator`, which setup creates
 (`create_directory`); a folder the person chooses must already exist. Its brief
 is the coordinating `orchestrator-v1` template or the person's own
-instructions. The guide starts through setup's schema-3 `first_agent`
+instructions. The orchestrator starts through setup's schema-3 `first_agent`
 request, saved in the profile's setup journal before it runs and retried or
 cancelled as that saved request. While it starts, setup's steps show as one
 status line under the button, and as soon as setup says its CLI runs
@@ -369,9 +370,9 @@ reply gets the first result, and the tool list comes from
 The layer offers the same persistent interface-size setting as the workspace,
 including during the opening scene. Progress is saved as `[setup]` in
 `settings.toml`: an interrupted first run resumes without the scene, and a
-profile made before the app closed (`profile`) goes straight to its guide.
+profile made before the app closed (`profile`) goes straight to its orchestrator.
 **New Profile…** in the application menu shows the same two screens in the
-content area, titled "New profile" and "Start its guide", with Cancel and Skip
+content area, titled "New profile" and "Start its orchestrator", with Cancel and Skip
 for now. An explicit library directory skips first run.
 
 ### Limitations
@@ -1104,7 +1105,8 @@ build-time advisory exception are described below.
   (MIT), `rpassword` 7.5.5 and `rtoolbox` 0.0.6 (Apache-2.0) are in test
   builds only.
 - **`base64` 0.23.1:** MIT OR Apache-2.0, pinned exactly. The roster sends a
-  skill folder's files to the Rust Backbone service in Base64.
+  skill folder's files to the Rust Backbone service in Base64, and the app
+  reads the screencast frames of agents' browsers from Base64.
 - **`serde`, `serde_json`, `uuid` and `tempfile`:** existing workspace
   dependencies also used by artifact metadata, publication IDs and atomic
   staging. The macOS adapter also uses `tempfile` 3.27.0 (exact pin) for private
@@ -1124,6 +1126,21 @@ build-time advisory exception are described below.
   formatter, reloadable filter and nonblocking background writer. The small
   app-owned file writer adds size-based rotation and explicit write-health
   reporting; it does not implement another logging facade.
+- **`tungstenite` 0.30.0:** MIT OR Apache-2.0, pinned exactly with only its
+  `handshake` feature: the client of an agent's Chrome DevTools page
+  endpoint on `127.0.0.1`, for its screencast, without TLS. It adds `sha1` 0.11.0, `digest` 0.11.3, `block-buffer`
+  0.12.1, `crypto-common` 0.2.2, `hybrid-array` 0.4.15, `const-oid` 0.10.3,
+  `cpufeatures` 0.3.1, `rand` 0.10.4, `rand_core` 0.10.1 and `chacha20` 0.10.2
+  (each MIT OR Apache-2.0), and `data-encoding` 2.11.1 (MIT).
+- **`image` 0.25.10:** MIT OR Apache-2.0, pinned exactly with only its `jpeg`
+  feature. It decodes the screencast's frames off the UI thread. It was already in
+  the graph through GPUI.
+- **`objc2-app-kit` 0.3.2:** Zlib OR Apache-2.0 OR MIT, pinned exactly, macOS
+  only, with the `NSApplication`, `NSResponder` and `NSRunningApplication`
+  features: Open in Chrome yields activation to the agent's Chrome process and
+  activates it, as macOS 14 expects, or activates it directly on earlier
+  versions. It and the workspace's
+  `objc2` 0.6.5 (MIT) were already in the graph through GPUI.
 - **`chrono` 0.4.45:** MIT OR Apache-2.0, pinned exactly with only its `clock`
   feature. It names local days and times for records and messages without
   `unsafe` code in the app. GPUI already builds the same version and feature,
@@ -1531,6 +1548,120 @@ ID, or by the workspace ID alone when there is no profile; only a choice made
 at the wide width is saved, so a narrow Connections pane never overwrites it.
 Neither path sends keystrokes to a terminal.
 
+### Agent browsers
+
+An agent that drives a browser with
+[agent-browser](https://github.com/vercel-labs/agent-browser) gets a Browser
+row under it in the sidebar. `agent_browser` finds the sessions from the files
+agent-browser keeps next to each session's socket, in
+`AGENT_BROWSER_SOCKET_DIR`, else `$XDG_RUNTIME_DIR/agent-browser`, else
+`~/.agent-browser`; sessions in a namespace (`AGENT_BROWSER_NAMESPACE`) are not
+read. Every two seconds a background read lists `<session>.pid` files and keeps
+those whose daemon is running (`kill(pid, 0)`). It reads the tab's DevTools id
+and address from `<session>.target`. It starts no
+process and opens no connection, so without agent-browser it costs one failed
+directory read. A session named exactly as an agent on this machine belongs to
+that agent; other sessions are not shown.
+
+The Browser view is a pane that stays in memory: the library saves it as an
+empty pane, so earlier readers can open the library and the view is not
+restored. While the view is shown, `agent_browser::stream` runs a Chrome
+screencast of the agent's tab. It finds the Chrome whose parent is the
+session's daemon, reads the DevTools port from the `DevToolsActivePort` file
+in that Chrome's `--user-data-dir`, and opens a WebSocket to
+`127.0.0.1:<port>/devtools/page/<target>`. It sends three methods only:
+`Page.startScreencast`, `Page.screencastFrameAck` and `Page.stopScreencast`.
+No input, script, page or emulation method reaches the page, so the agent's
+screenshots and commands are unchanged by it, and agent-browser's own
+stream keeps working beside it. Chrome keeps a few frames in flight and sends
+more only after they are acknowledged. The client's thread decodes each JPEG
+frame into one slot that a newer frame replaces, and acknowledges frames only
+when the view takes one to paint, together with those it replaced; a frame
+that cannot be decoded is acknowledged at once. Frames
+never queue, and a view that is not painting pauses Chrome after a few frames
+instead of decoding a full-rate stream. Chrome
+sends each frame at the page's own pixel size, 2x on a Retina display or
+with `--force-device-scale-factor=2`, together with the page's size in CSS
+pixels. The view draws the whole frame from its full-resolution image, at
+the largest size that fits the pane below its header, pinned to the pane's
+top left corner: a band left by a different shape falls to the right or
+below, and a 1x frame is scaled up to fill a larger pane. agent-browser's own stream is not
+used: it caps frames at its recorded viewport and reports that, rather than
+the page's real size. Every two seconds the client reads the tab's address
+and title from Chrome's target list (`GET /json/list`). The header names the
+page by its title, else by its address's host; when that read fails, the
+address is the one in `<session>.target`. A hidden or closed
+view stops the screencast. When the page can't be reached, the client tries
+again every two seconds; when discovery no longer finds the daemon, the view
+says the browser ended. A new tab bound in `<session>.target` starts a new
+screencast. After some navigations Chrome sends no frame of the new page
+until it changes again, so whenever the listed address changes, the client
+stops and starts the screencast once, 1.5 seconds later, which sends the
+page as it is. No frame cancels it, since a frame may still be the old
+page's. A page that keeps its address is never restarted, and neither is a
+reload or a quick return to the same address within one two-second listing.
+If Chrome refuses the restart, as during a change of renderer, the client
+connects again at once and the view keeps its picture; only if that
+connection fails does the view say the page can't be reached.
+
+The agent's browser takes the pane's size, as a terminal does, so the agent
+works on the same page the person watches, at one CSS pixel per point. When
+a view first shows a page, is chosen, or has been resized or moved to a
+display of another scale and held still for 300 ms, it runs
+`agent-browser --session <name> set viewport <W> <H> <scale>` off the UI
+thread: W and H are the width and height in points of the area below the
+header, rounded and kept to 320 to 4096 wide and 240 to 4096 high, and the
+scale is the window's, 2 on a Retina display. The scale is always given,
+since agent-browser otherwise sets it to 1. A narrow pane gives the site's
+narrow, responsive layout, which is the page the agent sees. The change goes
+through agent-browser, not DevTools, so its record of the page stays right,
+and the screencast still sends only its three methods. Only a browser the
+daemon started is resized: one agent-browser attached to may be the
+person's own Chrome. This works on Linux too, where the view also reads the
+daemon's Chrome process, while Open in Chrome stays macOS only.
+
+The command is sent only when the size or scale differs from the last one
+set for that tab, or the page shows another size. A frame never sends it,
+so a viewport the agent sets for itself, as to try a phone layout, is left
+alone until the next resize, change of scale, choice of the pane or new
+page. A size is recorded only once agent-browser has set it, and a command
+that failed leaves it unknown. One command runs at a time for a tab, and the
+newest size waiting is sent after it; a command that has not answered in 5
+seconds is stopped. Of two views on one browser, the one chosen last sizes
+it, as tmux sizes a window for its latest client, so a window resize that
+moves both counts only for that one. Before any choice, or for a browser
+that started anew while no Browser pane was chosen, the first view to ask
+sizes it, and when the view sizing a browser goes, the next view to ask
+takes over.
+agent-browser starts a new browser for a session that has ended, so the
+command runs only while discovery's files still show the same daemon; a
+session ending in the moment between that check and the command can still
+be started again. The program is found on `PATH`, else in
+`/opt/homebrew/bin` or `/usr/local/bin`, since an app started from the
+Finder may not have Homebrew on its `PATH`. Closing a view leaves the
+viewport as it is. A failed command is logged once, or quietly for a session
+that ended, while the view keeps fitting the frame, which then matters only
+before the first size lands or when the size is clamped. In headless mode
+the frames stay at one pixel per CSS pixel even with the scale at 2; the
+scale doubles only the agent's screenshots.
+
+agent-browser records whether a session is headless only in its daemon's
+memory. The view reads it from the daemon's Chrome child process: its command
+line has `--headless` when it has no window. Open in Chrome activates that
+Chrome process with `NSRunningApplication`, which brings only that window
+forward and asks for no permission. For a headless session it opens the
+page's address, HTTP or HTTPS only, in the person's Chrome by running
+`open -n -a "Google Chrome" --args <address>` as an argument vector, and
+`open <address>` when that fails. Each agent's headless Chrome registers as
+a running Google Chrome too, so plain `open -a` could hand the address to
+one of them; `-n` starts Chrome with the default profile, and Chrome's own
+single-instance check passes the address to the person's Chrome. That
+needs the agent's Chrome to have its own `--user-data-dir`. The button is
+disabled, with the reason in its tooltip, on Linux; for a browser the daemon
+did not start; and for a headless session whose Chrome has no
+`--user-data-dir`, uses the person's default Chrome folder, or runs while
+the person's home folder is unknown, or whose page has no web address.
+
 ### Bound native Policies
 
 Bound native Policies retain shared catalog IDs with the displayed instruction layers. Shared bodies come from the exact immutable provider revision, and discussions retain that artifact, revision and connection. Base and swarm briefs remain provider-owned read-only previews without artifact discussion authority. Catalog binding refusals invalidate the whole library; missing IDs cannot fall back to preview text or local paths. Reader completion tickets cancel closed openings and reject results after reopening the same path.
@@ -1735,7 +1866,7 @@ no process.
 Profile runtime catalogs come from `backbone runtimes --json` (schema 1), run
 with the captured discovery executable and caller context. It names no profile:
 what it lists is this machine's. Add agent offers a runtime that is installed
-and listed as supporting setup; a guide offers an installed runtime among the
+and listed as supporting setup; an orchestrator offers an installed runtime among the
 CLIs first-agent setup starts. Catalogs keep authentication observations
 separate from executable availability and setup support.
 Provider paths and unattended argument examples are discarded; these reads cannot
@@ -1882,7 +2013,7 @@ handshake. Fresh first-agent setup choices remain separate from saved-request
 recovery.
 
 New profile runs as two screens across its workspace's content area: name, then
-its guide.
+its orchestrator.
 The name screen takes an explicit profile name and records one immutable create
 request in the same durable lifecycle journal. The service serves a profile from
 the moment it makes it, so the screen then runs the authenticated selection;
@@ -1894,7 +2025,7 @@ computer's own Git name and email are kept, the saved request records
 copies nothing, so once the profile is running the app sets those two in it, as
 for a name and email typed there. Otherwise the mark is omitted, keeping the
 saved request's bytes unchanged, and recovery restores whichever request was
-saved. The guide screen reads the profile's runtime catalog
+saved. The orchestrator screen reads the profile's runtime catalog
 and asks `GET /api/profile/accounts/status` once for each installed CLI, so each
 tool card can say whether it is signed in; signed in means a stored sign-in, not a
 working account. Its Start saves and sends setup's `first_agent` request; Add
@@ -1916,7 +2047,7 @@ readiness does not authorize account access or open an ambient terminal.
 Fresh setup admission validates existing durable setup records and inserts the
 new intent under one journal lock. An open request blocks every other first-agent
 request of the same profile, whatever agent it adds, since it may still make the
-profile's first agent; a guide's Start waits while one is open. A request closes
+profile's first agent; an orchestrator's Start waits while one is open. A request closes
 on confirmed readiness, safe cancellation, a cancellation answered
 `request_expired` (the request never runs now; what came of it before stays
 unknown and listed), or a result whose retry policy says this same request can
@@ -1951,7 +2082,7 @@ A failed roster read loses status, not access: tmux keeps the sessions and panes
 attached, with a status note, while the read retries.
 
 Native first-agent setup captures one profile entry and the operator
-client before loading choices. A guide checks the independent private setup
+client before loading choices. An orchestrator checks the independent private setup
 journal for open requests of the profile, which hold back a new one, and then
 reads the Rust service's runtime catalog (`backbone runtimes --json`); setup
 starts Claude Code, Codex and Antigravity only. Add agent opens no journal.

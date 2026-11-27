@@ -370,7 +370,7 @@ starts `s24` lower. Screens cross-fade their words and body over `step_ms`.
 
 Fields are `setup_field`: `setup_control` (36) tall, `field` with a
 `line_strong` border, `accent` while focused. The name field leads with a
-neutral `profile_mark` showing the first letter as it is typed; the guide's
+neutral `profile_mark` showing the first letter as it is typed; the orchestrator's
 leads with the `bot` icon in `muted`. Labels are `meta` in `muted`, `s6` above
 their control, groups `s16` apart. The main button is `setup_button`: the
 column's width, `setup_control` tall, `s20` above; off it stays legible in
@@ -380,7 +380,7 @@ the button at the column's ends.
 
 Name shows "Git commits as" the name and email on one `meta` line, the name in
 `text`, with Change at its end; Change, or a computer with no Git name, opens
-two fields. The guide shows its Name, "Runs in" with `tool_card`s two to a row
+two fields. The orchestrator shows its Name, "Runs in" with `tool_card`s two to a row
 (`s8` apart; selected takes `accent_soft` and the `focus` ring; the state line
 is `meta`, with a trailing Install or Update), then Start, and More options
 opens one `panel` group with folder, instructions, model, hooks, greeting and orchestrator.
@@ -391,7 +391,7 @@ whose reason is `meta` in the mono font on `field`. Without Agent Backbone,
 "Agent Backbone isn't installed" has Continue with terminals as its button and
 Check again as a text action.
 
-When the guide's pane opens, the stage fades over `reveal_ms` and the
+When the orchestrator's pane opens, the stage fades over `reveal_ms` and the
 navigation panel eases in from 24 px to the left. New profile, from the menu,
 shows the same screens across the content area.
 
