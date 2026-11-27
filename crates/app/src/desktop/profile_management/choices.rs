@@ -110,6 +110,8 @@ pub(super) struct Form {
     finished: bool,
     /// The name last filled in from the folder, kept until the person edits it.
     folder_name: Option<String>,
+    /// What that name came from, as its note says.
+    named_from: &'static str,
     /// Model, instructions, greeting and orchestrator are open.
     more: bool,
     /// What leaving the form is called where it is shown.
@@ -201,6 +203,7 @@ impl Form {
             ticket: Ticket::default(),
             finished: false,
             folder_name: None,
+            named_from: FROM_FOLDER,
             more: false,
             skip,
             guide: false,
@@ -230,8 +233,9 @@ impl Form {
             let connection = profile.connect().ok()?;
             let local = connection.identity().installation_id.clone();
             let machines = machine_choices(connection.machines().ok()?, &local);
+            // No other machine now: applied too, so the row goes.
             if machines.is_empty() {
-                return None;
+                return Some((machines, Vec::new()));
             }
             Some((machines, connection.agent_names().ok()?))
         });
@@ -243,8 +247,8 @@ impl Form {
                 if form.finished || form.guide || !form.ticket.accepts(&ticket) {
                     return;
                 }
-                // A machine no longer listed is never kept as the choice:
-                // the form goes back to this machine.
+                // A machine no longer listed, or no longer online, is never
+                // kept as the choice: the form goes back to this machine.
                 if form.machine.is_some() && !still_listed(form.machine.as_deref(), &machines) {
                     form.machine = None;
                     form.elsewhere = None;
@@ -823,15 +827,15 @@ impl Form {
     /// Name the agent after its folder, unless the person typed a name.
     fn name_from_folder(&mut self, cx: &mut Context<Self>) {
         let name = self.project.as_deref().and_then(folder_name);
-        self.name_from(name, cx);
+        self.name_from(name, FROM_FOLDER, cx);
     }
     /// Name the agent after the repository or folder typed for another
     /// machine, unless the person typed a name.
     fn name_from_place(&mut self, cx: &mut Context<Self>) {
-        let name = place_name(self.place.read(cx).value());
-        self.name_from(name, cx);
+        let typed = self.place.read(cx).value().to_owned();
+        self.name_from(place_name(&typed), named_from(&typed), cx);
     }
-    fn name_from(&mut self, name: Option<String>, cx: &mut Context<Self>) {
+    fn name_from(&mut self, name: Option<String>, from: &'static str, cx: &mut Context<Self>) {
         let current = self.name.read(cx).value().to_owned();
         if !current.is_empty() && self.folder_name.as_deref() != Some(current.as_str()) {
             return;
@@ -841,6 +845,7 @@ impl Form {
         };
         self.name.update(cx, |field, cx| field.set_value(&name, cx));
         self.folder_name = Some(name);
+        self.named_from = from;
     }
     fn submit(&mut self, expected: &Arc<std::sync::atomic::AtomicBool>, cx: &mut Context<Self>) {
         // Enter and a click pass the same gate as the button shows.
@@ -990,14 +995,16 @@ fn agent_name(typed: &str) -> String {
 /// What a name filled in for the agent came from: on another machine
 /// (`elsewhere`) the repository or folder typed there, else the folder
 /// chosen.
-fn named_from(elsewhere: bool, typed: &str) -> &'static str {
-    match elsewhere.then(|| place(typed)).flatten() {
+fn named_from(typed: &str) -> &'static str {
+    match place(typed) {
         Some(agent_interface_roster::profiles::setup::start::Place::Repository(_)) => {
             "From the repository"
         }
-        _ => "From the folder",
+        _ => FROM_FOLDER,
     }
 }
+/// The note under a name filled in from a folder.
+const FROM_FOLDER: &str = "From the folder";
 /// The agent name a repository or folder typed for another machine gives:
 /// its last part, when that is a valid name.
 fn place_name(typed: &str) -> Option<String> {
@@ -1052,10 +1059,16 @@ fn machine_choices(mut machines: Vec<ProfileMachine>, local: &str) -> Vec<Profil
     machines.insert(0, this);
     machines
 }
-/// Whether another machine `chosen` is still one of `machines` (after this
-/// one, the first). This machine (`None`) always is.
+/// Whether another machine `chosen` can stay chosen with `machines`: still
+/// one of them (after this one, the first) and online, as choosing it
+/// needs. This machine (`None`) always can.
 fn still_listed(chosen: Option<&str>, machines: &[ProfileMachine]) -> bool {
-    chosen.is_none_or(|id| machines.iter().skip(1).any(|machine| machine.id == id))
+    chosen.is_none_or(|id| {
+        machines
+            .iter()
+            .skip(1)
+            .any(|machine| machine.id == id && machine.state == MachineState::Online)
+    })
 }
 /// Choose the machine `clicked`, `None` for this one, the first of
 /// `machines`. Another must be online. Returns whether the choice changed.
@@ -1369,7 +1382,7 @@ impl Render for Form {
                                         if taken {
                                             el.child(attention(format!("An agent named {name} already exists in this profile.").into()))
                                         } else if from_folder {
-                                            el.child(note(named_from(elsewhere.is_some(), self.place.read(cx).value()).into()))
+                                            el.child(note(self.named_from.into()))
                                         } else if name.is_empty() {
                                             el
                                         } else if !agent_interface_roster::valid_agent(&name) {

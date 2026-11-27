@@ -324,7 +324,10 @@ impl Connection {
     /// `GET /api/profile/machines/{id}/runtimes`. A service without that
     /// route lists nothing; a refusal keeps its reason. Runs on an I/O worker.
     pub fn machine_tools(&self, machine: &str) -> Result<Tools, AddError> {
-        if machine.is_empty() || !machine.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        if machine.is_empty()
+            || machine.len() > 256
+            || !machine.bytes().all(|b| b.is_ascii_alphanumeric())
+        {
             return Err(Error::Invalid.into());
         }
         let path = format!("/api/profile/machines/{machine}/runtimes");

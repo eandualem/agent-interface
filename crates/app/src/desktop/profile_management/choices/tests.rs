@@ -737,20 +737,25 @@ fn an_older_backbones_reason_ends_in_one_full_stop() {
 
 #[test]
 fn a_machine_gone_from_the_list_is_not_kept_as_the_choice() {
-    let listed = machines();
+    let mut listed = machines();
     let (laptop, desktop) = (listed[0].id.clone(), listed[1].id.clone());
     assert!(still_listed(None, &listed));
+    // Listed but offline: back to this machine, as it couldn't be chosen.
+    assert!(!still_listed(Some(&desktop), &listed));
+    listed[1].state = MachineState::Unknown;
+    assert!(!still_listed(Some(&desktop), &listed));
+    listed[1].state = MachineState::Online;
     assert!(still_listed(Some(&desktop), &listed));
-    // Gone from a newer list, or this machine's own ID: back to this one.
+    // Gone from a newer list, which may offer no choice at all now, or
+    // this machine's own ID: back to this one.
     assert!(!still_listed(Some(&desktop), &listed[..1]));
     assert!(!still_listed(Some(&laptop), &listed));
     assert!(!still_listed(Some(&desktop), &[]));
+    assert!(machine_choices(listed[..1].to_vec(), &laptop).is_empty());
 }
 
 #[test]
 fn a_name_from_a_repository_says_so() {
-    assert_eq!(named_from(true, " acme/app "), "From the repository");
-    assert_eq!(named_from(true, "~/work/app"), "From the folder");
-    // On this machine the name comes from the folder chosen.
-    assert_eq!(named_from(false, "acme/app"), "From the folder");
+    assert_eq!(named_from(" acme/app "), "From the repository");
+    assert_eq!(named_from("~/work/app"), "From the folder");
 }
