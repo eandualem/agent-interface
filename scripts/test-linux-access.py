@@ -178,7 +178,7 @@ class Records:
 
 def same(a, b):
     """Whether two grants name the same thing, whatever their access."""
-    keep = ("kind", "repo", "path", "name", "machine")
+    keep = ("kind", "repo", "path", "name", "machine", "browser")
     return {k: a.get(k) for k in keep} == {k: b.get(k) for k in keep}
 
 

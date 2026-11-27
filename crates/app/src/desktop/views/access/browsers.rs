@@ -36,8 +36,10 @@ pub(super) struct Browsing {
 pub(super) struct NewBrowser {
     /// Its ID once Backbone has made it; none while it is being named.
     pub id: Option<String>,
-    /// Whether its name and address are being changed before saving.
+    /// Whether its name and address are being changed before saving, and
+    /// what they were before, given back if the change is dropped.
     pub renaming: bool,
+    pub before_rename: Option<(String, String)>,
     /// The agents chosen to use it.
     pub chosen: Vec<String>,
     /// The agents offered as chips, in their order.
@@ -155,6 +157,7 @@ impl Pane {
         self.browsing.new = Some(NewBrowser {
             id: None,
             renaming: false,
+            before_rename: None,
             offered: offered(&asking, agents),
             chosen: asking,
             keep_on_sites: true,
@@ -189,6 +192,7 @@ impl Pane {
         self.browsing.new = Some(NewBrowser {
             id: Some(detail.browser.id.clone()),
             renaming: false,
+            before_rename: None,
             offered: offered(&asking, agents),
             chosen: asking,
             keep_on_sites: true,
@@ -205,6 +209,62 @@ impl Pane {
         self.notice = None;
         self.leave_field(window, cx);
         cx.notify();
+    }
+
+    /// The new browser's name and address as the sheet shows them: what the
+    /// fields hold, else what Backbone has, the address without its scheme.
+    fn new_name(&self, detail: Option<&Detail>, cx: &gpui::App) -> (String, String) {
+        let typed = |field: &gpui::Entity<super::super::NameField>| {
+            Some(field.read(cx).value().trim().to_owned()).filter(|value| !value.is_empty())
+        };
+        let name = typed(&self.name_field)
+            .or_else(|| detail.map(|d| d.browser.name.clone()))
+            .unwrap_or_default();
+        let opens = typed(&self.opens_field)
+            .or_else(|| detail.map(|d| d.browser.opens_at.clone()))
+            .unwrap_or_default();
+        (name, host(&opens).to_owned())
+    }
+
+    /// Escape in the new browser sheet: while its name is being changed, drop
+    /// the change; otherwise cancel the sheet.
+    pub(super) fn escape_new(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(new) = self
+            .browsing
+            .new
+            .as_mut()
+            .filter(|new| new.renaming && new.id.is_some())
+        else {
+            return self.cancel_new(window, cx);
+        };
+        new.renaming = false;
+        if let Some((name, opens)) = new.before_rename.take() {
+            self.name_field
+                .update(cx, |field, cx| field.set_value(&name, cx));
+            self.opens_field
+                .update(cx, |field, cx| field.set_value(&opens, cx));
+        }
+        self.leave_field(window, cx);
+    }
+
+    /// Close the new browser sheet once its browser was deleted, or saved,
+    /// elsewhere: what the sheet would send no longer applies.
+    pub(super) fn keep_new(&mut self) {
+        let (Some(model), Some(id)) = (
+            &self.model,
+            self.browsing.new.as_ref().and_then(|new| new.id.as_deref()),
+        ) else {
+            return;
+        };
+        let signing = model
+            .browsers
+            .items
+            .iter()
+            .find(|b| b.id == id)
+            .is_some_and(|b| b.state == State::SigningIn);
+        if !signing {
+            self.browsing.new = None;
+        }
     }
 
     /// Make the new browser on this machine, which opens its sign-in window.
@@ -320,13 +380,17 @@ impl Pane {
     /// Read the browser `id`'s use older than the session `before`, below
     /// what is shown.
     pub(super) fn read_older(&mut self, id: &str, before: i64, cx: &mut Context<Self>) {
-        let (connection, id) = (self.connection.clone(), id.to_owned());
+        let (connection, id, asked) = (self.connection.clone(), id.to_owned(), id.to_owned());
         let read = cx
             .background_executor()
             .spawn(async move { connection.browser_sessions(&id, Some(before), None) });
         cx.spawn(async move |this, cx| {
             let result = read.await;
             let _ = this.update(cx, |pane, cx| {
+                // Another browser was chosen while this read was under way.
+                if pane.browsing.chosen.as_deref() != Some(asked.as_str()) {
+                    return;
+                }
                 match result {
                     Ok(page) => {
                         let shown: Vec<i64> = pane
@@ -841,7 +905,13 @@ impl Pane {
         let mut first = true;
         for given in &detail.grants {
             let key = format!("access-browser-grant-{}", given.agent);
-            let by = given.given_by.as_deref().unwrap_or("you");
+            // Backbone names no giver for the owner, nor for an agent since
+            // forgotten, which keeps its ID.
+            let by = match (&given.given_by, &given.given_by_id) {
+                (Some(agent), _) => format!("given by {agent}"),
+                (None, None) => "given by you".to_owned(),
+                (None, Some(_)) => "given".to_owned(),
+            };
             let at = model::time(&given.given_at, now)
                 .map(|at| format!(" · {}", at.format("%-d %b")))
                 .unwrap_or_default();
@@ -855,7 +925,7 @@ impl Pane {
                         ui::mono(given.agent.clone()).text_color(c.text),
                         &t.text.status,
                     ))
-                    .child(meta(format!("given by {by}{at}")))
+                    .child(meta(format!("{by}{at}")))
                     .child(div().flex_1())
                     .child(meta(format!(
                         "used {} time{}",
@@ -1285,19 +1355,20 @@ impl Pane {
             .id
             .as_deref()
             .and_then(|id| self.browsing.detail.as_ref().filter(|d| d.browser.id == id));
-        let name = self.name_field.read(cx).value().trim().to_owned();
+        let (name, opens) = self.new_name(detail, cx);
         let named = new.id.is_some() && !new.renaming;
+        // A browser made already is on its machine; a new one on this one.
+        let machine = |pane: &Self| match detail {
+            Some(d) => pane.machine_chip(Some(&d.browser.machine), d.browser.machine_name.as_ref()),
+            None => ui::machine_chip(this_machine()),
+        };
         let signed: Vec<&str> = detail
             .map(|d| d.signed_in_to.iter().map(|s| s.domain.as_str()).collect())
             .unwrap_or_default();
         let creating = self.sending.as_deref() == Some("access-browser-create");
         let step_name =
             if named {
-                let browser = detail.map(|d| &d.browser);
-                let (shown, opens) = browser.map_or_else(
-                    || (name.clone(), self.opens_field.read(cx).value().to_owned()),
-                    |b| (b.name.clone(), b.opens_at.clone()),
-                );
+                let shown = name.clone();
                 div()
                     .flex()
                     .items_center()
@@ -1307,12 +1378,17 @@ impl Pane {
                     .child(div().text_color(c.text).child(shown))
                     .child(meta("opens at".into()))
                     .child(ui::text(ui::mono(opens).text_color(c.text_2), &t.text.meta))
-                    .child(ui::machine_chip(this_machine()))
+                    .child(machine(self))
                     .child(div().flex_1())
                     .child(ui::text_action("access-browser-rename", "Change").on_click(
                         cx.listener(|pane, _, window, cx| {
+                            let kept = (
+                                pane.name_field.read(cx).value().to_owned(),
+                                pane.opens_field.read(cx).value().to_owned(),
+                            );
                             if let Some(new) = &mut pane.browsing.new {
                                 new.renaming = true;
+                                new.before_rename = Some(kept);
                             }
                             let field = pane.name_field.read(cx).focus.clone();
                             pane.enter_field(field, window, cx);
@@ -1336,7 +1412,7 @@ impl Pane {
                             .h(px(t.size.chip + t.space.s4))
                             .child(hinted(&self.opens_field, "site.com", cx)),
                     )
-                    .child(ui::machine_chip(this_machine()))
+                    .child(machine(self))
                     .when(new.id.is_none(), |el| {
                         el.child(if creating {
                             ui::busy_button("access-browser-create", "Opening")
@@ -1436,7 +1512,7 @@ impl Pane {
                     Step::Now
                 },
                 false,
-                self.choose_users(new, detail, model, cx),
+                self.choose_users(new, detail, &name, model, cx),
             ));
         }
         let saving = self.sending.as_deref() == Some("access-browser-save");
@@ -1511,6 +1587,7 @@ impl Pane {
         &self,
         new: &NewBrowser,
         detail: &Detail,
+        name: &str,
         model: &model::Model,
         cx: &mut Context<Self>,
     ) -> Div {
@@ -1607,7 +1684,6 @@ impl Pane {
         } else {
             detail.policies.sites.join(" · ")
         };
-        let name = detail.browser.name.clone();
         div()
             .flex()
             .flex_col()

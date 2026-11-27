@@ -263,10 +263,11 @@ impl Pane {
                             pane.create_browser(cx);
                         } else if let Some(new) = &mut pane.browsing.new {
                             new.renaming = false;
+                            new.before_rename = None;
                         }
                         pane.leave_field(window, cx);
                     }
-                    NameEvent::Cancel => pane.cancel_new(window, cx),
+                    NameEvent::Cancel => pane.escape_new(window, cx),
                     NameEvent::Changed(_) => cx.notify(),
                 },
             )
@@ -384,6 +385,7 @@ impl Pane {
                             model.browsers = browsers;
                         }
                         pane.browsing.read(detail);
+                        pane.keep_new();
                         pane.keep_browser();
                         pane.read_at = Some(chrono::Local::now().format("%H:%M").to_string());
                         pane.error = None;
@@ -582,6 +584,17 @@ impl Pane {
                 if result.is_ok() {
                     pane.writes += 1;
                 }
+                // A browser cancelled that is gone already is as good as
+                // deleted.
+                let result = match result {
+                    Err(Failure::Refused { code, .. })
+                        if key == "access-browser-cancel" && code == "not_found" =>
+                    {
+                        let gone = pane.browsing.new.as_ref().and_then(|new| new.id.clone());
+                        Ok(Applied::Released(gone.unwrap_or_default(), true))
+                    }
+                    other => other,
+                };
                 // A browser's reply is shown in the browsers view itself.
                 let unsettled = match result {
                     Ok(Applied::Browser(detail)) => {
@@ -721,7 +734,7 @@ impl Pane {
             if !closed {
                 match self.shown {
                     Shown::Agents => return false,
-                    Shown::Browsers if self.browsing.new.is_some() => self.cancel_new(window, cx),
+                    Shown::Browsers if self.browsing.new.is_some() => self.escape_new(window, cx),
                     Shown::Requests | Shown::Browsers => self.shown = Shown::Agents,
                 }
             }
@@ -1009,6 +1022,7 @@ impl BrowserStream {
                         }
                     }
                     pane.newest_due = true;
+                    pane.keep_new();
                     pane.read(cx);
                     cx.notify();
                 });
