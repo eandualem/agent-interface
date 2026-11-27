@@ -1290,8 +1290,8 @@ is trusted only through the digest the signed manifest names, and nothing in
 the manifest is read before its signature holds, so neither GitHub nor the
 connection needs to be trusted. The key's public half is the constant
 `RELEASE_KEY` in the `install` crate (key ID `7BE270324422E708`). A build
-without it trusts no release, and the installer says Backbone is not
-published yet. The installer
+without it trusts no release, and the installer says Backbone is not published
+yet. The installer
 tests sign their fixture releases with a key they make, through an example
 program of the `install` crate that packaging never builds.
 
