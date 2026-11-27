@@ -207,7 +207,14 @@ fn each_change_uses_its_method_route_and_body() {
     ];
     for (request, (route, body)) in requests[1..].iter().zip(expected) {
         assert!(request.starts_with(route), "{request}");
-        assert!(request.ends_with(body), "{request}");
+        // Compared as JSON: key order depends on serde_json's features.
+        let (_, sent) = request.split_once("\r\n\r\n").unwrap();
+        let sent: Value = serde_json::from_str(sent).unwrap();
+        assert_eq!(
+            sent,
+            serde_json::from_str::<Value>(body).unwrap(),
+            "{request}"
+        );
         assert!(!request.contains("x-backbone-request-id"));
     }
     assert_eq!(requests.len(), 1 + expected.len());
