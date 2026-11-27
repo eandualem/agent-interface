@@ -284,9 +284,33 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
                 command("xdotool", "key", "--window", main, "ctrl+comma")
                 window = wait_for(lambda: next((w for w in app_windows() if w != main), None),
                                   "the settings window")
+                # Settings opens small: give the form room, then scroll the
+                # profile's page down to its agents and their Add agent.
+                command("xdotool", "windowsize", window, "1600", "1500")
+                time.sleep(1)
                 click(window, "Profiles")
                 click(window, "Personal")
+                wait_for(lambda: re.search(r"Sign-in", text(window)), "the profile's page")
+
+                def scroll_to(label, wheel):
+                    """Scroll the page (wheel 5 down, 4 up) until `label` shows."""
+                    for _ in range(12):
+                        if any(w["text"].strip(".,:;…") == label for w in words(window)):
+                            return
+                        fields = command("xdotool", "getwindowgeometry", "--shell", window)
+                        size = dict(line.split("=", 1) for line in fields.splitlines())
+                        command("xdotool", "mousemove", "--window", window,
+                                str(int(size["WIDTH"]) * 2 // 3), str(int(size["HEIGHT"]) // 2),
+                                "click", "--repeat", "5", wheel)
+                        time.sleep(0.5)
+
+                scroll_to("Add", "5")
                 click(window, "Add")
+                # The form opens where the page was: back up to its first rows.
+                wait_for(lambda: len([e for e in log("http.jsonl")
+                                      if e["path"] == "/api/profile/machines"]) >= 2,
+                         "the form's read of the machines", timeout=60)
+                scroll_to("linux-box", "4")
                 wait_for(lambda: re.search(r"linux-box", text(window)), "the Machine row", timeout=60)
                 value = text(window)
                 assert re.search(r"desktop\s+is\s+offline", value), value
