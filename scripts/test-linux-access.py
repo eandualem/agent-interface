@@ -320,6 +320,8 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
                                  and body.get("note") == "for this check"
                                  for method, path, body in list(RECORDS.calls)),
                      "the approval sent with its note by the keys")
+            # The reply closes the note; Escape before that would only close it.
+            wait_for(lambda: not find("check"), "the note closed by the approval")
             command("xdotool", "key", "Escape")
             wait_for(lambda: find("ORCHESTRATORS"), "the agent list again after Escape")
         finally:

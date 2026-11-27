@@ -464,10 +464,12 @@ impl Pane {
             .any(|field| field.read(cx).focus.is_focused(window))
     }
 
-    /// Give focus back to what had it before a field took it.
+    /// Give focus back to what had it before a field took it. It is kept,
+    /// as a kept note can be clicked into again without passing through
+    /// [`Self::enter_field`].
     fn leave_field(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.in_field(window, cx)
-            && let Some(focus) = self.return_focus.take()
+            && let Some(focus) = self.return_focus.clone()
         {
             window.focus(&focus, cx);
         }
