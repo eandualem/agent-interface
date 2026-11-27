@@ -321,6 +321,24 @@ fn kind(grant: &Grant) -> (std::mem::Discriminant<Grant>, Option<Access>, Option
     (std::mem::discriminant(grant), access, machine_id(grant))
 }
 
+/// What a grant's machine chip says: `this` for this app's own machine
+/// (`local`, or none named), the name Backbone serves for another, or
+/// "another machine" once Backbone names it no longer. Machine IDs are
+/// never shown.
+pub(super) fn machine_label(
+    this: &str,
+    local: &str,
+    id: Option<&str>,
+    name: Option<&str>,
+) -> String {
+    match (id, name) {
+        (Some(id), _) if id == local => this.into(),
+        (None, None) => this.into(),
+        (_, Some(name)) => name.into(),
+        (Some(_), None) => "another machine".into(),
+    }
+}
+
 /// The machine a grant is on, by ID; none for a repository.
 pub(super) fn machine_id(grant: &Grant) -> Option<&str> {
     match grant {
@@ -1110,5 +1128,14 @@ mod tests {
         let after = card_order(&pending, Some("lead"));
         assert_eq!(after, [vec![40, 19]]);
         assert_eq!(card_key(&after[0]), card_key(&before[0]));
+    }
+
+    #[test]
+    fn a_machine_chip_never_shows_a_machine_id() {
+        let label = |id, name| machine_label("this Mac", "aa", id, name);
+        assert_eq!(label(Some("aa"), Some("laptop")), "this Mac");
+        assert_eq!(label(None, None), "this Mac");
+        assert_eq!(label(Some("bb"), Some("build-box")), "build-box");
+        assert_eq!(label(Some("0d9e8f7a6b5c4d3e"), None), "another machine");
     }
 }

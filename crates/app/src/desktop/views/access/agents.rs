@@ -779,24 +779,16 @@ impl Pane {
         }
     }
 
-    /// A grant's machine as its chip: "this Mac" for this app's own, its
-    /// name for another, and none when Backbone no longer names it.
-    pub(super) fn machine_chip(&self, id: Option<&String>, name: Option<&String>) -> Option<Div> {
+    /// A grant's machine as its chip: this app's own as "this Mac", another
+    /// by the name Backbone serves, or "another machine" once it names none.
+    pub(super) fn machine_chip(&self, id: Option<&String>, name: Option<&String>) -> Div {
         let local = &self.connection.identity().installation_id;
-        let label = match (id, name) {
-            (Some(id), _) if id == local => this_machine().to_owned(),
-            (None, None) => this_machine().to_owned(),
-            (_, Some(name)) => name.clone(),
-            (Some(_), None) => return None,
-        };
-        Some(ui::machine_chip(label))
-    }
-
-    /// The chip for a grant on another machine, under a section that says
-    /// "on this Mac": its name, or its ID once Backbone no longer names it.
-    fn other_machine(&self, id: Option<&String>, name: Option<&String>) -> Div {
-        self.machine_chip(id, name)
-            .unwrap_or_else(|| ui::machine_chip(id.cloned().unwrap_or_default()))
+        ui::machine_chip(model::machine_label(
+            this_machine(),
+            local,
+            id.map(String::as_str),
+            name.map(String::as_str),
+        ))
     }
 
     /// Whether a grant is on this app's own machine, or names none.
@@ -886,7 +878,7 @@ impl Pane {
                         ui::mono(path.clone()).text_color(c.text),
                         &t.text.status,
                     ))
-                    .children(self.machine_chip(machine.as_ref(), machine_name.as_ref()))
+                    .child(self.machine_chip(machine.as_ref(), machine_name.as_ref()))
                     .child(div().flex_1())
                     .child(self.access_segments(
                         &key,
@@ -938,7 +930,7 @@ impl Pane {
                     ))
                     // The section says it is on this machine; others are named.
                     .when(!self.on_this_machine(id.as_ref()), |el| {
-                        el.child(self.other_machine(id.as_ref(), name.as_ref()))
+                        el.child(self.machine_chip(id.as_ref(), name.as_ref()))
                     })
                     .child(div().flex_1())
                     .child(self.busy(
@@ -989,7 +981,7 @@ impl Pane {
                     .child(ui::icon("package", t.size.icon, c.muted))
                     .child("Docker")
                     .when(!self.on_this_machine(id.as_ref()), |el| {
-                        el.child(self.other_machine(id.as_ref(), name.as_ref()))
+                        el.child(self.machine_chip(id.as_ref(), name.as_ref()))
                     })
                     .child(
                         ui::text(

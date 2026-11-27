@@ -425,7 +425,7 @@ impl Pane {
             return None;
         }
         let id = model::machine_id(grant).map(str::to_owned);
-        self.machine_chip(id.as_ref(), model::machine_of(grant).as_ref())
+        Some(self.machine_chip(id.as_ref(), model::machine_of(grant).as_ref()))
     }
 }
 
