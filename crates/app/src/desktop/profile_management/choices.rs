@@ -302,6 +302,22 @@ impl Form {
         self.runtime = None;
         self.model = None;
         self.elsewhere = None;
+        // A name the form filled in follows the new choice; a typed one stays.
+        if !again {
+            let (offers, from) = match self.machine {
+                None => (self.project.as_deref().and_then(folder_name), FROM_FOLDER),
+                Some(_) => {
+                    let typed = self.place.read(cx).value();
+                    (place_name(typed), named_from(typed))
+                }
+            };
+            let current = self.name.read(cx).value().to_owned();
+            if let Some(name) = refilled(&current, self.folder_name.as_deref(), offers) {
+                self.name.update(cx, |field, cx| field.set_value(&name, cx));
+                self.folder_name = Some(name).filter(|name| !name.is_empty());
+                self.named_from = from;
+            }
+        }
         let Some(machine) = self.machine.clone() else {
             self.runtime = self
                 .catalog()
@@ -1012,6 +1028,12 @@ fn place_name(typed: &str) -> Option<String> {
     place(typed)?;
     folder_name(std::path::Path::new(typed))
         .filter(|name| agent_interface_roster::valid_agent(name))
+}
+/// The name a machine change puts in the field, when it changes it: the
+/// name the form filled in, `filled`, follows what the new choice `offers`,
+/// and empties when that names nothing. A name the person typed stays.
+fn refilled(current: &str, filled: Option<&str>, offers: Option<String>) -> Option<String> {
+    (filled == Some(current)).then(|| offers.unwrap_or_default())
 }
 /// A folder's name as an agent name: lower case, spaces as hyphens.
 fn folder_name(path: &std::path::Path) -> Option<String> {

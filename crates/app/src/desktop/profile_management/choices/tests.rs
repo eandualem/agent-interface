@@ -713,6 +713,23 @@ fn a_place_on_another_machine_names_the_agent_only_with_a_valid_name() {
 }
 
 #[test]
+fn a_filled_name_follows_a_machine_change_and_a_typed_one_stays() {
+    // To another machine: the place typed there; back: the folder here.
+    let elsewhere = refilled("acme", Some("acme"), place_name("~/work/api"));
+    assert_eq!(elsewhere.as_deref(), Some("api"));
+    let here = refilled("api", Some("api"), folder_name(Path::new("/work/Acme")));
+    assert_eq!(here.as_deref(), Some("acme"));
+    // A choice that names nothing yet empties it.
+    assert_eq!(
+        refilled("api", Some("api"), place_name("")).as_deref(),
+        Some("")
+    );
+    // A typed name stays, and so does an emptied field.
+    assert_eq!(refilled("mine", Some("acme"), Some("api".into())), None);
+    assert_eq!(refilled("", Some("acme"), Some("api".into())), None);
+}
+
+#[test]
 fn only_the_latest_read_of_the_chosen_machine_is_shown() {
     assert!(accepts_read(2, 2, Some("linux"), "linux"));
     // A later read began: this one is superseded.
