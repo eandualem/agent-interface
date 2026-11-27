@@ -1,0 +1,389 @@
+{
+ "items": [
+  {
+   "name": "lead",
+   "registration_id": "6c656164000000000000000000000000",
+   "configured": true,
+   "state": "idle",
+   "repo": "",
+   "tags": [],
+   "machine": {
+    "id": "5f2c9e0d1b7a4e38",
+    "name": "laptop"
+   },
+   "role": "orchestrator",
+   "superior": null,
+   "mode": "sandboxed",
+   "grants": [
+    {
+     "kind": "repository",
+     "repo": "example/platform",
+     "access": "write"
+    },
+    {
+     "kind": "browser",
+     "machine": "5f2c9e0d1b7a4e38",
+     "machine_name": "laptop"
+    }
+   ],
+   "ceiling": [
+    {
+     "kind": "repository",
+     "repo": "example/platform",
+     "access": "write"
+    },
+    {
+     "kind": "folder",
+     "machine": "5f2c9e0d1b7a4e38",
+     "machine_name": "laptop",
+     "path": "/home/user/shared",
+     "access": "read"
+    }
+   ],
+   "reach": {
+    "kind": "profile",
+    "items": [
+     {
+      "repo": "example/platform",
+      "access": "write",
+      "source": "grant"
+     }
+    ]
+   }
+  },
+  {
+   "name": "overseer",
+   "registration_id": "6f766572736565720000000000000000",
+   "configured": true,
+   "state": "idle",
+   "repo": "",
+   "tags": [],
+   "machine": {
+    "id": "5f2c9e0d1b7a4e38",
+    "name": "laptop"
+   },
+   "role": "orchestrator",
+   "superior": "lead",
+   "mode": "sandboxed",
+   "grants": [],
+   "ceiling": [],
+   "reach": {
+    "kind": "repositories",
+    "items": [
+     {
+      "repo": "example/platform",
+      "access": "read",
+      "source": "role"
+     },
+     {
+      "repo": "example/site",
+      "access": "read",
+      "source": "role"
+     }
+    ]
+   }
+  },
+  {
+   "name": "planner",
+   "registration_id": "706c616e6e6572000000000000000000",
+   "configured": true,
+   "state": "idle",
+   "repo": "",
+   "tags": [],
+   "machine": {
+    "id": "5f2c9e0d1b7a4e38",
+    "name": "laptop"
+   },
+   "role": "coordinator",
+   "superior": "lead",
+   "mode": "sandboxed",
+   "grants": [],
+   "ceiling": [
+    {
+     "kind": "repository",
+     "repo": "example/app",
+     "access": "read"
+    }
+   ],
+   "reach": {
+    "kind": "repositories",
+    "items": [
+     {
+      "repo": "example/app",
+      "access": "read",
+      "source": "role"
+     },
+     {
+      "repo": "example/site",
+      "access": "read",
+      "source": "role"
+     },
+     {
+      "repo": "example/library",
+      "access": "read",
+      "source": "role"
+     }
+    ]
+   }
+  },
+  {
+   "name": "outreach",
+   "registration_id": "6f757472656163680000000000000000",
+   "configured": true,
+   "state": "idle",
+   "repo": "",
+   "tags": [],
+   "machine": {
+    "id": "5f2c9e0d1b7a4e38",
+    "name": "laptop"
+   },
+   "role": "coordinator",
+   "superior": "lead",
+   "mode": "sandboxed",
+   "grants": [
+    {
+     "kind": "browser",
+     "machine": "5f2c9e0d1b7a4e38",
+     "machine_name": "laptop"
+    }
+   ],
+   "ceiling": [],
+   "reach": {
+    "kind": "repositories",
+    "items": [
+     {
+      "repo": "example/site",
+      "access": "read",
+      "source": "role"
+     }
+    ]
+   }
+  },
+  {
+   "name": "builder",
+   "registration_id": "6275696c646572000000000000000000",
+   "configured": true,
+   "state": "idle",
+   "repo": "example/app",
+   "tags": [],
+   "machine": {
+    "id": "5f2c9e0d1b7a4e38",
+    "name": "laptop"
+   },
+   "role": "main",
+   "superior": "planner",
+   "mode": "sandboxed",
+   "grants": [
+    {
+     "kind": "repository",
+     "repo": "example/library",
+     "access": "read"
+    }
+   ],
+   "ceiling": [],
+   "reach": {
+    "kind": "repositories",
+    "items": [
+     {
+      "repo": "example/app",
+      "access": "write",
+      "source": "own_repository"
+     },
+     {
+      "repo": "example/library",
+      "access": "read",
+      "source": "grant"
+     }
+    ]
+   }
+  },
+  {
+   "name": "docs-site",
+   "registration_id": "646f63732d7369746500000000000000",
+   "configured": true,
+   "state": "idle",
+   "repo": "example/site",
+   "tags": [],
+   "machine": {
+    "id": "5f2c9e0d1b7a4e38",
+    "name": "laptop"
+   },
+   "role": "main",
+   "superior": "outreach",
+   "mode": "unsandboxed",
+   "grants": [
+    {
+     "kind": "folder",
+     "machine": "5f2c9e0d1b7a4e38",
+     "machine_name": "laptop",
+     "path": "/home/user/media",
+     "access": "write"
+    },
+    {
+     "kind": "secret_variable",
+     "machine": "5f2c9e0d1b7a4e38",
+     "machine_name": "laptop",
+     "name": "SITE_API_KEY"
+    },
+    {
+     "kind": "secret_file",
+     "machine": "0d9e8f7a6b5c4d3e",
+     "path": "/home/user/secrets/deploy-key"
+    },
+    {
+     "kind": "browser",
+     "machine": "5f2c9e0d1b7a4e38",
+     "machine_name": "laptop"
+    },
+    {
+     "kind": "docker",
+     "machine": "5f2c9e0d1b7a4e38",
+     "machine_name": "laptop"
+    },
+    {
+     "kind": "calendar",
+     "machine": "5f2c9e0d1b7a4e38"
+    }
+   ],
+   "ceiling": [],
+   "reach": {
+    "kind": "repositories",
+    "items": [
+     {
+      "repo": "example/site",
+      "access": "write",
+      "source": "own_repository"
+     }
+    ]
+   }
+  },
+  {
+   "name": "tester",
+   "registration_id": "74657374657200000000000000000000",
+   "configured": true,
+   "state": "idle",
+   "repo": "",
+   "tags": [],
+   "machine": {
+    "id": "5f2c9e0d1b7a4e38",
+    "name": "laptop"
+   },
+   "role": "main",
+   "superior": "lead",
+   "mode": "sandboxed",
+   "grants": [],
+   "ceiling": [],
+   "reach": {
+    "kind": "repositories",
+    "items": []
+   }
+  },
+  {
+   "name": "app-squad-coordinator",
+   "registration_id": "6170702d73717561642d636f6f726469",
+   "configured": true,
+   "state": "idle",
+   "repo": "example/app",
+   "tags": [
+    "swarm:app-squad"
+   ],
+   "machine": {
+    "id": "5f2c9e0d1b7a4e38",
+    "name": "laptop"
+   },
+   "role": "swarm_coordinator",
+   "superior": "builder",
+   "mode": "sandboxed",
+   "grants": [],
+   "ceiling": [],
+   "reach": {
+    "kind": "repositories",
+    "items": [
+     {
+      "repo": "example/app",
+      "access": "write",
+      "source": "own_repository"
+     }
+    ]
+   }
+  },
+  {
+   "name": "app-squad-coder",
+   "registration_id": "6170702d73717561642d636f64657200",
+   "configured": true,
+   "state": "idle",
+   "repo": "example/app",
+   "tags": [
+    "swarm:app-squad"
+   ],
+   "machine": {
+    "id": "5f2c9e0d1b7a4e38",
+    "name": "laptop"
+   },
+   "role": "swarm_member",
+   "superior": "app-squad-coordinator",
+   "mode": "sandboxed",
+   "grants": [],
+   "ceiling": [],
+   "reach": {
+    "kind": "repositories",
+    "items": [
+     {
+      "repo": "example/app",
+      "access": "write",
+      "source": "own_repository"
+     }
+    ]
+   }
+  },
+  {
+   "name": "app-squad-reviewer",
+   "registration_id": "6170702d73717561642d726576696577",
+   "configured": true,
+   "state": "idle",
+   "repo": "example/app",
+   "tags": [
+    "swarm:app-squad"
+   ],
+   "machine": {
+    "id": "5f2c9e0d1b7a4e38",
+    "name": "laptop"
+   },
+   "role": "swarm_member",
+   "superior": "app-squad-coordinator",
+   "mode": "sandboxed",
+   "grants": [],
+   "ceiling": [],
+   "reach": {
+    "kind": "repositories",
+    "items": [
+     {
+      "repo": "example/app",
+      "access": "read",
+      "source": "own_repository"
+     }
+    ]
+   }
+  },
+  {
+   "name": "scratch",
+   "configured": true,
+   "state": "idle",
+   "role": null,
+   "superior": null,
+   "mode": "sandboxed",
+   "grants": [],
+   "ceiling": [],
+   "reach": {
+    "kind": "repositories",
+    "items": []
+   }
+  },
+  {
+   "name": "stray",
+   "configured": false,
+   "state": "idle"
+  }
+ ],
+ "total": 12
+}

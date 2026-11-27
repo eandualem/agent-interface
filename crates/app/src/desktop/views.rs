@@ -34,6 +34,7 @@ use super::{
 use agent_interface_roster::profiles::Connection;
 use source::Source;
 
+mod access;
 mod activity;
 mod additions;
 mod agent;
@@ -80,6 +81,7 @@ pub(super) fn about(kind: ViewKind) -> About {
         ViewKind::Tags => ("hash", "Tags"),
         ViewKind::Reports => ("message-square", "Reports & updates"),
         ViewKind::Artifacts => ("layout-grid", "Artifacts"),
+        ViewKind::Access => ("shield", "Access"),
     };
     About { icon, label }
 }
@@ -206,6 +208,7 @@ pub(super) struct ViewPane {
     pub view: View,
     source: Option<Source>,
     connections: Option<Entity<connections::Pane>>,
+    access: Option<Entity<access::Pane>>,
     /// Immutable origin for retained content and every operation it opens.
     connection: Option<Connection>,
     data: Option<Data>,
@@ -327,7 +330,8 @@ impl ViewPane {
         }
     }
     /// Tell a Connections pane which workspace and profile it is in, for
-    /// its saved peer list choice and this profile's name.
+    /// its saved peer list choice and this profile's name; an Access pane,
+    /// the profile's name.
     pub(super) fn place_connections(
         &self,
         profile: Option<&str>,
@@ -345,6 +349,14 @@ impl ViewPane {
                     let _ = pane.update(cx, |_, cx| cx.notify());
                 });
             }
+        }
+        if let Some(pane) = &self.access
+            && pane.update(cx, |pane, _| pane.place(name))
+        {
+            let pane = pane.downgrade();
+            window.on_next_frame(move |_, cx| {
+                let _ = pane.update(cx, |_, cx| cx.notify());
+            });
         }
     }
 
@@ -388,6 +400,7 @@ impl ViewPane {
             folders,
             source: None,
             connections: None,
+            access: None,
             connection,
             data: None,
             read_at: None,
@@ -480,6 +493,12 @@ impl ViewPane {
             pane.connections = Some(cx.new(|cx| connections::Pane::new(connection, window, cx)));
             return pane;
         }
+        // The Access view reads through its own pane, never the view source.
+        if pane.view.kind == ViewKind::Access {
+            let visible = pane.visible.clone();
+            pane.access = Some(cx.new(|cx| access::Pane::new(connection, visible, window, cx)));
+            return pane;
+        }
         if matches!(pane.view.kind, ViewKind::Skills | ViewKind::Reports) {
             let field = cx.new(|cx| NameField::filter(window, cx));
             pane._search
@@ -554,6 +573,7 @@ impl ViewPane {
             ViewKind::Reports => reports_request(&self.reports),
             ViewKind::Connections => unreachable!("connections do not use the team content source"),
             ViewKind::Artifacts => unreachable!("artifacts have no Backbone source"),
+            ViewKind::Access => unreachable!("access reads through its own pane"),
             // A profile's agent card reads through its own connection.
             ViewKind::Agent => unreachable!("agent cards have no view source"),
         }
@@ -978,6 +998,9 @@ impl ViewPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if let Some(pane) = &self.access {
+            return pane.update(cx, |pane, cx| pane.key(key, window, cx));
+        }
         if let Some(pane) = &self.connections
             && key.key == "tab"
             && !key.modifiers.modified()
@@ -1124,6 +1147,9 @@ impl Render for ViewPane {
         }
         if let Some(connections) = &self.connections {
             return div().size_full().child(connections.clone());
+        }
+        if let Some(access) = &self.access {
+            return div().size_full().child(access.clone());
         }
         if let Some(artifacts) = &self.artifacts {
             return div().size_full().child(artifacts.clone());

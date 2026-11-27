@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 
+pub mod access;
 pub mod operations;
 
 use serde::Deserialize;

@@ -1122,6 +1122,8 @@ fn a_served_first_agent_starts_under_its_request_id_and_keeps_a_refusal() {
         assert_eq!(invalid.err(), Some(Error::Invalid));
     }
 }
+mod access;
+
 #[test]
 fn a_start_on_this_machine_sends_the_same_bytes_as_before() {
     use super::setup::start::Start;

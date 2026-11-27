@@ -1129,6 +1129,92 @@ pub fn badge(label: impl Into<SharedString>) -> Div {
     .child(label.into())
 }
 
+/// The machine a thing is on: a server icon and its name in a small mono
+/// badge.
+pub fn machine_chip(name: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap(px(t.space.s4))
+            .px(px(t.space.s4 + 1.0))
+            .h(px(t.size.keycap))
+            .rounded(px(t.radius.key))
+            .bg(c.field)
+            .border(px(t.size.hairline))
+            .border_color(c.line_strong)
+            .font_family(t.font.mono.clone())
+            .text_color(c.muted),
+        &t.text.key,
+    )
+    .child(icon("server", t.size.icon - 4.0, c.muted))
+    .child(name.into())
+}
+
+/// An agent's mark: the first letter of its name, upper case, on a round
+/// tint chosen from the name.
+pub fn agent_mark(name: &str, size: f32) -> Div {
+    let (t, c) = (tokens(), colors());
+    let hash = name.bytes().fold(0u32, |hash, byte| {
+        hash.wrapping_mul(31).wrapping_add(u32::from(byte))
+    });
+    let tint = [c.info, c.violet, c.green, c.accent][hash as usize % 4];
+    let letter = name
+        .chars()
+        .next()
+        .map_or_else(|| "?".to_owned(), |ch| ch.to_uppercase().collect());
+    text(
+        div()
+            .flex_shrink_0()
+            .size(px(size))
+            .rounded_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(Rgba { a: 0.2, ..tint })
+            .text_color(tint),
+        if size < t.size.access_mark_large {
+            &t.text.meta
+        } else {
+            &t.text.body
+        },
+    )
+    .font_weight(t.text.label.weight())
+    .child(letter)
+}
+
+/// A view's bottom row with a note on the left and another, in mono, on the
+/// right, such as the command that shows the same thing.
+pub fn note_footer(note: impl Into<SharedString>, aside: impl Into<SharedString>) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(t.space.s12))
+            .h(px(t.size.view_footer))
+            .px(px(t.space.s14))
+            .border_t(px(t.size.hairline))
+            .border_color(c.line)
+            .text_color(c.muted)
+            .overflow_hidden()
+            .whitespace_nowrap(),
+        &t.text.meta,
+    )
+    .child(
+        div()
+            .flex_1()
+            .min_w_0()
+            .overflow_hidden()
+            .text_ellipsis()
+            .child(note.into()),
+    )
+    .child(text(div().font_family(t.font.mono.clone()), &t.text.key).child(aside.into()))
+}
+
 /// A row of the new-pane views list: a glyph tile, a label and description,
 /// what it covers and its number key. Selected rows take the accent tile and
 /// ring.

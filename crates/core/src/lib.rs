@@ -202,11 +202,13 @@ pub enum ViewKind {
     Connections,
     /// Locally published HTML documents.
     Artifacts,
+    /// What each agent may reach, and the requests for more.
+    Access,
 }
 
 impl ViewKind {
     /// Every kind, in the order the new-pane chooser lists them.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Skills,
         Self::Policies,
         Self::Tags,
@@ -217,6 +219,7 @@ impl ViewKind {
         Self::Reports,
         Self::Connections,
         Self::Artifacts,
+        Self::Access,
     ];
 
     /// The saved name.
@@ -232,6 +235,7 @@ impl ViewKind {
             Self::Reports => "reports",
             Self::Connections => "connections",
             Self::Artifacts => "artifacts",
+            Self::Access => "access",
         }
     }
 
