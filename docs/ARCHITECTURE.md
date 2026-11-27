@@ -1569,11 +1569,13 @@ restored. While the view is shown, `agent_browser::stream` runs a Chrome
 screencast of the agent's tab. It finds the Chrome whose parent is the
 session's daemon, reads the DevTools port from the `DevToolsActivePort` file
 in that Chrome's `--user-data-dir`, and opens a WebSocket to
-`127.0.0.1:<port>/devtools/page/<target>`. It sends three methods only:
-`Page.startScreencast`, `Page.screencastFrameAck` and `Page.stopScreencast`.
-No input, script, page or emulation method reaches the page, so the agent's
-screenshots and commands are unchanged by it, and agent-browser's own
-stream keeps working beside it. Chrome keeps a few frames in flight and sends
+`127.0.0.1:<port>/devtools/page/<target>`. It sends six methods only:
+`Page.startScreencast`, `Page.screencastFrameAck` and `Page.stopScreencast`
+for the picture, and `Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`
+and `Input.insertText` for what the person does in the view. No script,
+page or emulation method reaches the page, so the agent's screenshots and
+commands are unchanged by it, and agent-browser's own stream keeps working
+beside it. Chrome keeps a few frames in flight and sends
 more only after they are acknowledged. The client's thread decodes each JPEG
 frame into one slot that a newer frame replaces, and acknowledges frames only
 when the view takes one to paint, together with those it replaced; a frame
@@ -1615,7 +1617,7 @@ scale is the window's, 2 on a Retina display. The scale is always given,
 since agent-browser otherwise sets it to 1. A narrow pane gives the site's
 narrow, responsive layout, which is the page the agent sees. The change goes
 through agent-browser, not DevTools, so its record of the page stays right,
-and the screencast still sends only its three methods. Only a browser the
+and the client still sends only its six methods. Only a browser the
 daemon started is resized: one agent-browser attached to may be the
 person's own Chrome. This works on Linux too, where the view also reads the
 daemon's Chrome process, while Open in Chrome stays macOS only.
@@ -1661,6 +1663,93 @@ disabled, with the reason in its tooltip, on Linux; for a browser the daemon
 did not start; and for a headless session whose Chrome has no
 `--user-data-dir`, uses the person's default Chrome folder, or runs while
 the person's home folder is unknown, or whose page has no web address.
+
+The person uses the page in the view as in a browser. Input goes on the
+view's own page connection, from the client's thread, and never through
+agent-browser, so it does not wait behind the agent's commands; Chrome takes
+both, and the agent's next snapshot shows what the person did. The view maps
+a point in the drawn frame to the page by the frame's own scale, the page's
+CSS width over the width drawn, which is right at any window scale,
+letterboxed or not, and one CSS pixel per point once the viewport follows
+the pane. Presses and releases of the left button with their click count,
+moves with the button held, and the wheel at the pointer go as
+`Input.dispatchMouseEvent`. A right or middle press, a Ctrl-click, which is
+a right click on macOS, or a Cmd-click could open Chrome's own menu or a
+link in a new tab in a browser window the view never shows, so those
+presses are not sent to the page. A right or middle press changes nothing
+else; a Ctrl- or Cmd-click, like any left click on a pane, selects it and
+gives the keyboard back to the app. Presses and releases carry no
+modifiers at all, since a Shift-click opens a link in a new window and an
+Option-click downloads it; moves carry Shift and Option, and the wheel
+Shift, which scrolls across;
+trackpad deltas keep their smoothness, and a wheel's lines are 40 CSS pixels
+each. Nothing beside the frame reaches the page, except that a drag begun
+inside keeps sending its moves and its release at the frame's nearest edge.
+A button released while no frame was drawn, as during a reconnect, is
+released in the page at the next move, and a release while the page can't be
+reached waits for the next connection. A pointer that leaves the frame, or
+the window, with no button held moves once just outside the page, so its
+hover ends.
+
+Hover and the wheel reach the page whenever the pointer is over the frame in
+the active window. A press in the frame gives the view the keyboard and a
+1-point focus ring; a press anywhere else, or a shortcut that moves to
+another pane, takes it back; without a page shown, a press in the view does
+not take it. In an expanded pane, Escape first restores the layout, as for a
+terminal, unless the input method is composing. While the input method
+composes, keys are its own, and no key is sent while the view shows no page,
+as when the page can't be reached; a composition or typed key still pending
+is dropped when the view loses the keyboard or the page. The window's
+shortcuts run before the view and keep working. A key the app or its menu
+acts on is never sent as well: the view skips any key with a key binding, a
+workspace command or a numbered selection, which covers Cmd-Q, Cmd-N, Cmd-O,
+Cmd-comma and the configurable chords, and Cmd-C, Cmd-V and Cmd-X, Ctrl on
+Linux, are not sent either. Named keys and combinations with Ctrl or Cmd go
+as `Input.dispatchKeyEvent` key down and up from the view's key handler. On
+macOS, Chrome runs no editing command for its usual editing keys by itself,
+so the view adds them from its own small table: `selectAll`, `undo` and
+`redo` for Cmd-A, Cmd-Z and Cmd-Shift-Z; moving by word with Option-Left and
+Option-Right, to the line's ends with Cmd-Left and Cmd-Right and to the
+document's with Cmd-Up and Cmd-Down, each extending the selection with
+Shift; and deleting a word with Option-Backspace and Option-Delete, or to
+the line's start with Cmd-Backspace. A Cmd key that types nothing also goes
+on to the system so that Cmd-` still switches windows; Cmd-Enter, Cmd-Space
+and Cmd-Tab carry a character, which a held key would also insert, so they
+stop at the view.
+
+A printable key is left to the platform's input method, which the view
+registers while it has the keyboard: when its text is the key's own
+character it goes as that key, with its text, so the page sees keydown,
+keypress and input; text the input method composed, from a dead key, a CJK
+input method or the emoji picker, goes as `Input.insertText`. The view keeps
+the composing text only to tell the platform that a composition is under
+way; the page shows nothing until it is committed, and the input method's
+own window shows it meanwhile. The page's pointer shape is reported only
+through methods outside the six, so the frame shows a plain pointer. A held
+key repeats in the page, as in a browser, rather than opening macOS's accent
+menu, which needs text the view does not have; accents come from dead keys
+and input methods.
+
+The client keeps the input waiting in order. At most one mouse move and one
+wheel turn wait for Chrome's answer: while one waits, a newer move replaces
+the next one waiting and wheel turns add up, also when moves and turns
+interleave, each turn keeping its own point, so moving while scrolling or a
+fast trackpad never builds a backlog in Chrome, and an answer not heard
+within a second counts as one.
+Presses, keys and text are never joined or reordered, so a move waiting is
+sent before a later press. The platform repeats a drag held still every 16
+ms; the view sends a repeated point once. The client's reads wait 5 ms while
+input came in the last second or waits for Chrome's answer, so input leaves
+within a few milliseconds; 20 ms while the view has the keyboard or the
+pointer is over the page in the active window, so the first key or click
+after a pause leaves within 20 ms without the client waking 200 times a
+second; and 100 ms otherwise, so a first input then leaves within one
+100 ms read. An error answer to an input request is logged once and leaves the
+screencast as it is; an error answer to the screencast's own requests still
+counts as a refusal. Input given while the client reconnects is dropped, not
+replayed on the new connection, except a mouse release, also one whose
+sending failed as the connection broke: the page keeps a button pressed
+across the client's connections until it hears one.
 
 ### Bound native Policies
 

@@ -1,4 +1,5 @@
-//! A watch-only screencast of an agent's page, read from its Chrome.
+//! A screencast of an agent's page, read from its Chrome, and the person's
+//! input to it.
 //!
 //! The client connects to the page's DevTools endpoint on `127.0.0.1`, at the
 //! port the agent's Chrome wrote in its own `DevToolsActivePort` file, and
@@ -10,15 +11,21 @@
 //! acknowledged at once. Frames come at the page's own pixel
 //! size, with its size in CSS pixels, and are decoded on the client's own
 //! thread into one slot that the newest frame replaces, so nothing queues.
-//! The client sends three methods only: `Page.startScreencast`,
-//! `Page.screencastFrameAck` and `Page.stopScreencast`. No input, script or
-//! emulation reaches the page. The page's address and title are read from
-//! Chrome's target list. After some navigations Chrome sends no frame of the
-//! new page until it changes again, so when the address changes the client
-//! restarts the screencast once, which sends the page as it is. Dropping the
-//! [`Stream`] stops the screencast.
+//! The client sends six methods only: `Page.startScreencast`,
+//! `Page.screencastFrameAck` and `Page.stopScreencast`, and for what the
+//! person does in the view, `Input.dispatchMouseEvent`,
+//! `Input.dispatchKeyEvent` and `Input.insertText`. No script or emulation
+//! reaches the page. Input goes on the same connection, so it never waits
+//! behind the agent's commands. At most one mouse move and one wheel turn
+//! wait for Chrome's answer: newer ones join the one waiting, also when moves
+//! and turns interleave, so a fast trackpad never builds a backlog. The
+//! page's address and title are read from Chrome's target list. After some
+//! navigations Chrome sends no frame of the new page until it changes again,
+//! so when the address changes the client restarts the screencast once, which
+//! sends the page as it is. Dropping the [`Stream`] stops the screencast.
 
 use std::{
+    collections::{HashSet, VecDeque},
     io::{ErrorKind, Read, Write},
     net::{SocketAddr, TcpStream},
     sync::{
@@ -42,6 +49,11 @@ const QUALITY: u32 = 80;
 const POLL: Duration = Duration::from_millis(5);
 /// How long a read waits while no frame waits to be drawn or acknowledged.
 const IDLE: Duration = Duration::from_millis(100);
+/// How long a read waits while the view has the keyboard but no input has
+/// come lately: short enough that the first key after a pause leaves soon,
+/// long enough that a view left focused does not wake the client 200 times a
+/// second.
+const FOCUSED: Duration = Duration::from_millis(20);
 /// How long a waiting frame keeps reads short. A view that has not taken it
 /// by then is not painting, so the client looks less often.
 const EAGER: Duration = Duration::from_secs(1);
@@ -56,6 +68,222 @@ const LISTING_BYTES: usize = 1 << 20;
 /// How long after the page's address changes a frame has to arrive before
 /// the client restarts the screencast.
 const REFRESH: Duration = Duration::from_millis(1500);
+/// How long a mouse move or wheel turn waits for Chrome's answer before the
+/// next is sent anyway.
+const ANSWER: Duration = Duration::from_secs(1);
+
+/// The modifier keys held, as bits of the page's `modifiers`.
+pub const ALT: u8 = 1;
+pub const CTRL: u8 = 2;
+pub const META: u8 = 4;
+pub const SHIFT: u8 = 8;
+
+/// A mouse button, as the page names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Button {
+    None,
+    Left,
+    Middle,
+    Right,
+}
+
+impl Button {
+    fn name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Left => "left",
+            Self::Middle => "middle",
+            Self::Right => "right",
+        }
+    }
+
+    /// Its bit in the buttons held.
+    pub fn bit(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::Left => 1,
+            Self::Right => 2,
+            Self::Middle => 4,
+        }
+    }
+}
+
+/// A mouse event at a point of the page, in CSS pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pointer {
+    pub x: f32,
+    pub y: f32,
+    /// The button pressed or released, or held during a move.
+    pub button: Button,
+    /// The bits of every button held.
+    pub buttons: u8,
+    pub clicks: usize,
+    pub modifiers: u8,
+}
+
+/// How a key event reaches the page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyKind {
+    /// A key that types its `text`.
+    Down,
+    /// A key that types nothing.
+    RawDown,
+    Up,
+}
+
+/// A key event, as the page receives it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Key {
+    pub kind: KeyKind,
+    /// The DOM `key` and `code`.
+    pub key: String,
+    pub code: &'static str,
+    pub virtual_key: u32,
+    pub text: Option<String>,
+    pub modifiers: u8,
+    pub repeat: bool,
+    /// The editing commands Chrome runs for it, which Chrome on macOS does
+    /// not find itself.
+    pub commands: &'static [&'static str],
+}
+
+/// What the person did in the view, for the page.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Input {
+    Pressed(Pointer),
+    Released(Pointer),
+    Moved(Pointer),
+    /// A wheel turn at a point, by CSS pixels; positive scrolls down and right.
+    Wheel {
+        x: f32,
+        y: f32,
+        dx: f32,
+        dy: f32,
+        modifiers: u8,
+    },
+    Key(Key),
+    /// Text an input method composed, inserted as it is.
+    Text(String),
+}
+
+impl Input {
+    fn message(&self) -> (&'static str, Value) {
+        let mouse = |kind: &str, pointer: &Pointer| {
+            serde_json::json!({
+                "type": kind,
+                "x": pointer.x,
+                "y": pointer.y,
+                "button": pointer.button.name(),
+                "buttons": pointer.buttons,
+                "clickCount": pointer.clicks,
+                "modifiers": pointer.modifiers,
+            })
+        };
+        match self {
+            Self::Pressed(pointer) => ("Input.dispatchMouseEvent", mouse("mousePressed", pointer)),
+            Self::Released(pointer) => {
+                ("Input.dispatchMouseEvent", mouse("mouseReleased", pointer))
+            }
+            Self::Moved(pointer) => ("Input.dispatchMouseEvent", mouse("mouseMoved", pointer)),
+            Self::Wheel {
+                x,
+                y,
+                dx,
+                dy,
+                modifiers,
+            } => (
+                "Input.dispatchMouseEvent",
+                serde_json::json!({
+                    "type": "mouseWheel",
+                    "x": x,
+                    "y": y,
+                    "deltaX": dx,
+                    "deltaY": dy,
+                    "modifiers": modifiers,
+                }),
+            ),
+            Self::Key(key) => {
+                let kind = match key.kind {
+                    KeyKind::Down => "keyDown",
+                    KeyKind::RawDown => "rawKeyDown",
+                    KeyKind::Up => "keyUp",
+                };
+                let mut params = serde_json::json!({
+                    "type": kind,
+                    "key": key.key,
+                    "code": key.code,
+                    "windowsVirtualKeyCode": key.virtual_key,
+                    "modifiers": key.modifiers,
+                    "autoRepeat": key.repeat,
+                });
+                if let Some(text) = &key.text {
+                    params["text"] = text.as_str().into();
+                    params["unmodifiedText"] = text.as_str().into();
+                }
+                if !key.commands.is_empty() {
+                    params["commands"] = key.commands.into();
+                }
+                ("Input.dispatchKeyEvent", params)
+            }
+            Self::Text(text) => ("Input.insertText", serde_json::json!({"text": text})),
+        }
+    }
+}
+
+/// Add `input` to the inputs waiting to be sent. Behind the last press,
+/// release, key or text waiting, a move replaces the move waiting and a wheel
+/// turn adds to the turn waiting, also when the other kind came between them,
+/// so moving while scrolling leaves at most one of each; each turn keeps its
+/// own point. Presses, releases, keys and text are never joined or reordered.
+fn push(waiting: &mut VecDeque<Input>, input: Input) {
+    let joinable = |input: &Input| matches!(input, Input::Moved(_) | Input::Wheel { .. });
+    let tail = waiting
+        .iter()
+        .rposition(|waiting| !joinable(waiting))
+        .map_or(0, |last| last + 1);
+    for waiting in waiting.range_mut(tail..) {
+        match (waiting, &input) {
+            (Input::Moved(last), Input::Moved(newer)) => {
+                *last = *newer;
+                return;
+            }
+            (
+                Input::Wheel {
+                    x,
+                    y,
+                    dx,
+                    dy,
+                    modifiers,
+                },
+                Input::Wheel {
+                    x: newer_x,
+                    y: newer_y,
+                    dx: more_x,
+                    dy: more_y,
+                    modifiers: newer_modifiers,
+                },
+            ) => {
+                (*x, *y, *modifiers) = (*newer_x, *newer_y, *newer_modifiers);
+                *dx += more_x;
+                *dy += more_y;
+                return;
+            }
+            _ => {}
+        }
+    }
+    waiting.push_back(input);
+}
+
+/// The next input to send: none while the first waiting is a move or wheel
+/// turn and one of its kind waits for Chrome's answer, so what follows it
+/// waits too and nothing is reordered.
+fn next(waiting: &mut VecDeque<Input>, moving: bool, wheeling: bool) -> Option<Input> {
+    match waiting.front()? {
+        Input::Moved(_) if moving => None,
+        Input::Wheel { .. } if wheeling => None,
+        _ => waiting.pop_front(),
+    }
+}
 
 /// Whether frames are arriving.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -94,11 +322,19 @@ struct Latest {
     taken: bool,
     address: Option<String>,
     title: Option<String>,
+    /// The person's input waiting to be sent, oldest first.
+    input: VecDeque<Input>,
+    /// When the view last gave input.
+    input_at: Option<Instant>,
 }
 
 struct Shared {
     latest: Mutex<Latest>,
     stop: AtomicBool,
+    /// Whether the view has the keyboard, so input may come at any moment.
+    focused: AtomicBool,
+    /// Whether the pointer is over the page in the view, so a click may.
+    hovered: AtomicBool,
 }
 
 /// Every message the client sends.
@@ -107,11 +343,13 @@ enum Outgoing {
     /// A frame drawn or replaced.
     Ack(i64),
     Stop,
+    Input(Input),
 }
 
 impl Outgoing {
     fn text(&self, id: u64) -> String {
         let (method, params) = match self {
+            Self::Input(input) => input.message(),
             Self::Start => (
                 "Page.startScreencast",
                 serde_json::json!({"format": "jpeg", "quality": QUALITY, "everyNthFrame": 1}),
@@ -149,6 +387,8 @@ impl Stream {
         let shared = Arc::new(Shared {
             latest: Mutex::default(),
             stop: AtomicBool::new(false),
+            focused: AtomicBool::new(false),
+            hovered: AtomicBool::new(false),
         });
         let worker = shared.clone();
         let started = thread::Builder::new()
@@ -179,6 +419,25 @@ impl Stream {
         latest.acks.push(frame.id);
         latest.taken = true;
         Some(frame)
+    }
+
+    /// Send the person's `input` to the page, after what came before it.
+    pub fn send(&self, input: Input) {
+        let mut latest = self.latest();
+        push(&mut latest.input, input);
+        latest.input_at = Some(Instant::now());
+    }
+
+    /// Whether the view has the keyboard, so the client looks for input
+    /// often.
+    pub fn set_focused(&self, focused: bool) {
+        self.shared.focused.store(focused, Ordering::Relaxed);
+    }
+
+    /// Whether the pointer is over the page in the view, so the client
+    /// looks for input often.
+    pub fn set_hovered(&self, hovered: bool) {
+        self.shared.hovered.store(hovered, Ordering::Relaxed);
     }
 
     fn latest(&self) -> std::sync::MutexGuard<'_, Latest> {
@@ -223,6 +482,7 @@ fn run(port: &dyn Fn() -> Option<u16>, target: &str, shared: &Shared, wake: &dyn
             latest.state = State::Unreachable;
             latest.acks.clear();
             latest.replaced.clear();
+            forget_input(&mut latest.input);
         }
         wake();
         let mut waited = Duration::ZERO;
@@ -234,13 +494,15 @@ fn run(port: &dyn Fn() -> Option<u16>, target: &str, shared: &Shared, wake: &dyn
 }
 
 /// Start a new connection: a frame from the previous one is neither drawn
-/// nor acknowledged on it.
+/// nor acknowledged on it, and input given before it is not sent, except a
+/// mouse release.
 fn restart(shared: &Shared) {
     let mut latest = lock(shared);
     latest.state = State::Connecting;
     latest.frame = None;
     latest.acks.clear();
     latest.replaced.clear();
+    forget_input(&mut latest.input);
 }
 
 /// A local TCP connection to `port`, waiting at most `RETRY` for each read.
@@ -289,12 +551,16 @@ fn watch(
     let mut sent = 0;
     let mut send = |socket: &mut WebSocket<TcpStream>, message: Outgoing| {
         sent += 1;
-        socket.send(Message::text(message.text(sent))).is_ok()
+        socket
+            .send(Message::text(message.text(sent)))
+            .is_ok()
+            .then_some(sent)
     };
     // A view that went while this connected asks for nothing.
-    if shared.stop.load(Ordering::Relaxed) || !send(socket, Outgoing::Start) {
+    if shared.stop.load(Ordering::Relaxed) || send(socket, Outgoing::Start).is_none() {
         return Ended::Lost;
     }
+    let mut inputs = Inputs::default();
     let mut timeout = IDLE;
     let mut listed: Option<Instant> = None;
     let mut waiting_since: Option<Instant> = None;
@@ -307,7 +573,7 @@ fn watch(
             return Ended::Lost;
         }
         if refresh.due(Instant::now()) {
-            if !(send(socket, Outgoing::Stop) && send(socket, Outgoing::Start)) {
+            if send(socket, Outgoing::Stop).is_none() || send(socket, Outgoing::Start).is_none() {
                 return Ended::Lost;
             }
             restarting = true;
@@ -327,19 +593,20 @@ fn watch(
                 }
             }
         }
-        let (acks, waiting, taken) = {
+        let (acks, waiting, taken, input_at) = {
             let mut latest = lock(shared);
             (
                 std::mem::take(&mut latest.acks),
                 latest.frame.is_some(),
                 std::mem::take(&mut latest.taken),
+                latest.input_at,
             )
         };
-        let wanted = if eager(&mut waiting_since, waiting, taken, Instant::now()) {
-            POLL
-        } else {
-            IDLE
-        };
+        let wanted = read_wait(
+            eager(&mut waiting_since, waiting, taken, Instant::now()),
+            input_at.is_some_and(|at| at.elapsed() < EAGER) || inputs.waiting(),
+            shared.focused.load(Ordering::Relaxed) || shared.hovered.load(Ordering::Relaxed),
+        );
         if wanted != timeout {
             if socket.get_ref().set_read_timeout(Some(wanted)).is_err() {
                 return Ended::Lost;
@@ -347,12 +614,33 @@ fn watch(
             timeout = wanted;
         }
         for frame in acks {
-            if !send(socket, Outgoing::Ack(frame)) {
+            if send(socket, Outgoing::Ack(frame)).is_none() {
                 return Ended::Lost;
             }
         }
+        let now = Instant::now();
+        loop {
+            let (moving, wheeling) = inputs.in_flight(now);
+            let Some(input) = next(&mut lock(shared).input, moving, wheeling) else {
+                break;
+            };
+            let kind = match input {
+                Input::Moved(_) => Some(Pending::Move),
+                Input::Wheel { .. } => Some(Pending::Wheel),
+                _ => None,
+            };
+            let Some(id) = send(socket, Outgoing::Input(input.clone())) else {
+                // A release that could not be sent waits for the next
+                // connection, which keeps it.
+                if matches!(input, Input::Released(_)) {
+                    lock(shared).input.push_front(input);
+                }
+                return Ended::Lost;
+            };
+            inputs.sent(id, kind, now);
+        }
         match socket.read() {
-            Ok(Message::Text(text)) => match receive(&text, shared) {
+            Ok(Message::Text(text)) => match receive(&text, shared, &mut inputs) {
                 Received::Changed => {
                     restarting = false;
                     wake();
@@ -376,6 +664,26 @@ fn watch(
             Err(_) => return Ended::Lost,
         }
     }
+}
+
+/// How long a read waits: `POLL` while a frame waits to be acknowledged or
+/// input came within `EAGER` or waits for Chrome's answer, `FOCUSED` while
+/// the view only has the keyboard or the pointer over the page, else `IDLE`.
+fn read_wait(frames: bool, input: bool, focused: bool) -> Duration {
+    if frames || input {
+        POLL
+    } else if focused {
+        FOCUSED
+    } else {
+        IDLE
+    }
+}
+
+/// Input given before a new connection is not sent on it, except a mouse
+/// release: the page keeps a button pressed across the client's connections
+/// until it hears one.
+fn forget_input(waiting: &mut VecDeque<Input>) {
+    waiting.retain(|input| matches!(input, Input::Released(_)));
 }
 
 /// When to restart the screencast: once, `REFRESH` after the listing shows a
@@ -428,6 +736,61 @@ fn eager(since: &mut Option<Instant>, waiting: bool, taken: bool, now: Instant) 
     waiting && now.duration_since(*since.get_or_insert(now)) < EAGER
 }
 
+/// Which kind of input waits for Chrome's answer before the next of its kind.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pending {
+    Move,
+    Wheel,
+}
+
+/// The input requests Chrome has not answered.
+#[derive(Default)]
+struct Inputs {
+    unanswered: HashSet<u64>,
+    /// The mouse move and wheel turn sent last, until answered or `ANSWER`
+    /// has passed.
+    moving: Option<(u64, Instant)>,
+    wheeling: Option<(u64, Instant)>,
+    /// Whether a refused input has been logged.
+    refused: bool,
+}
+
+impl Inputs {
+    fn sent(&mut self, id: u64, kind: Option<Pending>, now: Instant) {
+        self.unanswered.insert(id);
+        match kind {
+            Some(Pending::Move) => self.moving = Some((id, now)),
+            Some(Pending::Wheel) => self.wheeling = Some((id, now)),
+            None => {}
+        }
+    }
+
+    /// Whether a move and a wheel turn wait for Chrome's answer at `now`.
+    fn in_flight(&mut self, now: Instant) -> (bool, bool) {
+        let waits = |sent: &mut Option<(u64, Instant)>| {
+            if sent.is_some_and(|(_, at)| now.duration_since(at) >= ANSWER) {
+                *sent = None;
+            }
+            sent.is_some()
+        };
+        (waits(&mut self.moving), waits(&mut self.wheeling))
+    }
+
+    fn waiting(&self) -> bool {
+        self.moving.is_some() || self.wheeling.is_some()
+    }
+
+    /// Chrome answered request `id`: whether it was an input request.
+    fn answered(&mut self, id: u64) -> bool {
+        for sent in [&mut self.moving, &mut self.wheeling] {
+            if sent.is_some_and(|(sent, _)| sent == id) {
+                *sent = None;
+            }
+        }
+        self.unanswered.remove(&id)
+    }
+}
+
 /// What one message from Chrome did.
 #[derive(Debug, PartialEq, Eq)]
 enum Received {
@@ -438,13 +801,24 @@ enum Received {
     Refused,
 }
 
-/// Take in one message from Chrome.
-fn receive(text: &str, shared: &Shared) -> Received {
+/// Take in one message from Chrome. A refused input request is logged once
+/// and leaves the screencast as it is.
+fn receive(text: &str, shared: &Shared, inputs: &mut Inputs) -> Received {
     let Ok(message) = serde_json::from_str::<Value>(text) else {
         return Received::Nothing;
     };
-    if message.get("error").is_some() {
-        return Received::Refused;
+    let input = message
+        .get("id")
+        .and_then(Value::as_u64)
+        .is_some_and(|id| inputs.answered(id));
+    if let Some(error) = message.get("error") {
+        if !input {
+            return Received::Refused;
+        }
+        if !std::mem::replace(&mut inputs.refused, true) {
+            tracing::warn!(event = "browser_input_refused", %error, "Agent browser refused input");
+        }
+        return Received::Nothing;
     }
     if message.get("method").and_then(Value::as_str) != Some("Page.screencastFrame") {
         return Received::Nothing;
@@ -603,7 +977,123 @@ mod tests {
         Shared {
             latest: Mutex::default(),
             stop: AtomicBool::new(false),
+            focused: AtomicBool::new(false),
+            hovered: AtomicBool::new(false),
         }
+    }
+
+    fn pointer(x: f32) -> Pointer {
+        Pointer {
+            x,
+            y: 10.,
+            button: Button::Left,
+            buttons: Button::Left.bit(),
+            clicks: 1,
+            modifiers: 0,
+        }
+    }
+
+    fn wheel(x: f32, dy: f32) -> Input {
+        Input::Wheel {
+            x,
+            y: 10.,
+            dx: 0.,
+            dy,
+            modifiers: 0,
+        }
+    }
+
+    #[test]
+    fn moves_and_wheel_turns_join_while_one_waits_and_nothing_is_reordered() {
+        let mut waiting = VecDeque::new();
+        for x in [1., 2., 3.] {
+            push(&mut waiting, Input::Moved(pointer(x)));
+        }
+        // Only the newest move waits.
+        assert_eq!(waiting, [Input::Moved(pointer(3.))]);
+        push(&mut waiting, Input::Pressed(pointer(3.)));
+        push(&mut waiting, Input::Moved(pointer(4.)));
+        push(&mut waiting, wheel(4., 30.));
+        push(&mut waiting, wheel(5., 12.5));
+        assert_eq!(waiting.len(), 4);
+        // The turns add up, at the newest point.
+        assert_eq!(waiting.back(), Some(&wheel(5., 42.5)));
+        // A move still unanswered holds the next move, and what follows it.
+        assert_eq!(next(&mut waiting, true, false), None);
+        assert_eq!(
+            next(&mut waiting, false, true),
+            Some(Input::Moved(pointer(3.)))
+        );
+        assert_eq!(
+            next(&mut waiting, true, true),
+            Some(Input::Pressed(pointer(3.)))
+        );
+        assert_eq!(next(&mut waiting, true, true), None);
+        assert_eq!(
+            next(&mut waiting, false, true),
+            Some(Input::Moved(pointer(4.)))
+        );
+        assert_eq!(next(&mut waiting, false, true), None);
+        assert_eq!(next(&mut waiting, false, false), Some(wheel(5., 42.5)));
+    }
+
+    #[test]
+    fn moving_while_scrolling_leaves_one_move_and_one_turn_waiting() {
+        let mut waiting = VecDeque::new();
+        for (x, dy) in [(1., 10.), (2., 20.), (3., 30.)] {
+            push(&mut waiting, Input::Moved(pointer(x)));
+            push(&mut waiting, wheel(x, dy));
+        }
+        assert_eq!(waiting, [Input::Moved(pointer(3.)), wheel(3., 60.)]);
+        // A release starts a new run: nothing behind it joins what came before.
+        push(&mut waiting, Input::Released(pointer(3.)));
+        push(&mut waiting, wheel(4., 5.));
+        push(&mut waiting, Input::Moved(pointer(4.)));
+        push(&mut waiting, wheel(5., 5.));
+        assert_eq!(
+            waiting,
+            [
+                Input::Moved(pointer(3.)),
+                wheel(3., 60.),
+                Input::Released(pointer(3.)),
+                wheel(5., 10.),
+                Input::Moved(pointer(4.)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_move_waits_for_its_answer_or_for_a_second() {
+        let (start, mut inputs) = (Instant::now(), Inputs::default());
+        inputs.sent(7, Some(Pending::Move), start);
+        inputs.sent(8, None, start);
+        assert_eq!(inputs.in_flight(start), (true, false));
+        assert!(inputs.answered(7));
+        assert_eq!(inputs.in_flight(start), (false, false));
+        inputs.sent(9, Some(Pending::Wheel), start);
+        assert_eq!(inputs.in_flight(start + ANSWER), (false, false));
+        // An answer to a screencast request is not an input's.
+        assert!(!inputs.answered(1));
+        assert!(inputs.answered(8));
+    }
+
+    #[test]
+    fn a_refused_input_keeps_the_screencast() {
+        let (shared, mut inputs) = (shared(), Inputs::default());
+        inputs.sent(5, None, Instant::now());
+        let refusal = |id: u64| {
+            serde_json::json!({"id": id, "error": {"code": -32602, "message": "Invalid parameters"}})
+                .to_string()
+        };
+        assert_eq!(
+            receive(&refusal(5), &shared, &mut inputs),
+            Received::Nothing
+        );
+        // The screencast's own refusal still ends the connection.
+        assert_eq!(
+            receive(&refusal(1), &shared, &mut inputs),
+            Received::Refused
+        );
     }
 
     #[test]
@@ -611,7 +1101,10 @@ mod tests {
         let shared = shared();
         let data = jpeg();
         for id in 1..=5 {
-            assert_eq!(receive(&frame(id, &data), &shared), Received::Changed);
+            assert_eq!(
+                receive(&frame(id, &data), &shared, &mut Inputs::default()),
+                Received::Changed
+            );
         }
         let stream = Stream {
             shared: Arc::new(shared),
@@ -849,19 +1342,42 @@ mod tests {
     fn a_new_connection_forgets_the_last_frame() {
         let shared = shared();
         let data = jpeg();
-        receive(&frame(1, &data), &shared);
-        receive(&frame(2, "not a picture"), &shared);
-        receive(&frame(3, &data), &shared);
+        let mut inputs = Inputs::default();
+        receive(&frame(1, &data), &shared, &mut inputs);
+        receive(&frame(2, "not a picture"), &shared, &mut inputs);
+        receive(&frame(3, &data), &shared, &mut inputs);
         {
             let latest = lock(&shared);
             // A frame that cannot be drawn is acknowledged at once.
             assert_eq!(latest.acks, [2]);
             assert_eq!(latest.replaced, [1]);
         }
+        {
+            let mut latest = lock(&shared);
+            for input in [
+                Input::Pressed(pointer(1.)),
+                Input::Moved(pointer(2.)),
+                Input::Released(pointer(2.)),
+                Input::Text("a".into()),
+            ] {
+                push(&mut latest.input, input);
+            }
+        }
         restart(&shared);
         let latest = lock(&shared);
         assert!(latest.frame.is_none() && latest.acks.is_empty() && latest.replaced.is_empty());
         assert_eq!(latest.state, State::Connecting);
+        // Only a release goes on to the new connection, so no button stays
+        // pressed in the page.
+        assert_eq!(latest.input, [Input::Released(pointer(2.))]);
+    }
+
+    #[test]
+    fn a_view_left_focused_reads_less_often_than_one_in_use() {
+        assert_eq!(read_wait(true, false, false), POLL);
+        assert_eq!(read_wait(false, true, true), POLL);
+        assert_eq!(read_wait(false, false, true), FOCUSED);
+        assert_eq!(read_wait(false, false, false), IDLE);
     }
 
     #[test]
@@ -875,11 +1391,12 @@ mod tests {
     #[test]
     // tungstenite's handshake callback returns its HTTP response as the error.
     #[allow(clippy::result_large_err)]
-    fn the_client_only_screencasts() {
+    fn the_client_only_screencasts_and_sends_input() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let (sent, received) = mpsc::channel();
         let (acked, first_ack) = mpsc::channel();
+        let (inserted, text_arrived) = mpsc::channel();
         let server = thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             let mut path = String::new();
@@ -911,12 +1428,28 @@ mod tests {
                 socket.send(Message::text(frame(id, &data))).unwrap();
             }
             let mut messages = Vec::new();
+            let mut refused = false;
             while let Ok(message) = socket.read() {
                 match message {
                     Message::Text(text) => {
                         let message: Value = serde_json::from_str(&text).unwrap();
                         if message["method"] == "Page.screencastFrameAck" {
                             let _ = acked.send(());
+                        }
+                        // Answer input as Chrome does, refusing the first.
+                        if message["method"]
+                            .as_str()
+                            .is_some_and(|method| method.starts_with("Input."))
+                        {
+                            let answer = if std::mem::replace(&mut refused, true) {
+                                serde_json::json!({"id": message["id"], "result": {}})
+                            } else {
+                                serde_json::json!({"id": message["id"], "error": {"code": -32602, "message": "Invalid parameters"}})
+                            };
+                            let _ = socket.send(Message::text(answer.to_string()));
+                            if message["method"] == "Input.insertText" {
+                                let _ = inserted.send(());
+                            }
                         }
                         messages.push(message);
                     }
@@ -943,6 +1476,32 @@ mod tests {
         first_ack
             .recv_timeout(Duration::from_secs(10))
             .expect("the client acknowledged a frame");
+        // The person's input, the first refused: the rest still arrives on
+        // the same connection.
+        let key = |kind| Key {
+            kind,
+            key: "a".into(),
+            code: "KeyA",
+            virtual_key: 65,
+            text: (kind == KeyKind::Down).then(|| "a".into()),
+            modifiers: 0,
+            repeat: false,
+            commands: &[],
+        };
+        for input in [
+            Input::Moved(pointer(5.)),
+            Input::Pressed(pointer(5.)),
+            Input::Released(pointer(5.)),
+            wheel(5., 40.),
+            Input::Key(key(KeyKind::Down)),
+            Input::Key(key(KeyKind::Up)),
+            Input::Text("é".into()),
+        ] {
+            stream.send(input);
+        }
+        text_arrived
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the input arrived");
         drop(stream);
         let (path, messages) = received.recv_timeout(Duration::from_secs(10)).unwrap();
         server.join().unwrap();
@@ -959,11 +1518,35 @@ mod tests {
                 [
                     "Page.startScreencast",
                     "Page.screencastFrameAck",
-                    "Page.stopScreencast"
+                    "Page.stopScreencast",
+                    "Input.dispatchMouseEvent",
+                    "Input.dispatchKeyEvent",
+                    "Input.insertText",
                 ]
                 .contains(method),
                 "{method}"
             );
         }
+        let input: Vec<(&str, &str)> = messages
+            .iter()
+            .filter(|message| message["method"].as_str().unwrap().starts_with("Input."))
+            .map(|message| {
+                let params = &message["params"];
+                let kind = params["type"].as_str().or(params["text"].as_str()).unwrap();
+                (message["method"].as_str().unwrap(), kind)
+            })
+            .collect();
+        assert_eq!(
+            input,
+            [
+                ("Input.dispatchMouseEvent", "mouseMoved"),
+                ("Input.dispatchMouseEvent", "mousePressed"),
+                ("Input.dispatchMouseEvent", "mouseReleased"),
+                ("Input.dispatchMouseEvent", "mouseWheel"),
+                ("Input.dispatchKeyEvent", "keyDown"),
+                ("Input.dispatchKeyEvent", "keyUp"),
+                ("Input.insertText", "é"),
+            ]
+        );
     }
 }

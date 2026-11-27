@@ -365,7 +365,7 @@ A remote agent's pane is drawn natively like any other terminal. It shows
 what the profile allows. While it connects the pane shows **Connecting…**; after
 a failure it shows the reason with **Open again** and **Detach**.
 
-## Watch an agent's browser
+## Watch and use an agent's browser
 
 An agent that drives a browser with
 [agent-browser](https://github.com/vercel-labs/agent-browser) gets a
@@ -388,9 +388,30 @@ size, the way a terminal does, so the agent works on the page exactly as you
 see it: a tall pane gives it a tall page, and a narrow pane gives it the
 site's narrow layout. Closing the view leaves the agent's browser at that
 size. If the agent sets its own page size, it keeps it until you resize or
-choose the pane again. The picture is for watching and cannot
-be clicked or typed into. To act in the page, click **Open in Chrome**: it
-brings the agent's own Chrome window to the front, or, when the session runs
+choose the pane again.
+
+You can use the page in the view as in a browser while the agent keeps
+working on it: click links and buttons, double click, drag to select text,
+and scroll with the wheel or trackpad, also inside the page's own scrolling
+areas. Only left clicks reach the page, and as plain clicks: right and
+middle clicks, Ctrl-clicks and Cmd-clicks could open Chrome's own menu or a
+new tab that the view doesn't show, so they are not sent to the page (a
+Ctrl- or Cmd-click still selects the pane and gives the keyboard back to the
+app, as any click on a pane does), and Shift and Option
+are left off clicks, as a Shift-click opens a new window and an
+Option-click downloads the link. Click in the page to type into it: a thin ring around the page shows
+that your keys go there. Typing, Enter, Tab, Backspace, the arrows, Escape
+and the page's own shortcuts reach the page, and so does text from accented
+keys and input methods. Holding a key repeats it, as in a browser; type
+accents with dead keys, such as Option-E then E, or an input method. In an
+expanded pane, Escape first restores the layout. The app's shortcuts still work, as do Cmd-Q and
+Settings. Copy, paste and cut are not passed to the page yet. To give the
+keyboard back to the app, click the sidebar or another pane, or the view's
+header, or use a shortcut that moves to another pane. The
+pointer stays a plain arrow over the page. The agent's next snapshot shows
+what you did.
+
+**Open in Chrome** brings the agent's own Chrome window to the front, or, when the session runs
 without a window (headless), opens the page's address in your Chrome. When
 agent-browser attached to a browser it did not open, when a headless page
 has no web address, when the agent's browser has no profile of its own (it

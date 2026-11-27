@@ -760,10 +760,17 @@ impl PlatformWindow for Window {
 /// A text input handler whose caret geometry the platform reads in its own
 /// coordinates. Register every input handler through this.
 pub fn input(handler: impl InputHandler) -> impl InputHandler {
-    Input(handler)
+    Input(handler, true)
 }
 
-struct Input<H>(H);
+/// As [`input`], for a handler whose held keys repeat instead of opening
+/// macOS's accent menu, which needs text the handler can show.
+pub fn repeating_input(handler: impl InputHandler) -> impl InputHandler {
+    Input(handler, false)
+}
+
+/// A handler, and whether macOS may open its accent menu for a held key.
+struct Input<H>(H, bool);
 
 impl<H: InputHandler> InputHandler for Input<H> {
     fn selected_text_range(
@@ -855,7 +862,7 @@ impl<H: InputHandler> InputHandler for Input<H> {
         self.0.text_length_utf16(window, cx)
     }
     fn apple_press_and_hold_enabled(&mut self) -> bool {
-        self.0.apple_press_and_hold_enabled()
+        self.1 && self.0.apple_press_and_hold_enabled()
     }
     fn accepts_text_input(&mut self, window: &mut gpui::Window, cx: &mut App) -> bool {
         self.0.accepts_text_input(window, cx)
