@@ -422,10 +422,9 @@ fn reconcile_selection(
     rows: &[Row],
     selected: &mut Option<String>,
     disarmed: &mut bool,
-    refreshing: bool,
-    reading_agents: bool,
+    reading: bool,
 ) {
-    if refreshing && selected.is_some() {
+    if reading && selected.is_some() {
         return;
     }
     let mut choices = rows.iter().filter(|row| NewPane::selectable(row));
@@ -434,19 +433,22 @@ fn reconcile_selection(
             *selected = None;
             *disarmed = true;
         }
-    } else if !*disarmed {
-        // The connections, and while the agents are read the sessions and
-        // the agents' rows, are there before the agents' tree is whole: a
-        // session may become an agent's row, and a swarm member listed
-        // alone folds under its agent once the swarms are read. The first
-        // choice waits for those.
-        *selected = choices
-            .find(|row| match row {
-                Row::Connection(_) => !refreshing,
-                Row::Session(_) | Row::Tree(..) => !reading_agents,
-                _ => true,
-            })
-            .map(row_key);
+    } else if !*disarmed && !reading {
+        // Until every read has landed, rows change kind and place: a session
+        // becomes an agent, a member listed alone folds under its agent.
+        // The first choice waits; a person's own choice never does.
+        *selected = choices.next().map(row_key);
+    }
+}
+
+/// Whether the list is still being read: until its sessions, its team and,
+/// for a profile, its roster with the swarms have each landed once. A read
+/// that failed has landed.
+fn reading(mode: Mode, sessions: bool, team: bool, roster: Option<bool>) -> bool {
+    match mode {
+        Mode::Sessions => sessions || team || roster == Some(false),
+        Mode::Agents => team,
+        Mode::Reports | Mode::Views => false,
     }
 }
 
@@ -687,10 +689,7 @@ impl NewPane {
                     .team
                     .iter()
                     .flat_map(|team| team.members.iter())
-                    .filter(|member| {
-                        self.origin.remote_profile(member).is_some()
-                            || self.sessions.contains(&member.name)
-                    })
+                    .filter(|member| self.listed(member))
                 {
                     if entries.iter().all(|(name, _)| *name != member.name) {
                         entries.push((member.name.clone(), self.agents.get(&member.name).state));
@@ -831,7 +830,13 @@ impl NewPane {
         self.team
             .iter()
             .flat_map(|team| team.members.iter())
-            .find(|member| member.name == name)
+            .find(|member| member.name == name && self.listed(member))
+    }
+
+    /// Whether a team member is listed: it has a session here, or it is
+    /// opened from another machine of the profile.
+    fn listed(&self, member: &Member) -> bool {
+        self.origin.remote_profile(member).is_some() || self.sessions.contains(&member.name)
     }
 
     /// → or ← on the selected row.
@@ -993,22 +998,13 @@ impl Render for NewPane {
             .map(row_key)
             .collect();
         let count = rows.iter().filter(|row| Self::selectable(row)).count();
-        let refreshing = match self.mode {
-            Mode::Sessions => self.loading || self.team_loading,
-            Mode::Agents => self.team_loading,
-            Mode::Reports | Mode::Views => false,
-        };
-        // The swarms come with the roster, read apart from the team; once
-        // read, even as an error, the tree no longer changes shape.
-        let reading_agents = self.mode == Mode::Sessions
-            && (self.team_loading || (self.origin.has_provider() && !self.agents.observed()));
-        reconcile_selection(
-            &rows,
-            &mut self.selected,
-            &mut self.disarmed,
-            refreshing,
-            reading_agents,
+        let reading = reading(
+            self.mode,
+            self.loading,
+            self.team_loading,
+            self.origin.has_provider().then(|| self.agents.observed()),
         );
+        reconcile_selection(&rows, &mut self.selected, &mut self.disarmed, reading);
         let views = matches!(self.mode, Mode::Views | Mode::Agents);
         let buttons = div()
             .flex()
@@ -1475,6 +1471,22 @@ fn icon_slot(name: &'static str) -> Div {
         .child(ui::icon(name, t.size.icon, c.muted))
 }
 
+/// A child row's frame that cannot be chosen: a `choice_frame`'s layout,
+/// without its pointer, hover or selection.
+fn quiet_frame(id: SharedString) -> gpui::Stateful<Div> {
+    let t = tokens();
+    div()
+        .id(id)
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(t.space.s10))
+        .h(px(t.size.row))
+        .px(px(t.space.s10))
+        .rounded(px(t.radius.row))
+        .relative()
+}
+
 /// The slot before a top-level row's symbol, holding its chevron.
 fn chevron_slot() -> Div {
     div()
@@ -1616,7 +1628,7 @@ impl NewPane {
             agent_groups::Row::Review { review, .. } => (if choosable {
                 child()
             } else {
-                child().cursor_default().hover(|style| style)
+                quiet_frame(id.clone())
             })
             .child(ui::review_symbol(review.running))
             .child(
@@ -2111,40 +2123,36 @@ mod tests {
     }
 
     #[test]
-    fn the_first_choice_waits_for_the_agents_above_the_connections() {
-        let mut rows = vec![Row::Heading("CONNECTIONS", ""), Row::Connection(None)];
+    fn the_first_choice_waits_until_every_read_has_landed() {
+        // (a) Sessions and team read, the roster with the swarms not yet:
+        // a member is still listed alone and the connections are there.
+        assert!(reading(Mode::Sessions, false, false, Some(false)));
+        // (b) The team and roster read, the sessions not yet: only remote
+        // agents are listed, some of them members of a local initiator.
+        assert!(reading(Mode::Sessions, true, false, Some(true)));
+        assert!(reading(Mode::Sessions, false, true, Some(true)));
+        assert!(!reading(Mode::Sessions, false, false, Some(true)));
+        // Without a profile there is no roster to wait for.
+        assert!(!reading(Mode::Sessions, false, false, None));
+        assert!(reading(Mode::Agents, false, true, Some(true)));
+        assert!(!reading(Mode::Views, true, true, Some(false)));
+
+        // While reading, no row of any kind is chosen for the person.
+        let mut rows = shown(&[], &[]);
+        rows.push(Row::Heading("CONNECTIONS", ""));
+        rows.push(Row::Connection(None));
+        rows.push(Row::Session("scratch".into()));
         let (mut selected, mut disarmed) = (None, false);
-        reconcile_selection(&rows, &mut selected, &mut disarmed, true, false);
+        reconcile_selection(&rows, &mut selected, &mut disarmed, true);
         assert!(selected.is_none() && !disarmed);
-        rows.splice(0..0, shown(&[], &[]));
-        reconcile_selection(&rows, &mut selected, &mut disarmed, true, false);
+        reconcile_selection(&rows[3..], &mut selected, &mut disarmed, true);
+        assert!(selected.is_none() && !disarmed);
+        // Read, the first row is chosen: the agent most in need.
+        reconcile_selection(&rows, &mut selected, &mut disarmed, false);
         assert_eq!(selected.as_deref(), Some("agent:lead:"));
-        // Sessions read before the team wait too: they may become agents.
-        let early = vec![
-            Row::Heading("TMUX SESSIONS", ""),
-            Row::Session("lead".into()),
-        ];
+        // A list of connections alone still offers its first.
         let (mut selected, mut disarmed) = (None, false);
-        reconcile_selection(&early, &mut selected, &mut disarmed, true, true);
-        assert!(selected.is_none() && !disarmed);
-        reconcile_selection(&early, &mut selected, &mut disarmed, false, false);
-        assert_eq!(selected.as_deref(), Some("lead"));
-        // So does a swarm member listed alone before the swarms are read.
-        let alone = shown(&[], &[]);
-        let (mut selected, mut disarmed) = (None, false);
-        reconcile_selection(&alone, &mut selected, &mut disarmed, false, true);
-        assert!(selected.is_none() && !disarmed);
-        reconcile_selection(&alone, &mut selected, &mut disarmed, false, false);
-        assert_eq!(selected.as_deref(), Some("agent:lead:"));
-        // Read, a list of connections alone still offers its first.
-        let (mut selected, mut disarmed) = (None, false);
-        reconcile_selection(
-            &rows[rows.len() - 2..],
-            &mut selected,
-            &mut disarmed,
-            false,
-            false,
-        );
+        reconcile_selection(&rows[4..6], &mut selected, &mut disarmed, false);
         assert_eq!(selected.as_deref(), Some("connections:all"));
     }
 
@@ -2195,7 +2203,6 @@ mod tests {
             &mut selected,
             &mut disarmed,
             false,
-            false,
         );
         assert!(selected.is_none() && disarmed);
         assert_eq!(
@@ -2245,21 +2252,23 @@ mod tests {
     }
 
     #[test]
-    fn row_reconciliation_keeps_pending_selection_without_delaying_the_first_choice() {
+    fn row_reconciliation_keeps_a_choice_made_while_reading() {
         let rows = vec![Row::Heading("SESSIONS", ""), Row::Session("worker".into())];
         let (mut selected, mut disarmed) = (None, false);
-        reconcile_selection(&rows, &mut selected, &mut disarmed, true, false);
-        assert_eq!(selected.as_deref(), Some("worker"));
+        reconcile_selection(&rows, &mut selected, &mut disarmed, true);
+        assert!(selected.is_none());
+        // The person's own choice, made while reading, stands.
+        selected = Some("worker".into());
         // A reveal may briefly have no rows while fresh data is being read.
-        reconcile_selection(&[], &mut selected, &mut disarmed, true, false);
+        reconcile_selection(&[], &mut selected, &mut disarmed, true);
         assert_eq!(selected.as_deref(), Some("worker"));
         let reordered = vec![Row::Session("other".into()), Row::Session("worker".into())];
-        reconcile_selection(&reordered, &mut selected, &mut disarmed, false, false);
+        reconcile_selection(&reordered, &mut selected, &mut disarmed, false);
         assert_eq!(selected.as_deref(), Some("worker"));
-        reconcile_selection(&reordered[..1], &mut selected, &mut disarmed, false, false);
+        reconcile_selection(&reordered[..1], &mut selected, &mut disarmed, false);
         assert!(selected.is_none());
         assert!(disarmed);
-        reconcile_selection(&rows, &mut selected, &mut disarmed, false, false);
+        reconcile_selection(&rows, &mut selected, &mut disarmed, false);
         assert!(selected.is_none());
     }
 }
