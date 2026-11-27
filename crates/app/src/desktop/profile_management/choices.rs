@@ -987,6 +987,17 @@ const GUIDE: &str = "orchestrator";
 fn agent_name(typed: &str) -> String {
     typed.split_whitespace().collect::<Vec<_>>().join("-")
 }
+/// What a name filled in for the agent came from: on another machine
+/// (`elsewhere`) the repository or folder typed there, else the folder
+/// chosen.
+fn named_from(elsewhere: bool, typed: &str) -> &'static str {
+    match elsewhere.then(|| place(typed)).flatten() {
+        Some(agent_interface_roster::profiles::setup::start::Place::Repository(_)) => {
+            "From the repository"
+        }
+        _ => "From the folder",
+    }
+}
 /// The agent name a repository or folder typed for another machine gives:
 /// its last part, when that is a valid name.
 fn place_name(typed: &str) -> Option<String> {
@@ -1358,7 +1369,7 @@ impl Render for Form {
                                         if taken {
                                             el.child(attention(format!("An agent named {name} already exists in this profile.").into()))
                                         } else if from_folder {
-                                            el.child(note("From the folder".into()))
+                                            el.child(note(named_from(elsewhere.is_some(), self.place.read(cx).value()).into()))
                                         } else if name.is_empty() {
                                             el
                                         } else if !agent_interface_roster::valid_agent(&name) {

@@ -746,3 +746,11 @@ fn a_machine_gone_from_the_list_is_not_kept_as_the_choice() {
     assert!(!still_listed(Some(&laptop), &listed));
     assert!(!still_listed(Some(&desktop), &[]));
 }
+
+#[test]
+fn a_name_from_a_repository_says_so() {
+    assert_eq!(named_from(true, " acme/app "), "From the repository");
+    assert_eq!(named_from(true, "~/work/app"), "From the folder");
+    // On this machine the name comes from the folder chosen.
+    assert_eq!(named_from(false, "acme/app"), "From the folder");
+}
