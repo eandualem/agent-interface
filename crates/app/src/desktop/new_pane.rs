@@ -263,25 +263,25 @@ fn agent_rows(
 }
 
 /// Whether a tree row `matches` the filter: an agent by its name, folder,
-/// tags or machine; what it started by what its row shows.
+/// tags or machine tag; what it started by what its row shows.
 fn tree_matches<'a>(
     row: &agent_groups::Row,
     member: impl Fn(&str) -> Option<&'a Member>,
     matches: impl Fn(&str) -> bool,
 ) -> bool {
     match row {
-        agent_groups::Row::Agent { name, .. } => {
+        agent_groups::Row::Agent { name, machine, .. } => {
             matches(name)
+                || machine.as_ref().is_some_and(|m| matches(&m.name))
                 || member(name).is_some_and(|member| {
-                    matches(&member.repo)
-                        || member.tags.iter().any(|tag| matches(tag))
-                        || member.machine.as_ref().is_some_and(|m| matches(&m.name))
+                    matches(&member.repo) || member.tags.iter().any(|tag| matches(tag))
                 })
         }
-        // A member's whole name holds its short one.
-        agent_groups::Row::Member { name, .. } | agent_groups::Row::Swarm { name, .. } => {
-            matches(name)
+        // A member's whole name holds its short one; its machine, its tag.
+        agent_groups::Row::Member { name, machine, .. } => {
+            matches(name) || machine.as_ref().is_some_and(|m| matches(&m.name))
         }
+        agent_groups::Row::Swarm { name, .. } => matches(name),
         agent_groups::Row::Review { review, .. } => matches(&review.reviewer),
         agent_groups::Row::Browser { label, .. } => matches(label),
     }
@@ -423,6 +423,7 @@ fn reconcile_selection(
     selected: &mut Option<String>,
     disarmed: &mut bool,
     refreshing: bool,
+    reading_team: bool,
 ) {
     if refreshing && selected.is_some() {
         return;
@@ -434,10 +435,15 @@ fn reconcile_selection(
             *disarmed = true;
         }
     } else if !*disarmed {
-        // The connections are there before the agents above them are read;
+        // The connections, and the sessions while the team is read, are
+        // there before the agents above them, whose rows they may become;
         // the first choice waits for those.
         *selected = choices
-            .find(|row| !(refreshing && matches!(row, Row::Connection(_))))
+            .find(|row| match row {
+                Row::Connection(_) => !refreshing,
+                Row::Session(_) => !reading_team,
+                _ => true,
+            })
             .map(row_key);
     }
 }
@@ -990,7 +996,14 @@ impl Render for NewPane {
             Mode::Agents => self.team_loading,
             Mode::Reports | Mode::Views => false,
         };
-        reconcile_selection(&rows, &mut self.selected, &mut self.disarmed, refreshing);
+        let reading_team = self.mode == Mode::Sessions && self.team_loading;
+        reconcile_selection(
+            &rows,
+            &mut self.selected,
+            &mut self.disarmed,
+            refreshing,
+            reading_team,
+        );
         let views = matches!(self.mode, Mode::Views | Mode::Agents);
         let buttons = div()
             .flex()
@@ -1103,7 +1116,7 @@ impl Render for NewPane {
                 SharedString::from(format!("new-pane-{}-{number}-{}", self.pane, row_key(&row)));
             let element = match &row {
                 Row::Heading(label, note) => ui::view_heading(*label, *note).into_any_element(),
-                Row::Tree(line, ..) => {
+                Row::Tree(line, choosable, _) => {
                     if selected
                         && let agent_groups::Row::Agent { name, .. }
                         | agent_groups::Row::Member { name, .. } = line.as_ref()
@@ -1115,7 +1128,7 @@ impl Render for NewPane {
                     let depth = line.depth();
                     nested(
                         depth,
-                        self.tree_row(id, line, (key, chosen.clone()), selected, cx),
+                        self.tree_row(id, line, (key, chosen.clone(), *choosable), selected, cx),
                     )
                 }
                 Row::Connection(selection) => self
@@ -1336,7 +1349,8 @@ fn row_key(row: &Row) -> String {
     match row {
         Row::Heading(label, _) => (*label).to_owned(),
         Row::Tree(row, _, machine) => tree_key(row, machine),
-        Row::Connection(None) => "connections".to_owned(),
+        // tmux names hold no colon, so no session takes this.
+        Row::Connection(None) => "connections:all".to_owned(),
         Row::Connection(Some(Selection::Peer(generation))) => {
             format!("connection:{}", generation.generation)
         }
@@ -1362,11 +1376,12 @@ fn tree_key(row: &agent_groups::Row, machine: &str) -> String {
         }
         // By its view, so a review ending above it never moves the selection.
         agent_groups::Row::Review {
+            swarm,
             review: agent_groups::Review {
                 view: Some(view), ..
             },
             ..
-        } => format!("review:{view}"),
+        } => format!("review:{}/{view}", swarm.as_deref().unwrap_or_default()),
         agent_groups::Row::Swarm {
             initiator, name, ..
         } => format!("swarm:{}", agent_groups::swarm_key(initiator, name)),
@@ -1492,7 +1507,7 @@ impl NewPane {
         &self,
         id: SharedString,
         line: &agent_groups::Row,
-        (key, chosen): (String, String),
+        (key, chosen, choosable): (String, String, bool),
         selected: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1540,7 +1555,11 @@ impl NewPane {
                 });
                 ui::choice_frame(id, selected)
                     .child(slot)
-                    .child(ui::agent_symbol(*state))
+                    .child(ui::agent_symbol(if status.stale {
+                        AgentState::Unknown
+                    } else {
+                        *state
+                    }))
                     .child(mono(name.clone()).flex_shrink_0().text_color(c.text))
                     .children(member.map(|member| ui::badge(member.runtime.clone())))
                     .child(
@@ -1572,7 +1591,12 @@ impl NewPane {
                 machine,
                 ..
             } => child()
-                .child(ui::agent_symbol(*state))
+                // A stale state is not shown as current, as the panel does.
+                .child(ui::agent_symbol(if self.agents.get(name).stale {
+                    AgentState::Unknown
+                } else {
+                    *state
+                }))
                 .child(mono(short.clone()).flex_shrink_0().text_color(c.text))
                 .children(
                     self.member(name)
@@ -1583,23 +1607,28 @@ impl NewPane {
                 // Only a member's row says what Enter does, as the board shows.
                 .children(selected.then(attach_hint))
                 .into_any_element(),
-            agent_groups::Row::Review { review, .. } => child()
-                .child(ui::review_symbol(review.running))
-                .child(
-                    fill()
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .text_color(if review.running { c.text } else { c.muted })
-                        .child(review.reviewer.clone()),
-                )
-                .child(meta(
-                    match &review.effort {
-                        Some(effort) => format!("review · {effort}"),
-                        None => "review".to_owned(),
-                    },
-                    c.muted,
-                ))
-                .into_any_element(),
+            // One that cannot be chosen looks it: no pointer, no hover.
+            agent_groups::Row::Review { review, .. } => (if choosable {
+                child()
+            } else {
+                child().cursor_default().hover(|style| style)
+            })
+            .child(ui::review_symbol(review.running))
+            .child(
+                fill()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .text_color(if review.running { c.text } else { c.muted })
+                    .child(review.reviewer.clone()),
+            )
+            .child(meta(
+                match &review.effort {
+                    Some(effort) => format!("review · {effort}"),
+                    None => "review".to_owned(),
+                },
+                c.muted,
+            ))
+            .into_any_element(),
             agent_groups::Row::Browser { label, .. } => child()
                 .child(icon_slot("globe"))
                 .child(
@@ -1640,7 +1669,13 @@ impl NewPane {
                             .text_color(c.text_2)
                             .child(name.clone()),
                     )
-                    .child(meta(format!("swarm · {} agents", members.len()), c.muted))
+                    .child(meta(
+                        match members.len() {
+                            1 => "swarm · 1 agent".to_owned(),
+                            count => format!("swarm · {count} agents"),
+                        },
+                        c.muted,
+                    ))
                     .child(fill())
                     .child(right)
                     .into_any_element()
@@ -1698,7 +1733,7 @@ impl NewPane {
                 .text_color(if named { c.text } else { c.text_2 })
                 .child(peer_rows::display_name(entry.name.as_deref()).to_owned()),
         )
-        .children(entry.connected.then(|| meta("connected", c.muted)))
+        .children(entry.connected.then(|| meta("connected", c.ok)))
         .child(div().flex_1().min_w_0())
         .children(entry.badge.as_ref().map(|(label, badge)| {
             ui::text(
@@ -1816,7 +1851,7 @@ mod tests {
             [
                 "agent:lead:",
                 "review:/lead/0",
-                "review:run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60",
+                "review:/run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60",
                 "swarm:lead/fix",
                 "member:fix/fix-coordinator:",
                 "member:fix/fix-coder:",
@@ -1841,7 +1876,7 @@ mod tests {
             Step::FoldSwarm(agent_groups::swarm_key("lead", "fix"))
         );
         assert_eq!(
-            step(&open, "review:run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60", false),
+            step(&open, "review:/run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60", false),
             Step::Select("agent:lead:".into())
         );
         assert_eq!(
@@ -1944,7 +1979,7 @@ mod tests {
         let connections = [entry("r1", Some("Example")), entry("r2", None)];
         assert_eq!(
             keys(&connection_rows(&connections, |_| true)),
-            ["request:r1", "request:r2", "connections"]
+            ["request:r1", "request:r2", "connections:all"]
         );
         // An unnamed connection matches by the name it shows.
         assert_eq!(
@@ -1973,7 +2008,7 @@ mod tests {
                 "agent:helper:",
                 "agent:solo-coder:",
                 "request:r1",
-                "connections",
+                "connections:all",
                 "scratch"
             ]
         );
@@ -2032,6 +2067,14 @@ mod tests {
             &rows[0],
             agent_groups::Row::Agent { machine: None, .. }
         ));
+        // The filter finds a member by its machine's tag.
+        let on_box: Vec<_> = rows
+            .iter()
+            .filter(|row| tree_matches(row, |_| None, |text| text.contains("build-box")))
+            .collect();
+        assert!(
+            matches!(&on_box[..], [agent_groups::Row::Member { name, .. }] if name == "fix-coder")
+        );
     }
 
     #[test]
@@ -2066,15 +2109,31 @@ mod tests {
     fn the_first_choice_waits_for_the_agents_above_the_connections() {
         let mut rows = vec![Row::Heading("CONNECTIONS", ""), Row::Connection(None)];
         let (mut selected, mut disarmed) = (None, false);
-        reconcile_selection(&rows, &mut selected, &mut disarmed, true);
+        reconcile_selection(&rows, &mut selected, &mut disarmed, true, false);
         assert!(selected.is_none() && !disarmed);
         rows.splice(0..0, shown(&[], &[]));
-        reconcile_selection(&rows, &mut selected, &mut disarmed, true);
+        reconcile_selection(&rows, &mut selected, &mut disarmed, true, false);
         assert_eq!(selected.as_deref(), Some("agent:lead:"));
+        // Sessions read before the team wait too: they may become agents.
+        let early = vec![
+            Row::Heading("TMUX SESSIONS", ""),
+            Row::Session("lead".into()),
+        ];
+        let (mut selected, mut disarmed) = (None, false);
+        reconcile_selection(&early, &mut selected, &mut disarmed, true, true);
+        assert!(selected.is_none() && !disarmed);
+        reconcile_selection(&early, &mut selected, &mut disarmed, false, false);
+        assert_eq!(selected.as_deref(), Some("lead"));
         // Read, a list of connections alone still offers its first.
         let (mut selected, mut disarmed) = (None, false);
-        reconcile_selection(&rows[rows.len() - 2..], &mut selected, &mut disarmed, false);
-        assert_eq!(selected.as_deref(), Some("connections"));
+        reconcile_selection(
+            &rows[rows.len() - 2..],
+            &mut selected,
+            &mut disarmed,
+            false,
+            false,
+        );
+        assert_eq!(selected.as_deref(), Some("connections:all"));
     }
 
     #[test]
@@ -2123,6 +2182,7 @@ mod tests {
             &[Row::Pick(replacement)],
             &mut selected,
             &mut disarmed,
+            false,
             false,
         );
         assert!(selected.is_none() && disarmed);
@@ -2176,18 +2236,18 @@ mod tests {
     fn row_reconciliation_keeps_pending_selection_without_delaying_the_first_choice() {
         let rows = vec![Row::Heading("SESSIONS", ""), Row::Session("worker".into())];
         let (mut selected, mut disarmed) = (None, false);
-        reconcile_selection(&rows, &mut selected, &mut disarmed, true);
+        reconcile_selection(&rows, &mut selected, &mut disarmed, true, false);
         assert_eq!(selected.as_deref(), Some("worker"));
         // A reveal may briefly have no rows while fresh data is being read.
-        reconcile_selection(&[], &mut selected, &mut disarmed, true);
+        reconcile_selection(&[], &mut selected, &mut disarmed, true, false);
         assert_eq!(selected.as_deref(), Some("worker"));
         let reordered = vec![Row::Session("other".into()), Row::Session("worker".into())];
-        reconcile_selection(&reordered, &mut selected, &mut disarmed, false);
+        reconcile_selection(&reordered, &mut selected, &mut disarmed, false, false);
         assert_eq!(selected.as_deref(), Some("worker"));
-        reconcile_selection(&reordered[..1], &mut selected, &mut disarmed, false);
+        reconcile_selection(&reordered[..1], &mut selected, &mut disarmed, false, false);
         assert!(selected.is_none());
         assert!(disarmed);
-        reconcile_selection(&rows, &mut selected, &mut disarmed, false);
+        reconcile_selection(&rows, &mut selected, &mut disarmed, false, false);
         assert!(selected.is_none());
     }
 }

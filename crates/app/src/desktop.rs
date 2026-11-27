@@ -3693,17 +3693,27 @@ impl Render for Browser {
                                 if !placed {
                                     return;
                                 }
-                                // Once the pane shows Connections, select the row's peer.
-                                browser.peer_to_open = selection.clone().and_then(|selection| {
-                                    let space = browser.connections_workspace()?;
-                                    let (key, _, _) = browser.peer_inboxes.get(&space.id)?;
-                                    Some((
-                                        space.id.clone(),
-                                        key.clone(),
-                                        peer_inbox::Opening::Peer(selection),
-                                    ))
-                                });
                                 let target = browser.creation_target();
+                                // Once the pane shows Connections, select the row's peer;
+                                // as the panel's rows, never over an open a save holds.
+                                if !browser.saving
+                                    && !browser.save_failed
+                                    && target
+                                        .as_ref()
+                                        .is_some_and(|t| browser.creation_is_current(t))
+                                {
+                                    browser.peer_to_open =
+                                        selection.clone().and_then(|selection| {
+                                            let space = browser.connections_workspace()?;
+                                            let (key, _, _) =
+                                                browser.peer_inboxes.get(&space.id)?;
+                                            Some((
+                                                space.id.clone(),
+                                                key.clone(),
+                                                peer_inbox::Opening::Peer(selection),
+                                            ))
+                                        });
+                                }
                                 browser.open_connections(
                                     target.as_ref(),
                                     Some(&pane),

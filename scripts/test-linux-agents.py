@@ -360,14 +360,16 @@ with tempfile.TemporaryDirectory(prefix="agents-smoke-", dir="/tmp") as director
             wait_for(lambda: in_pane("lead"), "lead's row in the new pane")
             wait_for(lambda: find("expand"), "the new pane's hint bar")
             assert find("collapse"), "the hint bar lacks collapse"
-            wait_for(lambda: find("CONNECTIONS"), "the connections section")
+            wait_for(lambda: in_pane("CONNECTIONS"), "the new pane's connections section")
             # Its members are not top-level rows any more.
             assert not find("detach-coordinator"), "a swarm member is a top-level row"
             # Keys go to the filter field; it is empty, so the arrows fold.
             field = wait_for(lambda: in_pane("Filter"), "the new pane's filter")
             press(int(field["left"]) + int(field["width"]) // 2, int(field["top"]) + int(field["height"]) // 2)
-            # lead works, so it is the first row; Up stops there.
-            for _ in range(6):
+            # lead works, so it is the first row; Up stops there, from any of
+            # the pane's rows: four agents, the fixture's connections and
+            # All connections.
+            for _ in range(12):
                 command("xdotool", "key", "Up")
                 time.sleep(0.2)
             command("xdotool", "key", "Right")
