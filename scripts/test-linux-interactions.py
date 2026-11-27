@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check that the Interactions pane follows a window resize in a disposable
+"""Check that the Interactions view follows a window resize in a disposable
 Xvfb desktop, with no input after the resize.
 
 Run under xvfb-run + dbus-run-session as a normal user. Uses no live provider,
@@ -111,10 +111,11 @@ with tempfile.TemporaryDirectory(prefix="interactions-smoke-", dir="/tmp") as di
     server = Server(str(profile / "api.sock"), Provider)
     os.chmod(profile / "api.sock", 0o600)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    # One workspace whose only pane is Interactions, so no navigation is needed.
+    # One workspace whose only pane is Reports; its Interactions tab shows the
+    # interaction history.
     library = root / "library"
     library.mkdir()
-    leaf = dict(id="000000000003", agent=None, view="activity")
+    leaf = dict(id="000000000003", agent=None, view="reports")
     model = dict(version=2, focus=False, selected="000000000001", workspaces=[
         dict(id="000000000001", name="Fixture", profile_id=PROFILE, selected="000000000002", tabs=[
             dict(id="000000000002", name="Fixture tab", focus=leaf["id"], tree=leaf)])])
@@ -167,7 +168,22 @@ with tempfile.TemporaryDirectory(prefix="interactions-smoke-", dir="/tmp") as di
             # window is captured at fixed times after each resize, well within
             # the view's 20 s refresh, and read afterwards, so a slow reading
             # cannot stretch the wait.
-            wait_for(lambda: find("Recorded"), "the Interactions footer")
+            # A click while the pane is still settling can be lost, so press
+            # the tab again until the history's footer shows.
+            for attempt in range(4):
+                word = wait_for(lambda: find("Interactions"), "the Interactions tab")
+                command("xdotool", "mousemove", "--window", window,
+                        str(int(word["left"]) + int(word["width"]) // 2),
+                        str(int(word["top"]) + int(word["height"]) // 2))
+                time.sleep(0.2)
+                command("xdotool", "click", "1")
+                try:
+                    wait_for(lambda: find("Recorded"), "the Interactions footer", 15)
+                    break
+                except AssertionError:
+                    if attempt == 3:
+                        raise
+            command("xdotool", "mousemove", "--window", window, "5", "5")
             steps = (("2000", "causes"), ("1000", "communication"), ("2000", "causes"))
             for step, (size, note) in enumerate(steps):
                 command("xdotool", "windowsize", "--sync", window, size, "880")

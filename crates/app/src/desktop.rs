@@ -789,6 +789,9 @@ struct Browser {
     /// The profile's shells of panes being closed, ended once the close is
     /// saved and no pane holds them.
     shells_after_close: Option<(agent_interface_roster::profiles::Connection, Vec<String>)>,
+    /// A workspace being deleted, whose saved peer list choices are
+    /// forgotten once the deletion is saved.
+    forget_after_delete: Option<String>,
     /// A close waits for its shells' check, or for the person's answer.
     close_pending: bool,
     /// The pane Open terminal asked for, focused once its shell is attached.
@@ -1137,6 +1140,7 @@ impl Browser {
         self.shell_after_save = None;
         self.shell_to_open = None;
         self.shells_after_close = None;
+        self.forget_after_delete = None;
         self.resize = None;
         self.pane_drag = None;
         self.pane_motion = None;
@@ -1421,15 +1425,9 @@ impl Browser {
             return;
         };
         self.pending_save = Some(proposal);
-        // Settings are shared by every library, so only this deletion says a
-        // saved peer list choice is no longer needed.
-        if settings::forget_peer_list_of(expected) {
-            settings::save_in_background(settings::Settings::current(), |result| {
-                if let Err(error) = result {
-                    tracing::warn!(%error, "A deleted workspace's peer list not forgotten");
-                }
-            });
-        }
+        // Settings are shared by every library, so only this deletion, once
+        // saved, says a saved peer list choice is no longer needed.
+        self.forget_after_delete = Some(expected.to_owned());
         self.workspace_menu = false;
         self.editing = None;
         self.tab_menu = None;
@@ -1755,6 +1753,16 @@ impl Browser {
                             }
                         }
                         browser.creation_from = None;
+                        if let Some(workspace) = browser.forget_after_delete.take()
+                            && !result.conflict
+                            && settings::forget_peer_list_of(&workspace)
+                        {
+                            settings::save_in_background(settings::Settings::current(), |result| {
+                                if let Err(error) = result {
+                                    tracing::warn!(%error, "A deleted workspace's peer list not forgotten");
+                                }
+                            });
+                        }
                         if let Some((connection, ids)) = browser.shells_after_close.take()
                             && !result.conflict
                             && let Some(layout) = &browser.layout
@@ -1855,6 +1863,7 @@ impl Browser {
         self.shell_after_save = None;
         self.shell_to_open = None;
         self.shells_after_close = None;
+        self.forget_after_delete = None;
         self.resize = None;
         self.pane_drag = None;
         // A carried pane has no drag left to let it go.
