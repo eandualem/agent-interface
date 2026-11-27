@@ -80,6 +80,7 @@ pub(super) fn about(kind: ViewKind) -> About {
         ViewKind::Tags => ("hash", "Tags"),
         ViewKind::Reports => ("message-square", "Reports & updates"),
         ViewKind::Artifacts => ("layout-grid", "Artifacts"),
+        ViewKind::Access => ("shield", "Access"),
     };
     About { icon, label }
 }
@@ -480,6 +481,10 @@ impl ViewPane {
             pane.connections = Some(cx.new(|cx| connections::Pane::new(connection, window, cx)));
             return pane;
         }
+        // The Access view reads through its own pane, never the view source.
+        if pane.view.kind == ViewKind::Access {
+            return pane;
+        }
         if matches!(pane.view.kind, ViewKind::Skills | ViewKind::Reports) {
             let field = cx.new(|cx| NameField::filter(window, cx));
             pane._search
@@ -554,6 +559,7 @@ impl ViewPane {
             ViewKind::Reports => reports_request(&self.reports),
             ViewKind::Connections => unreachable!("connections do not use the team content source"),
             ViewKind::Artifacts => unreachable!("artifacts have no Backbone source"),
+            ViewKind::Access => unreachable!("access reads through its own pane"),
             // A profile's agent card reads through its own connection.
             ViewKind::Agent => unreachable!("agent cards have no view source"),
         }
