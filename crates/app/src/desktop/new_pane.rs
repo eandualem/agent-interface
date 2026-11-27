@@ -1456,7 +1456,7 @@ fn nested(depth: usize, row: AnyElement) -> AnyElement {
 }
 
 /// What Enter does on a selected row under an agent.
-fn attach_hint() -> Div {
+fn attach_hint(label: &'static str) -> Div {
     let t = tokens();
     ui::text(
         div()
@@ -1468,7 +1468,7 @@ fn attach_hint() -> Div {
         &t.text.meta,
     )
     .child(ui::key_hint("↵"))
-    .child("attach here")
+    .child(label)
 }
 
 /// Text in `meta` that gives way first.
@@ -1517,17 +1517,23 @@ fn chevron_slot() -> Div {
         .justify_center()
 }
 
+/// A fold's chevron as a button.
 fn chevron(id: String, open: bool) -> gpui::Stateful<Div> {
+    chevron_mark(open)
+        .id(SharedString::from(id))
+        .cursor_pointer()
+        .hover(|el| el.bg(colors().selected))
+}
+
+/// A fold's chevron showing only its state, as under a filter.
+fn chevron_mark(open: bool) -> Div {
     let (t, c) = (tokens(), colors());
     div()
-        .id(SharedString::from(id))
         .size(px(t.space.s20))
         .flex()
         .items_center()
         .justify_center()
         .rounded(px(t.radius.icon_button))
-        .cursor_pointer()
-        .hover(|el| el.bg(colors().selected))
         .child(ui::icon(
             if open {
                 "chevron-down"
@@ -1570,15 +1576,16 @@ impl NewPane {
                 let status = self.agents.get(name);
                 let toggled = name.clone();
                 let open = *expanded;
-                let slot = chevron_slot().when(*children, |slot| {
+                // A filter shows what matches and never folds: there the
+                // chevron only shows the state.
+                let filtered = !self.query.is_empty();
+                let slot = chevron_slot()
+                    .when(*children && filtered, |slot| slot.child(chevron_mark(open)));
+                let slot = slot.when(*children && !filtered, |slot| {
                     slot.child(
                         chevron(format!("new-pane-fold-{}-{name}", self.pane), open).on_click(
                             cx.listener(move |chooser, _, _, cx| {
                                 cx.stop_propagation();
-                                // A filter shows what matches; it never folds.
-                                if !chooser.query.is_empty() {
-                                    return;
-                                }
                                 if chooser.expanded.remove(&toggled) {
                                     // Closed, it keeps the selection, on itself.
                                     chooser.selected = Some(chosen.clone());
@@ -1643,7 +1650,19 @@ impl NewPane {
                 .children(tag(machine))
                 .child(fill())
                 // Only a member's row says what Enter does, as the board shows.
-                .children(selected.then(attach_hint))
+                // As the hint bar says it.
+                .children(selected.then(|| {
+                    attach_hint(
+                        if self
+                            .member(name)
+                            .is_some_and(|m| self.origin.remote_profile(m).is_some())
+                        {
+                            "open remote terminal"
+                        } else {
+                            "attach here"
+                        },
+                    )
+                }))
                 .into_any_element(),
             // One that cannot be chosen looks it: no pointer, no hover.
             agent_groups::Row::Review { review, .. } => (if choosable {
