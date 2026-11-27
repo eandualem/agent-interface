@@ -256,8 +256,8 @@ impl Sheets {
         );
         for (column, col) in open.grid.columns.iter().enumerate() {
             let cell = open.grid.cell(&r.row_id, &col.column_id);
-            let display = cell.map(|c| c.display.clone()).unwrap_or_default();
-            let display: String = display
+            let display: String = cell
+                .map_or("", |c| c.display.as_str())
                 .chars()
                 .take(200)
                 .map(|ch| match ch {
