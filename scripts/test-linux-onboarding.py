@@ -284,34 +284,44 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
                 command("xdotool", "key", "--window", main, "ctrl+comma")
                 window = wait_for(lambda: next((w for w in app_windows() if w != main), None),
                                   "the settings window")
-                # Settings opens small: give the form room, then scroll the
-                # profile's page down to its agents and their Add agent.
-                command("xdotool", "windowsize", window, "1600", "1500")
+                # Settings opens small: give the form room, wholly on the
+                # screen so no click is clamped, then scroll the profile's
+                # page down to its agents and their Add agent.
+                command("xdotool", "windowactivate", "--sync", window)
+                command("xdotool", "windowmove", "--sync", window, "0", "0")
+                command("xdotool", "windowsize", "--sync", window, "1600", "1500")
                 time.sleep(1)
                 click(window, "Profiles")
                 click(window, "Personal")
                 wait_for(lambda: re.search(r"Sign-in", text(window)), "the profile's page")
 
-                def scroll_to(label, wheel):
-                    """Scroll the page (wheel 5 down, 4 up) until `label` shows."""
+                def scroll_to(pattern, description):
+                    """Scroll the page down until `pattern` shows in it."""
                     for _ in range(12):
-                        if any(w["text"].strip(".,:;…") == label for w in words(window)):
+                        value = text(window)
+                        if re.search(pattern, value):
                             return
                         fields = command("xdotool", "getwindowgeometry", "--shell", window)
                         size = dict(line.split("=", 1) for line in fields.splitlines())
                         command("xdotool", "mousemove", "--window", window,
-                                str(int(size["WIDTH"]) * 2 // 3), str(int(size["HEIGHT"]) // 2),
-                                "click", "--repeat", "5", wheel)
+                                str(int(size["WIDTH"]) * 2 // 3), str(int(size["HEIGHT"]) // 2))
+                        # Let the window take the pointer before the wheel turns.
+                        time.sleep(0.2)
+                        command("xdotool", "click", "--repeat", "5", "--delay", "50", "5")
                         time.sleep(0.5)
+                    raise AssertionError(f"Not found scrolling down: {description}: {value}")
 
-                scroll_to("Add", "5")
+                def machine_reads():
+                    return len([e for e in log("http.jsonl") if e["path"] == "/api/profile/machines"])
+
+                scroll_to(r"\bAdd\b", "Add agent")
+                before = machine_reads()
                 click(window, "Add")
-                # The form opens where the page was: back up to its first rows.
-                wait_for(lambda: len([e for e in log("http.jsonl")
-                                      if e["path"] == "/api/profile/machines"]) >= 2,
-                         "the form's read of the machines", timeout=60)
-                scroll_to("linux-box", "4")
-                wait_for(lambda: re.search(r"linux-box", text(window)), "the Machine row", timeout=60)
+                # The form opens below the profile's Agents row: once it has
+                # read the machines and its tools, scroll down to it.
+                wait_for(lambda: machine_reads() > before, "the form's read of the machines", timeout=60)
+                scroll_to(r"Your\s+agent", "the loaded form")
+                scroll_to(r"linux-box", "the Machine row")
                 value = text(window)
                 assert re.search(r"desktop\s+is\s+offline", value), value
                 click(window, "linux-box")
