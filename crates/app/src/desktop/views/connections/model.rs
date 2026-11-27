@@ -136,7 +136,7 @@ impl Sample {
         // The person's decline is its receipt, at the same time.
         declined.receipt = api::Receipt::Confirmed {
             outcome: "declined".into(),
-            recorded_at: ago(60 * 26 - 1),
+            recorded_at: declined.decided_at.clone().unwrap_or_default(),
         };
         let mut messages = vec![
             declined,
