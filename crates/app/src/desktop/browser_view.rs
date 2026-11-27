@@ -1146,13 +1146,23 @@ fn key_press(keystroke: &Keystroke, held: bool, mac: bool) -> Press {
 /// The editing command Chrome on macOS runs for `keystroke`, which it does
 /// not find itself there: select all, undo and redo, moving by word with
 /// Option and to the line's or document's ends with Cmd, Shift extending
-/// the selection, and deleting by word or to the line's start.
+/// the selection, and deleting by word or to the line's start; and the
+/// system's Ctrl-A, Ctrl-E and Ctrl-K, to the line's ends and deleting to
+/// its end, which reach Chrome only through key bindings a sent key skips.
 fn mac_editing(keystroke: &Keystroke) -> &'static [&'static str] {
     let held = &keystroke.modifiers;
-    if held.control || held.function {
+    if held.function {
         return &[];
     }
     let (option, command, shift) = (held.alt, held.platform, held.shift);
+    if held.control {
+        return match (keystroke.key.as_str(), option, command, shift) {
+            ("a", false, false, false) => &["moveToBeginningOfParagraph"],
+            ("e", false, false, false) => &["moveToEndOfParagraph"],
+            ("k", false, false, false) => &["deleteToEndOfParagraph"],
+            _ => &[],
+        };
+    }
     match (keystroke.key.as_str(), option, command, shift) {
         ("a", false, true, false) => &["selectAll"],
         ("z", false, true, false) => &["undo"],
@@ -2291,6 +2301,32 @@ mod tests {
         }
         // Off macOS, none.
         assert!(down("alt-left", None, false).unwrap().commands.is_empty());
+    }
+
+    #[test]
+    fn macos_ctrl_a_e_and_k_carry_the_systems_commands() {
+        for (text, command) in [
+            ("ctrl-a", "moveToBeginningOfParagraph"),
+            ("ctrl-e", "moveToEndOfParagraph"),
+            ("ctrl-k", "deleteToEndOfParagraph"),
+        ] {
+            assert_eq!(
+                down(text, None, true).unwrap().commands,
+                [command],
+                "{text}"
+            );
+            assert!(
+                down(text, None, false).unwrap().commands.is_empty(),
+                "{text}"
+            );
+        }
+        // Another modifier with them, or another Ctrl key: none.
+        for text in ["ctrl-shift-a", "ctrl-alt-e", "ctrl-cmd-k", "ctrl-b"] {
+            assert!(
+                down(text, None, true).unwrap().commands.is_empty(),
+                "{text}"
+            );
+        }
     }
 
     #[test]
