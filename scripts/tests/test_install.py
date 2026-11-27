@@ -79,7 +79,7 @@ class InstallTests(unittest.TestCase):
         files = {resources + "/INSTALLER": APP_ID + "\n",
                  resources + "/TARGET": target + "\n",
                  # Without a fixture, the Backbone commands answer as a
-                 # shipped build with no release key does.
+                 # build with no release key does.
                  executable: "#!/bin/sh\n[ \"$1\" != backbone-install ] || {\n"
                              '    [ -z "${TEST_BACKBONE_FIXTURE:-}" ] || exec "$TEST_BACKBONE_FIXTURE" "$@"\n'
                              "    echo 'Agent Backbone is not published yet.' >&2; exit 3\n}\n"
@@ -757,6 +757,18 @@ if '--write-out' in args:
         self.assertIn("again in 5 seconds", result.stderr)
         self.assertEqual(self.backbone_downloads()[:4], self.LATEST * 2)
 
+    def test_backbone_before_its_first_release_keeps_the_app(self):
+        # The built-in release key is trusted, but no Backbone release has
+        # been published yet.
+        self.backbone_releases()
+        del self.env["BACKBONE_FIXTURE_KEY"]
+        result = self.install(None)
+        self.assert_app_installed(result)
+        self.assertEqual((self.root / "sleeps").read_text(), "5\n")
+        self.assertEqual(self.backbone_downloads(), self.LATEST * 2)
+        self.assertIn("Agent Backbone was not installed. Rerun the installer to try again.", result.stderr)
+        self.assertFalse(self.backbone.exists())
+
     def test_backbone_interrupt_keeps_the_app(self):
         self.backbone_releases()
         self.publish_backbone("0.2.0")
@@ -867,10 +879,10 @@ if '--write-out' in args:
         self.assertIn("digest differs", result.stderr)
         self.assertIn("Agent Backbone was not updated. Rerun the installer to try again.", result.stderr)
 
-    def test_backbone_shipped_build_without_a_key(self):
+    def test_backbone_build_without_a_key(self):
         self.backbone_releases()
         self.publish_backbone("0.2.0")
-        del self.env["BACKBONE_FIXTURE_KEY"]
+        self.env["BACKBONE_FIXTURE_KEY"] = ""
         result = self.install(None)
         self.assert_app_installed(result)
         self.assertIn("Agent Backbone is not published yet, so it was not installed.", result.stderr)

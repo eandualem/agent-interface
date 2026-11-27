@@ -219,9 +219,10 @@ are one program. The installer downloads the latest Backbone release's
 manifest and its signature, and the newly installed app checks that signature
 against the release key built into the app. The installer then downloads that
 version's archive, and the app checks its SHA-256 against the signed manifest
-before it puts Backbone in place. Agent
-Backbone is not published yet: until it is, the installer says so and
-installs only the app.
+before it puts Backbone in place. Until the first Agent Backbone release is
+published, the installer reports that the release manifest cannot be
+downloaded, tries once more five seconds later, then finishes with only the app
+installed and says Agent Backbone was not installed.
 
 Running the installer again updates Backbone to its latest release. It never
 installs a version older than the one installed, also after `backbone
