@@ -3650,6 +3650,16 @@ impl Render for Browser {
                         if browser.pane_owner(&pane) != Some(expected) {
                             return;
                         }
+                        // What opens outside the pane's own place, such as a
+                        // tab, needs its workspace and tab still shown.
+                        let placed = chooser.placement.as_ref().is_some_and(|(origin, tab)| {
+                            browser.selected_origin_is_current(Some(origin))
+                                && browser
+                                    .layout
+                                    .as_ref()
+                                    .and_then(|layout| layout.model().tab())
+                                    .is_some_and(|selected| &selected.id == tab)
+                        });
                         match event {
                             new_pane::NewPaneEvent::OpenTerminal => {
                                 browser.open_terminal_in_empty(&pane, window, cx)
@@ -3668,6 +3678,9 @@ impl Render for Browser {
                                 name,
                                 members,
                             } => {
+                                if !placed {
+                                    return;
+                                }
                                 let target = browser.creation_target();
                                 browser.open_swarm_tab(
                                     (initiator.as_str(), name.as_str(), members.as_slice()),
@@ -3677,16 +3690,7 @@ impl Render for Browser {
                                 );
                             }
                             new_pane::NewPaneEvent::Connections(selection) => {
-                                let Some((origin, tab)) = &chooser.placement else {
-                                    return;
-                                };
-                                if !browser.selected_origin_is_current(Some(origin))
-                                    || !browser
-                                        .layout
-                                        .as_ref()
-                                        .and_then(|layout| layout.model().tab())
-                                        .is_some_and(|selected| &selected.id == tab)
-                                {
+                                if !placed {
                                     return;
                                 }
                                 // Once the pane shows Connections, select the row's peer.

@@ -202,9 +202,11 @@ const SECTIONS: [SectionChoice; 7] = [
 
 enum Row {
     Heading(&'static str, &'static str),
-    /// A line of the agents tree, and whether it can be chosen: a review
-    /// whose output this pane cannot show cannot.
-    Tree(Box<agent_groups::Row>, bool),
+    /// A line of the agents tree; whether it can be chosen, as a review
+    /// whose output this pane cannot show cannot; and the ID of the machine
+    /// of the agent it names, so a same-name agent listed again on another
+    /// machine never takes its place.
+    Tree(Box<agent_groups::Row>, bool, String),
     /// A connection or request, or with none, all of them.
     Connection(Option<Selection>),
     Session(String),
@@ -337,7 +339,7 @@ fn step(rows: &[Row], selected: &str, open: bool) -> Step {
     let Some(at) = rows.iter().position(|row| row_key(row) == selected) else {
         return Step::Nothing;
     };
-    let Row::Tree(row, _) = &rows[at] else {
+    let Row::Tree(row, ..) = &rows[at] else {
         return Step::Nothing;
     };
     match (row.as_ref(), open) {
@@ -376,9 +378,38 @@ fn step(rows: &[Row], selected: &str, open: bool) -> Step {
         (row, false) if row.depth() > 0 => rows[..at]
             .iter()
             .rev()
-            .find(|above| matches!(above, Row::Tree(above, _) if above.depth() < row.depth()))
+            .find(|above| matches!(above, Row::Tree(above, ..) if above.depth() < row.depth()))
             .map_or(Step::Nothing, |above| Step::Select(row_key(above))),
         _ => Step::Nothing,
+    }
+}
+
+/// Apply `step` to the list's folds and selection; whether anything changed.
+fn apply(
+    step: Step,
+    expanded: &mut HashSet<String>,
+    collapsed: &mut HashSet<String>,
+    selected: &mut Option<String>,
+) -> bool {
+    match step {
+        Step::Open(agent) => expanded.insert(agent),
+        Step::Close(agent) => expanded.remove(&agent),
+        Step::OpenSwarm(key) => collapsed.remove(&key),
+        Step::FoldSwarm(key) => collapsed.insert(key),
+        Step::Select(key) => {
+            *selected = Some(key);
+            true
+        }
+        Step::Nothing => false,
+    }
+}
+
+/// Whether `key` folds the list, and which way: → and ← do in the agents
+/// list while the filter is empty; once it holds text, they move its caret.
+fn folding(mode: Mode, query: &str, key: &str) -> Option<bool> {
+    match key {
+        "right" | "left" if mode == Mode::Sessions && query.is_empty() => Some(key == "right"),
+        _ => None,
     }
 }
 
@@ -403,7 +434,11 @@ fn reconcile_selection(
             *disarmed = true;
         }
     } else if !*disarmed {
-        *selected = choices.next().map(row_key);
+        // The connections are there before the agents above them are read;
+        // the first choice waits for those.
+        *selected = choices
+            .find(|row| !(refreshing && matches!(row, Row::Connection(_))))
+            .map(row_key);
     }
 }
 
@@ -506,7 +541,7 @@ impl NewPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let field = cx.new(|cx| NameField::filter(window, cx));
+        let field = cx.new(|cx| NameField::bare_filter(window, cx));
         let input = cx.subscribe_in(&field, window, |chooser, _, event, _, cx| {
             match event {
                 NameEvent::Changed(query) => {
@@ -705,7 +740,16 @@ impl NewPane {
                     rows.push(Row::Heading("BACKBONE AGENTS", "needs you first"));
                     rows.extend(tree.into_iter().map(|row| {
                         let choosable = choosable(&row, local);
-                        Row::Tree(Box::new(row), choosable)
+                        let machine = match &row {
+                            agent_groups::Row::Agent { name, .. }
+                            | agent_groups::Row::Member { name, .. } => self
+                                .member(name)
+                                .and_then(|member| member.machine.as_ref())
+                                .map(|machine| machine.id.clone())
+                                .unwrap_or_default(),
+                            _ => String::new(),
+                        };
+                        Row::Tree(Box::new(row), choosable, machine)
                     }));
                 }
                 if self.origin.has_provider() {
@@ -766,12 +810,12 @@ impl NewPane {
     }
 
     fn selectable(row: &Row) -> bool {
-        !matches!(row, Row::Heading(..) | Row::Tree(_, false))
+        !matches!(row, Row::Heading(..) | Row::Tree(_, false, _))
     }
 
     /// Whether number keys reach the row: only top-level rows.
     fn numbered(row: &Row) -> bool {
-        Self::selectable(row) && !matches!(row, Row::Tree(row, _) if row.depth() > 0)
+        Self::selectable(row) && !matches!(row, Row::Tree(row, ..) if row.depth() > 0)
     }
 
     /// The listed team member of this name.
@@ -787,25 +831,19 @@ impl NewPane {
         let Some(selected) = self.selected.clone() else {
             return;
         };
-        match step(&self.rows(), &selected, open) {
-            Step::Open(agent) => {
-                self.expanded.insert(agent);
-            }
-            Step::Close(agent) => {
-                self.expanded.remove(&agent);
-            }
-            Step::OpenSwarm(key) => {
-                self.collapsed_swarms.remove(&key);
-            }
-            Step::FoldSwarm(key) => {
-                self.collapsed_swarms.insert(key);
-            }
-            Step::Select(key) => {
-                self.selected = Some(key);
-                self.disarmed = false;
-                self.reveal = true;
-            }
-            Step::Nothing => return,
+        let step = step(&self.rows(), &selected, open);
+        let select = matches!(step, Step::Select(_));
+        if !apply(
+            step,
+            &mut self.expanded,
+            &mut self.collapsed_swarms,
+            &mut self.selected,
+        ) {
+            return;
+        }
+        if select {
+            self.disarmed = false;
+            self.reveal = true;
         }
         cx.notify();
     }
@@ -883,8 +921,8 @@ impl NewPane {
 
     fn choose(&mut self, row: Row, cx: &mut Context<Self>) {
         match row {
-            Row::Heading(..) | Row::Tree(_, false) => {}
-            Row::Tree(row, true) => match *row {
+            Row::Heading(..) | Row::Tree(_, false, _) => {}
+            Row::Tree(row, true, _) => match *row {
                 agent_groups::Row::Agent { name, .. } | agent_groups::Row::Member { name, .. } => {
                     match self
                         .member(&name)
@@ -1065,7 +1103,7 @@ impl Render for NewPane {
                 SharedString::from(format!("new-pane-{}-{number}-{}", self.pane, row_key(&row)));
             let element = match &row {
                 Row::Heading(label, note) => ui::view_heading(*label, *note).into_any_element(),
-                Row::Tree(line, _) => {
+                Row::Tree(line, ..) => {
                     if selected
                         && let agent_groups::Row::Agent { name, .. }
                         | agent_groups::Row::Member { name, .. } = line.as_ref()
@@ -1075,7 +1113,10 @@ impl Render for NewPane {
                             .is_some_and(|m| self.origin.remote_profile(m).is_some());
                     }
                     let depth = line.depth();
-                    nested(depth, self.tree_row(id, line, key, selected, cx))
+                    nested(
+                        depth,
+                        self.tree_row(id, line, (key, chosen.clone()), selected, cx),
+                    )
                 }
                 Row::Connection(selection) => self
                     .connection_row(id, selection.as_ref(), key, selected)
@@ -1246,13 +1287,13 @@ impl NewPane {
         if m.modified() {
             return false;
         }
+        if let Some(open) = folding(self.mode, &self.query, &key.key) {
+            self.fold(open, cx);
+            return true;
+        }
         match key.key.as_str() {
             "up" => self.move_by(-1, cx),
             "down" => self.move_by(1, cx),
-            // Once the filter holds text, they move its caret.
-            "right" | "left" if self.mode == Mode::Sessions && self.query.is_empty() => {
-                self.fold(key.key == "right", cx)
-            }
             "tab" => self.toggle(false, cx),
             "enter" => self.activate(cx),
             digit if navigating && digit.len() == 1 => match digit.parse::<usize>() {
@@ -1294,7 +1335,7 @@ fn cycle(mode: Mode, back: bool) -> Mode {
 fn row_key(row: &Row) -> String {
     match row {
         Row::Heading(label, _) => (*label).to_owned(),
-        Row::Tree(row, _) => tree_key(row),
+        Row::Tree(row, _, machine) => tree_key(row, machine),
         Row::Connection(None) => "connections".to_owned(),
         Row::Connection(Some(Selection::Peer(generation))) => {
             format!("connection:{}", generation.generation)
@@ -1311,12 +1352,21 @@ fn row_key(row: &Row) -> String {
     }
 }
 
-/// A tree row's identity. Names never hold a slash or a colon, so these
-/// cannot collide.
-fn tree_key(row: &agent_groups::Row) -> String {
+/// A tree row's identity, with the ID of the machine of the agent it names.
+/// Names never hold a slash or a colon, so these cannot collide.
+fn tree_key(row: &agent_groups::Row, machine: &str) -> String {
     match row {
-        agent_groups::Row::Agent { name, .. } => format!("agent:{name}"),
-        agent_groups::Row::Member { swarm, name, .. } => format!("member:{swarm}/{name}"),
+        agent_groups::Row::Agent { name, .. } => format!("agent:{name}:{machine}"),
+        agent_groups::Row::Member { swarm, name, .. } => {
+            format!("member:{swarm}/{name}:{machine}")
+        }
+        // By its view, so a review ending above it never moves the selection.
+        agent_groups::Row::Review {
+            review: agent_groups::Review {
+                view: Some(view), ..
+            },
+            ..
+        } => format!("review:{view}"),
         agent_groups::Row::Swarm {
             initiator, name, ..
         } => format!("swarm:{}", agent_groups::swarm_key(initiator, name)),
@@ -1442,7 +1492,7 @@ impl NewPane {
         &self,
         id: SharedString,
         line: &agent_groups::Row,
-        key: String,
+        (key, chosen): (String, String),
         selected: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1453,7 +1503,6 @@ impl NewPane {
                 .as_ref()
                 .map(|machine| ui::machine_tag(&machine.name, machine.presence.attention()))
         };
-        let attach = || selected.then(attach_hint);
         let fill = || div().flex_1().min_w_0();
         match line {
             agent_groups::Row::Agent {
@@ -1473,7 +1522,15 @@ impl NewPane {
                         chevron(format!("new-pane-fold-{}-{name}", self.pane), open).on_click(
                             cx.listener(move |chooser, _, _, cx| {
                                 cx.stop_propagation();
-                                if !chooser.expanded.remove(&toggled) {
+                                // A filter shows what matches; it never folds.
+                                if !chooser.query.is_empty() {
+                                    return;
+                                }
+                                if chooser.expanded.remove(&toggled) {
+                                    // Closed, it keeps the selection, on itself.
+                                    chooser.selected = Some(chosen.clone());
+                                    chooser.disarmed = false;
+                                } else {
                                     chooser.expanded.insert(toggled.clone());
                                 }
                                 cx.notify();
@@ -1523,7 +1580,8 @@ impl NewPane {
                 )
                 .children(tag(machine))
                 .child(fill())
-                .children(attach())
+                // Only a member's row says what Enter does, as the board shows.
+                .children(selected.then(attach_hint))
                 .into_any_element(),
             agent_groups::Row::Review { review, .. } => child()
                 .child(ui::review_symbol(review.running))
@@ -1541,7 +1599,6 @@ impl NewPane {
                     },
                     c.muted,
                 ))
-                .children(attach())
                 .into_any_element(),
             agent_groups::Row::Browser { label, .. } => child()
                 .child(icon_slot("globe"))
@@ -1553,7 +1610,6 @@ impl NewPane {
                         .child(label.clone()),
                 )
                 .child(meta("browser", c.muted))
-                .children(attach())
                 .into_any_element(),
             agent_groups::Row::Swarm {
                 initiator,
@@ -1569,8 +1625,10 @@ impl NewPane {
                     chevron(format!("new-pane-swarm-{}-{key}", self.pane), false)
                         .on_click(cx.listener(move |chooser, _, _, cx| {
                             cx.stop_propagation();
-                            chooser.collapsed_swarms.remove(&key);
-                            cx.notify();
+                            if chooser.query.is_empty() {
+                                chooser.collapsed_swarms.remove(&key);
+                                cx.notify();
+                            }
                         }))
                         .into_any_element()
                 };
@@ -1728,7 +1786,7 @@ mod tests {
         .into_iter()
         .map(|row| {
             let choosable = choosable(&row, |_| true);
-            Row::Tree(Box::new(row), choosable)
+            Row::Tree(Box::new(row), choosable, String::new())
         })
         .collect()
     }
@@ -1742,25 +1800,28 @@ mod tests {
         let folded = shown(&[], &[]);
         assert_eq!(
             keys(&folded),
-            ["agent:lead", "agent:helper", "agent:solo-coder"]
+            ["agent:lead:", "agent:helper:", "agent:solo-coder:"]
         );
-        assert_eq!(step(&folded, "agent:lead", true), Step::Open("lead".into()));
-        assert_eq!(step(&folded, "agent:lead", false), Step::Nothing);
+        assert_eq!(
+            step(&folded, "agent:lead:", true),
+            Step::Open("lead".into())
+        );
+        assert_eq!(step(&folded, "agent:lead:", false), Step::Nothing);
         // Nothing under it: no chevron, and → does nothing.
-        assert_eq!(step(&folded, "agent:solo-coder", true), Step::Nothing);
+        assert_eq!(step(&folded, "agent:solo-coder:", true), Step::Nothing);
 
         let open = shown(&["lead"], &[]);
         assert_eq!(
             keys(&open),
             [
-                "agent:lead",
+                "agent:lead:",
                 "review:/lead/0",
-                "review:/lead/1",
+                "review:run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60",
                 "swarm:lead/fix",
-                "member:fix/fix-coordinator",
-                "member:fix/fix-coder",
-                "agent:helper",
-                "agent:solo-coder",
+                "member:fix/fix-coordinator:",
+                "member:fix/fix-coder:",
+                "agent:helper:",
+                "agent:solo-coder:",
             ]
         );
         // The member is a row Enter can reach.
@@ -1769,32 +1830,35 @@ mod tests {
             .filter(|row| NewPane::selectable(row))
             .map(row_key)
             .collect();
-        assert!(choices.contains(&"member:fix/fix-coder".to_owned()));
+        assert!(choices.contains(&"member:fix/fix-coder:".to_owned()));
         assert_eq!(
-            step(&open, "member:fix/fix-coder", false),
+            step(&open, "member:fix/fix-coder:", false),
             Step::Select("swarm:lead/fix".into())
         );
-        assert_eq!(step(&open, "member:fix/fix-coder", true), Step::Nothing);
+        assert_eq!(step(&open, "member:fix/fix-coder:", true), Step::Nothing);
         assert_eq!(
             step(&open, "swarm:lead/fix", false),
             Step::FoldSwarm(agent_groups::swarm_key("lead", "fix"))
         );
         assert_eq!(
-            step(&open, "review:/lead/1", false),
-            Step::Select("agent:lead".into())
+            step(&open, "review:run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60", false),
+            Step::Select("agent:lead:".into())
         );
-        assert_eq!(step(&open, "agent:lead", false), Step::Close("lead".into()));
+        assert_eq!(
+            step(&open, "agent:lead:", false),
+            Step::Close("lead".into())
+        );
 
         // A folded swarm opens with →; ← then goes up to its agent.
         let swarm_folded = shown(&["lead"], &["lead/fix"]);
-        assert!(!keys(&swarm_folded).contains(&"member:fix/fix-coder".to_owned()));
+        assert!(!keys(&swarm_folded).contains(&"member:fix/fix-coder:".to_owned()));
         assert_eq!(
             step(&swarm_folded, "swarm:lead/fix", true),
             Step::OpenSwarm("lead/fix".into())
         );
         assert_eq!(
             step(&swarm_folded, "swarm:lead/fix", false),
-            Step::Select("agent:lead".into())
+            Step::Select("agent:lead:".into())
         );
     }
 
@@ -1805,7 +1869,7 @@ mod tests {
         assert!(!NewPane::selectable(unwatched) && !NewPane::numbered(unwatched));
         assert!(NewPane::selectable(watched));
         // Nor one whose agent runs on another machine: its view is there.
-        let Row::Tree(row, _) = watched else {
+        let Row::Tree(row, ..) = watched else {
             unreachable!()
         };
         assert!(matches!(row.as_ref(), agent_groups::Row::Review { .. }));
@@ -1830,12 +1894,15 @@ mod tests {
         };
         let coder = filtered("coder");
         assert_eq!(
-            coder.iter().map(tree_key).collect::<Vec<_>>(),
+            coder
+                .iter()
+                .map(|row| tree_key(row, ""))
+                .collect::<Vec<_>>(),
             [
-                "agent:lead",
+                "agent:lead:",
                 "swarm:lead/fix",
-                "member:fix/fix-coder",
-                "agent:solo-coder"
+                "member:fix/fix-coder:",
+                "agent:solo-coder:"
             ]
         );
         // Shown open while something under them shows; nothing under the
@@ -1902,9 +1969,9 @@ mod tests {
         assert_eq!(
             presented,
             [
-                "agent:lead",
-                "agent:helper",
-                "agent:solo-coder",
+                "agent:lead:",
+                "agent:helper:",
+                "agent:solo-coder:",
                 "request:r1",
                 "connections",
                 "scratch"
@@ -1965,6 +2032,68 @@ mod tests {
             &rows[0],
             agent_groups::Row::Agent { machine: None, .. }
         ));
+    }
+
+    #[test]
+    fn arrows_fold_only_the_agents_list_with_an_empty_filter() {
+        assert_eq!(folding(Mode::Sessions, "", "right"), Some(true));
+        assert_eq!(folding(Mode::Sessions, "", "left"), Some(false));
+        // With text, the filter's caret moves; elsewhere they do nothing.
+        assert_eq!(folding(Mode::Sessions, "co", "right"), None);
+        assert_eq!(folding(Mode::Views, "", "left"), None);
+        assert_eq!(folding(Mode::Sessions, "", "down"), None);
+    }
+
+    #[test]
+    fn a_step_changes_the_list_folds_and_selection_it_names() {
+        let (mut expanded, mut collapsed, mut selected) = (HashSet::new(), HashSet::new(), None);
+        let mut run = |step| apply(step, &mut expanded, &mut collapsed, &mut selected);
+        assert!(run(Step::Open("lead".into())));
+        assert!(!run(Step::Open("lead".into())));
+        assert!(run(Step::FoldSwarm("lead/fix".into())));
+        assert!(run(Step::Select("swarm:lead/fix".into())));
+        assert!(!run(Step::Nothing));
+        assert_eq!(expanded, HashSet::from(["lead".to_owned()]));
+        assert_eq!(collapsed, HashSet::from(["lead/fix".to_owned()]));
+        assert_eq!(selected.as_deref(), Some("swarm:lead/fix"));
+        let mut run = |step| apply(step, &mut expanded, &mut collapsed, &mut selected);
+        assert!(run(Step::OpenSwarm("lead/fix".into())));
+        assert!(run(Step::Close("lead".into())));
+        assert!(expanded.is_empty() && collapsed.is_empty());
+    }
+
+    #[test]
+    fn the_first_choice_waits_for_the_agents_above_the_connections() {
+        let mut rows = vec![Row::Heading("CONNECTIONS", ""), Row::Connection(None)];
+        let (mut selected, mut disarmed) = (None, false);
+        reconcile_selection(&rows, &mut selected, &mut disarmed, true);
+        assert!(selected.is_none() && !disarmed);
+        rows.splice(0..0, shown(&[], &[]));
+        reconcile_selection(&rows, &mut selected, &mut disarmed, true);
+        assert_eq!(selected.as_deref(), Some("agent:lead:"));
+        // Read, a list of connections alone still offers its first.
+        let (mut selected, mut disarmed) = (None, false);
+        reconcile_selection(&rows[rows.len() - 2..], &mut selected, &mut disarmed, false);
+        assert_eq!(selected.as_deref(), Some("connections"));
+    }
+
+    #[test]
+    fn a_same_name_agent_on_another_machine_is_another_row() {
+        let agent = || {
+            Box::new(agent_groups::Row::Agent {
+                name: "worker".into(),
+                state: AgentState::Idle,
+                machine: None,
+                counts: agent_groups::Counts::default(),
+                children: false,
+                expanded: false,
+            })
+        };
+        let here = Row::Tree(agent(), true, "a".repeat(64));
+        let there = Row::Tree(agent(), true, "b".repeat(64));
+        assert_ne!(row_key(&here), row_key(&there));
+        let presented = vec![row_key(&here)];
+        assert!(numbered_row(&presented, 1, vec![there]).is_none());
     }
 
     #[test]

@@ -242,16 +242,15 @@ with tempfile.TemporaryDirectory(prefix="agents-smoke-", dir="/tmp") as director
         return subprocess.run(args, env=command_env, text=True, capture_output=True,
                               timeout=60 if reading else 15, check=check).stdout.strip()
 
-    # The new pane lists the agents with a session on the profile's own,
-    # private tmux server.
     profile_tmux = ["tmux", "-f", "/dev/null", "-S", str(root / "tmux/profile.sock")]
-    for name in ("lead", "detach-coordinator", "quiet"):
-        subprocess.run([*profile_tmux, "new-session", "-d", "-s", name, "sleep 600"],
-                       env=env, check=True, timeout=15)
-
     app = wm = window = None
     with (OUTPUT / "app.txt").open("w") as app_log, (OUTPUT / "wm.txt").open("w") as wm_log:
         try:
+            # The new pane lists the agents with a session on the profile's
+            # own, private tmux server, which the cleanup below ends.
+            for name in ("lead", "detach-coordinator", "quiet"):
+                subprocess.run([*profile_tmux, "new-session", "-d", "-s", name, "sleep 600"],
+                               env=env, check=True, timeout=15)
             wm = subprocess.Popen(["xfwm4", "--compositor=on", "--sm-client-disable"],
                                   env=env, stdout=wm_log, stderr=subprocess.STDOUT)
             wait_for(lambda: "_GTK_FRAME_EXTENTS" in command("xprop", "-root", "_NET_SUPPORTED"), "window manager")
@@ -349,17 +348,30 @@ with tempfile.TemporaryDirectory(prefix="agents-smoke-", dir="/tmp") as director
             assert find("Tags") or find("TAGS"), "the Tags pane was replaced"
             capture("connections-beside")
 
-            # The new pane: lead's row first, as it works, and folded.
+            # The new pane, right of the panel.
             click("Chooser")
+
+            def in_pane(text):
+                return next((word for word in found(text) if int(word["left"]) > panel_right), None)
+
+            # Its agents are read once the profile's team is: until then its
+            # sessions are listed as plain sessions.
+            wait_for(lambda: find("BACKBONE"), "the new pane's agents")
+            wait_for(lambda: in_pane("lead"), "lead's row in the new pane")
             wait_for(lambda: find("expand"), "the new pane's hint bar")
             assert find("collapse"), "the hint bar lacks collapse"
             wait_for(lambda: find("CONNECTIONS"), "the connections section")
             # Its members are not top-level rows any more.
             assert not find("detach-coordinator"), "a swarm member is a top-level row"
-            # Keys go to the filter field; it is empty, so → opens lead.
-            click("Filter")
+            # Keys go to the filter field; it is empty, so the arrows fold.
+            field = wait_for(lambda: in_pane("Filter"), "the new pane's filter")
+            press(int(field["left"]) + int(field["width"]) // 2, int(field["top"]) + int(field["height"]) // 2)
+            # lead works, so it is the first row; Up stops there.
+            for _ in range(6):
+                command("xdotool", "key", "Up")
+                time.sleep(0.2)
             command("xdotool", "key", "Right")
-            wait_for(lambda: find("coordinator"), "a swarm member under lead by its short name")
+            wait_for(lambda: in_pane("coordinator"), "a swarm member under lead by its short name")
             capture("new-pane-open")
             # Under lead: two reviews with no view here, which the arrows
             # skip, then its browser, the detach swarm and its coordinator.
