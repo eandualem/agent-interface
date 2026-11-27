@@ -251,6 +251,13 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
                 words = found(text)
                 return words[0] if words else None
 
+            def containing(fragment):
+                # Words holding `fragment`, top first: OCR joins or misreads
+                # letters around a word ("Adda repository"), not inside it.
+                words = [word for word in read() if fragment in word["text"]]
+                words.sort(key=lambda word: (int(word["top"]), int(word["left"])))
+                return words
+
             def click_word(word):
                 x = int(word["left"]) + int(word["width"]) // 2
                 y = int(word["top"]) + int(word["height"]) // 2
@@ -278,8 +285,10 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
             click("docs-site")
             # Only an unsandboxed agent's line says "everything".
             wait_for(lambda: find("everything"), "docs-site's confinement line")
-            wait_for(lambda: find("SECRETS"), "docs-site's secrets")
-            wait_for(lambda: find("FOLDERS"), "docs-site's folders")
+            # Parts of its rows OCR keeps: the arm runner read SITE_API_KEY as
+            # SITE_APL_KEY, and the folder /home/user/media whole.
+            wait_for(lambda: containing("SITE_"), "docs-site's secret")
+            wait_for(lambda: containing("media"), "docs-site's folder")
             capture("agent-detail")
 
             # Backbone refuses the confinement change; its reason is shown.
@@ -296,22 +305,9 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
             assert any(method == "PUT" and path == "/api/agents/tester/mode"
                        for method, path, _ in RECORDS.calls), RECORDS.calls
 
-            def containing(fragment):
-                # Words holding `fragment`, top first: OCR joins or misreads
-                # letters around a word ("Adda repository"), not inside it.
-                words = [word for word in read() if fragment in word["text"]]
-                words.sort(key=lambda word: (int(word["top"]), int(word["left"])))
-                return words
-
-            def changed_then_read(sent):
-                # A change Backbone was sent, then the pane's read after it:
-                # the pane reads again only once it has applied the reply.
-                def check():
-                    calls = list(RECORDS.calls)
-                    at = [index for index, call in enumerate(calls) if sent(*call)]
-                    return at and any(method == "GET" and path == "/api/agents"
-                                      for method, path, _ in calls[at[0] + 1:])
-                return check
+            def sent(change):
+                # Whether the stub has received a change matching `change`.
+                return lambda: any(change(*call) for call in list(RECORDS.calls))
 
             # A repository granted from the detail is read back from Backbone.
             # GitHub's "Add a repository" is the first line starting "Add".
@@ -325,12 +321,19 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
                                  for word in read()), "the add field")
             command("xdotool", "type", "--delay", "20", "example/extra")
             command("xdotool", "key", "Return")
-            wait_for(changed_then_read(
+            wait_for(sent(
                 lambda method, path, body: method == "POST" and path == "/api/agents/tester/grant"
                 and body["grant"] == dict(kind="repository", repo="example/extra", access="read")),
-                "the granted repository sent, then read back")
-            # The read is drawn on the next frame.
-            time.sleep(1)
+                "the granted repository sent")
+
+            def granted_shown():
+                # Once the field has closed, so the typed text cannot match,
+                # the new repository line is on screen.
+                words = read()
+                field_open = any(word["text"] == "Add" and int(word["left"]) > int(add["left"]) + 300
+                                 for word in words)
+                return not field_open and any("extra" in word["text"] for word in words)
+            wait_for(granted_shown, "the granted repository shown")
             capture("granted")
 
             # The waiting requests, and Escape back to the agents.
@@ -350,11 +353,12 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
             command("xdotool", "type", "--delay", "20", "for this check")
             command("xdotool", "key", "Return")
             command("xdotool", "key", "a")
-            approved_then_read = changed_then_read(
+            wait_for(sent(
                 lambda method, path, body: method == "POST" and path.endswith("/approve")
-                and body.get("note") == "for this check")
-            # Escape before the reply would only close the note.
-            wait_for(approved_then_read, "the approval sent with its note by the keys, then read back")
+                and body.get("note") == "for this check"),
+                "the approval sent with its note by the keys")
+            # The reply closes the note; Escape before that would only close it.
+            wait_for(lambda: len(containing("note")) <= notes, "the note closed by the reply")
             command("xdotool", "key", "Escape")
             wait_for(lambda: find("ORCHESTRATORS"), "the agent list again after Escape")
         finally:
