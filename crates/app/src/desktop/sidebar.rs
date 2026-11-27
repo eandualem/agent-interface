@@ -13,65 +13,6 @@ use super::{
 use crate::desktop::layout_edit::Create;
 use ui::AgentState;
 
-struct HeldDeliveryTip(&'static str);
-
-impl Render for HeldDeliveryTip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        ui::menu().child(self.0)
-    }
-}
-
-/// How long ago an offline machine was last seen, under its tag.
-struct MachineTip(SharedString);
-
-impl Render for MachineTip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        ui::menu().child(self.0.clone())
-    }
-}
-
-/// Nest rows under the row above them, one level per depth, each level
-/// joined to its parent's symbol by a hairline.
-fn nest(lines: Vec<(usize, AnyElement)>) -> Vec<AnyElement> {
-    let (t, c) = (tokens(), colors());
-    let branch = |children: Vec<AnyElement>| {
-        div()
-            .flex()
-            .flex_col()
-            .flex_shrink_0()
-            .gap(px(t.size.hairline))
-            // The hairline runs down from the middle of the parent's symbol.
-            .ml(px(t.space.s10 + t.size.agent_symbol / 2.0 - t.size.hairline))
-            .pl(px(t.space.s4))
-            .border_l(px(t.size.hairline))
-            .border_color(c.line_strong)
-            .children(children)
-            .into_any_element()
-    };
-    let mut levels: Vec<Vec<AnyElement>> = vec![Vec::new()];
-    let close = |levels: &mut Vec<Vec<AnyElement>>| {
-        let children = levels.pop().unwrap_or_default();
-        if let Some(parent) = levels.last_mut() {
-            parent.push(branch(children));
-        }
-    };
-    for (depth, line) in lines {
-        while levels.len() > depth + 1 {
-            close(&mut levels);
-        }
-        while levels.len() < depth + 1 {
-            levels.push(Vec::new());
-        }
-        if let Some(level) = levels.last_mut() {
-            level.push(line);
-        }
-    }
-    while levels.len() > 1 {
-        close(&mut levels);
-    }
-    levels.pop().unwrap_or_default()
-}
-
 #[derive(Clone)]
 struct TabDrag {
     origin: Option<super::navigation_origin::Origin>,
@@ -1000,7 +941,7 @@ impl Browser {
                 });
                 entries.extend(leads.into_iter().map(|name| (name, AgentState::Offline)));
             }
-            entries.sort_by_key(|(name, state)| {
+            entries.sort_by_cached_key(|(name, state)| {
                 (
                     !state.needs_you(),
                     !state.working(),
@@ -1153,16 +1094,6 @@ impl Browser {
                     rows = rows.child(quiet("No active agents".into(), None));
                 } else {
                     let creation = self.creation_target();
-                    // A 14 px icon in the place of a 16 px agent symbol.
-                    let icon_slot = |name: &'static str| {
-                        div()
-                            .flex_shrink_0()
-                            .size(px(t.size.agent_symbol))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(ui::icon(name, t.size.icon, c.muted))
-                    };
                     // An agent row; `swarm` marks a member under its swarm,
                     // shown by `label`.
                     #[allow(clippy::too_many_arguments)]
@@ -1206,7 +1137,7 @@ impl Browser {
                                 .when_some(tip, |tag, tip| {
                                     tag.tooltip(move |_, cx| {
                                         let tip = tip.clone();
-                                        cx.new(|_| MachineTip(tip)).into()
+                                        cx.new(|_| ui::Tip(tip)).into()
                                     })
                                 })
                         });
@@ -1274,7 +1205,7 @@ impl Browser {
                             .relative()
                             .group(group)
                             .when_some(held, |row, why| {
-                                row.tooltip(move |_, cx| cx.new(|_| HeldDeliveryTip(why)).into())
+                                row.tooltip(move |_, cx| cx.new(|_| ui::Tip(why.into())).into())
                             })
                             .when(stale || state == AgentState::Offline, |row| {
                                 row.opacity(0.75)
@@ -1293,11 +1224,7 @@ impl Browser {
                                     },
                                 ),
                             )
-                            .child(ui::agent_symbol(if stale {
-                                AgentState::Unknown
-                            } else {
-                                state
-                            }))
+                            .child(ui::agent_symbol(ui::shown_state(state, stale)))
                             // The name and what is beside it share one place with
                             // no gap between them; the name takes the room it needs.
                             .child(
@@ -1345,9 +1272,21 @@ impl Browser {
                             },
                         )
                     };
-                    let mut lines: Vec<(usize, AnyElement)> = Vec::new();
+                    // The depth of the row above: a level's line goes on from it
+                    // through the gap only while that row is at that level or deeper.
+                    let mut above = 0;
                     for row in tree {
                         let depth = row.depth();
+                        // A review's, browser's or swarm's symbol, and its label
+                        // taking the room left.
+                        let (symbol, label) = ui::tree_line(&row)
+                            .map(|(symbol, label)| {
+                                (
+                                    symbol,
+                                    label.flex_1().min_w_0().overflow_hidden().text_ellipsis(),
+                                )
+                            })
+                            .unzip();
                         let line = match row {
                             agent_groups::Row::Agent {
                                 name,
@@ -1393,42 +1332,22 @@ impl Browser {
                                     .whitespace_nowrap(),
                                 &t.text.row,
                             )
-                            .child(ui::review_symbol(review.running))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .text_color(if review.running { c.text } else { c.muted })
-                                    .child(review.reviewer),
-                            )
+                            .children(symbol)
+                            .children(label)
                             .children(review.effort.map(|effort| {
                                 ui::text(div().flex_shrink_0().text_color(c.muted), &t.text.meta)
                                     .child(effort)
                             }))
                             .into_any_element(),
-                            agent_groups::Row::Browser {
-                                agent,
-                                swarm,
-                                label,
-                            } => ui::row(
+                            agent_groups::Row::Browser { agent, swarm, .. } => ui::row(
                                 SharedString::from(format!(
                                     "browser-{}/{agent}",
                                     swarm.as_deref().unwrap_or_default()
                                 )),
                                 false,
                             )
-                            .child(icon_slot("globe"))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .text_color(c.text_2)
-                                    .child(label),
-                            )
+                            .children(symbol)
+                            .children(label)
                             .on_click(cx.listener(move |browser, _, window, cx| {
                                 browser.open_agent_browser(&agent, window, cx);
                             }))
@@ -1459,16 +1378,8 @@ impl Browser {
                                     SharedString::from(format!("swarm-{initiator}/{name}")),
                                     false,
                                 )
-                                .text_color(c.text_2)
-                                .child(icon_slot("users"))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .child(name.clone()),
-                                )
+                                .children(symbol)
+                                .children(label)
                                 .children((listed > 0).then(|| {
                                     ui::text(
                                         div().flex_shrink_0().text_color(c.muted),
@@ -1506,9 +1417,14 @@ impl Browser {
                             )
                             .into_any_element(),
                         };
-                        lines.push((depth, line));
+                        rows = rows.child(ui::nested(
+                            depth,
+                            line,
+                            0.0,
+                            (t.size.hairline, above.min(depth)),
+                        ));
+                        above = depth;
                     }
-                    rows = rows.children(nest(lines));
                 }
             }
         }
@@ -1617,15 +1533,6 @@ impl Browser {
                 },
             ))
         };
-        let slot = |child: AnyElement| {
-            div()
-                .flex_shrink_0()
-                .size(px(t.size.agent_symbol))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(child)
-        };
         let entries = summary
             .as_deref()
             .map(peer_rows::entries)
@@ -1640,9 +1547,7 @@ impl Browser {
                     Some(super::peer_inbox::Opening::Connect),
                 )
                 .text_color(c.text_2)
-                .child(slot(
-                    ui::icon("plus", t.size.icon, c.muted).into_any_element(),
-                ))
+                .child(ui::icon_slot("plus"))
                 .child("Connect a profile"),
             );
             return Some(section.into_any_element());
@@ -1653,7 +1558,6 @@ impl Browser {
                 super::peer_inbox::Selection::Peer(g) => format!("connection-{}", g.generation),
                 super::peer_inbox::Selection::Request(r) => format!("connection-request-{r}"),
             };
-            let named = entry.name.as_deref().is_some_and(|n| !n.trim().is_empty());
             let name = peer_rows::display_name(entry.name.as_deref()).to_owned();
             section = section.child(
                 open(
@@ -1670,31 +1574,21 @@ impl Browser {
                         .min_w_0()
                         .overflow_hidden()
                         .text_ellipsis()
-                        .text_color(if named { c.text } else { c.text_2 })
+                        .text_color(peer_rows::name_color(entry.name.as_deref()))
                         .child(name),
                 )
-                .children(entry.badge.map(|(label, badge)| {
-                    ui::text(
-                        div()
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .gap(px(t.space.s4 + 1.0))
-                            .text_color(peer_rows::badge_color(badge)),
-                        &t.text.meta,
-                    )
-                    .when(badge == peer_rows::Badge::Waiting, |state| {
-                        state.child(ui::dot(c.accent))
-                    })
-                    .child(label)
-                })),
+                .children(
+                    entry
+                        .badge
+                        .map(|(label, badge)| peer_rows::badge(&label, badge)),
+                ),
             );
         }
         if more > 0 {
             section = section.child(
                 open("connections-more".into(), None)
                     .text_color(c.muted)
-                    .child(slot(div().into_any_element()))
+                    .child(ui::symbol_slot(div()))
                     .child(format!("{more} more")),
             );
         }

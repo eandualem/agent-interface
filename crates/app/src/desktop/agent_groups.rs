@@ -301,9 +301,7 @@ pub(super) fn tree(
     }
     // By name within each urgency, so an agent lifted by what is under it
     // takes its place among that urgency's agents, not after them.
-    groups.sort_by(|(a, a_name, _), (b, b_name, _)| {
-        (a, a_name.to_ascii_lowercase(), a_name).cmp(&(b, b_name.to_ascii_lowercase(), b_name))
-    });
+    groups.sort_by_cached_key(|(rank, name, _)| (*rank, name.to_ascii_lowercase(), *name));
     groups.into_iter().flat_map(|(_, _, rows)| rows).collect()
 }
 

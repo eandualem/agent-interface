@@ -16,7 +16,7 @@ mod model;
 mod peers;
 mod rules;
 pub(in crate::desktop) use live::peer_mark;
-pub(in crate::desktop) use peers::{Badge, Entry, badge_color, entries};
+pub(in crate::desktop) use peers::{Badge, Entry, badge, badge_color, entries, name_color};
 pub(in crate::desktop) use rules::display_name;
 
 pub(super) struct Pane {
