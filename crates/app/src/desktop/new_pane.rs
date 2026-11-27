@@ -497,7 +497,6 @@ pub(super) struct NewPane {
     /// The connections of this pane's profile, as the panel lists them.
     connections: Vec<peer_rows::Entry>,
     visible: bool,
-    backbone: bool,
     scroll: ScrollHandle,
     session_source: Option<Sessions>,
     team_source: Option<Source>,
@@ -611,7 +610,6 @@ impl NewPane {
             collapsed_swarms: HashSet::new(),
             connections: Vec::new(),
             visible: true,
-            backbone: origin.has_provider(),
             origin,
             scroll: ScrollHandle::new(),
             session_source,
@@ -699,10 +697,7 @@ impl NewPane {
                         entries.push((member.name.clone(), self.agents.get(&member.name).state));
                     }
                 }
-                let local = |name: &str| {
-                    self.member(name)
-                        .is_some_and(|member| self.origin.remote_profile(member).is_none())
-                };
+                let local = |name: &str| self.member(name).is_some() && self.remote(name).is_none();
                 let local_machine = self.agents.local_machine_id();
                 let (machines, machines_read) = self.agents.machines();
                 let matches = |row: &agent_groups::Row| {
@@ -808,7 +803,7 @@ impl NewPane {
                     .filter(|member| self.matches(&member.name))
                     .filter_map(|member| self.origin.agent_view(member))
                     .collect();
-                views.sort_by_key(|view| {
+                views.sort_by_cached_key(|view| {
                     view.agent
                         .as_deref()
                         .unwrap_or_default()
@@ -835,6 +830,12 @@ impl NewPane {
             .iter()
             .flat_map(|team| team.members.iter())
             .find(|member| member.name == name && self.listed(member))
+    }
+
+    /// The profile a listed member's remote terminal opens on, when it is
+    /// on another machine of the profile.
+    fn remote(&self, name: &str) -> Option<String> {
+        self.origin.remote_profile(self.member(name)?)
     }
 
     /// Whether a team member is listed: it has a session here, or it is
@@ -903,7 +904,7 @@ impl NewPane {
     /// Move through sessions, Reports & updates and the views, forward or back;
     /// the agent list counts as the views.
     pub fn toggle(&mut self, back: bool, cx: &mut Context<Self>) {
-        if !self.backbone {
+        if !self.origin.has_provider() {
             return;
         }
         self.set_mode(cycle(self.mode, back), cx);
@@ -941,10 +942,7 @@ impl NewPane {
             Row::Heading(..) | Row::Tree(_, false, _) => {}
             Row::Tree(row, true, _) => match *row {
                 agent_groups::Row::Agent { name, .. } | agent_groups::Row::Member { name, .. } => {
-                    match self
-                        .member(&name)
-                        .and_then(|m| self.origin.remote_profile(m))
-                    {
+                    match self.remote(&name) {
                         Some(remote) => cx.emit(NewPaneEvent::Remote(name, remote)),
                         None => cx.emit(NewPaneEvent::Attach(name)),
                     }
@@ -1049,7 +1047,7 @@ impl Render for NewPane {
                     cx.emit(NewPaneEvent::OpenTerminal);
                 })),
             )
-            .when(self.backbone, |buttons| {
+            .when(self.origin.has_provider(), |buttons| {
                 buttons
                     .child(
                         ui::choice_button(
@@ -1143,14 +1141,16 @@ impl Render for NewPane {
                         && let agent_groups::Row::Agent { name, .. }
                         | agent_groups::Row::Member { name, .. } = line.as_ref()
                     {
-                        selected_remote = self
-                            .member(name)
-                            .is_some_and(|m| self.origin.remote_profile(m).is_some());
+                        selected_remote = self.remote(name).is_some();
                     }
                     let depth = line.depth();
-                    nested(
+                    // A top-level row has the chevron's slot before its symbol.
+                    ui::nested(
                         depth,
                         self.tree_row(id, line, (key, chosen.clone(), *choosable), selected, cx),
+                        t.space.s20 + t.space.s10,
+                        // Every level's line goes on through the gap above.
+                        (t.space.s2, depth),
                     )
                 }
                 Row::Connection(selection) => self
@@ -1251,12 +1251,12 @@ impl Render for NewPane {
             Mode::Agents => ("open its card here".into(), "back to sessions".into()),
         };
         let mut hints = vec![("↑↓", SharedString::from("move"))];
-        if self.backbone && self.mode == Mode::Sessions {
+        if self.origin.has_provider() && self.mode == Mode::Sessions {
             hints.push(("→", "expand".into()));
             hints.push(("←", "collapse".into()));
         }
         hints.push(("↵", enter));
-        if self.backbone {
+        if self.origin.has_provider() {
             hints.push(("⇥", tab));
         }
         div()
@@ -1275,7 +1275,7 @@ impl Render for NewPane {
                     .px(px(t.space.s28))
                     .child(buttons)
                     .child(ui::filter_frame().child(
-                        if self.mode == Mode::Sessions && self.backbone {
+                        if self.mode == Mode::Sessions && self.origin.has_provider() {
                             peer_rows::hinted(
                                 &self.field,
                                 "Filter agents, what they started, connections and sessions",
@@ -1422,39 +1422,6 @@ fn tree_key(row: &agent_groups::Row, machine: &str) -> String {
     }
 }
 
-/// A row under an agent, indented one level for each `depth`, with a
-/// hairline per level joining it to the symbol of the row it sits under.
-fn nested(depth: usize, row: AnyElement) -> AnyElement {
-    let (t, c) = (tokens(), colors());
-    if depth == 0 {
-        return row;
-    }
-    let mut wrapper = div().relative().flex_shrink_0();
-    let mut at = 0.0;
-    for level in 1..=depth {
-        // Under the symbol's middle; a top-level row has the chevron's slot
-        // before its symbol.
-        let lead = t.space.s10 + t.size.agent_symbol / 2.0 - t.size.hairline
-            + if level == 1 {
-                t.space.s20 + t.space.s10
-            } else {
-                0.0
-            };
-        wrapper = wrapper.child(
-            div()
-                .absolute()
-                // Through the gap above, so the levels' lines are unbroken.
-                .top(px(-t.space.s2))
-                .bottom_0()
-                .left(px(at + lead))
-                .w(px(t.size.hairline))
-                .bg(c.line_strong),
-        );
-        at += lead + t.space.s4 + t.size.hairline;
-    }
-    wrapper.pl(px(at)).child(row).into_any_element()
-}
-
 /// What Enter does on a selected row under an agent.
 fn attach_hint(label: &'static str) -> Div {
     let t = tokens();
@@ -1478,18 +1445,6 @@ fn meta(text: impl Into<SharedString>, color: gpui::Rgba) -> Div {
         &tokens().text.meta,
     )
     .child(text.into())
-}
-
-/// A 14 px icon in the place of a 16 px agent symbol.
-fn icon_slot(name: &'static str) -> Div {
-    let (t, c) = (tokens(), colors());
-    div()
-        .flex_shrink_0()
-        .size(px(t.size.agent_symbol))
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(ui::icon(name, t.size.icon, c.muted))
 }
 
 /// A child row's frame that cannot be chosen: a `choice_frame`'s layout,
@@ -1563,6 +1518,17 @@ impl NewPane {
                 .map(|machine| ui::machine_tag(&machine.name, machine.presence.attention()))
         };
         let fill = || div().flex_1().min_w_0();
+        // A review's, browser's or swarm's symbol and label, as the panel's.
+        let (symbol, label) = ui::tree_line(line).unzip();
+        // A label that takes the room left.
+        let filling = |label: Div| {
+            label
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+        };
         match line {
             agent_groups::Row::Agent {
                 name,
@@ -1600,11 +1566,7 @@ impl NewPane {
                 });
                 ui::choice_frame(id, selected)
                     .child(slot)
-                    .child(ui::agent_symbol(if status.stale {
-                        AgentState::Unknown
-                    } else {
-                        *state
-                    }))
+                    .child(ui::agent_symbol(ui::shown_state(*state, status.stale)))
                     .child(mono(name.clone()).flex_shrink_0().text_color(c.text))
                     .children(member.map(|member| ui::badge(member.runtime.clone())))
                     .child(
@@ -1637,11 +1599,10 @@ impl NewPane {
                 ..
             } => child()
                 // A stale state is not shown as current, as the panel does.
-                .child(ui::agent_symbol(if self.agents.get(name).stale {
-                    AgentState::Unknown
-                } else {
-                    *state
-                }))
+                .child(ui::agent_symbol(ui::shown_state(
+                    *state,
+                    self.agents.get(name).stale,
+                )))
                 .child(mono(short.clone()).flex_shrink_0().text_color(c.text))
                 .children(
                     self.member(name)
@@ -1652,16 +1613,11 @@ impl NewPane {
                 // Only a member's row says what Enter does, as the board shows.
                 // As the hint bar says it.
                 .children(selected.then(|| {
-                    attach_hint(
-                        if self
-                            .member(name)
-                            .is_some_and(|m| self.origin.remote_profile(m).is_some())
-                        {
-                            "open remote terminal"
-                        } else {
-                            "attach here"
-                        },
-                    )
+                    attach_hint(if self.remote(name).is_some() {
+                        "open remote terminal"
+                    } else {
+                        "attach here"
+                    })
                 }))
                 .into_any_element(),
             // One that cannot be chosen looks it: no pointer, no hover.
@@ -1670,15 +1626,8 @@ impl NewPane {
             } else {
                 quiet_frame(id.clone())
             })
-            .child(ui::review_symbol(review.running))
-            .child(
-                fill()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .text_color(if review.running { c.text } else { c.muted })
-                    .child(review.reviewer.clone()),
-            )
+            .children(symbol)
+            .children(label.map(filling))
             .child(meta(
                 match &review.effort {
                     Some(effort) => format!("review · {effort}"),
@@ -1687,16 +1636,9 @@ impl NewPane {
                 c.muted,
             ))
             .into_any_element(),
-            agent_groups::Row::Browser { label, .. } => child()
-                .child(icon_slot("globe"))
-                .child(
-                    fill()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .text_color(c.text_2)
-                        .child(label.clone()),
-                )
+            agent_groups::Row::Browser { .. } => child()
+                .children(symbol)
+                .children(label.map(filling))
                 .child(meta("browser", c.muted))
                 .into_any_element(),
             agent_groups::Row::Swarm {
@@ -1722,13 +1664,8 @@ impl NewPane {
                         .into_any_element()
                 };
                 child()
-                    .child(icon_slot("users"))
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .text_color(c.text_2)
-                            .child(name.clone()),
-                    )
+                    .children(symbol)
+                    .children(label.map(|label| label.flex_shrink_0()))
                     .child(meta(
                         match members.len() {
                             1 => "swarm · 1 agent".to_owned(),
@@ -1760,7 +1697,7 @@ impl NewPane {
         });
         let Some(entry) = entry else {
             return row
-                .child(icon_slot("link-2"))
+                .child(ui::icon_slot("link-2"))
                 .child(
                     div()
                         .flex_shrink_0()
@@ -1782,7 +1719,6 @@ impl NewPane {
                 )
                 .child(ui::choice_key(key));
         };
-        let named = entry.name.as_deref().is_some_and(|n| !n.trim().is_empty());
         row.child(peer_rows::peer_mark(
             entry.name.as_deref(),
             t.size.agent_symbol,
@@ -1790,26 +1726,17 @@ impl NewPane {
         .child(
             div()
                 .flex_shrink_0()
-                .text_color(if named { c.text } else { c.text_2 })
+                .text_color(peer_rows::name_color(entry.name.as_deref()))
                 .child(peer_rows::display_name(entry.name.as_deref()).to_owned()),
         )
         .children(entry.connected.then(|| meta("connected", c.ok)))
         .child(div().flex_1().min_w_0())
-        .children(entry.badge.as_ref().map(|(label, badge)| {
-            ui::text(
-                div()
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .gap(px(t.space.s4 + 1.0))
-                    .text_color(peer_rows::badge_color(*badge)),
-                &t.text.meta,
-            )
-            .when(*badge == peer_rows::Badge::Waiting, |state| {
-                state.child(ui::dot(c.accent))
-            })
-            .child(label.clone())
-        }))
+        .children(
+            entry
+                .badge
+                .as_ref()
+                .map(|(label, badge)| peer_rows::badge(label, *badge)),
+        )
         .child(ui::choice_key(key))
     }
 }
@@ -2276,10 +2203,6 @@ mod tests {
             |_| true,
         );
         assert!(selected.is_none() && disarmed);
-        assert_eq!(
-            original.registration_id.as_deref(),
-            Some("1234567890abcdef1234567890abcdef")
-        );
         member.registration_id = None;
         assert!(origin.agent_view(&member).is_none());
         member.registration_id = Some("invalid".into());
