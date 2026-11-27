@@ -5,8 +5,8 @@
 //!   line of the public key) and `DIRECTORY/secret`.
 //! - `sign DIRECTORY FILE` writes the signature of `FILE` to `FILE.minisig`.
 //! - `backbone-install ARGUMENTS` runs the app's command, trusting the key
-//!   in `BACKBONE_FIXTURE_KEY`. Without it, it runs exactly what a shipped
-//!   app runs.
+//!   in `BACKBONE_FIXTURE_KEY`. An empty value stands for a build with no
+//!   release key. Without it, it runs exactly what a shipped app runs.
 
 use std::{ffi::OsString, fs, path::PathBuf, process::ExitCode};
 
@@ -38,7 +38,9 @@ fn main() -> ExitCode {
             fs::write(name, signature.into_string()).unwrap();
         }
         Some("backbone-install") => {
+            // An empty key stands for a build that carries no release key.
             return match std::env::var("BACKBONE_FIXTURE_KEY") {
+                Ok(key) if key.is_empty() => agent_interface_install::run(arguments, None),
                 Ok(key) => agent_interface_install::run(arguments, Some(&key)),
                 Err(_) => agent_interface_install::main(arguments),
             };
