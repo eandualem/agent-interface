@@ -398,6 +398,161 @@ pub fn agent_symbol(state: AgentState) -> Div {
     }
 }
 
+/// A review run's mark, the size of [`agent_symbol`]. Running, it turns as a
+/// working agent does, with a dot at its centre in place of the play mark;
+/// queued, it is a still faint ring and dot.
+pub fn review_symbol(running: bool) -> Div {
+    let (t, c) = (tokens(), colors());
+    let size = t.size.agent_symbol;
+    let frame = div()
+        .flex_shrink_0()
+        .size(px(size))
+        .relative()
+        .flex()
+        .items_center()
+        .justify_center();
+    let centre = |color: Rgba| div().size(px(t.space.s4)).rounded_full().bg(color);
+    if running {
+        frame
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .rounded_full()
+                    .border(px(t.size.minimap_stroke * 1.5))
+                    .border_color(c.accent_soft),
+            )
+            .child(turning_arc(size))
+            .child(centre(c.accent))
+    } else {
+        frame
+            .child(
+                div()
+                    .absolute()
+                    .inset(px(t.space.s2))
+                    .rounded_full()
+                    .border(px(t.size.minimap_stroke * 1.5))
+                    .border_color(c.faint),
+            )
+            .child(centre(c.faint))
+    }
+}
+
+/// The still review mark in an agent's glance counts: a ring with a dot.
+fn review_mark(color: Rgba) -> Div {
+    let t = tokens();
+    let size = t.size.glance_icon;
+    div()
+        .flex_shrink_0()
+        .size(px(size))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .size(px(size - t.space.s2))
+                .rounded_full()
+                .border(px(t.size.minimap_stroke * 1.25))
+                .border_color(color)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(div().size(px(t.space.s2 + 1.0)).rounded_full().bg(color)),
+        )
+}
+
+/// The machine an agent runs on, beside its name when that is another
+/// machine. Offline or gone from the profile, it reads `name · offline` in
+/// the attention colour.
+pub fn machine_tag(name: &str, offline: bool) -> Div {
+    let (t, c) = (tokens(), colors());
+    let color = if offline { c.attention_text } else { c.muted };
+    let label = if offline {
+        format!("{name} · offline")
+    } else {
+        name.to_owned()
+    };
+    text(
+        div()
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .px(px(t.space.s4 + 1.0))
+            .h(px(t.size.keycap))
+            .flex()
+            .items_center()
+            .gap(px(t.space.s4))
+            .rounded(px(t.radius.key))
+            .bg(c.field)
+            .border(px(t.size.hairline))
+            .border_color(c.line_strong)
+            .font_family(t.font.mono.clone())
+            .text_color(color),
+        &t.text.key,
+    )
+    .child(icon("server", t.size.keycap - t.space.s6, color))
+    .child(
+        div()
+            .min_w_0()
+            .overflow_hidden()
+            .text_ellipsis()
+            .child(label),
+    )
+}
+
+/// What an agent's row counts of everything under it: each item an icon and
+/// a number, drawn open or folded. Where the row is too narrow, whole items
+/// give way, browsers first and reviews last; a number is never cut.
+pub fn glance_counts(counts: &super::agent_groups::Counts) -> Option<Div> {
+    use super::agent_groups::{Glance, Tone};
+    let (t, c) = (tokens(), colors());
+    let items = counts.items();
+    if items.is_empty() {
+        return None;
+    }
+    let size = t.size.glance_icon;
+    let line = t.size.keycap;
+    Some(
+        text(
+            // One line that wraps what does not fit onto a second, hidden
+            // line: an item that does not fit goes whole, the last first.
+            // The empty first item lets the first count go too.
+            div()
+                .min_w_0()
+                .h(px(line))
+                .overflow_hidden()
+                .flex()
+                .flex_wrap()
+                .justify_end()
+                .whitespace_nowrap(),
+            &t.text.meta,
+        )
+        .child(div().w(px(0.)).h(px(line)))
+        .children(items.into_iter().map(|(glance, number, tone)| {
+            let color = match tone {
+                Tone::Muted => c.muted,
+                Tone::Accent => c.accent_text,
+                Tone::Attention => c.attention_text,
+            };
+            let mark = match glance {
+                Glance::Reviews => review_mark(color).into_any_element(),
+                Glance::Members => icon("users", size, color).into_any_element(),
+                Glance::Browsers => icon("globe", size, color).into_any_element(),
+            };
+            div()
+                .flex_shrink_0()
+                .h(px(line))
+                .pl(px(t.space.s8))
+                .flex()
+                .items_center()
+                .gap(px(t.space.s2 + 1.0))
+                .text_color(color)
+                .child(mark)
+                .children(number.map(|number| number.to_string()))
+        })),
+    )
+}
+
 /// A tab's layout thumbnail: one frame, split once or more.
 pub fn minimap(panes: usize, color: Rgba) -> Div {
     let t = tokens();

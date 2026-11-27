@@ -421,6 +421,14 @@ impl Pane {
         self.pick(Some(target), cx);
     }
 
+    /// Open the connect popover, as the panel's "Connect a profile" asks.
+    pub(in crate::desktop) fn open_connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.preview.is_some() {
+            self.preview(false, cx);
+        }
+        self.show_form(Form::Connect, window, cx);
+    }
+
     pub(in crate::desktop) fn needs_review(&self, cx: &gpui::App) -> bool {
         self.live
             .inbox
@@ -2145,7 +2153,7 @@ impl Render for Tip {
 
 /// A connection's mark: its name's first letter, or a dashed tile with a
 /// link when it has no name.
-pub(super) fn peer_mark(name: Option<&str>, size: f32) -> Div {
+pub(in crate::desktop) fn peer_mark(name: Option<&str>, size: f32) -> Div {
     let (t, c) = (tokens(), colors());
     match name.map(str::trim).filter(|name| !name.is_empty()) {
         Some(name) => ui::profile_mark(name, size),

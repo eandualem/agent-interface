@@ -28,9 +28,13 @@ The local changes in `src/window.rs`, `src/pasteboard.rs` and `src/artifact.rs` 
   connections before document loading and selects an ephemeral WebKit data store.
   It checks the native preference selectors and fails closed when unavailable.
   This uses the existing MIT-licensed `objc2-web-kit` bindings, pinned to 0.3.2.
+- Round chosen bottom corners of a document's web view through its backing
+  layer, so the view stays inside the rounded pane it is laid over. It checks
+  the view's selector and runs only on the main thread.
 
 The workspace patches this existing dependency locally; it keeps the rest of
 the GPUI package family at 0.3.9. Remove this override when a pinned upstream
 version supplies equivalent native focus, image staging and artifact configuration
-behavior, including `gpui_macos::artifact_configuration`. Keep these sources
+behavior, including `gpui_macos::artifact_configuration` and
+`gpui_macos::round_bottom_corners`. Keep these sources
 separate from application code so an upstream update can be compared directly.

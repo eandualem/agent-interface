@@ -1,7 +1,7 @@
-//! Swarm members folded under the agent that started their swarm, and
-//! multi-machine roster grouping by full machine ID.
+//! The agents list as one tree: everything an agent started sits under it,
+//! and a machine is a tag on the agent rather than a group.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use agent_interface_roster::{
     Machine, MachineState, ProfileMachine, Swarm,
@@ -11,45 +11,180 @@ use agent_interface_roster::{
 
 use super::agent_status::AgentState;
 
+/// A review run under the agent that started it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Review {
+    /// Who reviews: its model, else its CLI, else the run's label.
+    pub reviewer: String,
+    pub effort: Option<String>,
+    /// Running, rather than queued.
+    pub running: bool,
+}
+
+/// What an agent started besides swarms.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct Started {
+    /// Its active reviews.
+    pub reviews: Vec<Review>,
+    /// Its browser's label, when it has one.
+    pub browser: Option<String>,
+}
+
+/// What an agent's row counts of everything under it, open or folded.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Counts {
+    /// Running reviews.
+    pub reviews: usize,
+    /// Listed agents in its swarms, each once.
+    pub members: usize,
+    pub members_working: bool,
+    pub members_need_you: bool,
+    pub browsers: usize,
+}
+
+/// One item of an agent's glance counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Glance {
+    Reviews,
+    Members,
+    Browsers,
+}
+
+/// The colour of a glance item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Tone {
+    Muted,
+    /// Something in it runs.
+    Accent,
+    /// Something in it needs the person.
+    Attention,
+}
+
+impl Counts {
+    /// The items to draw, in order, each with the number it shows. Zero
+    /// items are left out, and a single browser shows no number.
+    pub(super) fn items(&self) -> Vec<(Glance, Option<usize>, Tone)> {
+        let mut items = Vec::new();
+        if self.reviews > 0 {
+            items.push((Glance::Reviews, Some(self.reviews), Tone::Accent));
+        }
+        if self.members > 0 {
+            let tone = if self.members_need_you {
+                Tone::Attention
+            } else if self.members_working {
+                Tone::Accent
+            } else {
+                Tone::Muted
+            };
+            items.push((Glance::Members, Some(self.members), tone));
+        }
+        if self.browsers > 0 {
+            let shown = (self.browsers > 1).then_some(self.browsers);
+            items.push((Glance::Browsers, shown, Tone::Muted));
+        }
+        items
+    }
+}
+
 /// One line of the agents list.
 #[derive(Debug, PartialEq)]
 pub(super) enum Row {
-    /// A top-level agent, with the swarm members folded under it.
+    /// A top-level agent.
     Agent {
         name: String,
         state: AgentState,
-        /// How many running swarms list under this agent; the row expands when any do.
-        swarms: usize,
-        /// How many listed agents are folded under this one.
-        members: usize,
-        /// Whether a folded member needs the user.
-        needs_you: bool,
+        /// Its machine, when that is not this one.
+        machine: Option<MachineHeader>,
+        counts: Counts,
+        /// Whether anything sits under it, so it has a chevron.
+        children: bool,
         expanded: bool,
+    },
+    /// A review run under `agent`, or under the member `agent` of `swarm`.
+    Review {
+        agent: String,
+        swarm: Option<String>,
+        index: usize,
+        review: Review,
+    },
+    /// The browser of `agent`, or of the member `agent` of `swarm`.
+    Browser {
+        agent: String,
+        swarm: Option<String>,
+        label: String,
     },
     /// A swarm under its expanded initiator, with every member for its tab.
     Swarm {
         initiator: String,
         name: String,
         members: Vec<String>,
+        /// How many of its members are listed under it.
+        listed: usize,
+        expanded: bool,
     },
     /// A listed member of the swarm row above it.
     Member {
         swarm: String,
         name: String,
+        /// Its name without the swarm's name and hyphen in front.
+        short: String,
         state: AgentState,
+        machine: Option<MachineHeader>,
     },
 }
 
-/// Arrange listed agents. A swarm lists under its initiator when the initiator
-/// is listed, folding whichever members are listed too, even none, so it can
-/// still be opened; an agent that started a swarm of its own
-/// always keeps its top-level row. `entries` arrive with agents needing the
-/// user first, then working ones; an agent takes the most urgent place among
-/// itself and the members folded under it, so folding never hides attention.
-pub(super) fn rows(
+impl Row {
+    /// How many levels in the row sits.
+    pub(super) fn depth(&self) -> usize {
+        match self {
+            Self::Agent { .. } => 0,
+            Self::Swarm { .. } => 1,
+            Self::Member { .. } => 2,
+            Self::Review { swarm, .. } | Self::Browser { swarm, .. } => {
+                if swarm.is_some() {
+                    3
+                } else {
+                    1
+                }
+            }
+        }
+    }
+}
+
+/// The key of a swarm's fold: its initiator and name.
+pub(super) fn swarm_key(initiator: &str, swarm: &str) -> String {
+    // Names never hold a slash, so these cannot collide.
+    format!("{initiator}/{swarm}")
+}
+
+/// A member's name without its swarm's name and the joining hyphen in
+/// front, or the whole name when it does not start with them.
+pub(super) fn short_name<'a>(swarm: &str, member: &'a str) -> &'a str {
+    member
+        .strip_prefix(swarm)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(member)
+}
+
+/// Arrange listed agents as one tree. A swarm lists under its initiator when
+/// the initiator is listed, folding whichever members are listed too, even
+/// none, so it can still be opened; an agent that started a swarm of its own
+/// always keeps its top-level row. Under an expanded agent come its reviews,
+/// its browser and its swarms, in that order; a member's own reviews and
+/// browser sit under the member.
+///
+/// Agents needing the user come first, then working ones, each urgency by
+/// name. An agent takes the most urgent place among itself and everything
+/// under it, so folding never hides attention, and an offline agent on
+/// another machine goes last.
+pub(super) fn tree(
     entries: &[(String, AgentState)],
     swarms: &[Swarm],
+    started: impl Fn(&str) -> Started,
+    machine: impl Fn(&str) -> Option<MachineHeader>,
     expanded: &HashSet<String>,
+    collapsed_swarms: &HashSet<String>,
 ) -> Vec<Row> {
     let states: HashMap<&str, AgentState> = entries
         .iter()
@@ -76,7 +211,8 @@ pub(super) fn rows(
         .flat_map(|swarm| folded(swarm))
         .map(|(name, _)| name)
         .collect();
-    let mut groups: Vec<((bool, bool), Vec<Row>)> = Vec::new();
+    let running = |started: &Started| started.reviews.iter().filter(|r| r.running).count();
+    let mut groups: Vec<(Urgency, &str, Vec<Row>)> = Vec::new();
     for (name, state) in entries {
         if hidden.contains(name) {
             continue;
@@ -86,76 +222,140 @@ pub(super) fn rows(
             .filter(|swarm| swarm.initiator == *name)
             .map(|swarm| (*swarm, folded(swarm)))
             .collect();
-        let open = expanded.contains(name);
-        let all = || own.iter().flat_map(|(_, members)| members);
-        let needs_you = all().any(|(_, state)| state.needs_you());
-        let working = all().any(|(_, state)| state.working());
+        let mine = started(name);
+        // An agent in two of this agent's swarms is one folded agent.
+        let members: HashMap<&str, AgentState> = own
+            .iter()
+            .flat_map(|(_, members)| members)
+            .map(|(name, state)| (name.as_str(), *state))
+            .collect();
+        let theirs: HashMap<&str, Started> = members
+            .keys()
+            .map(|member| (*member, started(member)))
+            .collect();
+        let counts = Counts {
+            reviews: running(&mine) + theirs.values().map(running).sum::<usize>(),
+            members: members.len(),
+            members_working: members.values().any(|state| state.working()),
+            members_need_you: members.values().any(|state| state.needs_you()),
+            browsers: usize::from(mine.browser.is_some())
+                + theirs.values().filter(|s| s.browser.is_some()).count(),
+        };
+        let children = !mine.reviews.is_empty() || mine.browser.is_some() || !own.is_empty();
+        let open = children && expanded.contains(name);
+        let here = machine(name);
+        let away =
+            |name: &str, state: AgentState| state == AgentState::Offline && machine(name).is_some();
+        // Anything drawn under it keeps it among the rest: a review, running
+        // or queued, or a browser, its own or a member's, or a member that is
+        // not itself away.
+        let shows = |started: &Started| !started.reviews.is_empty() || started.browser.is_some();
+        let lifted = shows(&mine)
+            || theirs.values().any(shows)
+            || members.iter().any(|(member, state)| !away(member, *state));
+        let rank = if state.needs_you() || counts.members_need_you {
+            Urgency::NeedsYou
+        } else if state.working() || counts.members_working || counts.reviews > 0 {
+            Urgency::Working
+        } else if away(name, *state) && !lifted {
+            Urgency::Away
+        } else {
+            Urgency::Rest
+        };
         let mut rows = vec![Row::Agent {
             name: name.clone(),
             state: *state,
-            swarms: own.len(),
-            // An agent in two of this agent's swarms is one folded agent.
-            members: all().map(|(name, _)| name).collect::<HashSet<_>>().len(),
-            needs_you,
+            machine: here,
+            counts,
+            children,
             expanded: open,
         }];
-        for (swarm, members) in own.into_iter().filter(|_| open) {
-            rows.push(Row::Swarm {
-                initiator: name.clone(),
-                name: swarm.name.clone(),
-                members: swarm.members.clone(),
-            });
-            rows.extend(members.into_iter().map(|(name, state)| Row::Member {
-                swarm: swarm.name.clone(),
-                name,
-                state,
-            }));
+        if open {
+            push_started(&mut rows, name, None, mine);
+            for (swarm, members) in &own {
+                let key = swarm_key(name, &swarm.name);
+                let swarm_open = !collapsed_swarms.contains(&key);
+                rows.push(Row::Swarm {
+                    initiator: name.clone(),
+                    name: swarm.name.clone(),
+                    members: swarm.members.clone(),
+                    listed: members.len(),
+                    expanded: swarm_open,
+                });
+                for (member, state) in members.iter().filter(|_| swarm_open) {
+                    rows.push(Row::Member {
+                        swarm: swarm.name.clone(),
+                        short: short_name(&swarm.name, member).to_owned(),
+                        state: *state,
+                        machine: machine(member),
+                        name: member.clone(),
+                    });
+                    let theirs = theirs.get(member.as_str()).cloned().unwrap_or_default();
+                    push_started(&mut rows, member, Some(&swarm.name), theirs);
+                }
+            }
         }
-        groups.push((
-            (
-                !(state.needs_you() || needs_you),
-                !(state.working() || working),
-            ),
-            rows,
-        ));
+        groups.push((rank, name, rows));
     }
-    // Stable, so agents keep their given order within each urgency.
-    groups.sort_by_key(|(urgency, _)| *urgency);
-    groups.into_iter().flat_map(|(_, rows)| rows).collect()
+    // By name within each urgency, so an agent lifted by what is under it
+    // takes its place among that urgency's agents, not after them.
+    groups.sort_by(|(a, a_name, _), (b, b_name, _)| {
+        (a, a_name.to_ascii_lowercase(), a_name).cmp(&(b, b_name.to_ascii_lowercase(), b_name))
+    });
+    groups.into_iter().flat_map(|(_, _, rows)| rows).collect()
 }
 
-/// Offline agents whose running swarms still have a listed member on the same
-/// machine bucket. Listing them keeps a swarm together while the agent that
-/// started it restarts, without creating orphaned offline rows when all listed
-/// members run on another machine.
-pub(super) fn offline_leads_for_machines(
+/// Where an agent sorts, by itself and everything under it: one tier each,
+/// earliest first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Urgency {
+    /// It, or something under it, needs the person.
+    NeedsYou,
+    /// It, or something under it, works or runs a review.
+    Working,
+    Rest,
+    /// An offline agent on another machine with nothing under it lifting it.
+    Away,
+}
+
+/// The reviews, then the browser, of `agent`.
+fn push_started(rows: &mut Vec<Row>, agent: &str, swarm: Option<&str>, started: Started) {
+    rows.extend(
+        started
+            .reviews
+            .into_iter()
+            .enumerate()
+            .map(|(index, review)| Row::Review {
+                agent: agent.to_owned(),
+                swarm: swarm.map(str::to_owned),
+                index,
+                review,
+            }),
+    );
+    rows.extend(started.browser.map(|label| Row::Browser {
+        agent: agent.to_owned(),
+        swarm: swarm.map(str::to_owned),
+        label,
+    }));
+}
+
+/// Offline agents whose running swarms still have a listed member. Listing
+/// them keeps a swarm together while the agent that started it restarts.
+pub(super) fn offline_leads(
     entries: &[(String, AgentState)],
     swarms: &[Swarm],
-    local_machine_id: Option<&str>,
     state: impl Fn(&str) -> AgentState,
-    machine_of: impl Fn(&str) -> Option<Machine>,
 ) -> Vec<String> {
-    let bucket = |name: &str| -> Option<String> {
-        machine_of(name).and_then(|machine| {
-            local_machine_id
-                .is_some_and(|local| local != machine.id)
-                .then_some(machine.id)
-        })
-    };
-    let listed: HashMap<&str, Option<String>> = entries
-        .iter()
-        .map(|(name, _)| (name.as_str(), bucket(name)))
-        .collect();
+    let listed: HashSet<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
     let mut leads: Vec<String> = Vec::new();
     for swarm in swarms {
         let lead = swarm.initiator.as_str();
-        let lead_bucket = bucket(lead);
-        if !listed.contains_key(lead)
+        if !listed.contains(lead)
             && !leads.iter().any(|name| name == lead)
             && swarm
                 .members
                 .iter()
-                .any(|member| listed.get(member.as_str()) == Some(&lead_bucket))
+                .any(|member| listed.contains(member.as_str()))
             && state(lead) == AgentState::Offline
         {
             leads.push(lead.to_owned());
@@ -164,16 +364,7 @@ pub(super) fn offline_leads_for_machines(
     leads
 }
 
-#[cfg(test)]
-pub(super) fn offline_leads(
-    entries: &[(String, AgentState)],
-    swarms: &[Swarm],
-    state: impl Fn(&str) -> AgentState,
-) -> Vec<String> {
-    offline_leads_for_machines(entries, swarms, None, state, |_| None)
-}
-
-/// Reachability of a machine group as shown in the roster.
+/// Reachability of an agent's machine, as its tag shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum MachinePresence {
     Online,
@@ -254,7 +445,7 @@ pub(super) fn machine_presence(
     }
 }
 
-/// Header metadata for a remote machine group in the sidebar roster.
+/// A machine as an agent's tag shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct MachineHeader {
     pub id: String,
@@ -262,191 +453,87 @@ pub(super) struct MachineHeader {
     pub presence: MachinePresence,
 }
 
-/// One section of the sidebar roster: either local (including `machine: null`)
-/// or one remote machine keyed by its full ID.
-#[derive(Debug, PartialEq)]
-pub(super) struct MachineSection {
-    pub machine: Option<MachineHeader>,
-    pub rows: Vec<Row>,
-    pub offline_agents: Vec<String>,
-}
-
-/// Group sidebar roster entries by full machine ID.
-///
-/// A one-machine profile (no other machine in `machines` and no agent hosted
-/// on another machine) returns `(false, [local_section])` so it renders
-/// identically to today.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn grouped_by_machine(
+/// The tag for an agent placed on `machine`: none when that is this machine
+/// or this machine is not known, so nothing is called remote by mistake.
+pub(super) fn machine_tag(
     local_machine_id: Option<&str>,
     machines: &[ProfileMachine],
     machines_read: bool,
-    entries: &[(String, AgentState)],
-    offline_agents: &[(String, Option<Machine>)],
-    machine_of: impl Fn(&str) -> Option<Machine>,
-    swarms: &[Swarm],
-    expanded: &HashSet<String>,
-) -> (bool, Vec<MachineSection>) {
-    let is_remote = |id: &str| local_machine_id.is_some_and(|local| local != id);
-    let has_remote_profile_machine = machines.iter().any(|machine| is_remote(&machine.id));
-    let mut local_entries: Vec<(String, AgentState)> = Vec::new();
-    let mut remote_active: BTreeMap<String, Vec<(String, AgentState)>> = BTreeMap::new();
-    let mut remote_names: HashMap<String, String> = HashMap::new();
-    let listed_names: HashSet<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
-
-    for (name, state) in entries {
-        match machine_of(name) {
-            Some(machine) if is_remote(&machine.id) => {
-                remote_names
-                    .entry(machine.id.clone())
-                    .or_insert_with(|| machine.name.clone());
-                remote_active
-                    .entry(machine.id)
-                    .or_default()
-                    .push((name.clone(), *state));
-            }
-            // Local machine match OR `machine: null` (never started) stays local.
-            _ => local_entries.push((name.clone(), *state)),
-        }
+    machine: Option<&Machine>,
+) -> Option<MachineHeader> {
+    let machine = machine?;
+    if !local_machine_id.is_some_and(|local| local != machine.id) {
+        return None;
     }
-
-    let mut remote_offline: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for (name, machine) in offline_agents {
-        // An offline agent already listed in `entries` (e.g. a swarm initiator or
-        // an offline agent with background runs) must not appear twice.
-        if listed_names.contains(name.as_str()) {
-            continue;
-        }
-        if let Some(machine) = machine
-            && is_remote(&machine.id)
-        {
-            remote_names
-                .entry(machine.id.clone())
-                .or_insert_with(|| machine.name.clone());
-            remote_offline
-                .entry(machine.id.clone())
-                .or_default()
-                .push(name.clone());
-        }
-    }
-    for names in remote_offline.values_mut() {
-        names.sort_by(|a, b| {
-            a.to_ascii_lowercase()
-                .cmp(&b.to_ascii_lowercase())
-                .then(a.cmp(b))
-        });
-    }
-
-    let multi_machine =
-        has_remote_profile_machine || !remote_active.is_empty() || !remote_offline.is_empty();
-    if !multi_machine {
-        return (
-            false,
-            vec![MachineSection {
-                machine: None,
-                rows: rows(entries, swarms, expanded),
-                offline_agents: Vec::new(),
-            }],
-        );
-    }
-
-    // Keep the full `Swarm.members` list on `Row::Swarm` so opening a swarm tab
-    // includes members on every machine, while only attaching a swarm to its
-    // initiator's section when it has at least one member not listed in another
-    // section (or had no members originally). `rows()` itself folds only members
-    // present in `section_entries`.
-    let section_rows = |section_entries: &[(String, AgentState)]| {
-        let names: HashSet<&str> = section_entries
-            .iter()
-            .map(|(name, _)| name.as_str())
-            .collect();
-        let scoped: Vec<Swarm> = swarms
-            .iter()
-            .filter(|swarm| names.contains(swarm.initiator.as_str()))
-            .filter(|swarm| {
-                swarm.members.is_empty()
-                    || swarm.members.iter().any(|member| {
-                        names.contains(member.as_str()) || !listed_names.contains(member.as_str())
-                    })
-            })
-            .cloned()
-            .collect();
-        rows(section_entries, &scoped, expanded)
-    };
-
-    let mut sections = Vec::new();
-    if !local_entries.is_empty() {
-        sections.push(MachineSection {
-            machine: None,
-            rows: section_rows(&local_entries),
-            offline_agents: Vec::new(),
-        });
-    }
-
-    // Order known remote machines in the service's order, then unknown IDs.
-    let mut ordered_ids: Vec<String> = Vec::new();
-    let mut seen_ids: HashSet<String> = HashSet::new();
-    for machine in machines {
-        if is_remote(&machine.id)
-            && (remote_active.contains_key(&machine.id) || remote_offline.contains_key(&machine.id))
-            && seen_ids.insert(machine.id.clone())
-        {
-            ordered_ids.push(machine.id.clone());
-        }
-    }
-    let mut unknown_ids: Vec<(String, String)> = remote_active
-        .keys()
-        .chain(remote_offline.keys())
-        .filter(|id| !seen_ids.contains(*id))
-        .map(|id| {
-            let display =
-                machine_display_name(remote_names.get(id).map(String::as_str).unwrap_or(""), id);
-            (display.to_ascii_lowercase(), id.clone())
-        })
-        .collect();
-    unknown_ids.sort();
-    unknown_ids.dedup();
-    ordered_ids.extend(unknown_ids.into_iter().map(|(_, id)| id));
-
-    for id in ordered_ids {
-        let profile_machine = machines.iter().find(|machine| machine.id == id);
-        let raw_name = profile_machine
-            .map(|machine| machine.name.as_str())
-            .filter(|name| !name.trim().is_empty())
-            .or_else(|| remote_names.get(&id).map(String::as_str))
-            .unwrap_or("");
-        let name = machine_display_name(raw_name, &id);
-        let presence = machine_presence(&id, machines, machines_read);
-        let active = remote_active.remove(&id).unwrap_or_default();
-        let offline = remote_offline.remove(&id).unwrap_or_default();
-        sections.push(MachineSection {
-            machine: Some(MachineHeader { id, name, presence }),
-            rows: section_rows(&active),
-            offline_agents: offline,
-        });
-    }
-
-    (true, sections)
+    let raw = machines
+        .iter()
+        .find(|known| known.id == machine.id)
+        .map(|known| known.name.as_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(&machine.name);
+    Some(MachineHeader {
+        id: machine.id.clone(),
+        name: machine_display_name(raw, &machine.id),
+        presence: machine_presence(&machine.id, machines, machines_read),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_offline_initiator_is_listed_while_its_swarm_has_listed_members() {
-        let entries = vec![("fix-coder".to_owned(), AgentState::Idle)];
-        let swarm = |name: &str, initiator: &str, member: &str| Swarm {
+    fn listed(entries: &[(&str, AgentState)]) -> Vec<(String, AgentState)> {
+        entries
+            .iter()
+            .map(|(name, state)| ((*name).to_owned(), *state))
+            .collect()
+    }
+
+    fn swarm(name: &str, initiator: &str, members: &[&str]) -> Swarm {
+        Swarm {
             name: name.into(),
             initiator: initiator.into(),
-            members: vec![member.into()],
-        };
+            members: members.iter().map(|member| (*member).to_owned()).collect(),
+        }
+    }
+
+    fn review(reviewer: &str, running: bool) -> Review {
+        Review {
+            reviewer: reviewer.into(),
+            effort: Some("high".into()),
+            running,
+        }
+    }
+
+    fn names(rows: &[Row]) -> Vec<String> {
+        rows.iter()
+            .map(|row| match row {
+                Row::Agent { name, .. } => name.clone(),
+                Row::Review { agent, review, .. } => format!("{agent}:{}", review.reviewer),
+                Row::Browser { agent, label, .. } => format!("{agent}:{label}"),
+                Row::Swarm { name, .. } => format!("[{name}]"),
+                Row::Member { short, .. } => format!("  {short}"),
+            })
+            .collect()
+    }
+
+    fn header(name: &str) -> MachineHeader {
+        MachineHeader {
+            id: "b".repeat(64),
+            name: name.into(),
+            presence: MachinePresence::Online,
+        }
+    }
+
+    #[test]
+    fn an_offline_initiator_is_listed_while_its_swarm_has_listed_members() {
+        let entries = listed(&[("fix-coder", AgentState::Idle)]);
         let swarms = [
-            swarm("fix", "lead", "fix-coder"),
-            swarm("more", "lead", "fix-coder"),
+            swarm("fix", "lead", &["fix-coder"]),
+            swarm("more", "lead", &["fix-coder"]),
             // Not an agent Backbone knows, and a swarm with nobody listed.
-            swarm("lost", "gone", "fix-coder"),
-            swarm("quiet", "resting", "absent"),
+            swarm("lost", "gone", &["fix-coder"]),
+            swarm("quiet", "resting", &["absent"]),
         ];
         let state = |name: &str| match name {
             "gone" => AgentState::Unknown,
@@ -456,174 +543,495 @@ mod tests {
     }
 
     #[test]
-    fn members_fold_under_a_listed_initiator_and_show_when_expanded() {
-        let entries: Vec<(String, AgentState)> = [
-            ("fix-coder", AgentState::NeedsYou),
-            ("lead", AgentState::Working),
-            ("fix-coordinator", AgentState::Working),
-            ("other", AgentState::Idle),
-            ("lost-coder", AgentState::Idle),
-        ]
-        .map(|(name, state)| (name.to_owned(), state))
-        .to_vec();
-        let swarm = |name: &str, initiator: &str, members: &[&str]| Swarm {
-            name: name.into(),
-            initiator: initiator.into(),
-            members: members.iter().map(|member| (*member).to_owned()).collect(),
+    fn short_names_drop_the_swarm_name_and_hyphen_only() {
+        assert_eq!(short_name("remote-detach", "remote-detach-coder"), "coder");
+        assert_eq!(short_name("fix", "fix-sonnet-reviewer"), "sonnet-reviewer");
+        // Not starting with the swarm's name and a hyphen: the whole name.
+        assert_eq!(short_name("fix", "fixer-coder"), "fixer-coder");
+        assert_eq!(short_name("fix", "helper"), "helper");
+        assert_eq!(short_name("fix", "fix-"), "fix-");
+        assert_eq!(short_name("fix", "fix"), "fix");
+    }
+
+    #[test]
+    fn glance_counts_leave_out_zeros_and_colour_what_runs_or_needs_you() {
+        assert!(Counts::default().items().is_empty());
+        let counts = Counts {
+            reviews: 2,
+            members: 8,
+            members_working: true,
+            members_need_you: false,
+            browsers: 1,
         };
-        let swarms = [
-            swarm(
-                "fix",
-                "lead",
-                &["fix-coordinator", "fix-coder", "fix-offline"],
-            ),
-            // Its initiator is not listed, so its member stays where it was.
-            swarm("lost", "gone", &["lost-coder"]),
-        ];
-        let agent = |name: &str, state, members: usize, needs_you, expanded| Row::Agent {
-            name: name.into(),
-            state,
-            swarms: members.min(1),
-            members,
-            needs_you,
-            expanded,
-        };
-        let closed = rows(&entries, &swarms, &HashSet::new());
         assert_eq!(
-            closed,
+            counts.items(),
             [
-                agent("lead", AgentState::Working, 2, true, false),
-                agent("other", AgentState::Idle, 0, false, false),
-                agent("lost-coder", AgentState::Idle, 0, false, false),
+                (Glance::Reviews, Some(2), Tone::Accent),
+                (Glance::Members, Some(8), Tone::Accent),
+                // One browser shows only its icon, and never in accent.
+                (Glance::Browsers, None, Tone::Muted),
             ]
         );
-        let open = rows(&entries, &swarms, &HashSet::from(["lead".to_owned()]));
-        assert_eq!(open.len(), 6);
-        assert_eq!(open[0], agent("lead", AgentState::Working, 2, true, true));
+        let quiet = Counts {
+            members: 4,
+            browsers: 2,
+            ..Counts::default()
+        };
         assert_eq!(
-            open[1],
-            Row::Swarm {
-                initiator: "lead".into(),
-                name: "fix".into(),
-                members: vec![
-                    "fix-coordinator".into(),
-                    "fix-coder".into(),
-                    "fix-offline".into()
-                ],
-            }
+            quiet.items(),
+            [
+                (Glance::Members, Some(4), Tone::Muted),
+                (Glance::Browsers, Some(2), Tone::Muted),
+            ]
         );
-        assert!(matches!(&open[2], Row::Member { name, .. } if name == "fix-coordinator"));
-        assert!(matches!(&open[3], Row::Member { name, .. } if name == "fix-coder"));
+        let waiting = Counts {
+            members: 1,
+            members_working: true,
+            members_need_you: true,
+            ..Counts::default()
+        };
+        assert_eq!(
+            waiting.items(),
+            [(Glance::Members, Some(1), Tone::Attention)]
+        );
+    }
+
+    #[test]
+    fn everything_an_agent_started_sits_under_it_and_folds_with_it() {
+        let entries = listed(&[
+            ("lead", AgentState::Working),
+            ("detach-coordinator", AgentState::Working),
+            ("detach-coder", AgentState::Idle),
+            ("gate-coder", AgentState::Idle),
+            ("other", AgentState::Idle),
+        ]);
+        let swarms = [
+            swarm("detach", "lead", &["detach-coordinator", "detach-coder"]),
+            swarm("gate", "lead", &["gate-coder", "gate-offline"]),
+        ];
+        let started = |name: &str| match name {
+            "lead" => Started {
+                reviews: vec![review("gemini", true), review("sonnet", false)],
+                browser: Some("github.com".into()),
+            },
+            "detach-coder" => Started {
+                reviews: vec![review("codex", true)],
+                browser: Some("example.com".into()),
+            },
+            _ => Started::default(),
+        };
+        let counts = Counts {
+            reviews: 2,
+            members: 3,
+            members_working: true,
+            members_need_you: false,
+            browsers: 2,
+        };
+        let open = tree(
+            &entries,
+            &swarms,
+            started,
+            |_| None,
+            &HashSet::from(["lead".to_owned()]),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            names(&open),
+            [
+                "lead",
+                "lead:gemini",
+                "lead:sonnet",
+                "lead:github.com",
+                "[detach]",
+                "  coordinator",
+                "  coder",
+                "detach-coder:codex",
+                "detach-coder:example.com",
+                "[gate]",
+                "  coder",
+                "other",
+            ]
+        );
+        assert_eq!(
+            open.iter().map(Row::depth).collect::<Vec<_>>(),
+            [0, 1, 1, 1, 1, 2, 2, 3, 3, 1, 2, 0]
+        );
+        assert!(matches!(
+            &open[0],
+            Row::Agent { counts: c, children: true, expanded: true, .. } if *c == counts
+        ));
+        // The swarm row keeps every member for its tab, listed or not, and
+        // counts the ones listed under it.
+        assert!(matches!(
+            &open[9],
+            Row::Swarm { members, listed: 1, expanded: true, .. } if members.len() == 2
+        ));
+
+        // Folded, nothing under it shows and its counts stay.
+        let folded = tree(
+            &entries,
+            &swarms,
+            started,
+            |_| None,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(names(&folded), ["lead", "other"]);
+        assert!(matches!(
+            &folded[0],
+            Row::Agent { counts: c, children: true, expanded: false, .. } if *c == counts
+        ));
+        // Nothing under it: no chevron, and expanding it changes nothing.
+        assert!(matches!(
+            &folded[1],
+            Row::Agent {
+                children: false,
+                ..
+            }
+        ));
+
+        // A folded swarm keeps its row and hides its members.
+        let swarm_folded = tree(
+            &entries,
+            &swarms,
+            started,
+            |_| None,
+            &HashSet::from(["lead".to_owned(), "other".to_owned()]),
+            &HashSet::from([swarm_key("lead", "detach")]),
+        );
+        assert_eq!(
+            names(&swarm_folded),
+            [
+                "lead",
+                "lead:gemini",
+                "lead:sonnet",
+                "lead:github.com",
+                "[detach]",
+                "[gate]",
+                "  coder",
+                "other",
+            ]
+        );
+        assert!(matches!(
+            &swarm_folded[4],
+            Row::Swarm {
+                expanded: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn every_running_swarm_of_an_agent_lists_under_it_as_the_service_sends_them() {
+        // The shape of a live `/api/swarms` and `/api/agents`: one idle agent
+        // that started three swarms of four idle members each, an ended
+        // swarm of its own, and another agent's working swarm.
+        let member = |name: &str, state: &str| {
+            serde_json::json!({"name": name, "role": "coder", "runtime": "claude", "state": state,
+                "reason": null, "detail": null, "evidence": ["runtime: claude"]})
+        };
+        let swarm = |name: &str, initiator: &str, status: &str, state: &str| {
+            let members: Vec<_> = ["coder", "coordinator", "reviewer-1", "reviewer-2"]
+                .iter()
+                .map(|role| member(&format!("{name}-{role}"), state))
+                .collect();
+            serde_json::json!({"name": name, "repo": "example/project", "issue_number": 1,
+                "initiator": initiator, "coordinator": format!("{name}-coordinator"),
+                "branch": format!("swarm/{name}"), "status": status, "created_at": "2026-11-27T08:00:00Z",
+                "completed_at": null, "not_ended_at": null,
+                "members": if status == "active" { members } else { Vec::new() }})
+        };
+        let swarms = serde_json::json!({"total": 5, "items": [
+            swarm("upgrade", "lead", "active", "idle"),
+            swarm("sandbox", "lead", "active", "idle"),
+            swarm("tree", "other", "active", "busy"),
+            swarm("browse", "lead", "active", "idle"),
+            swarm("ended", "lead", "disbanded", "idle"),
+        ]});
+        let mut agents = vec![
+            serde_json::json!({"name": "lead", "state": "idle"}),
+            serde_json::json!({"name": "other", "state": "busy"}),
+        ];
+        for item in swarms["items"].as_array().unwrap() {
+            for member in item["members"].as_array().unwrap() {
+                agents.push(serde_json::json!({"name": member["name"], "state": member["state"]}));
+            }
+        }
+        let mut snapshot = agent_interface_roster::Snapshot::default();
+        snapshot.update(serde_json::json!({"items": agents}).to_string().as_bytes());
+        snapshot.update_swarms(Some(swarms.to_string().as_bytes()));
+        assert!(snapshot.swarms_read);
+        let mut entries: Vec<(String, AgentState)> = snapshot
+            .states
+            .iter()
+            .map(|(name, state)| (name.clone(), AgentState::from_runtime(state)))
+            .collect();
+        entries.sort_by_key(|(name, state)| (!state.needs_you(), !state.working(), name.clone()));
+        let rows = tree(
+            &entries,
+            &snapshot.swarms,
+            |_| Started::default(),
+            |_| None,
+            &HashSet::from(["lead".to_owned()]),
+            &HashSet::new(),
+        );
+        let lead = rows
+            .iter()
+            .position(|row| matches!(row, Row::Agent { name, .. } if name == "lead"))
+            .unwrap();
+        assert!(matches!(
+            &rows[lead],
+            Row::Agent {
+                counts: Counts { members: 12, .. },
+                children: true,
+                expanded: true,
+                ..
+            }
+        ));
+        let under: Vec<&str> = rows[lead + 1..]
+            .iter()
+            .take_while(|row| row.depth() > 0)
+            .filter_map(|row| match row {
+                Row::Swarm {
+                    name, listed: 4, ..
+                } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(under, ["upgrade", "sandbox", "browse"]);
+    }
+
+    #[test]
+    fn an_agent_takes_the_most_urgent_place_of_everything_under_it() {
+        let entries = listed(&[
+            ("m", AgentState::NeedsYou),
+            ("busy", AgentState::Working),
+            ("a-quiet", AgentState::Idle),
+            ("reviewing", AgentState::Idle),
+            ("z-lead", AgentState::Idle),
+        ]);
+        // A member of two of its swarms counts once.
+        let twice = [swarm("s1", "z-lead", &["m"]), swarm("s2", "z-lead", &["m"])];
+        let started = |name: &str| Started {
+            reviews: match name {
+                "reviewing" => vec![review("sonnet", true)],
+                // A queued review is not running and does not lift its agent.
+                "a-quiet" => vec![review("spare", false)],
+                _ => Vec::new(),
+            },
+            browser: None,
+        };
+        let rows = tree(
+            &entries,
+            &twice,
+            started,
+            |_| None,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(names(&rows), ["z-lead", "busy", "reviewing", "a-quiet"]);
+
+        // Lifted into a busier urgency, an agent takes its place there by
+        // name: an idle agent with a running review goes before a working
+        // agent that sorts after it.
+        let lifting = listed(&[("zeta", AgentState::Working), ("alpha", AgentState::Idle)]);
+        let lifted = tree(
+            &lifting,
+            &[],
+            |name: &str| Started {
+                reviews: if name == "alpha" {
+                    vec![review("sonnet", true)]
+                } else {
+                    Vec::new()
+                },
+                browser: None,
+            },
+            |_| None,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(names(&lifted), ["alpha", "zeta"]);
+
+        // Needing the person is one tier: also having working agents under it
+        // does not put an agent ahead of the others there.
+        let tiers = listed(&[
+            ("a-waits", AgentState::NeedsYou),
+            ("b-lead", AgentState::NeedsYou),
+            ("b-coder", AgentState::Working),
+        ]);
+        let tiered = tree(
+            &tiers,
+            &[swarm("b", "b-lead", &["b-coder"])],
+            |_| Started::default(),
+            |_| None,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(names(&tiered), ["a-waits", "b-lead"]);
+        assert!(matches!(
+            &rows[0],
+            Row::Agent {
+                counts: Counts {
+                    members: 1,
+                    members_need_you: true,
+                    ..
+                },
+                ..
+            }
+        ));
+        assert!(matches!(
+            &rows[3],
+            Row::Agent {
+                counts: Counts { reviews: 0, .. },
+                children: true,
+                ..
+            }
+        ));
 
         // A member leading a swarm of its own keeps its row, and the agent
-        // above it still expands although nothing folds under it.
+        // above it still has a swarm although nothing folds under it.
+        let entries = listed(&[
+            ("fix-coder", AgentState::NeedsYou),
+            ("fix-coordinator", AgentState::Working),
+            ("lead", AgentState::Working),
+        ]);
         let nested = [
             swarm("fix", "lead", &["fix-coordinator"]),
             swarm("deeper", "fix-coordinator", &["fix-coder"]),
         ];
-        let closed = rows(&entries, &nested, &HashSet::new());
-        // The coordinator comes first: its folded member needs the user.
-        assert!(matches!(
-            &closed[0],
-            Row::Agent { name, swarms: 1, members: 1, .. } if name == "fix-coordinator"
-        ));
-        assert!(matches!(
-            &closed[1],
-            Row::Agent { name, swarms: 1, members: 0, .. } if name == "lead"
-        ));
-
-        // A swarm with no listed member still lists under its initiator.
-        let quiet = rows(
+        let rows = tree(
             &entries,
-            &[swarm("empty", "other", &["offline"])],
-            &HashSet::from(["other".to_owned()]),
-        );
-        assert!(quiet.contains(&Row::Swarm {
-            initiator: "other".into(),
-            name: "empty".into(),
-            members: vec!["offline".into()],
-        }));
-
-        // An idle agent rises above working ones when a folded member needs
-        // the user, and a member of two of its swarms counts once.
-        let entries: Vec<(String, AgentState)> = [
-            ("m", AgentState::NeedsYou),
-            ("busy", AgentState::Working),
-            ("z-lead", AgentState::Idle),
-        ]
-        .map(|(name, state)| (name.to_owned(), state))
-        .to_vec();
-        let twice = [swarm("s1", "z-lead", &["m"]), swarm("s2", "z-lead", &["m"])];
-        let raised = rows(&entries, &twice, &HashSet::new());
-        assert!(matches!(
-            &raised[0],
-            Row::Agent { name, swarms: 2, members: 1, needs_you: true, .. } if name == "z-lead"
-        ));
-        assert!(matches!(&raised[1], Row::Agent { name, .. } if name == "busy"));
-    }
-
-    #[test]
-    fn one_machine_profile_stays_unchanged_and_handles_null_machine() {
-        let local_id = "a".repeat(64);
-        let machines = [ProfileMachine {
-            id: local_id.clone(),
-            name: "laptop".into(),
-            home: true,
-            state: MachineState::Online,
-            joined_at: None,
-            last_seen: None,
-        }];
-        let entries = vec![
-            ("worker".into(), AgentState::Working),
-            ("unplaced".into(), AgentState::Idle),
-        ];
-        let (multi, sections) = grouped_by_machine(
-            Some(&local_id),
-            &machines,
-            true,
-            &entries,
-            &[("never-started".into(), None)],
-            |name| {
-                (name == "worker").then(|| Machine {
-                    id: local_id.clone(),
-                    name: "laptop".into(),
-                })
-            },
-            &[],
+            &nested,
+            |_| Started::default(),
+            |_| None,
+            &HashSet::new(),
             &HashSet::new(),
         );
-        assert!(!multi);
-        assert_eq!(sections.len(), 1);
-        assert!(sections[0].machine.is_none());
-        assert_eq!(sections[0].rows.len(), 2);
+        assert_eq!(names(&rows), ["fix-coordinator", "lead"]);
+        assert!(matches!(
+            &rows[1],
+            Row::Agent {
+                counts: Counts { members: 0, .. },
+                children: true,
+                ..
+            }
+        ));
     }
 
     #[test]
-    fn multi_machine_groups_by_full_64_hex_id_and_tracks_offline_unknown_and_departed() {
-        let local_id = "a".repeat(64);
-        let remote_a = format!("{}b", "a".repeat(63));
-        let remote_b = format!("{}c", "a".repeat(63));
-        let unknown_id = "d".repeat(64);
-        let machines = vec![
+    fn offline_agents_on_another_machine_are_ordinary_rows_sorted_last() {
+        let entries = listed(&[
+            ("busy", AgentState::Working),
+            ("away", AgentState::Offline),
+            ("here-offline", AgentState::Offline),
+            ("remote", AgentState::Idle),
+            ("zed", AgentState::Idle),
+        ]);
+        let machine = |name: &str| matches!(name, "away" | "remote").then(|| header("build-box"));
+        let rows = tree(
+            &entries,
+            &[],
+            |_| Started::default(),
+            machine,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            names(&rows),
+            ["busy", "here-offline", "remote", "zed", "away"]
+        );
+        assert!(matches!(&rows[4], Row::Agent { machine: Some(m), .. } if m.name == "build-box"));
+        assert!(matches!(&rows[1], Row::Agent { machine: None, .. }));
+
+        // Lifted by what is under it, an offline agent on another machine
+        // takes that tier by name like any other agent, so folding never
+        // hides attention.
+        let lifting = listed(&[
+            ("busy", AgentState::Working),
+            ("waits", AgentState::NeedsYou),
+            ("away", AgentState::Offline),
+            ("away-coder", AgentState::NeedsYou),
+            ("drift", AgentState::Offline),
+            ("drift-coder", AgentState::Working),
+        ]);
+        let lifted = tree(
+            &lifting,
+            &[
+                swarm("away", "away", &["away-coder"]),
+                swarm("drift", "drift", &["drift-coder"]),
+            ],
+            |_| Started::default(),
+            |name| matches!(name, "away" | "drift").then(|| header("build-box")),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(names(&lifted), ["away", "waits", "busy", "drift"]);
+
+        // An offline agent on another machine kept for its swarm, whose
+        // member here is idle, sorts among the rest by name, not last.
+        let kept = listed(&[
+            ("lead", AgentState::Offline),
+            ("lead-coder", AgentState::Idle),
+            ("quiet", AgentState::Idle),
+            ("gone", AgentState::Offline),
+        ]);
+        let rows = tree(
+            &kept,
+            &[swarm("s", "lead", &["lead-coder"])],
+            |_| Started::default(),
+            |name| matches!(name, "lead" | "gone").then(|| header("build-box")),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(names(&rows), ["lead", "quiet", "gone"]);
+
+        // Kept up too by what is drawn under a member that is itself away:
+        // its queued review, or its browser.
+        let kept = listed(&[
+            ("lead", AgentState::Offline),
+            ("lead-coder", AgentState::Offline),
+            ("other", AgentState::Offline),
+            ("other-coder", AgentState::Offline),
+            ("quiet", AgentState::Idle),
+            ("gone", AgentState::Offline),
+        ]);
+        let rows = tree(
+            &kept,
+            &[
+                swarm("lead", "lead", &["lead-coder"]),
+                swarm("other", "other", &["other-coder"]),
+            ],
+            |name| Started {
+                reviews: if name == "lead-coder" {
+                    vec![review("spare", false)]
+                } else {
+                    Vec::new()
+                },
+                browser: (name == "other-coder").then(|| "example.com".into()),
+            },
+            |name| (name != "quiet").then(|| header("build-box")),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(names(&rows), ["lead", "other", "quiet", "gone"]);
+    }
+
+    #[test]
+    fn a_machine_tag_shows_only_another_known_machine() {
+        let local = "a".repeat(64);
+        let remote = "b".repeat(64);
+        let departed = "d".repeat(64);
+        let machines = [
             ProfileMachine {
-                id: local_id.clone(),
+                id: local.clone(),
                 name: "laptop".into(),
                 home: true,
                 state: MachineState::Online,
                 joined_at: None,
-                last_seen: Some("2026-11-22T12:00:00Z".into()),
+                last_seen: None,
             },
             ProfileMachine {
-                id: remote_a.clone(),
-                name: "build-box".into(),
-                home: false,
-                state: MachineState::Online,
-                joined_at: None,
-                last_seen: Some("2026-11-22T12:00:00Z".into()),
-            },
-            // Same display name as remote_a, different 64-hex ID!
-            ProfileMachine {
-                id: remote_b.clone(),
+                id: remote.clone(),
                 name: "build-box".into(),
                 home: false,
                 state: MachineState::Offline,
@@ -631,317 +1039,40 @@ mod tests {
                 last_seen: Some("2026-11-22T11:55:00Z".into()),
             },
         ];
-        let entries = vec![
-            ("local-agent".into(), AgentState::Working),
-            ("null-agent".into(), AgentState::Idle),
-            ("alpha".into(), AgentState::Working),
-            ("beta".into(), AgentState::Idle),
-            ("orphan".into(), AgentState::Unknown),
-        ];
-        let map: HashMap<&str, Machine> = HashMap::from([
-            (
-                "local-agent",
-                Machine {
-                    id: local_id.clone(),
-                    name: "laptop".into(),
-                },
-            ),
-            (
-                "alpha",
-                Machine {
-                    id: remote_a.clone(),
-                    name: "build-box".into(),
-                },
-            ),
-            (
-                "beta",
-                Machine {
-                    id: remote_b.clone(),
-                    name: "build-box".into(),
-                },
-            ),
-            (
-                "orphan",
-                Machine {
-                    id: unknown_id.clone(),
-                    name: "departed-box".into(),
-                },
-            ),
-        ]);
-        let (multi, sections) = grouped_by_machine(
-            Some(&local_id),
+        let on = |id: &str, name: &str| Machine {
+            id: id.into(),
+            name: name.into(),
+        };
+        // This machine, no machine, or an unknown local machine: no tag.
+        assert_eq!(
+            machine_tag(Some(&local), &machines, true, Some(&on(&local, "laptop"))),
+            None
+        );
+        assert_eq!(machine_tag(Some(&local), &machines, true, None), None);
+        assert_eq!(
+            machine_tag(None, &machines, true, Some(&on(&remote, "x"))),
+            None
+        );
+        // The profile's name wins over the agent's cached one.
+        let tag = machine_tag(Some(&local), &machines, true, Some(&on(&remote, "old"))).unwrap();
+        assert_eq!(tag.name, "build-box");
+        let now = epoch_seconds("2026-11-22T12:00:00Z").unwrap();
+        assert_eq!(tag.presence.label_at(now), "offline · last seen 5m ago");
+        assert!(tag.presence.attention());
+        // A machine no longer in the profile, or one read without services.
+        let gone = machine_tag(
+            Some(&local),
             &machines,
             true,
-            &entries,
-            &[(
-                "stopped-remote".into(),
-                Some(Machine {
-                    id: remote_a.clone(),
-                    name: "build-box".into(),
-                }),
-            )],
-            |name| map.get(name).cloned(),
-            &[],
-            &HashSet::new(),
-        );
-        assert!(multi);
-        assert_eq!(sections.len(), 4);
-        // Local section includes local-agent and machine: null agent.
-        assert!(sections[0].machine.is_none());
-        assert_eq!(sections[0].rows.len(), 2);
-        // Remote A: online + 1 offline agent.
-        let header_a = sections[1].machine.as_ref().unwrap();
-        assert_eq!(header_a.id, remote_a);
-        assert_eq!(header_a.presence, MachinePresence::Online);
-        assert_eq!(sections[1].offline_agents, ["stopped-remote"]);
-        // Remote B: distinct group despite identical display name, offline with last_seen.
-        let header_b = sections[2].machine.as_ref().unwrap();
-        assert_eq!(header_b.id, remote_b);
-        let now_epoch = epoch_seconds("2026-11-22T12:00:00Z").unwrap();
+            Some(&on(&departed, "departed-box")),
+        )
+        .unwrap();
         assert_eq!(
-            header_b.presence.label_at(now_epoch),
-            "offline · last seen 5m ago"
+            (gone.name.as_str(), &gone.presence),
+            ("departed-box", &MachinePresence::NotInProfile)
         );
-        // Unknown machine ID when services was read -> NotInProfile.
-        let header_unknown = sections[3].machine.as_ref().unwrap();
-        assert_eq!(header_unknown.id, unknown_id);
-        assert_eq!(header_unknown.name, "departed-box");
-        assert_eq!(header_unknown.presence, MachinePresence::NotInProfile);
-
-        // When services was not read (older service), unknown ID shows Unknown instead.
-        let (_, unread_sections) = grouped_by_machine(
-            Some(&local_id),
-            &[],
-            false,
-            &[("orphan".into(), AgentState::Idle)],
-            &[],
-            |name| map.get(name).cloned(),
-            &[],
-            &HashSet::new(),
-        );
-        assert_eq!(
-            unread_sections[0].machine.as_ref().unwrap().presence,
-            MachinePresence::Unknown
-        );
-
-        // Once the remote machine leaves and no agents remain on it, profile reverts to one-machine.
-        let (multi_after_leave, after_leave) = grouped_by_machine(
-            Some(&local_id),
-            &machines[..1],
-            true,
-            &[("local-agent".into(), AgentState::Working)],
-            &[],
-            |name| map.get(name).cloned(),
-            &[],
-            &HashSet::new(),
-        );
-        assert!(!multi_after_leave);
-        assert_eq!(after_leave.len(), 1);
-        assert!(after_leave[0].machine.is_none());
-    }
-
-    #[test]
-    fn unknown_local_id_never_treats_machines_as_remote_and_swarms_scope_cleanly() {
-        let local_id = "a".repeat(64);
-        let remote_id = "b".repeat(64);
-        let machines = vec![
-            ProfileMachine {
-                id: local_id.clone(),
-                name: "laptop".into(),
-                home: true,
-                state: MachineState::Online,
-                joined_at: None,
-                last_seen: None,
-            },
-            ProfileMachine {
-                id: remote_id.clone(),
-                name: "build-box".into(),
-                home: false,
-                state: MachineState::Online,
-                joined_at: None,
-                last_seen: None,
-            },
-        ];
-        let map: HashMap<&str, Machine> = HashMap::from([
-            (
-                "local-lead",
-                Machine {
-                    id: local_id.clone(),
-                    name: "laptop".into(),
-                },
-            ),
-            (
-                "remote-lead",
-                Machine {
-                    id: remote_id.clone(),
-                    name: "build-box".into(),
-                },
-            ),
-            (
-                "remote-coder",
-                Machine {
-                    id: remote_id.clone(),
-                    name: "build-box".into(),
-                },
-            ),
-            (
-                "cross-member",
-                Machine {
-                    id: remote_id.clone(),
-                    name: "build-box".into(),
-                },
-            ),
-        ]);
-
-        // Without a known local machine ID, nothing is classified as remote.
-        let (multi_none, sections_none) = grouped_by_machine(
-            None,
-            &machines[..1],
-            true,
-            &[("local-lead".into(), AgentState::Working)],
-            &[],
-            |name| map.get(name).cloned(),
-            &[],
-            &HashSet::new(),
-        );
-        assert!(!multi_none);
-        assert_eq!(sections_none.len(), 1);
-        assert!(sections_none[0].machine.is_none());
-
-        // Cross-machine swarm does not leave a phantom disclosure on local-lead,
-        // and an offline remote initiator already in `entries` is not duplicated in offline_agents.
-        let entries = vec![
-            ("local-lead".into(), AgentState::Working),
-            ("remote-lead".into(), AgentState::Offline),
-            ("remote-coder".into(), AgentState::Working),
-            ("cross-member".into(), AgentState::Idle),
-        ];
-        let swarms = vec![
-            Swarm {
-                name: "cross".into(),
-                initiator: "local-lead".into(),
-                members: vec!["cross-member".into()],
-            },
-            Swarm {
-                name: "remote-fix".into(),
-                initiator: "remote-lead".into(),
-                members: vec!["remote-coder".into()],
-            },
-        ];
-        let (multi, sections) = grouped_by_machine(
-            Some(&local_id),
-            &machines,
-            true,
-            &entries,
-            &[(
-                "remote-lead".into(),
-                Some(Machine {
-                    id: remote_id.clone(),
-                    name: "build-box".into(),
-                }),
-            )],
-            |name| map.get(name).cloned(),
-            &swarms,
-            &HashSet::new(),
-        );
-        assert!(multi);
-        assert_eq!(sections.len(), 2);
-        // Local section: local-lead has swarms == 0 (no phantom empty swarm).
-        assert_eq!(
-            sections[0].rows,
-            [Row::Agent {
-                name: "local-lead".into(),
-                state: AgentState::Working,
-                swarms: 0,
-                members: 0,
-                needs_you: false,
-                expanded: false,
-            }]
-        );
-        // Remote section: remote-lead folds remote-coder, cross-member stays visible,
-        // and remote-lead is NOT duplicated in offline_agents.
-        assert!(sections[1].offline_agents.is_empty());
-        assert_eq!(
-            sections[1].rows,
-            [
-                Row::Agent {
-                    name: "remote-lead".into(),
-                    state: AgentState::Offline,
-                    swarms: 1,
-                    members: 1,
-                    needs_you: false,
-                    expanded: false,
-                },
-                Row::Agent {
-                    name: "cross-member".into(),
-                    state: AgentState::Idle,
-                    swarms: 0,
-                    members: 0,
-                    needs_you: false,
-                    expanded: false,
-                },
-            ]
-        );
-
-        // A mixed-machine swarm preserves all members on Row::Swarm for open_swarm_tab
-        // while folding only same-machine members, and offline_leads_for_machines skips
-        // an offline initiator whose only active member runs on another machine.
-        let mut mixed_map = map.clone();
-        mixed_map.insert(
-            "local-coder",
-            Machine {
-                id: local_id.clone(),
-                name: "laptop".into(),
-            },
-        );
-        let mixed_entries = vec![
-            ("local-lead".into(), AgentState::Working),
-            ("local-coder".into(), AgentState::Idle),
-            ("cross-member".into(), AgentState::Idle),
-        ];
-        let mixed_swarms = vec![
-            Swarm {
-                name: "mixed".into(),
-                initiator: "local-lead".into(),
-                members: vec!["local-coder".into(), "cross-member".into()],
-            },
-            Swarm {
-                name: "cross-offline".into(),
-                initiator: "remote-lead".into(),
-                members: vec!["local-coder".into()],
-            },
-        ];
-        let leads = offline_leads_for_machines(
-            &mixed_entries,
-            &mixed_swarms,
-            Some(&local_id),
-            |_| AgentState::Offline,
-            |name| mixed_map.get(name).cloned(),
-        );
-        assert!(leads.is_empty());
-
-        let (_, expanded_sections) = grouped_by_machine(
-            Some(&local_id),
-            &machines,
-            true,
-            &mixed_entries,
-            &[],
-            |name| mixed_map.get(name).cloned(),
-            &mixed_swarms,
-            &HashSet::from(["local-lead".to_owned()]),
-        );
-        assert_eq!(
-            expanded_sections[0].rows[1],
-            Row::Swarm {
-                initiator: "local-lead".into(),
-                name: "mixed".into(),
-                members: vec!["local-coder".into(), "cross-member".into()],
-            }
-        );
-        assert_eq!(expanded_sections[0].rows.len(), 3);
-        assert!(matches!(
-            &expanded_sections[1].rows[0],
-            Row::Agent { name, .. } if name == "cross-member"
-        ));
+        let unread = machine_tag(Some(&local), &[], false, Some(&on(&departed, ""))).unwrap();
+        assert_eq!(unread.name, "dddddddd");
+        assert_eq!(unread.presence, MachinePresence::Unknown);
     }
 }

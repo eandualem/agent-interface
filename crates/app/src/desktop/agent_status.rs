@@ -87,8 +87,8 @@ pub(super) struct Status {
     pub reason: Option<String>,
     /// What it waits on and how many runs it has, when the service says.
     pub line: Option<String>,
-    /// Its held or waiting deliveries, when the service says any wait.
-    pub deliveries: Option<(String, Option<&'static str>)>,
+    /// Why its deliveries are held, when the service says they are.
+    pub held: Option<&'static str>,
     /// Its own restart while it is under way.
     pub restart: Option<agent_interface_roster::Restart>,
 }
@@ -104,7 +104,7 @@ impl Status {
             since: None,
             reason: None,
             line: None,
-            deliveries: None,
+            held: None,
             restart: None,
         }
     }
@@ -153,13 +153,12 @@ pub(super) fn stale_note(evidence: &[String]) -> Option<String> {
         .cloned()
 }
 
-/// An agent's active runs, as its sidebar row shows them.
+/// An agent's active runs, as the agents panel shows them: its reviews
+/// under it. An agent with other runs only has none.
 #[derive(Debug, Default, PartialEq)]
 pub(super) struct Activity {
-    /// Each active review: who reviews, and its state as written.
-    pub reviews: Vec<(String, String)>,
-    /// Its other active runs in a few words, such as `build running`.
-    pub runs: Option<String>,
+    /// Each active review.
+    pub reviews: Vec<super::agent_groups::Review>,
 }
 
 struct Current {
@@ -270,39 +269,31 @@ pub(super) fn deliveries(
     })
 }
 
-/// As [`deliveries`], for a navigation row: the count, and apart from it
-/// why they are held, so a narrow row can cut the reason, never the count.
-pub(super) fn row_deliveries(
-    held: Option<&agent_interface_roster::HeldQueue>,
-    queued: u64,
-) -> Option<(String, Option<&'static str>)> {
-    let Some(held) = held else {
-        return (queued > 0).then(|| (format!("{queued} waiting"), None));
-    };
-    let why = match held.reason.as_deref() {
+/// Why a navigation row's deliveries are held, as its tooltip says, or
+/// `None` when nothing holds them.
+pub(super) fn row_held(held: Option<&agent_interface_roster::HeldQueue>) -> Option<&'static str> {
+    Some(match held?.reason.as_deref() {
         Some("uncertain_delivery") => {
             "deliveries held: a message may still be in the original terminal"
         }
         _ => "deliveries are held",
-    };
-    // The held one waits too.
-    Some((format!("{} waiting", queued.max(1)), Some(why)))
+    })
 }
 
-/// Who a review asked: its model, else its CLI, else the run's label, then
-/// its effort when named.
-fn reviewer(run: &Run) -> String {
+/// Who a review asked, as its row shows it: its model, else its CLI, else
+/// the run's label, with its effort apart.
+fn review(run: &Run) -> super::agent_groups::Review {
     let review = run.review.as_ref();
-    let who = review
-        .and_then(|review| review.model.clone().or_else(|| review.runtime.clone()))
-        .unwrap_or_else(|| run.label.clone());
-    match review.and_then(|review| review.effort.as_ref()) {
-        Some(effort) => format!("{who} {effort}"),
-        None => who,
+    super::agent_groups::Review {
+        reviewer: review
+            .and_then(|review| review.model.clone().or_else(|| review.runtime.clone()))
+            .unwrap_or_else(|| run.label.clone()),
+        effort: review.and_then(|review| review.effort.clone()),
+        running: run.state == "running",
     }
 }
 
-/// Each agent's active runs: its reviews one by one, the rest in a few words.
+/// Each agent with active runs, and its reviews.
 fn activity(runs: &Runs) -> HashMap<String, Rc<Activity>> {
     let mut started: HashMap<&str, Vec<&Run>> = HashMap::new();
     // A stale list is no longer what runs.
@@ -314,19 +305,12 @@ fn activity(runs: &Runs) -> HashMap<String, Rc<Activity>> {
     started
         .into_iter()
         .map(|(agent, runs)| {
-            let (reviews, others): (Vec<&Run>, Vec<&Run>) =
-                runs.into_iter().partition(|run| run.kind == "review");
-            let count = |state: &str| others.iter().filter(|run| run.state == state).count();
-            let runs = match others.as_slice() {
-                [] => None,
-                [run] => Some(format!("{} {}", run.kind, run.state)),
-                _ => counted(count("running") as u64, count("queued") as u64, ", "),
-            };
-            let reviews = reviews
+            let reviews = runs
                 .into_iter()
-                .map(|run| (reviewer(run), run.state.clone()))
+                .filter(|run| run.kind == "review")
+                .map(review)
                 .collect();
-            (agent.to_owned(), Rc::new(Activity { reviews, runs }))
+            (agent.to_owned(), Rc::new(Activity { reviews }))
         })
         .collect()
 }
@@ -580,23 +564,25 @@ impl LiveAgents {
         current.activity.get(name).cloned()
     }
 
-    /// Agents of the roster that are offline but still have active runs;
-    /// none while the roster is reported unavailable.
-    pub fn offline_with_runs(&self) -> Vec<String> {
+    /// Agents of the roster that are offline but still have active reviews,
+    /// which sit under them in the agents panel; none while the roster is
+    /// reported unavailable.
+    pub fn offline_with_reviews(&self) -> Vec<String> {
         let current = self.0.current.borrow();
         if current.reported_unavailable() {
             return Vec::new();
         }
         current
             .activity
-            .keys()
-            .filter(|name| {
-                current
-                    .statuses
-                    .get(*name)
-                    .is_some_and(|status| status.state == AgentState::Offline)
+            .iter()
+            .filter(|(name, activity)| {
+                !activity.reviews.is_empty()
+                    && current
+                        .statuses
+                        .get(*name)
+                        .is_some_and(|status| status.state == AgentState::Offline)
             })
-            .cloned()
+            .map(|(name, _)| name.clone())
             .collect()
     }
 
@@ -690,8 +676,7 @@ impl LiveAgents {
                             (None, Some(stale)) => Some(stale.clone()),
                             (None, None) => None,
                         };
-                        status.deliveries =
-                            row_deliveries(details.held_queue.as_ref(), details.queued);
+                        status.held = row_held(details.held_queue.as_ref());
                         status.restart = details.restart.clone();
                     }
                     (name.clone(), Rc::new(status))
@@ -1058,21 +1043,14 @@ mod tests {
     }
 
     #[test]
-    fn held_and_waiting_deliveries_show_with_their_count_until_none_wait() {
+    fn held_deliveries_say_why_on_the_row_and_the_agent_view_counts_them() {
         let read = |body: &[u8]| {
             let agents = LiveAgents::default();
             let mut snapshot = Snapshot::default();
             snapshot.update(body);
             agents.update(snapshot);
-            // The row's count, then its reason, as one line.
-            agents
-                .get("worker")
-                .deliveries
-                .clone()
-                .map(|(count, why)| match why {
-                    Some(why) => format!("{count} · {why}"),
-                    None => count,
-                })
+            // The row's tooltip.
+            agents.get("worker").held
         };
         let fixture = |name: &str| {
             std::fs::read(format!(
@@ -1082,27 +1060,16 @@ mod tests {
             .unwrap()
         };
         assert_eq!(
-            read(&fixture("agents-held-queue")).as_deref(),
-            Some("8 waiting · deliveries held: a message may still be in the original terminal")
+            read(&fixture("agents-held-queue")),
+            Some("deliveries held: a message may still be in the original terminal")
         );
-        // The list does not say why a plain wait waits.
-        assert_eq!(
-            read(&fixture("agents-queued")).as_deref(),
-            Some("3 waiting")
-        );
+        // A plain wait holds nothing.
+        assert_eq!(read(&fixture("agents-queued")), None);
         assert_eq!(read(&fixture("agents")), None);
-        // One held with none behind it is still one waiting.
         assert_eq!(
-            read(br#"{"items":[{"name":"worker","held_queue":{"reason":"later"},"queued":1}]}"#)
-                .as_deref(),
-            Some("1 waiting · deliveries are held")
+            read(br#"{"items":[{"name":"worker","held_queue":{"reason":"later"},"queued":1}]}"#),
+            Some("deliveries are held")
         );
-        // A held queue always waits for at least the held one.
-        assert_eq!(
-            read(br#"{"items":[{"name":"worker","held_queue":{},"queued":0}]}"#).as_deref(),
-            Some("1 waiting · deliveries are held")
-        );
-        // Cleared only once nothing holds them and none wait.
         assert_eq!(
             read(br#"{"items":[{"name":"worker","held_queue":null,"queued":0}]}"#),
             None
@@ -1141,11 +1108,16 @@ mod tests {
         }));
         let mut update = observation(&profile, "offline");
         update.runs.active = runs.clone();
+        // A review the offline worker started, which keeps its row.
+        let mut review = runs[0].clone();
+        review.run_id = "0193a1b2c3d47e5f8a9b0c1d2e3f4a6f".into();
+        review.agent = Some("worker".into());
+        update.runs.active.push(review);
         update.runs.finished = vec![runs[1].clone()];
         agents.update_bound(update.clone());
         let worker = "1234567890abcdef1234567890abcdef";
         assert!(agents.activity("worker").is_some());
-        assert_eq!(agents.offline_with_runs(), ["worker"]);
+        assert_eq!(agents.offline_with_reviews(), ["worker"]);
         assert_eq!(agents.runs_of(worker).active.len(), 1);
         // A refused read reports the roster unavailable: its runs aren't
         // current any more, while those that ended stay.
@@ -1153,7 +1125,7 @@ mod tests {
         refused.error = Some(agent_interface_roster::profiles::Error::Refused(401));
         agents.update_bound(refused);
         assert!(agents.activity("worker").is_none());
-        assert!(agents.offline_with_runs().is_empty());
+        assert!(agents.offline_with_reviews().is_empty());
         let card = agents.runs_of(worker);
         assert!(card.active.is_empty());
         assert_eq!(card.finished.len(), 1);
@@ -1163,7 +1135,7 @@ mod tests {
         update.runs.stale = true;
         agents.update_bound(update);
         assert!(agents.activity("worker").is_none());
-        assert!(agents.offline_with_runs().is_empty());
+        assert!(agents.offline_with_reviews().is_empty());
         assert!(agents.runs_of(worker).active.is_empty());
         assert_eq!(agents.runs_of(worker).finished.len(), 1);
     }
@@ -1233,21 +1205,23 @@ mod tests {
         assert!(agents.update_bound(update.clone()));
         assert!(!agents.update_bound(update));
         let builder = agents.activity("builder").unwrap();
+        let review =
+            |reviewer: &str, effort: Option<&str>, running| super::super::agent_groups::Review {
+                reviewer: reviewer.into(),
+                effort: effort.map(str::to_owned),
+                running,
+            };
         assert_eq!(
             builder.reviews,
             [
-                ("gpt-example high".to_owned(), "running".to_owned()),
-                ("codex high".to_owned(), "running".to_owned()),
-                (
-                    "Review round 2, gpt-example".to_owned(),
-                    "queued".to_owned()
-                ),
+                review("gpt-example", Some("high"), true),
+                review("codex", Some("high"), true),
+                review("Review round 2, gpt-example", None, false),
             ]
         );
-        assert_eq!(builder.runs, None);
+        // An agent with other runs only is known to have runs.
         let worker = agents.activity("worker").unwrap();
         assert!(worker.reviews.is_empty());
-        assert_eq!(worker.runs.as_deref(), Some("1 running, 1 queued"));
         assert!(agents.activity("reviewer").is_none());
         // The card finds its agent's runs by registration.
         let card = agents.runs_of("1234567890abcdef1234567890abcdef");
@@ -1256,17 +1230,22 @@ mod tests {
         let mut update = observation(&profile, "busy");
         update.runs.active = vec![runs[1].clone()];
         agents.update_bound(update);
-        assert_eq!(
-            agents.activity("worker").unwrap().runs.as_deref(),
-            Some("build queued")
-        );
+        assert!(agents.activity("worker").unwrap().reviews.is_empty());
         assert!(agents.activity("builder").is_none());
-        assert!(agents.offline_with_runs().is_empty());
-        // An offline agent with runs is named; one the roster doesn't know is not.
+        assert!(agents.offline_with_reviews().is_empty());
+        // An offline agent whose only runs are not reviews has nothing to
+        // show under it; one with a review is named. One the roster doesn't
+        // know is not.
         let mut update = observation(&profile, "offline");
-        update.runs.active = runs;
+        update.runs.active = runs.clone();
+        agents.update_bound(update.clone());
+        assert!(agents.offline_with_reviews().is_empty());
+        let mut review = runs[0].clone();
+        review.run_id = "0193a1b2c3d47e5f8a9b0c1d2e3f4a6f".into();
+        review.agent = Some("worker".into());
+        update.runs.active.push(review);
         agents.update_bound(update);
-        assert_eq!(agents.offline_with_runs(), ["worker"]);
+        assert_eq!(agents.offline_with_reviews(), ["worker"]);
     }
 
     #[test]

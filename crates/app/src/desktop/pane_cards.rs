@@ -317,30 +317,40 @@ impl Browser {
                     .child(header)
             }))
             .child(
-                gpui::canvas(|_, _, _| (), {
-                    let bounds = Rc::clone(cards.pane_bounds);
-                    move |area, (), window, _| {
-                        bounds.borrow_mut().insert(id.clone(), area);
-                        // GPUI clips children to a rectangle. Cover the portions
-                        // outside the card's rounded outline after its children
-                        // paint; the card border is drawn over this afterwards.
-                        // An expanded border leaves a rounded, transparent hole.
-                        let outer = area.dilate(px(t.size.hairline));
-                        let radius = px(t.radius.pane)
-                            .min(outer.size.width / 2.0)
-                            .min(outer.size.height / 2.0);
-                        let mut transparent_ground = c.ground;
-                        transparent_ground.a = 0.0;
-                        window.paint_quad(gpui::quad(
-                            outer.dilate(radius),
-                            radius * 2.0,
-                            transparent_ground,
-                            radius,
-                            c.ground,
-                            gpui::BorderStyle::Solid,
-                        ));
-                    }
-                })
+                gpui::canvas(
+                    {
+                        // Before anything paints, so a web view in this card
+                        // finds the card's corners when it paints.
+                        let id = id.clone();
+                        move |area, window, _| {
+                            super::views::artifact_web::note_card(window, &id, area)
+                        }
+                    },
+                    {
+                        let bounds = Rc::clone(cards.pane_bounds);
+                        move |area, (), window, _| {
+                            bounds.borrow_mut().insert(id.clone(), area);
+                            // GPUI clips children to a rectangle. Cover the portions
+                            // outside the card's rounded outline after its children
+                            // paint; the card border is drawn over this afterwards.
+                            // An expanded border leaves a rounded, transparent hole.
+                            let outer = area.dilate(px(t.size.hairline));
+                            let radius = px(t.radius.pane)
+                                .min(outer.size.width / 2.0)
+                                .min(outer.size.height / 2.0);
+                            let mut transparent_ground = c.ground;
+                            transparent_ground.a = 0.0;
+                            window.paint_quad(gpui::quad(
+                                outer.dilate(radius),
+                                radius * 2.0,
+                                transparent_ground,
+                                radius,
+                                c.ground,
+                                gpui::BorderStyle::Solid,
+                            ));
+                        }
+                    },
+                )
                 .absolute()
                 .size_full(),
             )
