@@ -361,8 +361,10 @@ with tempfile.TemporaryDirectory(prefix="agents-smoke-", dir="/tmp") as director
             wait_for(lambda: find("expand"), "the new pane's hint bar")
             assert find("collapse"), "the hint bar lacks collapse"
             wait_for(lambda: in_pane("CONNECTIONS"), "the new pane's connections section")
-            # Its members are not top-level rows any more.
-            assert not find("detach-coordinator"), "a swarm member is a top-level row"
+            # Its members are not top-level rows any more: nothing in the pane
+            # holds "coordinator" while lead is folded, whole or split.
+            assert not any("coordinator" in word["text"] for word in read()
+                           if int(word["left"]) > panel_right), "a swarm member is a top-level row"
             # Keys go to the filter field; it is empty, so the arrows fold.
             field = wait_for(lambda: in_pane("Filter"), "the new pane's filter")
             press(int(field["left"]) + int(field["width"]) // 2, int(field["top"]) + int(field["height"]) // 2)
@@ -380,6 +382,14 @@ with tempfile.TemporaryDirectory(prefix="agents-smoke-", dir="/tmp") as director
             for _ in range(3):
                 command("xdotool", "key", "Down")
                 time.sleep(0.3)
+            # The member is chosen: its row says what Enter does.
+            member = in_pane("coordinator")
+
+            def chosen():
+                return any(abs(int(word["top"]) - int(member["top"])) < int(member["height"])
+                           for word in found("attach") if int(word["left"]) > panel_right)
+
+            wait_for(chosen, "the swarm member chosen, saying attach here")
             command("xdotool", "key", "Return")
 
             def attached():

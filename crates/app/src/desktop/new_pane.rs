@@ -423,6 +423,7 @@ fn reconcile_selection(
     selected: &mut Option<String>,
     disarmed: &mut bool,
     reading: bool,
+    own: impl Fn(&Row) -> bool,
 ) {
     if reading && selected.is_some() {
         return;
@@ -436,8 +437,11 @@ fn reconcile_selection(
     } else if !*disarmed && !reading {
         // Until every read has landed, rows change kind and place: a session
         // becomes an agent, a member listed alone folds under its agent.
-        // The first choice waits; a person's own choice never does.
-        *selected = choices.next().map(row_key);
+        // The first choice waits; a person's own choice never does. Under a
+        // filter it takes the first row that matches by itself, not one
+        // kept above a match to show its place.
+        let mut first = choices.clone().filter(|row| own(row));
+        *selected = first.next().or_else(|| choices.next()).map(row_key);
     }
 }
 
@@ -1004,7 +1008,24 @@ impl Render for NewPane {
             self.team_loading,
             self.origin.has_provider().then(|| self.agents.observed()),
         );
-        reconcile_selection(&rows, &mut self.selected, &mut self.disarmed, reading);
+        let own: HashSet<String> = rows
+            .iter()
+            .filter(|row| match row {
+                Row::Tree(line, ..) => {
+                    self.query.is_empty()
+                        || tree_matches(line, |name| self.member(name), |text| self.matches(text))
+                }
+                _ => true,
+            })
+            .map(row_key)
+            .collect();
+        reconcile_selection(
+            &rows,
+            &mut self.selected,
+            &mut self.disarmed,
+            reading,
+            |row| own.contains(&row_key(row)),
+        );
         let views = matches!(self.mode, Mode::Views | Mode::Agents);
         let buttons = div()
             .flex()
@@ -2143,17 +2164,44 @@ mod tests {
         rows.push(Row::Connection(None));
         rows.push(Row::Session("scratch".into()));
         let (mut selected, mut disarmed) = (None, false);
-        reconcile_selection(&rows, &mut selected, &mut disarmed, true);
+        reconcile_selection(&rows, &mut selected, &mut disarmed, true, |_| true);
         assert!(selected.is_none() && !disarmed);
-        reconcile_selection(&rows[3..], &mut selected, &mut disarmed, true);
+        reconcile_selection(&rows[3..], &mut selected, &mut disarmed, true, |_| true);
         assert!(selected.is_none() && !disarmed);
         // Read, the first row is chosen: the agent most in need.
-        reconcile_selection(&rows, &mut selected, &mut disarmed, false);
+        reconcile_selection(&rows, &mut selected, &mut disarmed, false, |_| true);
         assert_eq!(selected.as_deref(), Some("agent:lead:"));
         // A list of connections alone still offers its first.
         let (mut selected, mut disarmed) = (None, false);
-        reconcile_selection(&rows[4..6], &mut selected, &mut disarmed, false);
+        reconcile_selection(&rows[4..6], &mut selected, &mut disarmed, false, |_| true);
         assert_eq!(selected.as_deref(), Some("connections:all"));
+    }
+
+    #[test]
+    fn under_a_filter_the_first_choice_is_the_match_not_the_rows_above_it() {
+        let (expanded, collapsed) = (HashSet::new(), HashSet::new());
+        let matches = |row: &agent_groups::Row| {
+            tree_matches(row, |_| None, |text| text.contains("fix-coder"))
+        };
+        let rows: Vec<Row> = agent_rows(
+            &entries(),
+            &[fix_swarm()],
+            started,
+            |_| None,
+            (&expanded, &collapsed),
+            Some(&matches),
+        )
+        .into_iter()
+        .map(|row| Row::Tree(Box::new(row), true, String::new()))
+        .collect();
+        assert_eq!(
+            keys(&rows),
+            ["agent:lead:", "swarm:lead/fix", "member:fix/fix-coder:"]
+        );
+        let own = |row: &Row| matches!(row, Row::Tree(line, ..) if matches(line));
+        let (mut selected, mut disarmed) = (None, false);
+        reconcile_selection(&rows, &mut selected, &mut disarmed, false, own);
+        assert_eq!(selected.as_deref(), Some("member:fix/fix-coder:"));
     }
 
     #[test]
@@ -2203,6 +2251,7 @@ mod tests {
             &mut selected,
             &mut disarmed,
             false,
+            |_| true,
         );
         assert!(selected.is_none() && disarmed);
         assert_eq!(
@@ -2255,20 +2304,22 @@ mod tests {
     fn row_reconciliation_keeps_a_choice_made_while_reading() {
         let rows = vec![Row::Heading("SESSIONS", ""), Row::Session("worker".into())];
         let (mut selected, mut disarmed) = (None, false);
-        reconcile_selection(&rows, &mut selected, &mut disarmed, true);
+        reconcile_selection(&rows, &mut selected, &mut disarmed, true, |_| true);
         assert!(selected.is_none());
         // The person's own choice, made while reading, stands.
         selected = Some("worker".into());
         // A reveal may briefly have no rows while fresh data is being read.
-        reconcile_selection(&[], &mut selected, &mut disarmed, true);
+        reconcile_selection(&[], &mut selected, &mut disarmed, true, |_| true);
         assert_eq!(selected.as_deref(), Some("worker"));
         let reordered = vec![Row::Session("other".into()), Row::Session("worker".into())];
-        reconcile_selection(&reordered, &mut selected, &mut disarmed, false);
+        reconcile_selection(&reordered, &mut selected, &mut disarmed, false, |_| true);
         assert_eq!(selected.as_deref(), Some("worker"));
-        reconcile_selection(&reordered[..1], &mut selected, &mut disarmed, false);
+        reconcile_selection(&reordered[..1], &mut selected, &mut disarmed, false, |_| {
+            true
+        });
         assert!(selected.is_none());
         assert!(disarmed);
-        reconcile_selection(&rows, &mut selected, &mut disarmed, false);
+        reconcile_selection(&rows, &mut selected, &mut disarmed, false, |_| true);
         assert!(selected.is_none());
     }
 }

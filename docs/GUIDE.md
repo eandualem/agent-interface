@@ -329,7 +329,7 @@ list shows every matching row under its agent, so typing `coder` finds the
 swarm members named so. Enter attaches the selected agent or member in the
 pane, opens a browser's view, opens a swarm's members together as a tab, or
 shows a review's output, read-only, when the service names a view for it; a
-review without one cannot be chosen. **CONNECTIONS** follows, one row per
+review without one, or whose agent runs on another machine, cannot be chosen. **CONNECTIONS** follows, one row per
 connection of the profile and then **All connections**, each opening
 Connections in the pane. The number keys choose top-level rows only.
 
