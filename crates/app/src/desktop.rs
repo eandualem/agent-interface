@@ -789,6 +789,9 @@ struct Browser {
     /// The profile's shells of panes being closed, ended once the close is
     /// saved and no pane holds them.
     shells_after_close: Option<(agent_interface_roster::profiles::Connection, Vec<String>)>,
+    /// A workspace being deleted, whose saved peer list choices are
+    /// forgotten once the deletion is saved.
+    forget_after_delete: Option<String>,
     /// A close waits for its shells' check, or for the person's answer.
     close_pending: bool,
     /// The pane Open terminal asked for, focused once its shell is attached.
@@ -1137,6 +1140,7 @@ impl Browser {
         self.shell_after_save = None;
         self.shell_to_open = None;
         self.shells_after_close = None;
+        self.forget_after_delete = None;
         self.resize = None;
         self.pane_drag = None;
         self.pane_motion = None;
@@ -1421,6 +1425,9 @@ impl Browser {
             return;
         };
         self.pending_save = Some(proposal);
+        // Settings are shared by every library, so only this deletion, once
+        // saved, says a saved peer list choice is no longer needed.
+        self.forget_after_delete = Some(expected.to_owned());
         self.workspace_menu = false;
         self.editing = None;
         self.tab_menu = None;
@@ -1746,6 +1753,16 @@ impl Browser {
                             }
                         }
                         browser.creation_from = None;
+                        if let Some(workspace) = browser.forget_after_delete.take()
+                            && !result.conflict
+                            && settings::forget_peer_list_of(&workspace)
+                        {
+                            settings::save_in_background(settings::Settings::current(), |result| {
+                                if let Err(error) = result {
+                                    tracing::warn!(%error, "A deleted workspace's peer list not forgotten");
+                                }
+                            });
+                        }
                         if let Some((connection, ids)) = browser.shells_after_close.take()
                             && !result.conflict
                             && let Some(layout) = &browser.layout
@@ -1846,6 +1863,7 @@ impl Browser {
         self.shell_after_save = None;
         self.shell_to_open = None;
         self.shells_after_close = None;
+        self.forget_after_delete = None;
         self.resize = None;
         self.pane_drag = None;
         // A carried pane has no drag left to let it go.
@@ -3367,7 +3385,8 @@ impl Render for Browser {
                         .is_some_and(|layout| saved_view(layout.model(), id, &pane.view)))
         });
         for (id, view) in shown.clone() {
-            if view.kind == agent_interface_core::ViewKind::Connections
+            let connections = view.kind == agent_interface_core::ViewKind::Connections;
+            if connections
                 && self.views.get(&id).is_some_and(|(_, events)| {
                     !events.belongs_to(self.pane_navigation_origin(&id).as_ref())
                 })
@@ -3400,27 +3419,27 @@ impl Render for Browser {
                     ),
                     None => views::ViewPane::new(view, directory, folders, window, cx),
                 });
-                if let Some(space) = self
-                    .layout
-                    .as_ref()
-                    .and_then(|layout| layout.model().workspace_for_pane(&id))
-                {
-                    let name = self
-                        .workspace_profiles
-                        .profile_name(space)
-                        .map(str::to_owned);
-                    let (profile, workspace) = (space.profile_id.clone(), space.id.clone());
-                    pane.update(cx, |pane, cx| {
-                        pane.place_connections(profile.as_deref(), &workspace, name.as_deref(), cx)
-                    });
-                }
                 if let Some(section) = self.opening_sections.remove(&id)
                     && reports
                 {
                     pane.update(cx, |pane, cx| pane.open_section(section, window, cx));
                 }
                 self.views
-                    .insert(id, (pane, navigation_origin::ViewEvents::default()));
+                    .insert(id.clone(), (pane, navigation_origin::ViewEvents::default()));
+            }
+            // Placed on every draw, so a profile name that loads after the
+            // pane exists still reaches it.
+            if connections
+                && let Some((pane, _)) = self.views.get(&id)
+                && let Some(space) = self
+                    .layout
+                    .as_ref()
+                    .and_then(|layout| layout.model().workspace_for_pane(&id))
+            {
+                let name = self.workspace_profiles.profile_name(space);
+                pane.update(cx, |pane, cx| {
+                    pane.place_connections(space.profile_id.as_deref(), &space.id, name, window, cx)
+                });
             }
         }
         if let Some((workspace, key, selection)) = self.peer_to_open.take()

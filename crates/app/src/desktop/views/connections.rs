@@ -199,9 +199,20 @@ impl Pane {
 
     /// Where this pane is: its workspace, that workspace's profile and the
     /// profile's name, which decide where its peer list choice is saved.
-    pub(super) fn place(&mut self, profile: Option<&str>, workspace: &str, name: Option<&str>) {
-        self.list_key = Some(peers::list_key(profile, workspace));
-        self.profile_name = name.map(str::to_owned);
+    /// Says whether anything changed, as a name can arrive after the pane
+    /// was made.
+    pub(super) fn place(
+        &mut self,
+        profile: Option<&str>,
+        workspace: &str,
+        name: Option<&str>,
+    ) -> bool {
+        peers::place(
+            (&mut self.list_key, &mut self.profile_name),
+            profile,
+            workspace,
+            name,
+        )
     }
 
     /// Open or close the preview. Its records are new each time it opens.
