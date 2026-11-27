@@ -36,8 +36,9 @@ impl Store {
             .connection
             .pragma_update(None, "foreign_keys", false)
             .map_err(|error| store.failure(error))?;
+        // A cheap readiness check. `save` validates the schema and the current
+        // row again inside its transaction, so the row is not read here.
         store.check_writable_schema()?;
-        store.load()?;
         Ok(store)
     }
 

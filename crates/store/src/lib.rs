@@ -148,6 +148,14 @@ impl Store {
     /// Read and validate the current arrangement. A library without the
     /// arrangement table is refused; malformed records are never repaired.
     pub fn load(&self) -> Result<Document, Error> {
+        self.read_document().and_then(|refusal| refusal)
+    }
+
+    /// [`Store::load`], telling its two kinds of failure apart. The inner error
+    /// is a refusal of the committed schema or record, which reading again
+    /// returns until another commit. The outer error is a failed read, such as
+    /// a lock, which a retry may clear.
+    pub fn read_document(&self) -> Result<Result<Document, Error>, Error> {
         // Schema and row must come from the same snapshot. Saving already owns
         // an immediate transaction; ordinary reads start their own transaction.
         let transaction = self
@@ -161,7 +169,7 @@ impl Store {
             [], |row| row.get::<_, bool>(0),
         ))?;
         if !initialized {
-            return Err(self.failure("terminal_layout table is missing"));
+            return Ok(Err(self.failure("terminal_layout table is missing")));
         }
         let stored = self.read(|| {
             // Dedicated PRAGMA statements cannot resolve database-defined
@@ -191,7 +199,9 @@ impl Store {
             Ok(count == 2)
         })?;
         if !stored {
-            return Err(self.failure("layout id and value must be ordinary stored columns"));
+            return Ok(Err(
+                self.failure("layout id and value must be ordinary stored columns")
+            ));
         }
         // Check byte length in the same statement that reads the value, preventing
         // a concurrent writer from replacing a small record after a size precheck.
@@ -202,10 +212,15 @@ impl Store {
                 ValueRef::Text(text) => Ok(std::str::from_utf8(text).ok().map(str::to_owned)),
                 _ => Ok(None),
             },
-        ).optional())?
-            .ok_or_else(|| self.failure("current layout row is missing"))?
-            .ok_or_else(|| self.failure("layout record must be UTF-8 text no larger than 16 MiB"))?;
-        let document = Document::parse(raw, &self.path)?;
+        ).optional())?;
+        let document = raw
+            .ok_or_else(|| self.failure("current layout row is missing"))
+            .and_then(|raw| {
+                raw.ok_or_else(|| {
+                    self.failure("layout record must be UTF-8 text no larger than 16 MiB")
+                })
+            })
+            .and_then(|raw| Document::parse(raw, &self.path));
         if let Some(transaction) = transaction {
             transaction.commit().map_err(|error| self.failure(error))?;
         }
