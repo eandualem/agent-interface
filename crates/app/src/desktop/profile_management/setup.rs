@@ -982,8 +982,8 @@ impl Pane {
             Some(served) => served.request.start.name(),
             None => snapshot.map_or("Your agent", |s| s.agent_name.as_str()),
         };
-        // Started on another machine: it shows in the panel under that
-        // machine, and nothing here attaches to it.
+        // Started on another machine: it appears in the panel with that
+        // machine's tag, and nothing here attaches to it.
         if let Some(there) = self.elsewhere().filter(|_| self.running()) {
             let (title, note) = started_elsewhere(name, there);
             return div()

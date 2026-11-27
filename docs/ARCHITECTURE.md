@@ -374,7 +374,8 @@ machine by its full ID, and its tools come from
 `GET /api/profile/machines/{id}/runtimes`. A service without that route, or a
 machine whose Backbone is too old to list its tools (a 503 `unavailable`
 naming that machine), starts the profile's default tool. No pane opens here
-for an agent on another machine: it appears in the panel under that machine.
+for an agent on another machine: it appears in the panel with that machine's
+tag.
 
 The layer offers the same persistent interface-size setting as the workspace,
 including during the opening scene. Progress is saved as `[setup]` in
