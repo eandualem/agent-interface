@@ -49,14 +49,23 @@ impl ArtifactPane {
                         .await;
                     if this
                         .update(cx, |pane, cx| {
-                            match catalog {
+                            let changed = match catalog {
                                 Ok(catalog) => {
+                                    let changed =
+                                        pane.catalog != catalog || pane.catalog_error.is_some();
                                     pane.catalog = catalog;
                                     pane.catalog_error = None;
+                                    changed
                                 }
-                                Err(error) => pane.catalog_error = Some(error.to_string()),
-                            }
-                            if pane.selected.is_none() {
+                                Err(error) => {
+                                    let error = Some(error.to_string());
+                                    let changed = pane.catalog_error != error;
+                                    pane.catalog_error = error;
+                                    changed
+                                }
+                            };
+                            // An unchanged rescan must not redraw the window.
+                            if changed && pane.selected.is_none() {
                                 cx.notify();
                             }
                         })

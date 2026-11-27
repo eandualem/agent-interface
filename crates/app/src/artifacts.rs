@@ -29,7 +29,7 @@ pub struct Entry {
 }
 
 /// The newest retained artifact metadata, bounded independently of HTML bodies.
-#[derive(Default)]
+#[derive(Default, PartialEq, Eq)]
 pub struct Catalog {
     /// Available documents, newest first.
     pub entries: Vec<Entry>,
