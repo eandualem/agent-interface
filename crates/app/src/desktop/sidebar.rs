@@ -1569,7 +1569,7 @@ impl Browser {
                     })
                     .child(div().text_color(color).child(label))
             });
-        let summary = ui::text(
+        let summary_line = ui::text(
             div()
                 .min_w_0()
                 .h(px(line))
@@ -1583,7 +1583,7 @@ impl Browser {
         .child(div().w(px(0.)).h(px(line)))
         .children(summary_parts);
         let heading = section_toggle("CONNECTIONS", self.connections_collapsed)
-            .child(summary)
+            .child(summary_line)
             .on_click(cx.listener(|b, _, _, cx| {
                 b.connections_collapsed = !b.connections_collapsed;
                 cx.notify();
