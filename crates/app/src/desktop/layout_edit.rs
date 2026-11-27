@@ -99,11 +99,12 @@ pub(super) fn save(
         && let Some(previous) = previous
         && bound(local, previous, false)
     {
-        remember_directories(local, previous, |leaf| {
-            let socket = library::existing_shell_socket(directory, &leaf.id)?
-                .ok_or_else(|| std::io::Error::other("Ordinary shell is not running"))?;
-            library::remember_shell_directory(leaf, &socket)
-        });
+        remember_ordinary_directories(
+            local,
+            previous,
+            || library::existing_shell_sessions(directory),
+            library::remember_shell_directory,
+        );
     }
     if let Some((action, cwd)) = creation {
         action.apply(local, &cwd);
@@ -166,6 +167,32 @@ pub(super) fn select_created(model: &mut Layout, created: &Layout) {
     } else {
         model.set_focus_mode(created.focus_mode());
     }
+}
+
+/// Refresh the previous tab's leaves from the library's ordinary shells. The
+/// socket and session list are read once for the whole tab. When that read
+/// fails or no server is registered, nothing is refreshed: a failed query is
+/// not evidence that a session is absent.
+fn remember_ordinary_directories(
+    model: &mut Layout,
+    previous: &Tab,
+    shells: impl FnOnce() -> std::io::Result<Option<(std::path::PathBuf, Vec<String>)>>,
+    mut read: impl FnMut(&mut agent_interface_core::Leaf, &Path) -> std::io::Result<()>,
+) {
+    let (socket, sessions) = match shells() {
+        Ok(Some(shells)) => shells,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::debug!(%error, event = "shell_sessions_unavailable", "Could not list ordinary shells");
+            return;
+        }
+    };
+    remember_directories(model, previous, |leaf| {
+        if !library::ordinary_session(&leaf.id).is_some_and(|session| sessions.contains(&session)) {
+            return Err(std::io::Error::other("Ordinary shell is not running"));
+        }
+        read(leaf, &socket)
+    });
 }
 
 /// Refresh only previously nonempty leaves from their own ordinary shells.
@@ -388,6 +415,63 @@ mod tests {
         assert_eq!(leaves[2].cwd.as_deref(), Some("/saved"));
         assert_eq!(leaves[0].attachment, previous.tree.leaves()[0].attachment);
         assert!(server.run(&["list-clients"]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_multi_leaf_tab_lists_the_ordinary_shells_once() {
+        let mut model = Layout::initial("/saved".into());
+        model.split(Direction::Right, "/saved".into(), false);
+        model.split(Direction::Below, "/saved".into(), false);
+        let previous = model.tab().unwrap().clone();
+        let ids: Vec<String> = previous
+            .tree
+            .leaves()
+            .iter()
+            .map(|leaf| leaf.id.clone())
+            .collect();
+        // The last leaf's shell is not running.
+        let running: Vec<String> = ids[..2]
+            .iter()
+            .map(|id| library::ordinary_session(id).unwrap())
+            .collect();
+        let lists = std::cell::Cell::new(0);
+        let mut reads = Vec::new();
+        remember_ordinary_directories(
+            &mut model,
+            &previous,
+            || {
+                lists.set(lists.get() + 1);
+                Ok(Some(("/shells.sock".into(), running)))
+            },
+            |leaf, socket| {
+                assert_eq!(socket, Path::new("/shells.sock"));
+                reads.push(leaf.id.clone());
+                leaf.cwd = Some("/current".into());
+                Ok(())
+            },
+        );
+        assert_eq!(lists.get(), 1);
+        assert_eq!(reads, ids[..2]);
+        let cwds: Vec<_> = model
+            .tab()
+            .unwrap()
+            .tree
+            .leaves()
+            .iter()
+            .map(|leaf| leaf.cwd.clone().unwrap())
+            .collect();
+        assert_eq!(cwds, ["/current", "/current", "/saved"]);
+        // A failed listing is not an absent session: nothing is refreshed.
+        let mut model = Layout::initial("/saved".into());
+        let before = model.clone();
+        let tab = model.tab().unwrap().clone();
+        remember_ordinary_directories(
+            &mut model,
+            &tab,
+            || Err(std::io::Error::other("timed out")),
+            |_, _| panic!("no session is read"),
+        );
+        assert_eq!(model, before);
     }
 
     #[test]

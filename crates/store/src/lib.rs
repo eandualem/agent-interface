@@ -36,6 +36,20 @@ pub struct Error {
     pub detail: String,
 }
 
+const RECOVERY_NEEDED: &str =
+    "database recovery is needed; preserve layouts.db and its journal files";
+
+impl Error {
+    /// Whether the same read can succeed without the library changing: another
+    /// connection holds a lock, or a writer's journal still awaits recovery.
+    /// SQLite renders SQLITE_BUSY and SQLITE_LOCKED with these texts.
+    pub fn is_transient(&self) -> bool {
+        self.detail == RECOVERY_NEEDED
+            || self.detail.contains("database is locked")
+            || self.detail.contains("database table is locked")
+    }
+}
+
 /// A validated schema-v2 document and its independent in-memory model.
 #[derive(Clone, Debug)]
 pub struct Document {
@@ -136,7 +150,7 @@ impl Store {
                     if code.extended_code == rusqlite::ffi::SQLITE_READONLY_ROLLBACK =>
                 {
                     if Instant::now() >= deadline {
-                        return Err(self.failure("database recovery is needed; preserve layouts.db and its journal files"));
+                        return Err(self.failure(RECOVERY_NEEDED));
                     }
                     std::thread::sleep(Duration::from_millis(25));
                 }

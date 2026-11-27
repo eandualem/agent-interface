@@ -288,8 +288,14 @@ fn writable_open_never_initializes_or_imports_and_save_rechecks_the_current_row(
     for invalid in ["{}", "null"] {
         db.execute("UPDATE terminal_layout SET value=?1 WHERE id=1", [invalid])
             .unwrap();
-        assert!(writer.save(&mut base, &local).is_err());
-        assert!(Store::open_existing_writable(directory.path()).is_err());
+        // Opening checks only the schema. Saving refuses the row with the text
+        // a read reports for it.
+        let refused = Store::open(directory.path()).unwrap().load().unwrap_err();
+        assert_eq!(
+            writer.save(&mut base, &local).unwrap_err().detail,
+            refused.detail
+        );
+        assert!(Store::open_existing_writable(directory.path()).is_ok());
         assert_eq!(base.raw_json(), original);
         assert_eq!(local.workspaces[0].name, "Unsaved edit");
         assert_eq!(
@@ -301,8 +307,11 @@ fn writable_open_never_initializes_or_imports_and_save_rechecks_the_current_row(
         );
     }
     db.execute("DELETE FROM terminal_layout", []).unwrap();
-    assert!(writer.save(&mut base, &local).is_err());
-    assert!(Store::open_existing_writable(directory.path()).is_err());
+    assert_eq!(
+        writer.save(&mut base, &local).unwrap_err().detail,
+        "current layout row is missing"
+    );
+    assert!(Store::open_existing_writable(directory.path()).is_ok());
     db.execute("INSERT INTO terminal_layout VALUES(1, ?1)", [RECORD])
         .unwrap();
     db.execute_batch("ALTER TABLE terminal_layout ADD COLUMN extra TEXT DEFAULT 'retained'")

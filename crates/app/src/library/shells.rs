@@ -22,6 +22,20 @@ pub fn existing_shell_socket(
     select_socket(existing_library_socket(resolved_directory)?, leaf_id, false)
 }
 
+/// The library's existing ordinary-shell socket and its session names, or
+/// None when no server is registered. One bounded read-only query lists every
+/// session, so a caller checking many leaves pays it once. A query failure is
+/// returned, not treated as an empty list.
+pub fn existing_shell_sessions(
+    resolved_directory: &Path,
+) -> io::Result<Option<(PathBuf, Vec<String>)>> {
+    let Some(socket) = existing_library_socket(resolved_directory)? else {
+        return Ok(None);
+    };
+    let sessions = agent_interface_tmux::discovery::read_sessions(&socket)?;
+    Ok(Some((socket, sessions)))
+}
+
 fn existing_library_socket(resolved_directory: &Path) -> io::Result<Option<PathBuf>> {
     let uid = uzers::get_current_uid();
     lookup_in(&socket_directory(uid), uid, resolved_directory)

@@ -1,7 +1,9 @@
 //! First-run initialization and read-only library polling on the storage worker.
 
+use std::collections::BTreeMap;
 use std::io;
-use std::path::PathBuf;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -14,8 +16,8 @@ mod window;
 pub use location::library_directory;
 pub(crate) use shells::prepare_shell;
 pub use shells::{
-    existing_shell_socket, ordinary_session, reconnect_shells_from, remember_shell_directory,
-    shell_socket_for_creation,
+    existing_shell_sessions, existing_shell_socket, ordinary_session, reconnect_shells_from,
+    remember_shell_directory, shell_socket_for_creation,
 };
 pub use window::WindowLayout;
 
@@ -72,14 +74,25 @@ impl Library {
                 tracing::debug!(event = "library_opened", "Library opened");
                 let mut version = None;
                 let mut last_error = None;
+                // The token at which the record last failed to decode. Only a
+                // commit can change that result; a lock or busy error retries.
+                let mut unreadable = None;
                 loop {
                     let result = store.data_version().and_then(|current| {
-                        if version == Some(current) && last_error.is_none() {
+                        if (version == Some(current) && last_error.is_none())
+                            || unreadable == Some(current)
+                        {
                             return Ok(None);
                         }
-                        let document = store.load()?;
+                        #[cfg(test)]
+                        tests::count_load(&directory);
+                        let document = store.load().inspect_err(|error| {
+                            if !error.is_transient() {
+                                unreadable = Some(current);
+                            }
+                        })?;
                         if version.is_none()
-                            && let Err(error) = shells::remember_server(&directory)
+                            && let Err(error) = remember_once(&directory, shells::remember_server)
                         {
                             tracing::warn!(%error, "Could not record the library's shell server");
                         }
@@ -147,6 +160,39 @@ impl Drop for Library {
     }
 }
 
+/// The location each library's shell server was last remembered at, by the
+/// filesystem identity of its directory and `layouts.db`. A save restarts the
+/// reader of the same library, which need not register its server again.
+static REMEMBERED: Mutex<BTreeMap<(u64, u64, u64), PathBuf>> = Mutex::new(BTreeMap::new());
+
+/// Run `remember` on the first start of a library in this process, and again
+/// once the library at `directory` is another one or has moved. A failure is
+/// not recorded, so the next start retries it.
+fn remember_once(
+    directory: &Path,
+    remember: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<()> {
+    let identity = std::fs::metadata(directory).and_then(|folder| {
+        let database = std::fs::metadata(directory.join("layouts.db"))?;
+        Ok((folder.dev(), folder.ino(), database.ino()))
+    });
+    let lock = || REMEMBERED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Ok(identity) = identity
+        && lock()
+            .get(&identity)
+            .is_some_and(|location| location == directory)
+    {
+        return Ok(());
+    }
+    remember(directory)?;
+    if let Ok(identity) = identity {
+        let mut remembered = lock();
+        remembered.retain(|_, location| location != directory);
+        remembered.insert(identity, directory.to_owned());
+    }
+    Ok(())
+}
+
 fn publish(updates: &Mutex<Option<Update>>, result: Result<Document, Error>, wake: &impl Fn()) {
     {
         let mut pending = updates.lock().unwrap_or_else(|e| e.into_inner());
@@ -167,6 +213,86 @@ mod tests {
     use super::*;
     use rusqlite::Connection;
     use std::cell::Cell;
+
+    static LOADS: Mutex<BTreeMap<PathBuf, usize>> = Mutex::new(BTreeMap::new());
+
+    /// Count record reads per library, so parallel tests do not share a count.
+    pub(super) fn count_load(directory: &Path) {
+        *LOADS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(directory.to_owned())
+            .or_default() += 1;
+    }
+
+    fn loads(directory: &Path) -> usize {
+        let directory = location::library_location(Some(directory)).unwrap();
+        LOADS.lock().unwrap().get(&directory).copied().unwrap_or(0)
+    }
+
+    #[test]
+    fn a_server_is_remembered_once_until_the_library_is_replaced_or_moved() {
+        let root = tempfile::tempdir().unwrap();
+        let first = root.path().join("first");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::write(first.join("layouts.db"), "").unwrap();
+        let calls = Cell::new(0);
+        let remember = |directory: &Path, succeeds: bool| {
+            remember_once(directory, |_| {
+                calls.set(calls.get() + 1);
+                succeeds
+                    .then_some(())
+                    .ok_or_else(|| io::Error::other("unavailable"))
+            })
+        };
+        assert!(remember(&first, false).is_err());
+        remember(&first, true).unwrap();
+        // A save restarts the reader of the same library.
+        remember(&first, true).unwrap();
+        assert_eq!(calls.get(), 2);
+        // Another library replaces this one in the same folder.
+        std::fs::write(first.join("replacement"), "").unwrap();
+        std::fs::rename(first.join("replacement"), first.join("layouts.db")).unwrap();
+        remember(&first, true).unwrap();
+        assert_eq!(calls.get(), 3);
+        // The library moves away and back again.
+        let second = root.path().join("second");
+        std::fs::rename(&first, &second).unwrap();
+        remember(&second, true).unwrap();
+        std::fs::rename(&second, &first).unwrap();
+        remember(&first, true).unwrap();
+        assert_eq!(calls.get(), 5);
+    }
+
+    #[test]
+    fn an_unreadable_record_is_read_again_only_after_a_commit() {
+        let directory = tempfile::tempdir().unwrap();
+        let writer = Connection::open(directory.path().join("layouts.db")).unwrap();
+        writer
+            .execute_batch(
+                "CREATE TABLE terminal_layout (id INTEGER PRIMARY KEY, value TEXT);
+                 INSERT INTO terminal_layout VALUES (1, '{}')",
+            )
+            .unwrap();
+        let (wake, woken) = mpsc::channel();
+        let library = Library::start(Some(directory.path().into()), move || {
+            let _ = wake.send(());
+        })
+        .unwrap();
+        woken.recv_timeout(Duration::from_secs(5)).unwrap();
+        let first = library.take_update().unwrap().error.unwrap().detail;
+        // Several polls pass without decoding the unchanged record again.
+        std::thread::sleep(POLL_INTERVAL * 3);
+        assert_eq!(loads(directory.path()), 1);
+        writer
+            .execute("UPDATE terminal_layout SET value = 'null'", [])
+            .unwrap();
+        woken.recv_timeout(Duration::from_secs(5)).unwrap();
+        let second = library.take_update().unwrap().error.unwrap().detail;
+        assert_ne!(first, second);
+        std::thread::sleep(POLL_INTERVAL * 3);
+        assert_eq!(loads(directory.path()), 2);
+    }
 
     #[test]
     fn first_launch_without_provider_or_existing_library() {
