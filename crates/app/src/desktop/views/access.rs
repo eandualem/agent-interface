@@ -33,15 +33,8 @@ mod requests;
 const EVERY: Duration = Duration::from_secs(3);
 
 /// What one read of the pane returns: the agents, the waiting requests, the
-/// browsers, the shown browser's detail, and each browser's newest session
-/// when an agent's detail shows them.
-type Read = (
-    Overview,
-    RequestPage,
-    Option<Browsers>,
-    Option<Detail>,
-    Option<HashMap<String, Session>>,
-);
+/// browsers and the shown browser's detail.
+type Read = (Overview, RequestPage, Option<Browsers>, Option<Detail>);
 
 /// Which of the pane's two views is shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -172,6 +165,13 @@ pub(super) struct Pane {
     dismissed: Option<(Menu, std::time::Instant)>,
     /// The browsers view: the chosen browser and the new browser sheet.
     browsing: browsers::Browsing,
+    /// Whether the next read is the poll's, which may check a new browser's
+    /// sign-in.
+    check_due: bool,
+    /// Whether the browsers' newest sessions are to be read again, and
+    /// whether a read of them is under way.
+    newest_due: bool,
+    reading_newest: bool,
     /// The new browser's name and address.
     name_field: Entity<NameField>,
     opens_field: Entity<NameField>,
@@ -276,7 +276,11 @@ impl Pane {
         let stream = BrowserStream::start(connection.clone(), cx);
         let poll = cx.spawn(async move |this, cx| {
             loop {
-                if this.update(cx, |pane, cx| pane.read(cx)).is_err() {
+                let polled = this.update(cx, |pane, cx| {
+                    pane.check_due = true;
+                    pane.read(cx);
+                });
+                if polled.is_err() {
                     break;
                 }
                 cx.background_executor().timer(EVERY).await;
@@ -313,6 +317,9 @@ impl Pane {
             return_focus: None,
             dismissed: None,
             browsing: browsers::Browsing::default(),
+            check_due: false,
+            newest_due: true,
+            reading_newest: false,
             name_field,
             opens_field,
             _poll: poll,
@@ -345,31 +352,21 @@ impl Pane {
         let writes = self.writes;
         let connection = self.connection.clone();
         let shown = self.browsing.shown_id(self.shown == Shown::Browsers);
-        // An agent's detail says when each browser was last used.
-        let used = self.shown == Shown::Agents && self.selected.is_some();
+        // Backbone reads a new browser's sign-in only when it is checked, so
+        // the poll checks it while the sheet waits for one; a read the check
+        // itself sets off does not check again.
+        let check = self.browsing.waits_for_sign_in() && std::mem::take(&mut self.check_due);
         let read = cx.background_executor().spawn(async move {
             let overview = connection.access_overview()?;
             let pending = connection.access_requests(Requests::Pending)?;
             // Browsers only add to the pane, so their own failure keeps the
             // last ones read.
             let browsers = connection.browsers(None).ok();
-            let detail = shown.and_then(|id| connection.browser(&id).ok());
-            let newest = browsers.as_ref().filter(|_| used).map(|browsers| {
-                browsers
-                    .items
-                    .iter()
-                    .filter_map(|browser| {
-                        let session = connection
-                            .browser(&browser.id)
-                            .ok()?
-                            .recent
-                            .into_iter()
-                            .next()?;
-                        Some((browser.id.clone(), session))
-                    })
-                    .collect()
+            let detail = shown.and_then(|id| match check {
+                true => connection.check_browser(&id).ok(),
+                false => connection.browser(&id).ok(),
             });
-            Ok::<Read, Error>((overview, pending, browsers, detail, newest))
+            Ok::<Read, Error>((overview, pending, browsers, detail))
         });
         cx.spawn(async move |this, cx| {
             let result = read.await;
@@ -379,15 +376,12 @@ impl Pane {
                     // Read before a change's reply was applied: the read that
                     // follows the change shows the newer state.
                     Ok(_) if pane.writes != writes => pane.again = true,
-                    Ok((overview, pending, browsers, detail, newest)) => {
+                    Ok((overview, pending, browsers, detail)) => {
                         let model = pane.model.get_or_insert_with(Default::default);
                         model.overview = overview;
                         model.pending = pending.items;
                         if let Some(browsers) = browsers {
                             model.browsers = browsers;
-                        }
-                        if let Some(newest) = newest {
-                            model.newest = newest;
                         }
                         pane.browsing.read(detail);
                         pane.keep_browser();
@@ -400,6 +394,47 @@ impl Pane {
                 if std::mem::take(&mut pane.again) {
                     pane.read(cx);
                 }
+                pane.read_newest(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Read each browser's newest session, for the shown agent's browser
+    /// rows, once it is due: when the shown agent changes or a browser
+    /// changes. It runs beside the pane's own read, so a slow one holds
+    /// neither up.
+    fn read_newest(&mut self, cx: &mut Context<Self>) {
+        let Some(model) = &self.model else { return };
+        if !self.newest_due
+            || self.reading_newest
+            || self.shown != Shown::Agents
+            || self.selected.is_none()
+        {
+            return;
+        }
+        self.newest_due = false;
+        self.reading_newest = true;
+        let ids: Vec<String> = model.browsers.items.iter().map(|b| b.id.clone()).collect();
+        let connection = self.connection.clone();
+        let read = cx.background_executor().spawn(async move {
+            ids.into_iter()
+                .filter_map(|id| {
+                    let newest = connection.browser_sessions(&id, None, Some(1)).ok()?;
+                    Some((id, newest.items.into_iter().next()?))
+                })
+                .collect::<HashMap<String, Session>>()
+        });
+        cx.spawn(async move |this, cx| {
+            let newest = read.await;
+            let _ = this.update(cx, |pane, cx| {
+                pane.reading_newest = false;
+                if let Some(model) = pane.model.as_mut() {
+                    model.newest = newest;
+                }
+                // Due again while this read was under way.
+                pane.read_newest(cx);
                 cx.notify();
             });
         })
@@ -460,6 +495,7 @@ impl Pane {
             return;
         }
         let groups = model::groups(&model.overview, model::Filter::All);
+        self.newest_due = true;
         self.selected = groups
             .orchestrators
             .iter()
@@ -972,6 +1008,7 @@ impl BrowserStream {
                             None => model.remove_browser(&id),
                         }
                     }
+                    pane.newest_due = true;
                     pane.read(cx);
                     cx.notify();
                 });

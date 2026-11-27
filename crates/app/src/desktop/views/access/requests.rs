@@ -323,11 +323,18 @@ impl Pane {
         let reach = not_needed
             .clone()
             .map(|note| note_line("info", c.muted, note).pl(px(indent)));
-        // A browser asked for that is not there yet is made from here.
+        // A browser asked for on this machine that is not there yet is made
+        // from here, as new browsers are made on this machine.
         let missing = match &first.grant {
             Grant::Browser {
-                browser: Some(id), ..
-            } if !model.browsers.items.iter().any(|b| &b.id == id) => Some(id.clone()),
+                browser: Some(id),
+                machine,
+                ..
+            } if !model.browsers.items.iter().any(|b| &b.id == id)
+                && self.on_this_machine(machine.as_ref()) =>
+            {
+                Some(id.clone())
+            }
             _ => None,
         };
         let absent = missing.as_ref().map(|id| {

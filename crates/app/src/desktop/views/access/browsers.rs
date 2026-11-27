@@ -59,6 +59,17 @@ impl Browsing {
         }
     }
 
+    /// Whether the new browser has been made and Backbone has found it
+    /// signed in to nothing yet.
+    pub fn waits_for_sign_in(&self) -> bool {
+        let made = self.new.as_ref().and_then(|new| new.id.as_deref());
+        made.is_some()
+            && self
+                .detail
+                .as_ref()
+                .is_some_and(|d| Some(d.browser.id.as_str()) == made && d.signed_in_to.is_empty())
+    }
+
     /// Keep a detail that was read, unless another browser is shown by now.
     pub fn read(&mut self, detail: Option<Detail>) {
         if let Some(detail) = detail
@@ -160,6 +171,40 @@ impl Pane {
             self.opens_field.read(cx).focus.clone()
         };
         self.enter_field(field, window, cx);
+    }
+
+    /// Open the new browser sheet again for the chosen browser, which was
+    /// made and not saved: its name and address as Backbone has them, and the
+    /// agents that asked for it chosen.
+    pub(super) fn resume_new(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(detail) = self.browsing.detail.clone() else {
+            return;
+        };
+        let asking: Vec<String> = detail.requests.iter().map(|a| a.agent.clone()).collect();
+        let agents = self
+            .model
+            .as_ref()
+            .map(|model| model.overview.agents.as_slice())
+            .unwrap_or_default();
+        self.browsing.new = Some(NewBrowser {
+            id: Some(detail.browser.id.clone()),
+            renaming: false,
+            offered: offered(&asking, agents),
+            chosen: asking,
+            keep_on_sites: true,
+        });
+        let (name, opens) = (
+            detail.browser.name.clone(),
+            host(&detail.browser.opens_at).to_owned(),
+        );
+        self.name_field
+            .update(cx, |field, cx| field.set_value(&name, cx));
+        self.opens_field
+            .update(cx, |field, cx| field.set_value(&opens, cx));
+        self.menu = None;
+        self.notice = None;
+        self.leave_field(window, cx);
+        cx.notify();
     }
 
     /// Make the new browser on this machine, which opens its sign-in window.
@@ -588,10 +633,10 @@ impl Pane {
         )
         .child(letter_mark(&browser.name, t.size.access_mark, true))
         .child(ui::text(div().text_color(c.text), &t.text.empty_title).child(browser.name.clone()))
-        .child(if signed_in {
-            ui::tag("Signed in", ui::Tone::Done)
-        } else {
-            ui::tag("Signed out", ui::Tone::Attention)
+        .child(match browser.state {
+            State::SigningIn => ui::tag("Signing in", ui::Tone::Quiet),
+            _ if signed_in => ui::tag("Signed in", ui::Tone::Done),
+            _ => ui::tag("Signed out", ui::Tone::Attention),
         })
         .children(
             since
@@ -599,6 +644,18 @@ impl Pane {
                 .map(|since| div().text_color(c.muted).child(since)),
         )
         .child(div().flex_1())
+        // A browser left signing in is finished in the new browser sheet.
+        .when(browser.state == State::SigningIn, |el| {
+            el.child(
+                ui::button(
+                    "access-browser-resume",
+                    "Finish signing in",
+                    Button::Secondary,
+                )
+                .h(px(t.size.chip + t.space.s4))
+                .on_click(cx.listener(|pane, _, window, cx| pane.resume_new(window, cx))),
+            )
+        })
         .children(port.map(|port| {
             let watch = WatchBrowser {
                 id: browser.id.clone(),
@@ -926,10 +983,11 @@ impl Pane {
         let mut first = true;
         for giver in &detail.givers {
             let key = format!("access-browser-giver-{}", giver.agent);
+            // Its ceiling is replaced whole, so without its record nothing is
+            // sent.
             let ceiling = model
                 .agent(&giver.agent)
-                .map(|agent| without(&agent.ceiling, &browser.id))
-                .unwrap_or_default();
+                .map(|agent| without(&agent.ceiling, &browser.id));
             let agent = giver.agent.clone();
             card = card.child(
                 line(first)
@@ -946,24 +1004,25 @@ impl Pane {
                         if giver.under == 1 { "" } else { "s" }
                     )))
                     .child(div().flex_1())
-                    .child(self.busy(
-                        &key,
-                        ui::icon_button(SharedString::from(format!("{key}-remove")), "x").on_click(
-                            cx.listener({
-                                let key = key.clone();
-                                move |pane, _, _, cx| {
-                                    pane.send(
-                                        key.clone(),
-                                        Change::Browser(BrowserChange::Ceiling(
-                                            agent.clone(),
-                                            ceiling.clone(),
-                                        )),
-                                        cx,
-                                    );
-                                }
-                            }),
-                        ),
-                    )),
+                    .children(ceiling.map(|ceiling| {
+                        self.busy(
+                            &key,
+                            ui::icon_button(SharedString::from(format!("{key}-remove")), "x")
+                                .on_click(cx.listener({
+                                    let key = key.clone();
+                                    move |pane, _, _, cx| {
+                                        pane.send(
+                                            key.clone(),
+                                            Change::Browser(BrowserChange::Ceiling(
+                                                agent.clone(),
+                                                ceiling.clone(),
+                                            )),
+                                            cx,
+                                        );
+                                    }
+                                })),
+                        )
+                    })),
             );
             first = false;
         }
@@ -1737,15 +1796,40 @@ pub(super) fn offered(asking: &[String], agents: &[Agent]) -> Vec<String> {
     offered
 }
 
-/// When a browser was last used, from its newest session: "in use now"
-/// while it is open, else "last used 2 hours ago".
-pub(super) fn last_used(session: &Session, now: &DateTime<FixedOffset>) -> String {
-    match session.ended_at.as_deref() {
-        None => "in use now".into(),
-        Some(ended) => match model::time(ended, now) {
-            Some(ended) => format!("last used {} ago", model::age(&ended, now)),
-            None => "last used".into(),
-        },
+/// What an agent's row for a browser says, from the browser's newest
+/// session: "in use now" or "last used 2 h ago" for the agent's own, "used by
+/// <agent>" for another's, "no agent uses it" for a browser given to none.
+pub(super) fn row_note(
+    newest: Option<&Session>,
+    agent: &str,
+    browser: &Browser,
+    now: &DateTime<FixedOffset>,
+) -> String {
+    match newest {
+        Some(Session {
+            agent: Some(other), ..
+        }) if other != agent => format!("used by {other}"),
+        Some(session) => last_used(session, now),
+        None if browser.agents == 0 => "no agent uses it".into(),
+        None => String::new(),
+    }
+}
+
+/// When a browser was last used: "in use now" while its session is open,
+/// else "last used 12 min ago", "2 h ago", "yesterday" or its date.
+fn last_used(session: &Session, now: &DateTime<FixedOffset>) -> String {
+    let Some(ended) = session.ended_at.as_deref() else {
+        return "in use now".into();
+    };
+    let Some(ended) = model::time(ended, now) else {
+        return "last used".into();
+    };
+    let minutes = (*now - ended).num_minutes().max(0);
+    match (now.date_naive() - ended.date_naive()).num_days() {
+        _ if minutes < 60 => format!("last used {minutes} min ago"),
+        0 => format!("last used {} h ago", minutes / 60),
+        1 => "last used yesterday".into(),
+        _ => format!("last used {}", ended.format("%-d %b")),
     }
 }
 
@@ -2095,8 +2179,14 @@ mod tests {
         );
         assert_eq!(when(&detail.recent[0].started_at, &now), "today 10:12");
         assert_eq!(when(&detail.recent[2].started_at, &now), "yesterday");
-        assert_eq!(last_used(&detail.recent[0], &now), "in use now");
-        assert_eq!(last_used(&detail.recent[1], &now), "last used 2 hours ago");
+        let youtube = &browsers()[1];
+        let note = |session, agent| row_note(Some(session), agent, youtube, &now);
+        assert_eq!(note(&detail.recent[0], "poster"), "in use now");
+        assert_eq!(note(&detail.recent[1], "poster"), "last used 2 h ago");
+        assert_eq!(note(&detail.recent[1], "uploader"), "used by poster");
+        // The owner's own use is the browser's last use for every agent.
+        assert_eq!(note(&detail.recent[2], "uploader"), "last used yesterday");
+        assert_eq!(row_note(None, "poster", youtube, &now), "no agent uses it");
     }
 
     #[test]

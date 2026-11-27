@@ -68,6 +68,8 @@ class Records:
         self.browsers = browser_fixture("browsers")
         # The requests that wait for each browser made here, until it is saved.
         self.asking = {}
+        # The site each browser made here is signed in to once it is checked.
+        self.signing = {}
         self.calls = []
 
     def agent(self, name):
@@ -104,10 +106,12 @@ class Records:
             wanted = [w for w in self.browsers["wanted"] if w["browser"] == id]
             self.browsers["wanted"] = [w for w in self.browsers["wanted"] if w["browser"] != id]
             host = body["opens_at"].removeprefix("https://").strip("/")
-            # Signed in at once: the person's sign-in is not part of this check.
+            # As in Backbone, its sign-in is found only when it is checked; the
+            # person's sign-in itself is not part of this check.
+            self.signing[id] = host
             self.browsers["items"].append(dict(
                 id=id, name=body["name"], machine="5f2c9e0d1b7a4e38", machine_name="laptop",
-                opens_at=f"https://{host}/", signed_in_to=[host], state="signing_in", agents=0,
+                opens_at=f"https://{host}/", signed_in_to=[], state="signing_in", agents=0,
                 asks=sum(len(w["requests"]) for w in wanted), holder=None,
                 signed_in_since="2026-11-27T10:40:00Z", checked_at="2026-11-27T10:40:00Z"))
             self.asking[id] = [r for w in wanted for r in w["requests"]]
@@ -129,6 +133,8 @@ class Records:
                            state="given" if grants else "nobody")
             self.asking.pop(browser["id"], None)
             return self.detail(browser["id"])
+        if action == "check" and browser["id"] in self.signing:
+            browser["signed_in_to"] = [self.signing[browser["id"]]]
         if action in ("window", "check", "policies"):
             return self.detail(browser["id"])
         return 404, {"detail": {"code": "not_found", "message": "No such route in this check."}}
@@ -473,6 +479,11 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
             wait_for(sent(lambda method, path, body: method == "POST" and path == "/api/browsers"
                           and body == dict(name="Telegram", opens_at="web.telegram.org")),
                      "the new browser created")
+            # The pane checks the sign-in while the sheet waits for one.
+            wait_for(sent(lambda method, path, _: method == "POST"
+                          and path == "/api/browsers/telegram/check"), "the sign-in checked")
+            # "Signed in to", which only a found sign-in shows.
+            wait_for(lambda: find("Signed"), "the site found signed in")
             wait_for(lambda: find("Choose"), "who may use it")
             wait_for(lambda: containing("uploader"), "the agent that asked, offered")
             capture("new-browser")

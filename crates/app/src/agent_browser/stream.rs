@@ -383,12 +383,18 @@ impl Stream {
     }
 
     /// Watch the page `target` of the Chrome whose DevTools port is `port`,
-    /// or without a target its first page, found again before each
-    /// connection.
+    /// or its first page when there is no target or Chrome no longer lists
+    /// it, found again before each connection.
     pub fn open_port(port: u16, target: Option<String>, wake: impl Fn() + Send + 'static) -> Self {
         Self::open_on(
             move || Some(port),
-            move |port| target.clone().or_else(|| first_page(port)),
+            move |port| {
+                let listed = targets(port)?;
+                target
+                    .clone()
+                    .filter(|target| found(&listed, target).is_some())
+                    .or_else(|| first_page(&listed))
+            },
             wake,
         )
     }
@@ -902,8 +908,8 @@ fn decode(id: i64, data: &str, metadata: &Value) -> Option<Frame> {
 }
 
 /// The first page in Chrome's target list.
-fn first_page(port: u16) -> Option<String> {
-    targets(port)?
+fn first_page(targets: &[Value]) -> Option<String> {
+    targets
         .iter()
         .find(|listed| listed.get("type").and_then(Value::as_str) == Some("page"))
         .and_then(|listed| Some(listed.get("id")?.as_str()?.to_owned()))
@@ -1189,6 +1195,17 @@ mod tests {
             let response = format!("HTTP/1.1 200 OK\r\nContent-Length: {length}\r\n\r\n[]");
             assert_eq!(listing(response.as_bytes(), "PAGE"), Some(None));
         }
+    }
+
+    #[test]
+    fn without_a_listed_target_the_first_page_is_watched() {
+        let targets: Vec<Value> = serde_json::from_str(
+            r#"[{"id":"W","type":"service_worker"},{"id":"A","type":"page"},{"id":"B","type":"page"}]"#,
+        )
+        .unwrap();
+        assert_eq!(first_page(&targets).as_deref(), Some("A"));
+        assert!(found(&targets, "B").is_some() && found(&targets, "GONE").is_none());
+        assert_eq!(first_page(&[]), None);
     }
 
     #[test]

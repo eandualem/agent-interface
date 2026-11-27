@@ -343,6 +343,8 @@ impl Pane {
         .on_click(cx.listener(move |pane, _, window, cx| {
             if pane.selected.as_deref() != Some(name.as_str()) {
                 pane.selected = Some(name.clone());
+                pane.newest_due = true;
+                pane.read_newest(cx);
                 pane.menu = None;
                 pane.adding = None;
                 pane.notice = None;
@@ -880,11 +882,12 @@ impl Pane {
                 .find(|grant| super::browsers::names(grant, &browser.id))
                 .cloned();
             given += usize::from(granted.is_some());
-            let note = match model.newest.get(&browser.id) {
-                Some(session) => super::browsers::last_used(session, &now),
-                None if browser.agents == 0 => "no agent uses it".to_owned(),
-                None => String::new(),
-            };
+            let note = super::browsers::row_note(
+                model.newest.get(&browser.id),
+                &agent.name,
+                browser,
+                &now,
+            );
             let key = format!("access-browser-switch-{}", browser.id);
             let change = match granted.clone() {
                 Some(grant) => Change::Revoke(agent.name.clone(), grant),
@@ -937,7 +940,12 @@ impl Pane {
         } else {
             format!("{given} of {} sites you signed in to", items.len())
         };
-        Some(section("BROWSER SIGN-INS", Some(note), card))
+        Some(section("BROWSER SIGN-INS", Some(note), card).child(
+            ui::text(div().px(px(t.space.s2)).text_color(c.muted), &t.text.meta).child(
+                "It opens these sites already signed in, in tabs of its own. It never sees \
+                     a password, or another agent's tabs.",
+            ),
+        ))
     }
 
     fn folders(&self, agent: &Agent, cx: &mut Context<Self>) -> Div {
