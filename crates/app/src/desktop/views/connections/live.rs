@@ -1762,13 +1762,7 @@ impl Pane {
                         String::new(),
                     ));
                 }
-                // The connection's state, unless its last shown event says it.
-                let said = history
-                    .events
-                    .iter()
-                    .rfind(|e| e.kind != EventKind::Unknown)
-                    .is_some_and(|e| e.kind == EventKind::Disconnected);
-                if !connected && !(said && peer.state == "disconnected") {
+                if !connected && !ends_disconnected(history, peer) {
                     body = body.child(event("link-2-off", link_status(peer), String::new()));
                 }
                 column.child(body)
@@ -2179,7 +2173,8 @@ fn thread(history: &api::History) -> Vec<ThreadItem<'_>> {
     let mut items = Vec::new();
     for m in &history.items {
         let sent = epoch(&m.submitted_at).unwrap_or(f64::MAX);
-        while let Some(e) = events.next_if(|e| epoch(&e.at).unwrap_or(f64::MAX) < sent) {
+        // An event without a readable time never holds back the ones after it.
+        while let Some(e) = events.next_if(|e| epoch(&e.at).unwrap_or(f64::MIN) < sent) {
             items.push(ThreadItem::Event(e));
         }
         if !(m.state == "revision_requested" && sent_back.contains(m.message_id.as_str())) {
@@ -2188,6 +2183,17 @@ fn thread(history: &api::History) -> Vec<ThreadItem<'_>> {
     }
     items.extend(events.map(ThreadItem::Event));
     items
+}
+
+/// Whether the thread's last shown event already says what the connection's
+/// closing line would.
+fn ends_disconnected(history: &api::History, peer: &api::Peer) -> bool {
+    peer.state == "disconnected"
+        && history
+            .events
+            .iter()
+            .rfind(|e| e.kind != EventKind::Unknown)
+            .is_some_and(|e| e.kind == EventKind::Disconnected)
 }
 
 /// The line a connection event leaves in its thread, or none for a kind
@@ -2448,6 +2454,28 @@ mod tests {
         // Without its event, the draft keeps its place.
         history.events.retain(|e| e.id != 3);
         assert_eq!(order(&history)[1], "message 70");
+    }
+
+    #[test]
+    fn a_thread_ending_in_its_disconnect_has_no_second_line() {
+        let mut history = events_fixture();
+        let mut peer = api::Peer {
+            connection: history.items[0].connection.clone(),
+            display_name: None,
+            state: "disconnected".into(),
+            gates: api::Gates {
+                incoming: Policy::Review,
+                outgoing: Policy::Review,
+            },
+            revocation_failure: None,
+        };
+        assert!(ends_disconnected(&history, &peer));
+        let mut later = history.events[0].clone();
+        later.kind = EventKind::Unknown;
+        history.events.push(later);
+        assert!(ends_disconnected(&history, &peer));
+        peer.state = "revocation_pending".into();
+        assert!(!ends_disconnected(&history, &peer));
     }
 
     #[test]

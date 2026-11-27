@@ -129,12 +129,7 @@ impl Pane {
                 .child(name(sender, outgoing, c.text))
                 .child(ui::icon("arrow-right", t.size.icon - 2.0, c.muted))
                 .child(name(recipient, !outgoing, c.text_2))
-                // A first draft has no pill.
-                .children(
-                    m.revision
-                        .filter(|&n| n > 1)
-                        .map(|n| ui::pill(format!("revision {n}"))),
-                )
+                .children(rules::revision(m).map(|n| ui::pill(format!("revision {n}"))))
                 .child(div().flex_1())
                 .child(meta(rules::clock(&m.submitted_at), c.muted).flex_shrink_0()),
         );

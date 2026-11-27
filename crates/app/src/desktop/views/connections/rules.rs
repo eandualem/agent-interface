@@ -34,6 +34,11 @@ pub(super) fn clock(stamp: &str) -> String {
         .unwrap_or_else(|_| stamp.to_owned())
 }
 
+/// Which revision `m` is, when it is a later draft: a first draft has no pill.
+pub(super) fn revision(m: &api::Message) -> Option<u32> {
+    m.revision.filter(|&n| n > 1)
+}
+
 /// The state line for `m`, whose local agent is `local`. A message waiting
 /// for review has none: its card says so instead.
 pub(super) fn state_line(m: &api::Message, local: &str) -> Option<StateLine> {
@@ -412,6 +417,27 @@ mod tests {
         let mut m = message(Direction::Outgoing, "declined", Receipt::Missing);
         m.decided_at = Some(at.into());
         assert_eq!(says(&m).1, format!("You declined it {}", clock(at)));
+        // An incoming decline is its receipt; the decision time is said.
+        let mut m = message(
+            Direction::Incoming,
+            "declined",
+            Receipt::Confirmed {
+                outcome: "declined".into(),
+                recorded_at: "2026-11-21T12:09:00Z".into(),
+            },
+        );
+        m.decided_at = Some(at.into());
+        assert_eq!(says(&m).1, format!("You declined it {}", clock(at)));
+    }
+
+    #[test]
+    fn only_a_later_draft_shows_its_revision() {
+        let mut m = message(Direction::Outgoing, "revoked", Receipt::Missing);
+        assert_eq!(revision(&m), None);
+        m.revision = Some(1);
+        assert_eq!(revision(&m), None);
+        m.revision = Some(2);
+        assert_eq!(revision(&m), Some(2));
     }
 
     #[test]
