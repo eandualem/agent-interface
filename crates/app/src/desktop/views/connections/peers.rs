@@ -136,7 +136,7 @@ pub(super) fn toggle(
 
 /// How a row's trailing word reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Badge {
+pub(in crate::desktop) enum Badge {
     /// Waiting on the person: a review or a request.
     Waiting,
     Quiet,
@@ -146,7 +146,7 @@ pub(super) enum Badge {
 
 /// One row of the list.
 #[derive(Debug, PartialEq)]
-pub(super) struct Entry {
+pub(in crate::desktop) struct Entry {
     pub selection: Selection,
     pub name: Option<String>,
     pub peer_id: String,
@@ -179,7 +179,7 @@ pub(super) fn next_waiting(rows: &[Entry], shown: Option<&Selection>) -> Option<
 }
 
 /// The rows for `summary`: requests not yet accepted, then connections.
-pub(super) fn entries(summary: &Summary) -> Vec<Entry> {
+pub(in crate::desktop) fn entries(summary: &Summary) -> Vec<Entry> {
     let overview = &summary.overview;
     let requests = overview
         .invitations
@@ -229,7 +229,7 @@ pub(super) fn entries(summary: &Summary) -> Vec<Entry> {
     requests.chain(connections).collect()
 }
 
-fn badge_color(badge: Badge) -> gpui::Rgba {
+pub(in crate::desktop) fn badge_color(badge: Badge) -> gpui::Rgba {
     let c = colors();
     match badge {
         Badge::Waiting => c.accent_text,

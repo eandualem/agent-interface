@@ -49,6 +49,14 @@ pub(super) enum Selection {
     Peer(api::Generation),
 }
 
+/// What opening Connections from the panel shows once its pane is there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Opening {
+    Peer(Selection),
+    /// The connect popover.
+    Connect,
+}
+
 pub(super) struct Summary {
     pub overview: api::Overview,
     counts: HashMap<String, usize>,
@@ -140,35 +148,6 @@ impl Summary {
         } else {
             labels.join(" · ")
         }
-    }
-
-    pub fn attention_rows(&self) -> Vec<(Selection, String, String)> {
-        let mut rows = Vec::new();
-        for r in &self.overview.invitations {
-            let label = match (r.direction, r.state.as_str()) {
-                (api::Direction::Incoming, "pending") => "request",
-                (api::Direction::Outgoing, "declined") => "declined",
-                _ => continue,
-            };
-            rows.push((
-                Selection::Request(r.request_id.clone()),
-                r.display_name.clone().unwrap_or_else(|| r.peer_id.clone()),
-                label.into(),
-            ));
-        }
-        for p in &self.overview.connections {
-            let n = self.count(&p.connection.generation);
-            if n > 0 {
-                rows.push((
-                    Selection::Peer(p.connection.clone()),
-                    p.display_name
-                        .clone()
-                        .unwrap_or_else(|| p.connection.peer_id.clone()),
-                    format!("{n} review"),
-                ));
-            }
-        }
-        rows
     }
 }
 

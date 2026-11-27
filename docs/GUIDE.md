@@ -82,9 +82,9 @@ The window follows the Quiet Instrument design ([design language](DESIGN.md)).
 The workspace icons at the bottom scroll horizontally when they do not fit.
 The agents list shows at most nine rows at once, with working and starting agents
 first; scroll to reach the remaining agents. Each row shows the name and its
-status symbol. When messages wait for an agent's terminal, its row and its view
-show how many; when Backbone holds them, they also say why, and hovering the
-row shows the whole reason. Backbone reports a change within about a minute.
+status symbol. When messages wait for an agent's terminal, its view shows how
+many; when Backbone holds them, hovering the agent's row says why. Backbone
+reports a change within about a minute.
 
 The navigation panel on the left shows the current workspace (click it for the
 workspace menu), a **Jump** field (Command-K) that finds tabs, panes, agents and
@@ -93,9 +93,12 @@ in a workspace with a profile, the **AGENTS** section: agents needing you first,
 each with a state symbol. Click an agent to show the tab holding its session;
 an agent on another machine without a pane opens in a new tab named after it,
 and clicking an offline agent opens its menu with **Resume** and **Start new**.
-An agent running swarms shows the number of swarm members beside its name
-instead of listing them separately. Click the arrow to list each swarm with its
-members under the agent. Click a swarm to show it in a tab named after it: the
+What an agent started sits under it: its reviews, running or queued, its
+browser by its page's site, and its swarms with their members, each member
+shown by its name without the swarm's. Beside the name, counts of running reviews, swarm
+members and browsers stay in view while the agent is folded. Click the arrow
+to list what is under the agent; a swarm has its own arrow for its members.
+Click a swarm to show it in a tab named after it: the
 agent that started it on the left and its members tiled on the right.
 The tab closes by itself when the swarm finishes, unless you renamed it or
 added a pane of your own. A swarm stays grouped under the agent that started it
@@ -352,9 +355,11 @@ scales to fit when the shared grid is larger. An agent tile reflows at its own w
 ## Agents on other machines
 
 A profile can run agents on more than one machine. In the sidebar's **AGENTS**
-section, agents on another machine are grouped under that machine's name and
-status: online, offline with when it was last seen, not in profile, or status
-unknown. Offline agents fold into a count you can expand. Right-click an agent,
+section, every agent is in one list, and an agent on another machine carries a
+tag with that machine's name. When that machine is offline or no longer in the
+profile, the tag says so, and pointing at it shows when the machine was last
+seen. Offline agents on another machine are dimmed and listed last unless
+something is listed under them. Right-click an agent,
 or use its **⋯** button, for **Open remote terminal**, **Restart**,
 **Restart (resume)** and **Stop**, or **Resume** and **Start new** when it is
 offline. The Team view can group agents by **Machine**, and Jump shows each
@@ -428,7 +433,11 @@ and the row opens it again.
 
 **Connections** shows a profile's links with other Agent Backbone profiles. Open
 it from the sidebar's **CONNECTIONS** section, from Jump, or in an empty pane
-under **Skills, usage, team…**; a workspace has one Connections pane. It shows
+under **Skills, usage, team…**; a workspace has one Connections pane. The
+section lists each connection and request by name with what waits on you.
+Clicking one shows it in the workspace's Connections pane; with none open,
+Connections takes an empty pane in the current tab, else opens beside the
+pane you are in, and Option-click opens it in a new tab instead. It shows
 this profile's connection ID with **Copy ID**, **Connect a profile** to send a
 request, incoming and outgoing requests to accept or decline, and a review gate
 for each direction of a connection. When Connections can't be read, the pane

@@ -314,7 +314,9 @@ impl Browser {
             Target::Command(action, target) => {
                 self.create_from(action, target.as_ref(), window, cx)
             }
-            Target::Connections(target) => self.open_connections(Some(&target), None, window, cx),
+            Target::Connections(target) => {
+                self.open_connections(Some(&target), None, false, window, cx)
+            }
             Target::NewWorkspace => self.begin_workspace(window, cx),
             Target::Settings => cx.defer(super::settings_window::show),
         }

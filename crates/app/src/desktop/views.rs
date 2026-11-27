@@ -44,6 +44,12 @@ mod bound_policies;
 mod bound_skills;
 mod clock;
 mod connections;
+/// The Connections pieces the panel draws its connection rows with.
+pub(super) mod peer_rows {
+    pub(in crate::desktop) use super::connections::{
+        Badge, badge_color, display_name, entries, peer_mark,
+    };
+}
 mod conversation;
 mod documents;
 mod interactions;
@@ -327,6 +333,12 @@ impl ViewPane {
     ) {
         if let Some(pane) = &self.connections {
             pane.update(cx, |p, cx| p.pick_peer(selection, cx));
+        }
+    }
+    /// Open a Connections pane's connect popover.
+    pub(super) fn open_connect(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(pane) = &self.connections {
+            pane.update(cx, |p, cx| p.open_connect(window, cx));
         }
     }
     /// Tell a Connections pane which workspace and profile it is in, for

@@ -1506,6 +1506,16 @@ impl super::Browser {
             .unwrap_or_else(|| "Browser".into())
     }
 
+    /// What the agents panel shows for `session`: its page's host, else
+    /// [`Self::agent_browser_label`].
+    pub(super) fn agent_browser_host(&self, session: &Session, cx: &gpui::App) -> String {
+        session
+            .address
+            .as_deref()
+            .and_then(host)
+            .map_or_else(|| self.agent_browser_label(session, cx), str::to_owned)
+    }
+
     /// Show `agent`'s browser in the empty pane `pane`, as its chooser asked.
     pub(super) fn show_agent_browser_in(
         &mut self,

@@ -21,6 +21,57 @@ impl Render for HeldDeliveryTip {
     }
 }
 
+/// How long ago an offline machine was last seen, under its tag.
+struct MachineTip(SharedString);
+
+impl Render for MachineTip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        ui::menu().child(self.0.clone())
+    }
+}
+
+/// Nest rows under the row above them, one level per depth, each level
+/// joined to its parent's symbol by a hairline.
+fn nest(lines: Vec<(usize, AnyElement)>) -> Vec<AnyElement> {
+    let (t, c) = (tokens(), colors());
+    let branch = |children: Vec<AnyElement>| {
+        div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .gap(px(t.size.hairline))
+            // The hairline runs down from the middle of the parent's symbol.
+            .ml(px(t.space.s10 + t.size.agent_symbol / 2.0 - t.size.hairline))
+            .pl(px(t.space.s4))
+            .border_l(px(t.size.hairline))
+            .border_color(c.line_strong)
+            .children(children)
+            .into_any_element()
+    };
+    let mut levels: Vec<Vec<AnyElement>> = vec![Vec::new()];
+    let close = |levels: &mut Vec<Vec<AnyElement>>| {
+        let children = levels.pop().unwrap_or_default();
+        if let Some(parent) = levels.last_mut() {
+            parent.push(branch(children));
+        }
+    };
+    for (depth, line) in lines {
+        while levels.len() > depth + 1 {
+            close(&mut levels);
+        }
+        while levels.len() < depth + 1 {
+            levels.push(Vec::new());
+        }
+        if let Some(level) = levels.last_mut() {
+            level.push(line);
+        }
+    }
+    while levels.len() > 1 {
+        close(&mut levels);
+    }
+    levels.pop().unwrap_or_default()
+}
+
 #[derive(Clone)]
 struct TabDrag {
     origin: Option<super::navigation_origin::Origin>,
@@ -919,21 +970,35 @@ impl Browser {
                 .map(|(name, state)| (name.clone(), *state))
                 .collect();
             if let Some(agents) = self.active_agents() {
+                // An offline agent on another machine is an ordinary row.
                 let local_machine = agents.local_machine_id();
-                let leads = agent_groups::offline_leads_for_machines(
-                    &entries,
-                    &agents.swarms(),
-                    local_machine.as_deref(),
-                    |name| agents.get(name).state,
-                    |name| agents.machine(name),
-                );
-                entries.extend(leads.into_iter().map(|name| (name, AgentState::Offline)));
-                // An offline agent whose runs go on keeps a row to carry them.
-                for name in agents.offline_with_runs() {
+                let (machines, machines_read) = agents.machines();
+                for (name, machine) in agents.offline_with_machines() {
+                    if entries.iter().all(|(listed, _)| *listed != name)
+                        && agent_groups::machine_tag(
+                            local_machine.as_deref(),
+                            &machines,
+                            machines_read,
+                            machine.as_ref(),
+                        )
+                        .is_some()
+                    {
+                        entries.push((name, AgentState::Offline));
+                    }
+                }
+                // An offline agent whose reviews go on keeps a row to carry
+                // them; other runs have nothing to show under it.
+                for name in agents.offline_with_reviews() {
                     if entries.iter().all(|(listed, _)| *listed != name) {
                         entries.push((name, AgentState::Offline));
                     }
                 }
+                // Last, so a swarm whose listed members are only the agents
+                // added above still keeps the agent that started it.
+                let leads = agent_groups::offline_leads(&entries, &agents.swarms(), |name| {
+                    agents.get(name).state
+                });
+                entries.extend(leads.into_iter().map(|name| (name, AgentState::Offline)));
             }
             entries.sort_by_key(|(name, state)| {
                 (
@@ -1048,46 +1113,71 @@ impl Browser {
                     .active_agents()
                     .map(|agents| agents.machines())
                     .unwrap_or_default();
-                let offline_remote = self
-                    .active_agents()
-                    .map(|agents| agents.offline_with_machines())
-                    .unwrap_or_default();
-                let (multi_machine, sections) = agent_groups::grouped_by_machine(
-                    local_machine.as_deref(),
-                    &machines,
-                    machines_read,
-                    entries,
-                    &offline_remote,
-                    |name| self.active_agents()?.machine(name),
-                    &swarms,
-                    &self.expanded_agents,
+                // Each local agent's browser, a session named as it is.
+                let browsers = crate::agent_browser::by_agent(
+                    &self.agent_browsers,
+                    entries
+                        .iter()
+                        .map(|(name, _)| name.as_str())
+                        .filter(|name| {
+                            self.agent_target(name)
+                                .is_some_and(|target| target.remote_profile.is_none())
+                        }),
                 );
-                let has_any = sections
-                    .iter()
-                    .any(|section| !section.rows.is_empty() || !section.offline_agents.is_empty());
-                if !has_any {
+                let tree = agent_groups::tree(
+                    entries,
+                    &swarms,
+                    |name| agent_groups::Started {
+                        reviews: self
+                            .active_agents()
+                            .and_then(|agents| agents.activity(name))
+                            .map(|activity| activity.reviews.clone())
+                            .unwrap_or_default(),
+                        browser: browsers
+                            .get(name)
+                            .map(|session| self.agent_browser_host(session, cx)),
+                    },
+                    |name| {
+                        let machine = self.active_agents()?.machine(name);
+                        agent_groups::machine_tag(
+                            local_machine.as_deref(),
+                            &machines,
+                            machines_read,
+                            machine.as_ref(),
+                        )
+                    },
+                    &self.expanded_agents,
+                    &self.collapsed_swarms,
+                );
+                if tree.is_empty() {
                     rows = rows.child(quiet("No active agents".into(), None));
                 } else {
                     let creation = self.creation_target();
-                    // An agent row; `swarm` marks a member indented under its swarm.
+                    // A 14 px icon in the place of a 16 px agent symbol.
+                    let icon_slot = |name: &'static str| {
+                        div()
+                            .flex_shrink_0()
+                            .size(px(t.size.agent_symbol))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(ui::icon(name, t.size.icon, c.muted))
+                    };
+                    // An agent row; `swarm` marks a member under its swarm,
+                    // shown by `label`.
+                    #[allow(clippy::too_many_arguments)]
                     let agent = |browser: &Self,
                                  cx: &mut Context<Self>,
                                  name: &str,
+                                 label: &str,
                                  state: AgentState,
                                  swarm: Option<&str>,
-                                 show_machine_badge: bool| {
+                                 machine: Option<agent_groups::MachineHeader>,
+                                 counts: agent_groups::Counts,
+                                 chevron: Option<AnyElement>| {
                         let target = browser.agent_target(name);
                         let status = browser.active_agents().map(|agents| agents.get(name));
                         let stale = status.as_ref().is_some_and(|status| status.stale);
-                        let machine = show_machine_badge
-                            .then(|| {
-                                target
-                                    .as_ref()
-                                    .and_then(|target| target.remote_profile.as_ref())
-                                    .and_then(|_| browser.active_agents()?.machine(name))
-                                    .map(|m| agent_groups::machine_display_name(&m.name, &m.id))
-                            })
-                            .flatten();
                         let calm = matches!(
                             state,
                             AgentState::Idle | AgentState::Unknown | AgentState::Offline
@@ -1101,20 +1191,88 @@ impl Browser {
                         let menu_name = name.to_owned();
                         let options_name = name.to_owned();
                         let click_name = name.to_owned();
-                        let runs = browser
-                            .active_agents()
-                            .and_then(|agents| agents.activity(name))
-                            .and_then(|activity| activity.runs.clone());
-                        // How many deliveries wait keeps its width; why they
-                        // are held gives way first.
-                        let (waiting, held) =
-                            match status.as_ref().and_then(|status| status.deliveries.clone()) {
-                                Some((count, why)) => (Some(count), why),
-                                None => (None, None),
+                        // Why its deliveries are held, as the row's tooltip.
+                        let held = status.as_ref().and_then(|status| status.held);
+                        let tag = machine.map(|machine| {
+                            let offline = machine.presence.attention();
+                            // The full "last seen" text is the tag's tooltip.
+                            let tip = offline.then(|| SharedString::from(machine.presence.label()));
+                            div()
+                                .id(SharedString::from(format!("machine-{id}")))
+                                .flex()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .child(ui::machine_tag(&machine.name, offline))
+                                .when_some(tip, |tag, tip| {
+                                    tag.tooltip(move |_, cx| {
+                                        let tip = tip.clone();
+                                        cx.new(|_| MachineTip(tip)).into()
+                                    })
+                                })
+                        });
+                        // Beside the name, what gives way before it does; drawn
+                        // only when there is something to show.
+                        let glance = ui::glance_counts(&counts);
+                        // Its space from the name is inside it, so once the name
+                        // has squeezed it to nothing it costs the name nothing.
+                        let beside = (tag.is_some() || glance.is_some()).then(|| {
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .flex()
+                                .items_center()
+                                .justify_end()
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .pl(px(t.space.s10))
+                                        .flex()
+                                        .items_center()
+                                        .justify_end()
+                                        .children(tag)
+                                        .children(glance),
+                                )
+                        });
+                        // On hover the row's options cover the end of what is
+                        // left of the chevron, as a tab's take its thumbnail's
+                        // place, so they reserve no width.
+                        let options_right = t.space.s10
+                            + if chevron.is_some() {
+                                t.size.icon_button + t.space.s10
+                            } else {
+                                0.0
                             };
+                        let options = div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .right(px(options_right))
+                            .flex()
+                            .items_center()
+                            .bg(c.hover)
+                            .invisible()
+                            .group_hover(group.clone(), |style| style.visible())
+                            .child(
+                                ui::icon_button(
+                                    SharedString::from(format!("agent-options-{id}")),
+                                    "ellipsis",
+                                )
+                                .on_click(cx.listener(
+                                    move |browser, event: &gpui::ClickEvent, window, cx| {
+                                        cx.stop_propagation();
+                                        browser.open_agent_menu(
+                                            &options_name,
+                                            event.position(),
+                                            window,
+                                            cx,
+                                        );
+                                    },
+                                )),
+                            );
                         ui::row(SharedString::from(id.clone()), false)
-                            .group(group.clone())
-                            .when(swarm.is_some(), |row| row.pl(px(t.space.s10 * 3.0)))
+                            .relative()
+                            .group(group)
                             .when_some(held, |row, why| {
                                 row.tooltip(move |_, cx| cx.new(|_| HeldDeliveryTip(why)).into())
                             })
@@ -1140,98 +1298,26 @@ impl Browser {
                             } else {
                                 state
                             }))
+                            // The name and what is beside it share one place with
+                            // no gap between them; the name takes the room it needs.
                             .child(
                                 div()
-                                    // With runs or a held reason beside it the
-                                    // name keeps its width and they give way first.
-                                    .when(runs.is_none() && held.is_none(), |name| name.flex_1())
+                                    .flex_1()
                                     .min_w_0()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .text_color(if calm { c.muted } else { c.text })
-                                    .child(name.to_owned()),
-                            )
-                            .when(stale, |row| {
-                                row.child(
-                                    ui::text(
-                                        div().flex_shrink_0().text_color(c.attention_text),
-                                        &t.text.meta,
-                                    )
-                                    .child("stale"),
-                                )
-                            })
-                            .when_some(machine, |row, name| row.child(ui::badge(name)))
-                            .children(runs.map(|runs| {
-                                ui::text(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(t.space.s4))
-                                        .overflow_hidden()
-                                        .text_color(c.muted),
-                                    &t.text.meta,
-                                )
-                                .child(ui::icon("activity", t.size.icon - t.space.s2, c.muted))
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .child(runs),
-                                )
-                            }))
-                            .children(waiting.map(|count| {
-                                ui::text(
-                                    div()
-                                        .flex_shrink_0()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(t.space.s4))
-                                        .whitespace_nowrap()
-                                        .text_color(c.muted),
-                                    &t.text.meta,
-                                )
-                                .child(ui::icon("mail", t.size.icon - t.space.s2, c.muted))
-                                .child(count)
-                            }))
-                            .children(held.map(|why| {
-                                ui::text(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .whitespace_nowrap()
-                                        .text_ellipsis()
-                                        .text_color(c.muted),
-                                    &t.text.meta,
-                                )
-                                .child(format!("· {why}"))
-                            }))
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .invisible()
-                                    .group_hover(group, |style| style.visible())
+                                    .flex()
+                                    .items_center()
                                     .child(
-                                        ui::icon_button(
-                                            SharedString::from(format!("agent-options-{id}")),
-                                            "ellipsis",
-                                        )
-                                        .on_click(cx.listener(
-                                            move |browser, event: &gpui::ClickEvent, window, cx| {
-                                                cx.stop_propagation();
-                                                browser.open_agent_menu(
-                                                    &options_name,
-                                                    event.position(),
-                                                    window,
-                                                    cx,
-                                                );
-                                            },
-                                        )),
-                                    ),
+                                        div()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .text_color(if calm { c.muted } else { c.text })
+                                            .child(label.to_owned()),
+                                    )
+                                    .children(beside),
                             )
+                            .children(chevron)
+                            .child(options)
                             .on_click(cx.listener(
                                 move |browser, event: &gpui::ClickEvent, window, cx| {
                                     if state == AgentState::Offline {
@@ -1247,301 +1333,182 @@ impl Browser {
                                 },
                             ))
                     };
-                    // An agent's active reviews, each a row one level under it.
-                    let reviews = |browser: &Self, name: &str, indent: f32| {
-                        let activity = browser
-                            .active_agents()
-                            .and_then(|agents| agents.activity(name));
-                        activity
-                            .into_iter()
-                            .flat_map(|activity| activity.reviews.clone())
-                            .map(|(reviewer, state)| {
-                                ui::text(
-                                    div()
-                                        .flex()
-                                        .flex_shrink_0()
-                                        .items_center()
-                                        .gap(px(t.space.s10))
-                                        .h(px(t.size.row))
-                                        .pl(px(indent))
-                                        .pr(px(t.space.s10))
-                                        .overflow_hidden()
-                                        .whitespace_nowrap(),
-                                    &t.text.row,
+                    // Only the chevron folds; a click elsewhere on its row
+                    // still goes where the row goes.
+                    let chevron = |id: String, open: bool| {
+                        ui::icon_button(
+                            SharedString::from(id),
+                            if open {
+                                "chevron-down"
+                            } else {
+                                "chevron-right"
+                            },
+                        )
+                    };
+                    let mut lines: Vec<(usize, AnyElement)> = Vec::new();
+                    for row in tree {
+                        let depth = row.depth();
+                        let line = match row {
+                            agent_groups::Row::Agent {
+                                name,
+                                state,
+                                machine,
+                                counts,
+                                children,
+                                expanded,
+                            } => {
+                                let toggled = name.clone();
+                                let fold = children.then(|| {
+                                    chevron(format!("agent-swarms/{name}"), expanded)
+                                        .on_click(cx.listener(move |browser, _, _, cx| {
+                                            cx.stop_propagation();
+                                            if !browser.expanded_agents.remove(&toggled) {
+                                                browser.expanded_agents.insert(toggled.clone());
+                                            }
+                                            cx.notify();
+                                        }))
+                                        .into_any_element()
+                                });
+                                agent(self, cx, &name, &name, state, None, machine, counts, fold)
+                                    .into_any_element()
+                            }
+                            agent_groups::Row::Review {
+                                agent,
+                                swarm,
+                                index,
+                                review,
+                            } => ui::text(
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "review-{}/{agent}/{index}",
+                                        swarm.as_deref().unwrap_or_default()
+                                    )))
+                                    .flex()
+                                    .flex_shrink_0()
+                                    .items_center()
+                                    .gap(px(t.space.s10))
+                                    .h(px(t.size.row))
+                                    .px(px(t.space.s10))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap(),
+                                &t.text.row,
+                            )
+                            .child(ui::review_symbol(review.running))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .text_color(if review.running { c.text } else { c.muted })
+                                    .child(review.reviewer),
+                            )
+                            .children(review.effort.map(|effort| {
+                                ui::text(div().flex_shrink_0().text_color(c.muted), &t.text.meta)
+                                    .child(effort)
+                            }))
+                            .into_any_element(),
+                            agent_groups::Row::Browser {
+                                agent,
+                                swarm,
+                                label,
+                            } => ui::row(
+                                SharedString::from(format!(
+                                    "browser-{}/{agent}",
+                                    swarm.as_deref().unwrap_or_default()
+                                )),
+                                false,
+                            )
+                            .child(icon_slot("globe"))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .text_color(c.text_2)
+                                    .child(label),
+                            )
+                            .on_click(cx.listener(move |browser, _, window, cx| {
+                                browser.open_agent_browser(&agent, window, cx);
+                            }))
+                            .into_any_element(),
+                            agent_groups::Row::Swarm {
+                                initiator,
+                                name,
+                                members,
+                                listed,
+                                expanded,
+                            } => {
+                                let key = agent_groups::swarm_key(&initiator, &name);
+                                // With nobody listed under it there is nothing to
+                                // count or fold; the row still opens the swarm.
+                                let fold = (listed > 0).then(|| {
+                                    chevron(format!("swarm-fold-{key}"), expanded).on_click(
+                                        cx.listener(move |browser, _, _, cx| {
+                                            cx.stop_propagation();
+                                            if !browser.collapsed_swarms.remove(&key) {
+                                                browser.collapsed_swarms.insert(key.clone());
+                                            }
+                                            cx.notify();
+                                        }),
+                                    )
+                                });
+                                let creation = creation.clone();
+                                ui::row(
+                                    SharedString::from(format!("swarm-{initiator}/{name}")),
+                                    false,
                                 )
-                                .child(ui::icon("search", t.size.icon, c.muted))
+                                .text_color(c.text_2)
+                                .child(icon_slot("users"))
                                 .child(
                                     div()
                                         .flex_1()
                                         .min_w_0()
                                         .overflow_hidden()
                                         .text_ellipsis()
-                                        .text_color(c.text_2)
-                                        .child(reviewer),
+                                        .child(name.clone()),
                                 )
-                                .child(
+                                .children((listed > 0).then(|| {
                                     ui::text(
                                         div().flex_shrink_0().text_color(c.muted),
                                         &t.text.meta,
                                     )
-                                    .child(state),
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                    };
-                    // Each local agent's browser, a session named as it is.
-                    let browsers = crate::agent_browser::by_agent(
-                        &self.agent_browsers,
-                        entries
-                            .iter()
-                            .map(|(name, _)| name.as_str())
-                            .filter(|name| {
-                                self.agent_target(name)
-                                    .is_some_and(|target| target.remote_profile.is_none())
-                            }),
-                    );
-                    // An agent's browser, a row one level under it.
-                    let browsing = |browser: &Self,
-                                    cx: &mut Context<Self>,
-                                    key: String,
-                                    name: &str,
-                                    indent: f32| {
-                        let label = browser.agent_browser_label(browsers.get(name)?, cx);
-                        let open = name.to_owned();
-                        Some(
-                            ui::row(SharedString::from(format!("browser-{key}")), false)
-                                .pl(px(indent))
-                                .child(ui::icon("globe", t.size.icon, c.muted))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .text_color(c.text_2)
-                                        .child(label),
-                                )
+                                    .child(listed.to_string())
+                                }))
+                                .children(fold)
                                 .on_click(cx.listener(move |browser, _, window, cx| {
-                                    browser.open_agent_browser(&open, window, cx);
-                                })),
-                        )
-                    };
-                    for section in sections {
-                        let show_badge = !multi_machine;
-                        let mut expanded_offline = false;
-                        if let Some(header) = &section.machine {
-                            let state_text = header.presence.label();
-                            let state_color = if header.presence.attention() {
-                                c.attention_text
-                            } else {
-                                c.muted
-                            };
-                            let machine_id = header.id.clone();
-                            let offline_count = section.offline_agents.len();
-                            expanded_offline = self.expanded_machines.contains(&header.id);
-                            rows = rows.child(
-                                ui::text(
-                                    div()
-                                        .id(SharedString::from(format!("machine-{}", header.id)))
-                                        .flex()
-                                        .flex_shrink_0()
-                                        .items_center()
-                                        .gap(px(t.space.s6))
-                                        .h(px(t.size.section_label))
-                                        .px(px(t.space.s10))
-                                        .pt(px(t.space.s4))
-                                        .text_color(c.muted)
-                                        .overflow_hidden()
-                                        .whitespace_nowrap(),
-                                    &t.text.meta,
-                                )
-                                .child(ui::icon("server", t.size.icon - 2.0, state_color))
-                                // The name keeps its natural width and the status takes only
-                                // what is left, so the status truncates first; a long name
-                                // still truncates before the offline toggle is pushed out.
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .text_color(c.text_2)
-                                        .font_weight(t.text.row_selected.weight())
-                                        .child(header.name.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .text_right()
-                                        .text_color(state_color)
-                                        .child(state_text),
-                                )
-                                .when(offline_count > 0, |row| {
-                                    row.child(
-                                        div()
-                                            .id(SharedString::from(format!(
-                                                "machine-offline-{}",
-                                                header.id
-                                            )))
-                                            .flex_shrink_0()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(t.space.s2))
-                                            .px(px(t.space.s4))
-                                            .rounded(px(t.radius.key))
-                                            .cursor_pointer()
-                                            .hover(|el| el.bg(colors().hover))
-                                            .text_color(c.muted)
-                                            .child(format!("{offline_count} offline"))
-                                            .child(ui::icon(
-                                                if expanded_offline {
-                                                    "chevron-down"
-                                                } else {
-                                                    "chevron-right"
-                                                },
-                                                t.size.icon - 3.0,
-                                                c.muted,
-                                            ))
-                                            .on_click(cx.listener(move |browser, _, _, cx| {
-                                                cx.stop_propagation();
-                                                if !browser.expanded_machines.remove(&machine_id) {
-                                                    browser
-                                                        .expanded_machines
-                                                        .insert(machine_id.clone());
-                                                }
-                                                cx.notify();
-                                            })),
-                                    )
-                                }),
-                            );
-                        }
-                        for row in section.rows {
-                            let reviewed = match &row {
-                                agent_groups::Row::Agent { name, .. } => {
-                                    Some(reviews(self, name, t.space.s10 * 2.0))
-                                }
-                                agent_groups::Row::Member { name, .. } => {
-                                    Some(reviews(self, name, t.space.s10 * 4.0))
-                                }
-                                agent_groups::Row::Swarm { .. } => None,
-                            };
-                            let browsed = match &row {
-                                agent_groups::Row::Agent { name, .. } => {
-                                    browsing(self, cx, name.clone(), name, t.space.s10 * 2.0)
-                                }
-                                agent_groups::Row::Member { swarm, name, .. } => browsing(
-                                    self,
-                                    cx,
-                                    format!("{swarm}/{name}"),
-                                    name,
-                                    t.space.s10 * 4.0,
-                                ),
-                                agent_groups::Row::Swarm { .. } => None,
-                            };
-                            rows = rows.child(match row {
-                                agent_groups::Row::Agent {
-                                    name,
-                                    state,
-                                    swarms: 0,
-                                    ..
-                                } => agent(self, cx, &name, state, None, show_badge),
-                                agent_groups::Row::Agent {
-                                    name,
-                                    state,
-                                    members,
-                                    needs_you,
-                                    expanded,
-                                    ..
-                                } => {
-                                    let toggled = name.clone();
-                                    agent(self, cx, &name, state, None, show_badge)
-                                        .children((members > 0).then(|| {
-                                            ui::text(
-                                                div().text_color(if needs_you {
-                                                    c.attention_text
-                                                } else {
-                                                    c.muted
-                                                }),
-                                                &t.text.meta,
-                                            )
-                                            .child(members.to_string())
-                                        }))
-                                        .child(
-                                            ui::icon_button(
-                                                SharedString::from(format!("agent-swarms/{name}")),
-                                                if expanded {
-                                                    "chevron-down"
-                                                } else {
-                                                    "chevron-right"
-                                                },
-                                            )
-                                            .on_click(
-                                                cx.listener(move |browser, _, _, cx| {
-                                                    cx.stop_propagation();
-                                                    if !browser.expanded_agents.remove(&toggled) {
-                                                        browser
-                                                            .expanded_agents
-                                                            .insert(toggled.clone());
-                                                    }
-                                                    cx.notify();
-                                                }),
-                                            ),
-                                        )
-                                }
-                                agent_groups::Row::Swarm {
-                                    initiator,
-                                    name,
-                                    members,
-                                } => {
-                                    let creation = creation.clone();
-                                    ui::row(
-                                        SharedString::from(format!("swarm-{initiator}/{name}")),
-                                        false,
-                                    )
-                                    .pl(px(t.space.s10 * 2.0))
-                                    .text_color(c.muted)
-                                    .child(ui::icon("users", t.size.icon, c.muted))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .overflow_hidden()
-                                            .text_ellipsis()
-                                            .child(name.clone()),
-                                    )
-                                    .on_click(cx.listener(
-                                        move |browser, _, window, cx| {
-                                            browser.open_swarm_tab(
-                                                (&initiator, &name, &members),
-                                                creation.as_ref(),
-                                                window,
-                                                cx,
-                                            );
-                                        },
-                                    ))
-                                }
-                                agent_groups::Row::Member { swarm, name, state } => {
-                                    agent(self, cx, &name, state, Some(&swarm), show_badge)
-                                }
-                            });
-                            rows = rows.children(browsed);
-                            rows = rows.children(reviewed.into_iter().flatten());
-                        }
-                        if expanded_offline {
-                            for name in section.offline_agents {
-                                rows = rows.child(agent(
-                                    self,
-                                    cx,
-                                    &name,
-                                    AgentState::Offline,
-                                    None,
-                                    false,
-                                ));
+                                    browser.open_swarm_tab(
+                                        (&initiator, &name, &members),
+                                        creation.as_ref(),
+                                        window,
+                                        cx,
+                                    );
+                                }))
+                                .into_any_element()
                             }
-                        }
+                            agent_groups::Row::Member {
+                                swarm,
+                                name,
+                                short,
+                                state,
+                                machine,
+                            } => agent(
+                                self,
+                                cx,
+                                &name,
+                                &short,
+                                state,
+                                Some(&swarm),
+                                machine,
+                                agent_groups::Counts::default(),
+                                None,
+                            )
+                            .into_any_element(),
+                        };
+                        lines.push((depth, line));
                     }
+                    rows = rows.children(nest(lines));
                 }
             }
         }
@@ -1561,97 +1528,174 @@ impl Browser {
     }
 
     fn connections_block(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        use super::views::peer_rows;
         let space = self.connections_workspace()?;
         let (t, c) = (tokens(), colors());
         let target = self.creation_target();
         let inbox = self.peer_inboxes.get(&space.id).map(|(_, e, _)| e.read(cx));
-        let summary = inbox.and_then(|i| i.summary.as_deref());
+        let summary = inbox.and_then(|i| i.summary.clone());
         let unavailable = inbox.is_some_and(|i| i.error.is_some());
-        let label = if inbox.is_some_and(|i| i.not_answering()) {
-            "not answering".into()
+        let parts: Vec<(String, gpui::Rgba)> = if inbox.is_some_and(|i| i.not_answering()) {
+            vec![("not answering".into(), c.attention_text)]
         } else if unavailable {
-            "unavailable".into()
+            vec![("unavailable".into(), c.attention_text)]
         } else {
-            summary.map_or_else(String::new, |s| s.label())
+            summary
+                .as_deref()
+                .map(super::connections::heading)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(label, badge)| (label, peer_rows::badge_color(badge)))
+                .collect()
         };
+        // One line that sends a part that does not fit onto a second, hidden
+        // line, so whole parts give way, the last first: what waits on the
+        // person is kept longest and no part is cut. The empty first item
+        // lets the first part go too.
+        let line = t.size.keycap;
+        let summary_parts = parts
+            .into_iter()
+            .enumerate()
+            .map(|(index, (label, color))| {
+                div()
+                    .flex_shrink_0()
+                    .h(px(line))
+                    .flex()
+                    .items_center()
+                    .gap(px(t.space.s4))
+                    .when(index > 0, |part| {
+                        part.pl(px(t.space.s4))
+                            .child(div().text_color(c.muted).child("·"))
+                    })
+                    .child(div().text_color(color).child(label))
+            });
+        let summary_line = ui::text(
+            div()
+                .min_w_0()
+                .h(px(line))
+                .overflow_hidden()
+                .flex()
+                .flex_wrap()
+                .justify_end()
+                .whitespace_nowrap(),
+            &t.text.meta,
+        )
+        .child(div().w(px(0.)).h(px(line)))
+        .children(summary_parts);
         let heading = section_toggle("CONNECTIONS", self.connections_collapsed)
-            .child(
-                ui::text(
-                    div().text_color(if unavailable || summary.is_some_and(|s| s.attention()) {
-                        c.attention_text
-                    } else {
-                        c.muted
-                    }),
-                    &t.text.meta,
-                )
-                .child(label),
-            )
+            .child(summary_line)
             .on_click(cx.listener(|b, _, _, cx| {
                 b.connections_collapsed = !b.connections_collapsed;
                 cx.notify();
             }));
         let mut section = div().flex_shrink_0().child(heading);
-        if !self.connections_collapsed {
-            let rows = summary.map(|s| s.attention_rows()).unwrap_or_default();
-            let shown = rows.len().min(3);
-            for (selection, name, status) in rows.into_iter().take(shown) {
-                let key = self.peer_inboxes.get(&space.id)?.0.clone();
-                let workspace = space.id.clone();
-                let target = target.clone();
-                section = section.child(
-                    ui::row(
-                        format!(
-                            "attention-peer-{workspace}-{name}-{status}-{}",
-                            match &selection {
-                                super::peer_inbox::Selection::Peer(g) => &g.generation,
-                                super::peer_inbox::Selection::Request(r) => r,
-                            }
-                        ),
-                        false,
-                    )
-                    .mx(px(t.space.s8))
-                    .child(ui::mono("!"))
-                    .child(name)
-                    .child(ui::text(div().text_color(c.attention_text), &t.text.meta).child(status))
-                    .on_click(cx.listener(move |b, _, window, cx| {
-                        if !b.saving
-                            && !b.save_failed
-                            && target.as_ref().is_some_and(|t| b.creation_is_current(t))
-                        {
-                            b.peer_to_open =
-                                Some((workspace.clone(), key.clone(), selection.clone()));
-                            b.open_connections(target.as_ref(), None, window, cx);
-                        }
-                    })),
-                );
+        if self.connections_collapsed {
+            return Some(section.into_any_element());
+        }
+        let key = self
+            .peer_inboxes
+            .get(&space.id)
+            .map(|(key, _, _)| key.clone());
+        // Opening a row: Option-click opens Connections in a new tab.
+        let open = |id: SharedString, opening: Option<super::peer_inbox::Opening>| {
+            let workspace = space.id.clone();
+            let key = key.clone();
+            let target = target.clone();
+            ui::row(id, false).mx(px(t.space.s8)).on_click(cx.listener(
+                move |b, event: &gpui::ClickEvent, window, cx| {
+                    if !b.saving
+                        && !b.save_failed
+                        && target.as_ref().is_some_and(|t| b.creation_is_current(t))
+                    {
+                        b.peer_to_open = opening
+                            .clone()
+                            .zip(key.clone())
+                            .map(|(opening, key)| (workspace.clone(), key, opening));
+                        let new_tab = event.modifiers().alt;
+                        b.open_connections(target.as_ref(), None, new_tab, window, cx);
+                    }
+                },
+            ))
+        };
+        let slot = |child: AnyElement| {
+            div()
+                .flex_shrink_0()
+                .size(px(t.size.agent_symbol))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(child)
+        };
+        let entries = summary
+            .as_deref()
+            .map(peer_rows::entries)
+            .unwrap_or_default();
+        if entries.is_empty() {
+            if !super::connections::offers_connect(summary.is_some(), unavailable) {
+                return Some(section.into_any_element());
             }
-            let total = summary.map_or(0, |s| {
-                s.overview.connections.len()
-                    + s.overview
-                        .invitations
-                        .iter()
-                        .filter(|r| r.state != "accepted")
-                        .count()
-            });
-            let remaining = total.saturating_sub(shown);
-            let label = if remaining > 0 {
-                match (shown > 0, remaining) {
-                    (true, 1) => "1 other connection".into(),
-                    (true, n) => format!("{n} other connections"),
-                    (false, 1) => "1 connection".into(),
-                    (false, n) => format!("{n} connections"),
-                }
-            } else {
-                "Open connections".into()
-            };
             section = section.child(
-                ui::row("show-profile-connections", false)
-                    .mx(px(t.space.s8))
-                    .child(ui::icon("link-2", t.size.icon, c.muted))
+                open(
+                    "connect-a-profile".into(),
+                    Some(super::peer_inbox::Opening::Connect),
+                )
+                .text_color(c.text_2)
+                .child(slot(
+                    ui::icon("plus", t.size.icon, c.muted).into_any_element(),
+                ))
+                .child("Connect a profile"),
+            );
+            return Some(section.into_any_element());
+        }
+        let (shown, more) = super::connections::panel_rows(entries, |entry| entry.needs);
+        for entry in shown {
+            let id = match &entry.selection {
+                super::peer_inbox::Selection::Peer(g) => format!("connection-{}", g.generation),
+                super::peer_inbox::Selection::Request(r) => format!("connection-request-{r}"),
+            };
+            let named = entry.name.as_deref().is_some_and(|n| !n.trim().is_empty());
+            let name = peer_rows::display_name(entry.name.as_deref()).to_owned();
+            section = section.child(
+                open(
+                    id.into(),
+                    Some(super::peer_inbox::Opening::Peer(entry.selection.clone())),
+                )
+                .child(peer_rows::peer_mark(
+                    entry.name.as_deref(),
+                    t.size.agent_symbol,
+                ))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .text_color(if named { c.text } else { c.text_2 })
+                        .child(name),
+                )
+                .children(entry.badge.map(|(label, badge)| {
+                    ui::text(
+                        div()
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .gap(px(t.space.s4 + 1.0))
+                            .text_color(peer_rows::badge_color(badge)),
+                        &t.text.meta,
+                    )
+                    .when(badge == peer_rows::Badge::Waiting, |state| {
+                        state.child(ui::dot(c.accent))
+                    })
                     .child(label)
-                    .on_click(cx.listener(move |b, _, window, cx| {
-                        b.open_connections(target.as_ref(), None, window, cx)
-                    })),
+                })),
+            );
+        }
+        if more > 0 {
+            section = section.child(
+                open("connections-more".into(), None)
+                    .text_color(c.muted)
+                    .child(slot(div().into_any_element()))
+                    .child(format!("{more} more")),
             );
         }
         Some(section.into_any_element())

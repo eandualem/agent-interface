@@ -200,6 +200,14 @@ if not (args.no_compositor or args.light):
         str(ROOT / "scripts/test-linux-access.py"),
     ], check=True)
 
+# The panel's agents tree, and a connection opening beside the focused pane.
+if not (args.no_compositor or args.light):
+    subprocess.run([
+        "xvfb-run", "-a", "-s", "-screen 0 1440x900x24",
+        "dbus-run-session", "--", sys.executable,
+        str(ROOT / "scripts/test-linux-agents.py"),
+    ], check=True)
+
 # The Interactions pane following a resize, in its own fresh desktop.
 if not (args.no_compositor or args.light):
     subprocess.run([

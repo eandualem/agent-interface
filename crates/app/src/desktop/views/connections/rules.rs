@@ -289,7 +289,7 @@ pub(super) fn pass_note(direction: Direction, local: &str, peer: &str) -> String
 
 /// The name a connection is shown by: the profile's own, else "Unnamed
 /// profile", which is always shown with its [`fingerprint`].
-pub(super) fn display_name(name: Option<&str>) -> &str {
+pub(in crate::desktop) fn display_name(name: Option<&str>) -> &str {
     name.map(str::trim)
         .filter(|name| !name.is_empty())
         .unwrap_or("Unnamed profile")
