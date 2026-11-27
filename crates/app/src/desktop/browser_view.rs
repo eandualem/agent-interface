@@ -361,11 +361,19 @@ impl BrowserView {
         self.focus.is_focused(window)
     }
 
+    /// Whether an input method is composing text for the page.
+    pub fn composing(&self) -> bool {
+        self.marked.is_some()
+    }
+
     /// A press at `at`, the page point under it, or beside the frame.
     fn pressed(&mut self, event: &MouseDownEvent, at: Option<(f32, f32)>) {
-        let (Some(at), Some(button)) = (at, button(event.button)) else {
+        let (Some(at), Some(button)) = (at, pressable(event.button, &event.modifiers)) else {
             return;
         };
+        if !self.showing() {
+            return;
+        }
         self.caret = Some(event.position);
         let pressed = self.pointing.press(
             at,
@@ -382,11 +390,14 @@ impl BrowserView {
             return;
         };
         let modifiers = mouse_modifiers(&event.modifiers);
+        // Sent even while the page can't be reached, so the next connection
+        // still releases the button in the page.
         if let Some(released) = self
             .pointing
             .release(at, button, event.click_count, modifiers)
+            && let Some(stream) = &self.stream
         {
-            self.send(released);
+            stream.send(released);
         }
     }
 
@@ -515,8 +526,16 @@ impl Render for BrowserView {
             self.claim(false, cx);
         }
         let focused = self.focus.is_focused(window);
+        let live = window.is_window_active() && self.showing();
+        // A key or composition begun before the keyboard or page went is over.
+        if !(focused && live) {
+            (self.typed, self.marked) = (None, None);
+        }
         if let Some(stream) = &self.stream {
-            stream.set_focused(focused && window.is_window_active());
+            stream.set_focused(focused && live);
+            if !live {
+                stream.set_hovered(false);
+            }
         }
         let address = self.address();
         let site = site_name(self.title().as_deref(), address.as_deref());
@@ -572,6 +591,9 @@ impl Render for BrowserView {
                     .text_color(c.muted),
                 &t.text.body,
             )
+            // Without the page, a press does not give the view the keyboard;
+            // anything drawn over this keeps its own.
+            .on_any_mouse_down(|_, window, _| window.prevent_default())
             .child(text)
         };
         let state = self.stream.as_ref().map(Stream::state);
@@ -775,8 +797,8 @@ fn listen(
                 return;
             }
             window.prevent_default();
-            // Only a button the page is sent takes the keyboard.
-            if button(event.button).is_none() {
+            // Only a press the page is sent takes the keyboard.
+            if pressable(event.button, &event.modifiers).is_none() {
                 return;
             }
             window.focus(&focus, cx);
@@ -965,9 +987,15 @@ fn button(button: MouseButton) -> Option<Button> {
     (button == MouseButton::Left).then_some(Button::Left)
 }
 
+/// The button of a press the view sends: a left press without Ctrl or Cmd,
+/// since a Ctrl-click is a right click on macOS and a Cmd- or Ctrl-click
+/// opens a link in a new tab.
+fn pressable(pressed: MouseButton, held: &Modifiers) -> Option<Button> {
+    button(pressed).filter(|_| !(held.control || held.platform))
+}
+
 /// The page's bits for the modifier keys held with the mouse: Shift and
-/// Option only, since a Ctrl-click opens Chrome's menu on macOS and a Cmd- or
-/// Ctrl-click opens a link in a new tab.
+/// Option only, as a press with Ctrl or Cmd is not sent.
 fn mouse_modifiers(held: &Modifiers) -> u8 {
     modifiers(held) & (ALT | SHIFT)
 }
@@ -2068,6 +2096,21 @@ mod tests {
             function: false,
         };
         assert_eq!(mouse_modifiers(&held), ALT | SHIFT);
+        // A Ctrl- or Cmd-click is not sent at all; Shift and Option are.
+        let with = |control, platform| Modifiers {
+            control,
+            platform,
+            shift: true,
+            alt: true,
+            function: false,
+        };
+        assert_eq!(
+            pressable(MouseButton::Left, &with(false, false)),
+            Some(Button::Left)
+        );
+        assert_eq!(pressable(MouseButton::Left, &with(true, false)), None);
+        assert_eq!(pressable(MouseButton::Left, &with(false, true)), None);
+        assert_eq!(pressable(MouseButton::Right, &with(false, false)), None);
     }
 
     #[test]

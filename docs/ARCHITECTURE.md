@@ -1676,21 +1676,25 @@ count, moves with the button held, and the wheel at the pointer go as
 `Input.dispatchMouseEvent`, with Shift and Option but not Ctrl or Cmd. A
 right or middle press, a Ctrl-click, which is a right click on macOS, or a
 Cmd-click could open Chrome's own menu or a link in a new tab in a browser
-window the view never shows, so those buttons are not sent and change
-nothing, and Ctrl and Cmd are left out;
+window the view never shows, so those presses are not sent and change
+nothing, and Ctrl and Cmd are left out of moves, releases and the wheel;
 trackpad deltas keep their smoothness, and a wheel's lines are 40 CSS pixels
 each. Nothing beside the frame reaches the page, except that a drag begun
 inside keeps sending its moves and its release at the frame's nearest edge.
 A button released while no frame was drawn, as during a reconnect, is
-released in the page at the next move. A pointer that leaves the frame with no button
+released in the page at the next move, and a release while the page can't
+be reached waits for the next connection. A pointer that leaves the frame with no button
 held moves once just outside the page, so its hover ends.
 Hover and the wheel reach the page whenever the pointer is over the frame in
 the active window. A press in the frame gives the view the keyboard and a
 1-point focus ring; a press anywhere else, or a shortcut that moves to
-another pane, takes it back. In an expanded pane, Escape first restores the
-layout, as for a terminal. While the input method composes,
+another pane, takes it back; without a page shown, a press in the view does
+not take it. In an expanded pane, Escape first restores the layout, as for a
+terminal, unless the input method is composing. While the input method
+composes,
 keys are its own, and no key is sent while the view shows no page, as when
-the page can't be reached. The window's shortcuts run before the view and
+the page can't be reached; a composition or typed key still pending is
+dropped when the view loses the keyboard or the page. The window's shortcuts run before the view and
 keep working. A key the app or its menu acts on is never sent as well: the
 view skips any key with a key binding, a workspace command or a numbered
 selection, which covers Cmd-Q, Cmd-N, Cmd-O, Cmd-comma and the configurable
