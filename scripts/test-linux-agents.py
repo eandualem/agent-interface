@@ -323,7 +323,7 @@ with tempfile.TemporaryDirectory(prefix="agents-smoke-", dir="/tmp") as director
             press(*chevron("lead"))
             # Only lead's own fold hides all of these at once; folding the
             # detach swarm alone would hide only its members.
-            under_lead = {"coordinator", "github.com", "detach", "gemini-4-neon"}
+            under_lead = {"coordinator", "github.com", "detach", "gemini-4-neon", "high"}
             wait_for(lambda: not under_lead & {word["text"].strip().rstrip(".,:;") for word in read()},
                      "lead folded again")
             capture("tree-refolded")
