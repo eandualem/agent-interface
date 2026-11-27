@@ -998,6 +998,9 @@ impl ViewPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if let Some(pane) = &self.access {
+            return pane.update(cx, |pane, cx| pane.key(key, window, cx));
+        }
         if let Some(pane) = &self.connections
             && key.key == "tab"
             && !key.modifiers.modified()

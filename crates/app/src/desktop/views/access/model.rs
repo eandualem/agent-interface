@@ -5,7 +5,8 @@
 use agent_interface_roster::{
     Swarm,
     profiles::access::{
-        Agent, AgentAccess, Grant, Mode, Overview, Placed, Reach, Request, RequestState, Role,
+        Access, Agent, AgentAccess, Grant, Mode, Overview, Placed, Reach, Request, RequestState,
+        Role,
     },
 };
 use chrono::{DateTime, FixedOffset};
@@ -309,6 +310,134 @@ pub(super) fn decided_at(request: &Request, now: &DateTime<FixedOffset>) -> Opti
     Some(at.format("%-d %b %H:%M").to_string())
 }
 
+/// The kind of thing a grant is, to put an agent's requests of one kind on
+/// one card.
+fn kind(grant: &Grant) -> std::mem::Discriminant<Grant> {
+    std::mem::discriminant(grant)
+}
+
+/// Waiting requests as the board draws them: one card for an agent's
+/// requests of the same kind that wait on the same decider, in the order
+/// the first of them is met.
+pub(super) fn cards<'a>(requests: &[&'a Request]) -> Vec<Vec<&'a Request>> {
+    let mut cards: Vec<Vec<&Request>> = Vec::new();
+    for request in requests {
+        let same = |card: &&mut Vec<&Request>| {
+            let first = card[0];
+            first.agent == request.agent
+                && first.waits_on == request.waits_on
+                && kind(&first.grant) == kind(&request.grant)
+                && request.grant != Grant::Unknown
+        };
+        match cards.iter_mut().find(|card| same(card)) {
+            Some(card) => card.push(request),
+            None => cards.push(vec![request]),
+        }
+    }
+    cards
+}
+
+/// What a grant names: a repository, a path, a variable; none for the
+/// browser, Docker or a kind this version does not know.
+pub(super) fn thing(grant: &Grant) -> Option<String> {
+    match grant {
+        Grant::Repository { repo, .. } => Some(repo.clone()),
+        Grant::Folder { path, .. } | Grant::SecretFile { path, .. } => Some(path.clone()),
+        Grant::SecretVariable { name, .. } => Some(name.clone()),
+        Grant::Browser { .. } | Grant::Docker { .. } | Grant::Unknown => None,
+    }
+}
+
+/// The machine a grant is on, by name, when the reply names one.
+pub(super) fn machine_of(grant: &Grant) -> Option<String> {
+    match grant {
+        Grant::Folder { machine_name, .. }
+        | Grant::SecretFile { machine_name, .. }
+        | Grant::SecretVariable { machine_name, .. }
+        | Grant::Browser { machine_name, .. }
+        | Grant::Docker { machine_name, .. } => machine_name.clone(),
+        Grant::Repository { .. } | Grant::Unknown => None,
+    }
+}
+
+/// What a card says the agent asks, and the thing it asks for when the card
+/// holds one request: "asks to read" `example/app`, "asks to read 2
+/// repositories", "asks to use" `browser`.
+pub(super) fn phrase(card: &[&Request]) -> (String, Option<String>) {
+    let Some(first) = card.first() else {
+        return (String::new(), None);
+    };
+    let n = card.len();
+    let plural = |one: &str, many: &str| {
+        if n == 1 {
+            one.to_owned()
+        } else {
+            format!("{n} {many}")
+        }
+    };
+    let reads = |access: &Access| match access {
+        Access::Read => "asks to read",
+        Access::Write => "asks to write",
+    };
+    let (verb, many) = match &first.grant {
+        Grant::Repository { access, .. } => (reads(access), plural("", "repositories")),
+        Grant::Folder { access, .. } => (reads(access), plural("", "folders")),
+        Grant::SecretVariable { .. } => ("asks for the secret", plural("", "secrets")),
+        Grant::SecretFile { .. } => ("asks for the secret file", plural("", "secret files")),
+        Grant::Browser { .. } => return ("asks to use".into(), Some("browser".into())),
+        Grant::Docker { .. } => return ("asks to use".into(), Some("Docker".into())),
+        Grant::Unknown => return ("asks for access this version cannot show".into(), None),
+    };
+    if n == 1 {
+        (verb.into(), thing(&first.grant))
+    } else {
+        // "asks for the secret" reads "asks for 2 secrets" when there are more.
+        let verb = verb
+            .trim_end_matches(" the secret file")
+            .trim_end_matches(" the secret");
+        (format!("{verb} {many}"), None)
+    }
+}
+
+/// Why approving a card changes nothing, when Backbone's records say so:
+/// the agent reads every repository, or already reaches what it asks for.
+pub(super) fn not_needed(agent: &Agent, card: &[&Request]) -> Option<String> {
+    let mut asked = Vec::new();
+    for request in card {
+        let Grant::Repository { repo, access } = &request.grant else {
+            return None;
+        };
+        asked.push((repo, *access));
+    }
+    let reaches = |repo: &str, access: Access| -> bool {
+        let items = match &agent.reach {
+            Reach::Profile { .. } if access == Access::Read => return true,
+            Reach::Profile { items } | Reach::Repositories { items } => items,
+            Reach::Unknown => return false,
+        };
+        items.iter().any(|item| {
+            item.repo == repo && (item.access == Access::Write || access == Access::Read)
+        })
+    };
+    if !asked.iter().all(|(repo, access)| reaches(repo, *access)) {
+        return None;
+    }
+    let name = &agent.name;
+    Some(match (&agent.reach, agent.role) {
+        (Reach::Profile { .. }, Some(Role::Orchestrator))
+            if asked.iter().all(|(_, access)| *access == Access::Read) =>
+        {
+            format!(
+                "{name} is an orchestrator now, and orchestrators read every repository. Approving changes nothing."
+            )
+        }
+        _ if asked.len() == 1 => {
+            format!("{name} already reaches this repository. Approving changes nothing.")
+        }
+        _ => format!("{name} already reaches these repositories. Approving changes nothing."),
+    })
+}
+
 impl Model {
     /// The agent named `name`.
     pub fn agent(&self, name: &str) -> Option<&Agent> {
@@ -366,7 +495,7 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_interface_roster::profiles::access::{Access, Reached, Source};
+    use agent_interface_roster::profiles::access::{Reached, Source};
 
     fn overview() -> Overview {
         let agents: serde_json::Value = serde_json::from_str(include_str!(
@@ -646,5 +775,99 @@ mod tests {
             reach_label(&model.agent("builder").unwrap().reach),
             "1 repository"
         );
+    }
+
+    #[test]
+    fn requests_of_one_kind_from_one_agent_share_a_card() {
+        let mut pending = requests("pending");
+        let mut second = pending[2].clone();
+        second.id = 22;
+        second.grant = Grant::Repository {
+            repo: "example/site".into(),
+            access: Access::Read,
+        };
+        pending.push(second);
+        // Another kind from the same agent has its own card.
+        let mut docker = pending[2].clone();
+        docker.id = 23;
+        docker.grant = Grant::Docker {
+            machine: None,
+            machine_name: None,
+        };
+        pending.push(docker);
+        let (on_you, _) = waiting(&pending);
+        let cards = cards(&on_you);
+        let ids: Vec<Vec<i64>> = cards
+            .iter()
+            .map(|card| card.iter().map(|r| r.id).collect())
+            .collect();
+        assert_eq!(ids, [vec![21], vec![19, 22], vec![23]]);
+        assert_eq!(
+            phrase(&cards[1]),
+            ("asks to read 2 repositories".into(), None)
+        );
+        assert_eq!(
+            phrase(&cards[0]),
+            ("asks to use".into(), Some("browser".into()))
+        );
+        assert_eq!(
+            phrase(&[&pending[1]]),
+            ("asks to read".into(), Some("example/library".into()))
+        );
+        assert_eq!(machine_of(&pending[0].grant).as_deref(), Some("laptop"));
+        let mut secrets = pending[1].clone();
+        secrets.grant = Grant::SecretVariable {
+            machine: None,
+            machine_name: None,
+            name: "KEY".into(),
+        };
+        assert_eq!(
+            phrase(&[&secrets]),
+            ("asks for the secret".into(), Some("KEY".into()))
+        );
+        assert_eq!(phrase(&[&secrets, &secrets]).0, "asks for 2 secrets");
+    }
+
+    #[test]
+    fn approving_what_an_agent_already_reaches_is_said_to_change_nothing() {
+        let overview = overview();
+        let agent = |name: &str| overview.agents.iter().find(|a| a.name == name).unwrap();
+        let pending = requests("pending");
+        // lead reads every repository.
+        assert_eq!(
+            not_needed(agent("lead"), &[&pending[2]]).as_deref(),
+            Some(
+                "lead is an orchestrator now, and orchestrators read every repository. Approving changes nothing."
+            )
+        );
+        // builder already reads example/library through a grant.
+        let mut library = pending[1].clone();
+        library.agent = "builder".into();
+        assert_eq!(
+            not_needed(agent("builder"), &[&library]).as_deref(),
+            Some("builder already reaches this repository. Approving changes nothing.")
+        );
+        // Writing it is more than it has; the browser is not a repository.
+        library.grant = Grant::Repository {
+            repo: "example/library".into(),
+            access: Access::Write,
+        };
+        assert_eq!(not_needed(agent("builder"), &[&library]), None);
+        assert_eq!(not_needed(agent("tester"), &[&pending[0]]), None);
+        // An orchestrator's write is only needless where it already writes.
+        let mut write = pending[2].clone();
+        write.grant = Grant::Repository {
+            repo: "example/platform".into(),
+            access: Access::Write,
+        };
+        assert_eq!(
+            not_needed(agent("lead"), &[&write]).as_deref(),
+            Some("lead already reaches this repository. Approving changes nothing.")
+        );
+        write.grant = Grant::Repository {
+            repo: "example/app".into(),
+            access: Access::Write,
+        };
+        assert_eq!(not_needed(agent("lead"), &[&write]), None);
     }
 }

@@ -224,7 +224,7 @@ group!(
         review_strip: f32 = number, connect_popover: f32 = number, request_card: f32 = number,
         access_list: f32 = number, access_row: f32 = number, access_header: f32 = number,
         access_label: f32 = number, access_filter: f32 = number, access_mark: f32 = number,
-        access_mark_large: f32 = number,
+        access_mark_large: f32 = number, access_menu: f32 = number,
         titlebar: f32 = number, window_controls_x: f32 = number,
         window_controls_y: f32 = number, panel_width: f32 = number, panel_min: f32 = number,
         panel_max: f32 = number, workspace_tile: f32 = number, row: f32 = number,

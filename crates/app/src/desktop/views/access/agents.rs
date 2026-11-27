@@ -1,18 +1,21 @@
 //! Board A: the agents grouped by role, and the chosen agent's place and
-//! access, one section per kind.
-use super::{Pane, model};
+//! access, one section per kind, each with its changes.
+use super::{Adding, Change, Menu, Pane, model};
 use crate::desktop::{
-    components::{self as ui, Tone},
+    components::{self as ui, Button, Tone},
     design::{colors, tokens},
+    views::connections::hinted,
 };
-use agent_interface_roster::profiles::access::{Access, Agent, Grant, Mode, Reach, Source};
+use agent_interface_roster::profiles::access::{
+    Access, Agent, Grant, Mode, Reach, RequestState, Role, Source,
+};
 use gpui::{AnyElement, Context, Div, SharedString, Stateful, div, prelude::*, px};
 
 /// How many main agents the list shows before "N more".
 const MAIN_SHOWN: usize = 8;
 
 /// The machine of this app's own profile, named as the board names it.
-fn this_machine() -> &'static str {
+pub(super) fn this_machine() -> &'static str {
     if cfg!(target_os = "macos") {
         "this Mac"
     } else {
@@ -38,7 +41,7 @@ impl Pane {
                     .min_h_0()
                     .flex()
                     .child(self.list(model, cx))
-                    .child(self.detail(model)),
+                    .child(self.detail(model, cx)),
             )
     }
 
@@ -58,6 +61,29 @@ impl Pane {
                     )),
             )
             .children(self.live_note().map(|note| ui::text(note, &t.text.meta)))
+    }
+
+    /// The button that shows the waiting requests, and from them the agents
+    /// again.
+    pub(super) fn waiting_button(&self, waiting: usize, cx: &mut Context<Self>) -> Stateful<Div> {
+        let (t, c) = (tokens(), colors());
+        ui::text(
+            div()
+                .id("access-requests-waiting")
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap(px(t.space.s6))
+                .cursor_pointer()
+                .text_color(c.accent_text),
+            &t.text.meta,
+        )
+        .child(ui::icon("clock", t.size.icon - 1.0, c.accent_text))
+        .child(format!(
+            "{waiting} request{} waiting",
+            if waiting == 1 { "" } else { "s" }
+        ))
+        .on_click(cx.listener(|pane, _, _, cx| pane.toggle_requests(cx)))
     }
 
     fn toolbar(&self, model: &model::Model, cx: &mut Context<Self>) -> Div {
@@ -83,7 +109,7 @@ impl Pane {
         let waiting = model
             .pending
             .iter()
-            .filter(|r| r.state == agent_interface_roster::profiles::access::RequestState::Pending)
+            .filter(|r| r.state == RequestState::Pending)
             .count();
         ui::view_toolbar()
             .child(
@@ -91,33 +117,12 @@ impl Pane {
                     .w(px(t.size.access_filter))
                     .h(px(t.size.chip + t.space.s2))
                     .child(ui::icon("search", t.size.icon - 1.0, c.muted))
-                    .child(super::super::connections::hinted(
-                        &self.query,
-                        "Filter agents",
-                        cx,
-                    )),
+                    .child(hinted(&self.query, "Filter agents", cx)),
             )
             .children(chips)
             .child(div().flex_1())
             .when(waiting > 0, |bar| {
-                bar.child(
-                    ui::text(
-                        div()
-                            .id("access-requests-waiting")
-                            .flex()
-                            .flex_shrink_0()
-                            .items_center()
-                            .gap(px(t.space.s6))
-                            .cursor_pointer()
-                            .text_color(c.accent_text),
-                        &t.text.meta,
-                    )
-                    .child(ui::icon("clock", t.size.icon - 1.0, c.accent_text))
-                    .child(format!(
-                        "{waiting} request{} waiting",
-                        if waiting == 1 { "" } else { "s" }
-                    )),
-                )
+                bar.child(self.waiting_button(waiting, cx))
             })
     }
 
@@ -217,13 +222,13 @@ impl Pane {
             }
         }
         if !groups.swarms.is_empty() {
+            let agents = groups.swarm_agents();
             list = list.child(heading(
                 "SWARMS",
                 format!(
-                    "{} · {} agent{}",
+                    "{} · {agents} agent{}",
                     groups.swarms.len(),
-                    groups.swarm_agents(),
-                    if groups.swarm_agents() == 1 { "" } else { "s" }
+                    if agents == 1 { "" } else { "s" }
                 ),
                 first,
             ));
@@ -231,12 +236,10 @@ impl Pane {
                 let open = self.open_swarms.contains(&swarm.name);
                 let name = swarm.name.clone();
                 let members = swarm.members.len();
+                let count = format!("{members} agent{}", if members == 1 { "" } else { "s" });
                 let note = match &swarm.initiator {
-                    Some(by) => format!(
-                        "{members} agent{} · started by {by}",
-                        if members == 1 { "" } else { "s" }
-                    ),
-                    None => format!("{members} agent{}", if members == 1 { "" } else { "s" }),
+                    Some(by) => format!("{count} · started by {by}"),
+                    None => count,
                 };
                 list = list.child(
                     self.row_frame(SharedString::from(format!("access-swarm-{name}")), false)
@@ -284,7 +287,6 @@ impl Pane {
         let (t, c) = (tokens(), colors());
         let selected = self.selected.as_deref() == Some(agent.name.as_str());
         let asks = model::asks(&model.pending, &agent.name);
-        let browsers = model::browsers(agent);
         let secrets = model::secrets(agent);
         let name = agent.name.clone();
         let count = |icon: &'static str, n: usize| {
@@ -321,7 +323,7 @@ impl Pane {
         .when(agent.mode == Mode::Unsandboxed, |row| {
             row.child(ui::tag("unsandboxed", Tone::Quiet))
         })
-        .when(browsers > 0 || secrets > 0, |row| {
+        .when(secrets > 0, |row| {
             row.child(
                 ui::text(
                     div()
@@ -332,17 +334,21 @@ impl Pane {
                         .text_color(c.muted),
                     &t.text.meta,
                 )
-                .when(browsers > 0, |el| el.child(count("globe", browsers)))
-                .when(secrets > 0, |el| el.child(count("lock", secrets))),
+                .child(count("lock", secrets)),
             )
         })
         .on_click(cx.listener(move |pane, _, _, cx| {
-            pane.selected = Some(name.clone());
+            if pane.selected.as_deref() != Some(name.as_str()) {
+                pane.selected = Some(name.clone());
+                pane.menu = None;
+                pane.adding = None;
+                pane.notice = None;
+            }
             cx.notify();
         }))
     }
 
-    fn detail(&self, model: &model::Model) -> Div {
+    fn detail(&self, model: &model::Model, cx: &mut Context<Self>) -> Div {
         let (t, c) = (tokens(), colors());
         let Some(agent) = self.selected.as_deref().and_then(|name| model.agent(name)) else {
             return div().flex_1();
@@ -389,6 +395,7 @@ impl Pane {
             .flex()
             .flex_col()
             .child(header)
+            .children(self.notice_band(cx))
             .child(
                 div()
                     .id("access-detail")
@@ -401,16 +408,552 @@ impl Pane {
                     .px(px(t.space.s24))
                     .pt(px(t.space.s16))
                     .pb(px(t.space.s20))
-                    .child(role_and_place(agent))
-                    .child(confinement(agent))
-                    .child(github(agent))
-                    .child(folders(agent))
-                    .child(secrets_and_docker(agent)),
+                    .child(self.role_and_place(agent, model, cx))
+                    .child(self.confinement(agent, cx))
+                    .child(self.github(agent, cx))
+                    .child(self.folders(agent, cx))
+                    .child(self.secrets_and_docker(agent, cx)),
             )
             .child(ui::note_footer(
                 "Saved to Agent Backbone as you change it. You are the owner: nothing here is above you.",
                 format!("backbone access show {}", agent.name),
             ))
+    }
+
+    /// A control, dimmed while its change is under way.
+    pub(super) fn busy<E: Styled>(&self, key: &str, element: E) -> E {
+        if self.sending.as_deref() == Some(key) {
+            element.opacity(colors().pane_dim)
+        } else {
+            element
+        }
+    }
+
+    /// A menu's button and, while it is open, the menu below it.
+    pub(super) fn with_menu(
+        &self,
+        menu: Menu,
+        button: Stateful<Div>,
+        items: Vec<Stateful<Div>>,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let t = tokens();
+        let open = self.menu == Some(menu);
+        div()
+            .relative()
+            .flex_shrink_0()
+            .child(button.on_click(cx.listener(move |pane, _, _, cx| {
+                pane.menu = if pane.menu == Some(menu) {
+                    None
+                } else {
+                    Some(menu)
+                };
+                cx.notify();
+            })))
+            .when(open, |el| {
+                el.child(
+                    gpui::deferred(
+                        ui::menu()
+                            .id(SharedString::from(format!("access-menu-{menu:?}")))
+                            .absolute()
+                            .top(px(t.size.icon_button + t.space.s4))
+                            .left_0()
+                            .max_h(px(t.size.access_menu))
+                            .overflow_y_scroll()
+                            .on_mouse_down_out(cx.listener(|pane, _, _, cx| {
+                                pane.menu = None;
+                                cx.notify();
+                            }))
+                            .children(items),
+                    )
+                    .with_priority(1),
+                )
+            })
+    }
+
+    fn role_and_place(&self, agent: &Agent, model: &model::Model, cx: &mut Context<Self>) -> Div {
+        let c = colors();
+        let role = agent.role.unwrap_or(Role::Unknown);
+        let superior = agent.superior.clone();
+        let roles = Role::ALL
+            .into_iter()
+            .map(|choice| {
+                let (name, superior) = (agent.name.clone(), superior.clone());
+                ui::menu_item(
+                    SharedString::from(format!("access-role-{choice:?}")),
+                    (choice == role).then(|| ui::icon("check", tokens().size.icon, c.accent)),
+                    model::role_label(choice),
+                    None,
+                )
+                .on_click(cx.listener(move |pane, _, _, cx| {
+                    pane.menu = None;
+                    if choice != role {
+                        pane.send(
+                            "access-role".into(),
+                            Change::Place(name.clone(), choice, superior.clone()),
+                            cx,
+                        );
+                    }
+                    cx.notify();
+                }))
+            })
+            .collect();
+        let others = std::iter::once(None).chain(
+            model
+                .overview
+                .agents
+                .iter()
+                .filter(|other| other.name != agent.name)
+                .map(|other| Some(other.name.clone())),
+        );
+        let superiors = others
+            .map(|choice| {
+                let name = agent.name.clone();
+                let current = choice == superior;
+                let label = choice.clone().unwrap_or_else(|| "you".into());
+                ui::menu_item(
+                    SharedString::from(format!("access-superior-{label}")),
+                    current.then(|| ui::icon("check", tokens().size.icon, c.accent)),
+                    label,
+                    None,
+                )
+                .when(choice.is_some(), |el| {
+                    el.font_family(tokens().font.mono.clone())
+                })
+                .on_click(cx.listener(move |pane, _, _, cx| {
+                    pane.menu = None;
+                    if !current {
+                        pane.send(
+                            "access-superior".into(),
+                            Change::Place(name.clone(), role, choice.clone()),
+                            cx,
+                        );
+                    }
+                    cx.notify();
+                }))
+            })
+            .collect();
+        section(
+            "ROLE AND PLACE",
+            None,
+            ui::group_card()
+                .child(labelled(true, "Role").child(self.with_menu(
+                    Menu::Role,
+                    self.busy(
+                        "access-role",
+                        dropdown("access-role".into(), model::role_label(role).into(), false),
+                    ),
+                    roles,
+                    cx,
+                )))
+                .child(labelled(false, "Answers to").child(self.with_menu(
+                    Menu::Superior,
+                    self.busy(
+                        "access-superior",
+                        dropdown(
+                            "access-superior".into(),
+                            superior.clone().unwrap_or_else(|| "you".into()),
+                            superior.is_some(),
+                        ),
+                    ),
+                    superiors,
+                    cx,
+                ))),
+        )
+    }
+
+    fn confinement(&self, agent: &Agent, cx: &mut Context<Self>) -> Div {
+        let c = colors();
+        let reaches = match agent.mode {
+            Mode::Sandboxed => Some("Reaches only what is listed below.".to_owned()),
+            Mode::Unsandboxed => Some(format!(
+                "Reaches everything your account can on {}.",
+                this_machine()
+            )),
+            Mode::Unknown => None,
+        };
+        let segment = |mode: Mode, label: &'static str| {
+            let name = agent.name.clone();
+            let on = agent.mode == mode;
+            ui::segment(
+                SharedString::from(format!("access-mode-{label}")),
+                label,
+                on,
+            )
+            .on_click(cx.listener(move |pane, _, _, cx| {
+                if !on {
+                    pane.send("access-mode".into(), Change::Mode(name.clone(), mode), cx);
+                }
+            }))
+        };
+        section(
+            "CONFINEMENT",
+            Some("only you can change this".into()),
+            ui::group_card().child(
+                labelled(true, "Runs")
+                    .child(
+                        self.busy(
+                            "access-mode",
+                            ui::segments()
+                                .child(segment(Mode::Sandboxed, "Sandboxed"))
+                                .child(segment(Mode::Unsandboxed, "Unsandboxed")),
+                        ),
+                    )
+                    .children(reaches.map(|line| {
+                        ui::text(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .flex()
+                                .justify_end()
+                                .text_color(c.muted),
+                            &tokens().text.meta,
+                        )
+                        .child(line)
+                    })),
+            ),
+        )
+    }
+
+    /// Read and Write as a segmented control. With `grant`, choosing the
+    /// other access grants it again at that access, which replaces it.
+    fn access_segments(
+        &self,
+        id: &str,
+        access: Access,
+        grant: Option<(String, Grant)>,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let segment = |choice: Access, label: &'static str| {
+            let segment = ui::segment(
+                SharedString::from(format!("{id}-{label}")),
+                label,
+                access == choice,
+            );
+            match grant.clone().filter(|_| access != choice) {
+                Some((name, grant)) => {
+                    let key = id.to_owned();
+                    segment.on_click(cx.listener(move |pane, _, _, cx| {
+                        let regranted = match grant.clone() {
+                            Grant::Repository { repo, .. } => Grant::Repository {
+                                repo,
+                                access: choice,
+                            },
+                            Grant::Folder { machine, path, .. } => Grant::Folder {
+                                machine,
+                                machine_name: None,
+                                path,
+                                access: choice,
+                            },
+                            other => other,
+                        };
+                        pane.send(key.clone(), Change::Grant(name.clone(), regranted), cx);
+                    }))
+                }
+                // Not changeable here: its own repository or its role.
+                None => segment.cursor_default(),
+            }
+        };
+        self.busy(
+            id,
+            ui::segments()
+                .child(segment(Access::Read, "Read"))
+                .child(segment(Access::Write, "Write")),
+        )
+    }
+
+    /// The mark that takes `grant` away from the agent `name`.
+    fn remove(
+        &self,
+        key: String,
+        name: &str,
+        grant: Grant,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let name = name.to_owned();
+        let id = format!("{key}-remove");
+        let busy = key.clone();
+        self.busy(
+            &busy,
+            ui::icon_button(SharedString::from(id), "x").on_click(cx.listener(
+                move |pane, _, _, cx| {
+                    pane.send(key.clone(), Change::Revoke(name.clone(), grant.clone()), cx);
+                },
+            )),
+        )
+    }
+
+    /// A card's last line: "Add a …", or while adding, the field, the access
+    /// it will have and the Add button.
+    fn add_line(&self, first: bool, repository: bool, cx: &mut Context<Self>) -> Stateful<Div> {
+        let (t, c) = (tokens(), colors());
+        let (label, hint, id) = if repository {
+            ("Add a repository", "owner/name", "access-add-repo")
+        } else {
+            ("Add a folder", "/absolute/path", "access-add-folder")
+        };
+        let adding = match self.adding {
+            Some(Adding::Repository(access)) if repository => Some(access),
+            Some(Adding::Folder(access)) if !repository => Some(access),
+            _ => None,
+        };
+        let line = ui::text(
+            div()
+                .id(SharedString::from(id))
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap(px(t.space.s10))
+                .h(px(t.size.group_row))
+                .pl(px(t.space.s12))
+                .pr(px(t.space.s8))
+                .when(!first, |el| {
+                    el.border_t(px(t.size.hairline)).border_color(c.line)
+                })
+                .text_color(c.muted),
+            &t.text.row,
+        )
+        .child(ui::icon("plus", t.size.icon, c.muted));
+        let make = move |access: Access| {
+            if repository {
+                Adding::Repository(access)
+            } else {
+                Adding::Folder(access)
+            }
+        };
+        match adding {
+            None => line
+                .child(label)
+                .cursor_pointer()
+                .hover(|el| el.bg(colors().hover))
+                .on_click(cx.listener(move |pane, _, window, cx| {
+                    pane.start_add(make(Access::Read), window, cx);
+                })),
+            Some(access) => {
+                let segment = |choice: Access, label: &'static str| {
+                    ui::segment(
+                        SharedString::from(format!("{id}-{label}")),
+                        label,
+                        access == choice,
+                    )
+                    .on_click(cx.listener(move |pane, _, window, cx| {
+                        pane.start_add(make(choice), window, cx);
+                    }))
+                };
+                line.child(
+                    ui::field_frame(true)
+                        .flex_1()
+                        .h(px(t.size.chip + t.space.s2))
+                        .child(hinted(&self.add_field, hint, cx)),
+                )
+                .child(
+                    ui::segments()
+                        .child(segment(Access::Read, "Read"))
+                        .child(segment(Access::Write, "Write")),
+                )
+                .child(
+                    self.busy(
+                        "access-add",
+                        ui::button(
+                            SharedString::from(format!("{id}-submit")),
+                            "Add",
+                            Button::Secondary,
+                        )
+                        .h(px(t.size.icon_button))
+                        .on_click(cx.listener(|pane, _, _, cx| pane.submit_add(cx))),
+                    ),
+                )
+            }
+        }
+    }
+
+    fn github(&self, agent: &Agent, cx: &mut Context<Self>) -> Div {
+        let (t, c) = (tokens(), colors());
+        let (items, note) = match &agent.reach {
+            Reach::Profile { items } => (
+                &items[..],
+                "every repository, through the profile's GitHub connection".to_owned(),
+            ),
+            Reach::Repositories { items } => (
+                &items[..],
+                format!(
+                    "{}, through the profile's GitHub connection",
+                    model::reach_label(&agent.reach)
+                ),
+            ),
+            Reach::Unknown => (&[][..], "what it reaches is not known".to_owned()),
+        };
+        let mut card = ui::group_card();
+        for (at, item) in items.iter().enumerate() {
+            let key = format!("access-repo-{}", item.repo);
+            let grant = Grant::Repository {
+                repo: item.repo.clone(),
+                access: item.access,
+            };
+            let granted = item.source == Source::Grant;
+            card = card.child(
+                line(at == 0)
+                    .child(ui::icon("git-branch", t.size.icon, c.muted))
+                    .child(ui::text(
+                        ui::mono(item.repo.clone()).text_color(c.text),
+                        &t.text.status,
+                    ))
+                    .when(item.source == Source::OwnRepository, |el| {
+                        el.child(ui::tag("its own repository", Tone::Quiet))
+                    })
+                    .child(div().flex_1())
+                    .child(self.access_segments(
+                        &key,
+                        item.access,
+                        granted.then(|| (agent.name.clone(), grant.clone())),
+                        cx,
+                    ))
+                    .child(if granted {
+                        self.remove(key.clone(), &agent.name, grant, cx)
+                            .into_any_element()
+                    } else {
+                        no_remove().into_any_element()
+                    }),
+            );
+        }
+        section(
+            "GITHUB",
+            Some(note),
+            card.child(self.add_line(items.is_empty(), true, cx)),
+        )
+    }
+
+    fn folders(&self, agent: &Agent, cx: &mut Context<Self>) -> Div {
+        let (t, c) = (tokens(), colors());
+        let mut card = ui::group_card();
+        let mut first = true;
+        for grant in &agent.grants {
+            let Grant::Folder {
+                machine_name,
+                path,
+                access,
+                ..
+            } = grant
+            else {
+                continue;
+            };
+            let key = format!("access-folder-{path}");
+            card = card.child(
+                line(first)
+                    .child(ui::icon("folder", t.size.icon, c.muted))
+                    .child(ui::text(
+                        ui::mono(path.clone()).text_color(c.text),
+                        &t.text.status,
+                    ))
+                    .child(machine(machine_name.as_ref()))
+                    .child(div().flex_1())
+                    .child(self.access_segments(
+                        &key,
+                        *access,
+                        Some((agent.name.clone(), grant.clone())),
+                        cx,
+                    ))
+                    .child(self.remove(key.clone(), &agent.name, grant.clone(), cx)),
+            );
+            first = false;
+        }
+        section(
+            "FOLDERS",
+            Some("beyond its own folder".into()),
+            card.child(self.add_line(first, false, cx)),
+        )
+    }
+
+    fn secrets_and_docker(&self, agent: &Agent, cx: &mut Context<Self>) -> Div {
+        let (t, c) = (tokens(), colors());
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for grant in &agent.grants {
+            let (label, name) = match grant {
+                Grant::SecretVariable {
+                    machine_name, name, ..
+                } => (name, machine_name),
+                Grant::SecretFile {
+                    machine_name, path, ..
+                } => (path, machine_name),
+                _ => continue,
+            };
+            let key = format!("access-secret-{label}");
+            let (agent_name, revoked) = (agent.name.clone(), grant.clone());
+            let switch_key = key.clone();
+            rows.push(
+                line(rows.is_empty())
+                    .pr(px(t.space.s12))
+                    .child(ui::icon("lock", t.size.icon, c.muted))
+                    .child(ui::text(
+                        ui::mono(label.clone()).text_color(c.text),
+                        &t.text.status,
+                    ))
+                    .when(name.is_some(), |el| el.child(machine(name.as_ref())))
+                    .child(div().flex_1())
+                    .child(self.busy(
+                        &key,
+                        ui::switch(SharedString::from(key.clone()), true).on_click(cx.listener(
+                            move |pane, _, _, cx| {
+                                pane.send(
+                                    switch_key.clone(),
+                                    Change::Revoke(agent_name.clone(), revoked.clone()),
+                                    cx,
+                                );
+                            },
+                        )),
+                    ))
+                    .into_any_element(),
+            );
+        }
+        let docker = agent
+            .grants
+            .iter()
+            .find(|grant| matches!(grant, Grant::Docker { .. }))
+            .cloned();
+        let name = agent.name.clone();
+        let on = docker.is_some();
+        rows.push(
+            line(rows.is_empty())
+                .pr(px(t.space.s12))
+                .child(ui::icon("package", t.size.icon, c.muted))
+                .child("Docker")
+                .child(
+                    ui::text(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .text_color(c.muted),
+                        &t.text.meta,
+                    )
+                    .child("Only you can allow this. No agent can hand it down."),
+                )
+                .child(self.busy(
+                    "access-docker",
+                    ui::switch("access-docker", on).on_click(cx.listener(move |pane, _, _, cx| {
+                        let change = match docker.clone() {
+                            Some(grant) => Change::Revoke(name.clone(), grant),
+                            None => Change::Grant(
+                                name.clone(),
+                                Grant::Docker {
+                                    machine: None,
+                                    machine_name: None,
+                                },
+                            ),
+                        };
+                        pane.send("access-docker".into(), change, cx);
+                    })),
+                ))
+                .into_any_element(),
+        );
+        section(
+            "SECRETS AND DOCKER",
+            Some(format!("on {}", this_machine())),
+            ui::group_card().children(rows),
+        )
     }
 }
 
@@ -472,7 +1015,6 @@ fn line(first: bool) -> Div {
             .h(px(t.size.group_row))
             .pl(px(t.space.s12))
             .pr(px(t.space.s8))
-            .overflow_hidden()
             .whitespace_nowrap()
             .text_color(c.text_2)
             .when(!first, |el| {
@@ -519,274 +1061,12 @@ fn dropdown(id: SharedString, value: String, mono: bool) -> Stateful<Div> {
     .child(ui::icon("chevrons-up-down", t.size.icon - 2.0, c.muted))
 }
 
-/// Read and Write as a segmented control, the agent's access chosen.
-fn access_segments(id: &str, access: Access) -> Div {
-    ui::segments()
-        .child(ui::segment(
-            SharedString::from(format!("{id}-read")),
-            "Read",
-            access == Access::Read,
-        ))
-        .child(ui::segment(
-            SharedString::from(format!("{id}-write")),
-            "Write",
-            access == Access::Write,
-        ))
-}
-
-/// A card's last line, which adds a thing: a plus and what it adds.
-fn add_line(id: SharedString, label: &'static str) -> Stateful<Div> {
-    let (t, c) = (tokens(), colors());
-    ui::text(
-        div()
-            .id(id)
-            .flex()
-            .flex_shrink_0()
-            .items_center()
-            .gap(px(t.space.s10))
-            .h(px(t.size.group_row))
-            .px(px(t.space.s12))
-            .border_t(px(t.size.hairline))
-            .border_color(c.line)
-            .text_color(c.muted)
-            .cursor_pointer()
-            .hover(|el| el.bg(colors().hover)),
-        &t.text.row,
-    )
-    .child(ui::icon("plus", t.size.icon, c.muted))
-    .child(label)
-}
-
-/// The mark that takes a grant away.
-fn remove(id: SharedString) -> Stateful<Div> {
-    let (t, c) = (tokens(), colors());
-    ui::icon_button(id, "x").child(ui::icon("x", t.size.icon - 1.0, c.muted))
-}
-
 /// The space a row without a remove mark keeps, so access controls line up.
 fn no_remove() -> Div {
     div().w(px(tokens().size.icon_button)).flex_shrink_0()
 }
 
-fn role_and_place(agent: &Agent) -> Div {
-    let role = agent
-        .role
-        .map(model::role_label)
-        .unwrap_or("Role not known");
-    let superior = agent.superior.clone().unwrap_or_else(|| "you".into());
-    section(
-        "ROLE AND PLACE",
-        None,
-        ui::group_card()
-            .child(labelled(true, "Role").child(dropdown("access-role".into(), role.into(), false)))
-            .child(labelled(false, "Answers to").child(dropdown(
-                "access-superior".into(),
-                superior.clone(),
-                agent.superior.is_some(),
-            ))),
-    )
-}
-
-fn confinement(agent: &Agent) -> Div {
-    let c = colors();
-    let reaches = match agent.mode {
-        Mode::Sandboxed => Some("Reaches only what is listed below.".to_owned()),
-        Mode::Unsandboxed => Some(format!(
-            "Reaches everything your account can on {}.",
-            this_machine()
-        )),
-        Mode::Unknown => None,
-    };
-    section(
-        "CONFINEMENT",
-        Some("only you can change this".into()),
-        ui::group_card().child(
-            labelled(true, "Runs")
-                .child(
-                    ui::segments()
-                        .child(ui::segment(
-                            "access-sandboxed",
-                            "Sandboxed",
-                            agent.mode == Mode::Sandboxed,
-                        ))
-                        .child(ui::segment(
-                            "access-unsandboxed",
-                            "Unsandboxed",
-                            agent.mode == Mode::Unsandboxed,
-                        )),
-                )
-                .children(reaches.map(|line| {
-                    ui::text(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .flex()
-                            .justify_end()
-                            .text_color(c.muted),
-                        &tokens().text.meta,
-                    )
-                    .child(line)
-                })),
-        ),
-    )
-}
-
-fn github(agent: &Agent) -> Div {
-    let (t, c) = (tokens(), colors());
-    let (items, note) = match &agent.reach {
-        Reach::Profile { items } => (
-            &items[..],
-            "every repository, through the profile's GitHub connection".to_owned(),
-        ),
-        Reach::Repositories { items } => (
-            &items[..],
-            format!(
-                "{}, through the profile's GitHub connection",
-                model::reach_label(&agent.reach)
-            ),
-        ),
-        Reach::Unknown => (&[][..], "what it reaches is not known".to_owned()),
-    };
-    let mut card = ui::group_card();
-    for (at, item) in items.iter().enumerate() {
-        let id = format!("access-repo-{}", item.repo);
-        card = card.child(
-            line(at == 0)
-                .child(ui::icon("git-branch", t.size.icon, c.muted))
-                .child(ui::text(
-                    ui::mono(item.repo.clone()).text_color(c.text),
-                    &t.text.status,
-                ))
-                .when(item.source == Source::OwnRepository, |el| {
-                    el.child(ui::tag("its own repository", Tone::Quiet))
-                })
-                .child(div().flex_1())
-                .child(access_segments(&id, item.access))
-                .child(if item.source == Source::Grant {
-                    remove(SharedString::from(format!("{id}-remove"))).into_any_element()
-                } else {
-                    no_remove().into_any_element()
-                }),
-        );
-    }
-    let card = if items.is_empty() {
-        card.child(add_line("access-add-repo".into(), "Add a repository").border_t_0())
-    } else {
-        card.child(add_line("access-add-repo".into(), "Add a repository"))
-    };
-    section("GITHUB", Some(note), card)
-}
-
-/// A grant's machine as its chip, named "this Mac" for this app's own.
-fn machine(name: Option<&String>, id: Option<&String>) -> Option<Div> {
-    let _ = id;
-    Some(ui::machine_chip(
-        name.cloned().unwrap_or_else(|| this_machine().to_owned()),
-    ))
-}
-
-fn folders(agent: &Agent) -> Div {
-    let (t, c) = (tokens(), colors());
-    let mut card = ui::group_card();
-    let mut first = true;
-    for grant in &agent.grants {
-        let Grant::Folder {
-            machine: id,
-            machine_name,
-            path,
-            access,
-        } = grant
-        else {
-            continue;
-        };
-        let key = format!("access-folder-{path}");
-        card = card.child(
-            line(first)
-                .child(ui::icon("folder", t.size.icon, c.muted))
-                .child(ui::text(
-                    ui::mono(path.clone()).text_color(c.text),
-                    &t.text.status,
-                ))
-                .children(machine(machine_name.as_ref(), id.as_ref()))
-                .child(div().flex_1())
-                .child(access_segments(&key, *access))
-                .child(remove(SharedString::from(format!("{key}-remove")))),
-        );
-        first = false;
-    }
-    let add = add_line("access-add-folder".into(), "Add a folder");
-    section(
-        "FOLDERS",
-        Some("beyond its own folder".into()),
-        card.child(if first { add.border_t_0() } else { add }),
-    )
-}
-
-fn secrets_and_docker(agent: &Agent) -> Div {
-    let (t, c) = (tokens(), colors());
-    let mut rows: Vec<AnyElement> = Vec::new();
-    for grant in &agent.grants {
-        let (label, id, name) = match grant {
-            Grant::SecretVariable {
-                machine,
-                machine_name,
-                name,
-            } => (name, machine, machine_name),
-            Grant::SecretFile {
-                machine,
-                machine_name,
-                path,
-            } => (path, machine, machine_name),
-            _ => continue,
-        };
-        rows.push(
-            line(rows.is_empty())
-                .pr(px(t.space.s12))
-                .child(ui::icon("lock", t.size.icon, c.muted))
-                .child(ui::text(
-                    ui::mono(label.clone()).text_color(c.text),
-                    &t.text.status,
-                ))
-                .when(name.is_some(), |el| {
-                    el.children(machine(name.as_ref(), id.as_ref()))
-                })
-                .child(div().flex_1())
-                .child(ui::switch(
-                    SharedString::from(format!("access-secret-{label}")),
-                    true,
-                ))
-                .into_any_element(),
-        );
-    }
-    let docker = agent
-        .grants
-        .iter()
-        .any(|grant| matches!(grant, Grant::Docker { .. }));
-    rows.push(
-        line(rows.is_empty())
-            .pr(px(t.space.s12))
-            .child(ui::icon("package", t.size.icon, c.muted))
-            .child("Docker")
-            .child(
-                ui::text(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .text_color(c.muted),
-                    &t.text.meta,
-                )
-                .child("Only you can allow this. No agent can hand it down."),
-            )
-            .child(ui::switch("access-docker", docker))
-            .into_any_element(),
-    );
-    section(
-        "SECRETS AND DOCKER",
-        Some(format!("on {}", this_machine())),
-        ui::group_card().children(rows),
-    )
+/// A grant's machine as its chip, "this Mac" when the reply names none.
+fn machine(name: Option<&String>) -> Div {
+    ui::machine_chip(name.cloned().unwrap_or_else(|| this_machine().to_owned()))
 }

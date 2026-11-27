@@ -1,22 +1,73 @@
 //! The Access pane: what each agent may reach, who is above whom, and the
 //! requests for more. It reads Agent Backbone live and draws boards A (by
 //! agent) and E (requests); every change goes to Backbone, and the pane shows
-//! what Backbone returns.
+//! what Backbone returns, a refusal and its reason included.
 use super::{NameEvent, NameField, colors, tokens, ui};
 use agent_interface_roster::profiles::{
     Connection, Error,
-    access::{Overview, RequestPage, Requests},
+    access::{
+        Access, AgentAccess, Failure, Grant, Mode, Overview, Placed, Request, RequestPage,
+        RequestState, Requests, Role,
+    },
 };
 use gpui::{Context, Div, Entity, Render, Subscription, Task, Window, div, prelude::*, px};
 use std::{cell::Cell, collections::HashSet, rc::Rc, time::Duration};
 
 mod agents;
-// Used by the requests view and the actions, which are not drawn yet.
-#[cfg_attr(not(test), allow(dead_code))]
 mod model;
+mod requests;
 
 /// How often the pane reads Backbone again, as the other live views do.
 const EVERY: Duration = Duration::from_secs(3);
+
+/// Which of the pane's two views is shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shown {
+    Agents,
+    Requests,
+}
+
+/// Which small menu is open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Menu {
+    Role,
+    Superior,
+    AgentFilter,
+}
+
+/// A thing being added to the chosen agent, with the access chosen for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Adding {
+    Repository(Access),
+    Folder(Access),
+}
+
+/// A change sent to Backbone.
+#[derive(Clone, Debug)]
+enum Change {
+    Grant(String, Grant),
+    Revoke(String, Grant),
+    Mode(String, Mode),
+    Place(String, Role, Option<String>),
+    /// Approve or refuse these requests, with the decider's note.
+    Decide(Vec<i64>, bool, String),
+}
+
+/// What Backbone returned for a change.
+enum Applied {
+    Access(AgentAccess),
+    Placed(Placed),
+    /// The requests decided, and why one after them was not.
+    Decided(Vec<Request>, Option<Failure>),
+}
+
+/// A line at the top of the pane about the last change: a warning Backbone
+/// served with it, or why it refused it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Notice {
+    text: String,
+    refused: bool,
+}
 
 pub(super) struct Pane {
     connection: Connection,
@@ -28,6 +79,9 @@ pub(super) struct Pane {
     /// Why the last read failed, shown over the records still drawn.
     error: Option<String>,
     reading: bool,
+    /// A read asked for while one was under way, made when it ends.
+    again: bool,
+    shown: Shown,
     filter: model::Filter,
     query: Entity<NameField>,
     /// The chosen agent, by name.
@@ -38,8 +92,24 @@ pub(super) struct Pane {
     all_main: bool,
     /// This profile's name, for the header.
     profile_name: Option<String>,
+    menu: Option<Menu>,
+    adding: Option<Adding>,
+    add_field: Entity<NameField>,
+    /// The control whose change is under way; one change at a time.
+    sending: Option<String>,
+    notice: Option<Notice>,
+    tab: requests::Tab,
+    /// The agent whose requests are listed; none for all agents.
+    agent_filter: Option<String>,
+    /// The `before` that reads older decided requests, when there are more.
+    decided_before: Option<i64>,
+    /// The request card the keys act on, by its first request's ID.
+    card: Option<i64>,
+    /// The request card whose note is open.
+    noting: Option<i64>,
+    note_field: Entity<NameField>,
     _poll: Task<()>,
-    _query: Subscription,
+    _fields: [Subscription; 3],
 }
 
 impl Pane {
@@ -49,15 +119,35 @@ impl Pane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let query = cx.new(|cx| {
-            let mut field = NameField::bare_filter(window, cx);
-            field.focus = field.focus.clone().tab_stop(true);
-            field
-        });
+        let field = |window: &mut Window, cx: &mut Context<Self>| {
+            cx.new(|cx| {
+                let mut field = NameField::bare_filter(window, cx);
+                field.focus = field.focus.clone().tab_stop(true);
+                field
+            })
+        };
+        let query = field(window, cx);
+        let add_field = cx.new(|cx| NameField::bare("", window, cx));
+        let note_field = field(window, cx);
         let changed = cx.subscribe(&query, |_, _, event: &NameEvent, cx| {
             if matches!(event, NameEvent::Changed(_)) {
                 cx.notify();
             }
+        });
+        let added = cx.subscribe(&add_field, |pane, _, event: &NameEvent, cx| match event {
+            NameEvent::Save => pane.submit_add(cx),
+            NameEvent::Cancel => {
+                pane.adding = None;
+                cx.notify();
+            }
+            NameEvent::Changed(_) => cx.notify(),
+        });
+        let noted = cx.subscribe(&note_field, |pane, _, event: &NameEvent, cx| match event {
+            NameEvent::Cancel => {
+                pane.noting = None;
+                cx.notify();
+            }
+            NameEvent::Save | NameEvent::Changed(_) => cx.notify(),
         });
         let poll = cx.spawn(async move |this, cx| {
             loop {
@@ -74,14 +164,27 @@ impl Pane {
             read_at: None,
             error: None,
             reading: false,
+            again: false,
+            shown: Shown::Agents,
             filter: model::Filter::All,
             query,
             selected: None,
             open_swarms: HashSet::new(),
             all_main: false,
             profile_name: None,
+            menu: None,
+            adding: None,
+            add_field,
+            sending: None,
+            notice: None,
+            tab: requests::Tab::Waiting,
+            agent_filter: None,
+            decided_before: None,
+            card: None,
+            noting: None,
+            note_field,
             _poll: poll,
-            _query: changed,
+            _fields: [changed, added, noted],
         }
     }
 
@@ -94,10 +197,15 @@ impl Pane {
         changed
     }
 
-    /// Read the agents and waiting requests, unless a read is under way or
-    /// the pane is hidden.
+    /// Read the agents and waiting requests, unless the pane is hidden. A
+    /// read asked for while one is under way follows it, so a change's
+    /// result is never left behind an older read.
     fn read(&mut self, cx: &mut Context<Self>) {
-        if self.reading || !self.visible.get() {
+        if !self.visible.get() {
+            return;
+        }
+        if self.reading {
+            self.again = true;
             return;
         }
         self.reading = true;
@@ -119,6 +227,40 @@ impl Pane {
                         pane.read_at = Some(chrono::Local::now().format("%H:%M").to_string());
                         pane.error = None;
                         pane.keep_selection();
+                    }
+                    Err(error) => pane.error = Some(failure(error)),
+                }
+                if std::mem::take(&mut pane.again) {
+                    pane.read(cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Read decided requests: the newest page, or the page older than
+    /// `before`, added below those already read.
+    fn read_decided(&mut self, before: Option<i64>, cx: &mut Context<Self>) {
+        let connection = self.connection.clone();
+        let read = cx
+            .background_executor()
+            .spawn(async move { connection.access_requests(Requests::All { before }) });
+        cx.spawn(async move |this, cx| {
+            let result = read.await;
+            let _ = this.update(cx, |pane, cx| {
+                match result {
+                    Ok(page) => {
+                        let model = pane.model.get_or_insert_with(Default::default);
+                        let decided = page
+                            .items
+                            .into_iter()
+                            .filter(|r| r.state != RequestState::Pending);
+                        match (&mut model.decided, before) {
+                            (Some(read), Some(_)) => read.extend(decided),
+                            (read, _) => *read = Some(decided.collect()),
+                        }
+                        pane.decided_before = page.next_before_id.filter(|_| page.has_more);
                     }
                     Err(error) => pane.error = Some(failure(error)),
                 }
@@ -150,6 +292,270 @@ impl Pane {
             .map(|agent| agent.name.clone());
     }
 
+    /// Send `change` to Backbone from the control `key`, unless another
+    /// change is under way, then show what Backbone returned and read again.
+    fn send(&mut self, key: String, change: Change, cx: &mut Context<Self>) {
+        if self.sending.is_some() {
+            return;
+        }
+        self.sending = Some(key);
+        self.notice = None;
+        self.menu = None;
+        let connection = self.connection.clone();
+        let sent = cx.background_executor().spawn(async move {
+            match change {
+                Change::Grant(name, grant) => connection.grant(&name, &grant).map(Applied::Access),
+                Change::Revoke(name, grant) => {
+                    connection.revoke(&name, &grant).map(Applied::Access)
+                }
+                Change::Mode(name, mode) => connection.set_mode(&name, mode).map(Applied::Access),
+                Change::Place(name, role, superior) => connection
+                    .place(&name, role, superior.as_deref())
+                    .map(Applied::Placed),
+                Change::Decide(ids, approve, note) => {
+                    let mut decided = Vec::new();
+                    for id in ids {
+                        let reply = if approve {
+                            connection.approve(id, &note)
+                        } else {
+                            connection.refuse(id, &note)
+                        };
+                        // What was decided before a refusal stays decided;
+                        // the read that follows shows the rest still waiting.
+                        match reply {
+                            Ok(request) => decided.push(request),
+                            Err(failure) if decided.is_empty() => return Err(failure),
+                            Err(failure) => return Ok(Applied::Decided(decided, Some(failure))),
+                        }
+                    }
+                    Ok(Applied::Decided(decided, None))
+                }
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            let result = sent.await;
+            let _ = this.update(cx, |pane, cx| {
+                pane.sending = None;
+                pane.notice = match result {
+                    Ok(applied) => pane.apply(applied),
+                    Err(failure) => Some(Notice {
+                        text: refusal(failure),
+                        refused: true,
+                    }),
+                };
+                pane.read(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Apply a change's reply at once, and say what Backbone warned of.
+    fn apply(&mut self, applied: Applied) -> Option<Notice> {
+        let model = self.model.as_mut()?;
+        let warning = match applied {
+            Applied::Access(reply) => {
+                let warning = reply.warning.clone();
+                model.apply_access(reply);
+                warning
+            }
+            Applied::Placed(reply) => {
+                model.apply_placed(reply);
+                None
+            }
+            Applied::Decided(replies, failure) => {
+                self.noting = None;
+                let warning = replies.iter().find_map(|r| r.warning.clone());
+                for reply in replies {
+                    model.apply_decided(reply);
+                }
+                if let Some(failure) = failure {
+                    return Some(Notice {
+                        text: refusal(failure),
+                        refused: true,
+                    });
+                }
+                warning
+            }
+        };
+        warning.map(|text| Notice {
+            text,
+            refused: false,
+        })
+    }
+
+    /// Add what the add field names to the chosen agent.
+    fn submit_add(&mut self, cx: &mut Context<Self>) {
+        let (Some(adding), Some(name)) = (self.adding, self.selected.clone()) else {
+            return;
+        };
+        let value = self.add_field.read(cx).value().trim().to_owned();
+        if value.is_empty() {
+            return;
+        }
+        let grant = match adding {
+            Adding::Repository(access) => Grant::Repository {
+                repo: value,
+                access,
+            },
+            Adding::Folder(access) => Grant::Folder {
+                machine: None,
+                machine_name: None,
+                path: value,
+                access,
+            },
+        };
+        self.adding = None;
+        self.add_field.update(cx, |field, cx| field.clear(cx));
+        self.send("access-add".into(), Change::Grant(name, grant), cx);
+    }
+
+    /// Open the add field for `adding`, or change the access it will add.
+    fn start_add(&mut self, adding: Adding, window: &mut Window, cx: &mut Context<Self>) {
+        let same_kind = matches!(
+            (self.adding, adding),
+            (Some(Adding::Repository(_)), Adding::Repository(_))
+                | (Some(Adding::Folder(_)), Adding::Folder(_))
+        );
+        if !same_kind {
+            self.add_field.update(cx, |field, cx| field.clear(cx));
+        }
+        self.adding = Some(adding);
+        window.focus(&self.add_field.read(cx).focus.clone(), cx);
+        cx.notify();
+    }
+
+    /// Show the requests, or the agents again.
+    fn toggle_requests(&mut self, cx: &mut Context<Self>) {
+        self.shown = match self.shown {
+            Shown::Agents => Shown::Requests,
+            Shown::Requests => Shown::Agents,
+        };
+        self.menu = None;
+        self.noting = None;
+        self.adding = None;
+        cx.notify();
+    }
+
+    /// Keys while the pane is selected: Escape closes what is open or returns
+    /// from the requests to the agents; in the requests, ↑↓ move between
+    /// cards and a, r and n approve, refuse and open a note. Returns whether
+    /// the key was one of them.
+    pub(super) fn key(
+        &mut self,
+        key: &gpui::Keystroke,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if key.modifiers.modified() {
+            return false;
+        }
+        if key.key == "escape" {
+            let closed = self.menu.take().is_some()
+                || self.adding.take().is_some()
+                || self.noting.take().is_some();
+            if !closed {
+                if self.shown != Shown::Requests {
+                    return false;
+                }
+                self.shown = Shown::Agents;
+            }
+            cx.notify();
+            return true;
+        }
+        let typing = [&self.query, &self.add_field, &self.note_field]
+            .iter()
+            .any(|field| field.read(cx).focus.is_focused(window));
+        if typing || self.shown != Shown::Requests || self.tab != requests::Tab::Waiting {
+            return false;
+        }
+        let cards = self.card_order();
+        let at = self
+            .card
+            .and_then(|card| cards.iter().position(|ids| ids.first() == Some(&card)));
+        match key.key.as_str() {
+            "down" | "up" => {
+                let next = match (at, key.key.as_str()) {
+                    (None, _) => 0,
+                    (Some(at), "down") => (at + 1).min(cards.len().saturating_sub(1)),
+                    (Some(at), _) => at.saturating_sub(1),
+                };
+                self.card = cards.get(next).and_then(|ids| ids.first().copied());
+            }
+            "a" | "r" => {
+                let Some(ids) = at.and_then(|at| cards.get(at)).cloned() else {
+                    return false;
+                };
+                self.decide(ids, key.key == "a", cx);
+            }
+            "n" => {
+                let Some(first) = at.and_then(|at| cards.get(at)).and_then(|ids| ids.first())
+                else {
+                    return false;
+                };
+                self.open_note(*first, window, cx);
+            }
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
+    /// The waiting requests the requests view lists, for its agent filter.
+    fn listed_pending(&self) -> Vec<Request> {
+        self.model
+            .iter()
+            .flat_map(|model| &model.pending)
+            .filter(|r| self.agent_filter.as_ref().is_none_or(|a| &r.agent == a))
+            .cloned()
+            .collect()
+    }
+
+    /// The waiting cards in the order they are drawn, each by its requests'
+    /// IDs.
+    fn card_order(&self) -> Vec<Vec<i64>> {
+        let pending = self.listed_pending();
+        let (on_you, on_agent) = model::waiting(&pending);
+        model::cards(&on_you)
+            .into_iter()
+            .chain(model::cards(&on_agent))
+            .map(|card| card.iter().map(|r| r.id).collect())
+            .collect()
+    }
+
+    /// Approve or refuse a card's requests, with its note when one is open.
+    fn decide(&mut self, ids: Vec<i64>, approve: bool, cx: &mut Context<Self>) {
+        let first = ids.first().copied().unwrap_or_default();
+        let note = if self.noting == Some(first) {
+            self.note_field.read(cx).value().trim().to_owned()
+        } else {
+            String::new()
+        };
+        self.decide_with(ids, approve, note, cx);
+    }
+
+    fn decide_with(&mut self, ids: Vec<i64>, approve: bool, note: String, cx: &mut Context<Self>) {
+        let first = ids.first().copied().unwrap_or_default();
+        self.card = Some(first);
+        self.send(
+            format!("access-decide-{first}"),
+            Change::Decide(ids, approve, note),
+            cx,
+        );
+    }
+
+    /// Open the note under the card whose first request is `first`.
+    fn open_note(&mut self, first: i64, window: &mut Window, cx: &mut Context<Self>) {
+        if self.noting != Some(first) {
+            self.note_field.update(cx, |field, cx| field.clear(cx));
+        }
+        self.noting = Some(first);
+        self.card = Some(first);
+        window.focus(&self.note_field.read(cx).focus.clone(), cx);
+        cx.notify();
+    }
+
     /// "live from Agent Backbone · read 10:31", once something was read.
     fn live_note(&self) -> Option<Div> {
         let (t, c) = (tokens(), colors());
@@ -165,6 +571,51 @@ impl Pane {
                 .child(format!("live from Agent Backbone · read {at}")),
         )
     }
+
+    /// The last change's notice, with the button that dismisses it: a served
+    /// warning in the accent tint, a refusal in the attention tint.
+    fn notice_band(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let (t, c) = (tokens(), colors());
+        let notice = self.notice.as_ref()?;
+        let (fill, tint) = if notice.refused {
+            (c.attention_soft, c.attention_text)
+        } else {
+            (c.accent_soft, c.accent_text)
+        };
+        Some(
+            ui::text(
+                div()
+                    .flex()
+                    .flex_shrink_0()
+                    .items_start()
+                    .gap(px(t.space.s8))
+                    .pl(px(t.space.s12))
+                    .pr(px(t.space.s6))
+                    .py(px(t.space.s6))
+                    .bg(fill)
+                    .border_b(px(t.size.hairline))
+                    .border_color(c.line)
+                    .text_color(c.text),
+                &t.text.status,
+            )
+            .child(ui::icon("triangle-alert", t.size.icon - 1.0, tint).mt(px(t.space.s4)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .py(px(t.space.s2))
+                    .child(notice.text.clone()),
+            )
+            .child(
+                ui::icon_button("access-notice-dismiss", "x").on_click(cx.listener(
+                    |pane, _, _, cx| {
+                        pane.notice = None;
+                        cx.notify();
+                    },
+                )),
+            ),
+        )
+    }
 }
 
 /// What the pane says when a read fails, over the records still drawn.
@@ -175,6 +626,26 @@ fn failure(error: Error) -> String {
             "{} Showing the last data read.",
             agent_interface_roster::views::UNAVAILABLE
         ),
+    }
+}
+
+/// What the pane says for a change Backbone did not make: its own message,
+/// or what is known when it gave none.
+fn refusal(failure: Failure) -> String {
+    match failure {
+        Failure::Refused { message, .. } => message,
+        Failure::Connection(Error::Refused(status)) => {
+            format!("Agent Backbone did not make the change (HTTP {status}).")
+        }
+        Failure::Connection(Error::Unavailable) => {
+            "Agent Backbone did not answer, so the change may not have been made.".into()
+        }
+        Failure::Connection(Error::Invalid) => {
+            "This change cannot be sent to Agent Backbone.".into()
+        }
+        Failure::Connection(error) => {
+            format!("Agent Backbone did not make the change ({error:?}).")
+        }
     }
 }
 
@@ -198,8 +669,8 @@ fn band(message: String) -> Div {
 impl Render for Pane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = colors();
-        let body = match &self.model {
-            None => match &self.error {
+        let body = match (&self.model, self.shown) {
+            (None, _) => match &self.error {
                 Some(error) => ui::empty_state(
                     ui::empty_tile("shield", c.selected, c.muted),
                     "Access unavailable",
@@ -207,7 +678,8 @@ impl Render for Pane {
                 ),
                 None => div().flex_1(),
             },
-            Some(_) => self.agents_view(cx),
+            (Some(_), Shown::Agents) => self.agents_view(cx),
+            (Some(_), Shown::Requests) => self.requests_view(cx),
         };
         div()
             .size_full()
@@ -221,5 +693,29 @@ impl Render for Pane {
                     .filter(|_| self.model.is_some())
                     .map(band),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refused_change_shows_backbones_reason() {
+        let refused = Failure::Refused {
+            code: "outside_authority".into(),
+            message: "Only the owner may set how an agent is confined.".into(),
+        };
+        assert_eq!(
+            refusal(refused),
+            "Only the owner may set how an agent is confined."
+        );
+        assert_eq!(
+            refusal(Failure::Connection(Error::Refused(500))),
+            "Agent Backbone did not make the change (HTTP 500)."
+        );
+        assert!(
+            refusal(Failure::Connection(Error::Unavailable)).contains("may not have been made")
+        );
     }
 }
