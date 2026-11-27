@@ -1118,10 +1118,328 @@ fn a_served_first_agent_starts_under_its_request_id_and_keeps_a_refusal() {
         Start::new("guide", Path::new("/a"), "shell", None, None),
         Start::new("guide", Path::new("/a"), "claude", None, Some("acme")),
         Start::new("guide", Path::new("/a"), "claude", None, Some("acme/app/x")),
+        Start::new("guide", Path::new("/a"), "claude", None, Some("acme/..")),
     ] {
         assert_eq!(invalid.err(), Some(Error::Invalid));
     }
 }
 mod access;
+
+#[test]
+fn a_start_on_this_machine_sends_the_same_bytes_as_before() {
+    use super::setup::start::Start;
+    let start = Start::new(
+        "guide",
+        Path::new("/a"),
+        "claude",
+        Some("opus"),
+        Some("acme/app"),
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_string(&start).unwrap(),
+        r#"{"name":"guide","dir":"/a","runtime":"claude","model":"opus","watch":["acme/app"],"wait":false}"#
+    );
+    let bare = Start::new("guide", Path::new("/a"), "claude", None, None).unwrap();
+    assert_eq!(
+        serde_json::to_string(&bare).unwrap(),
+        r#"{"name":"guide","dir":"/a","runtime":"claude","wait":false}"#
+    );
+}
+
+#[test]
+fn a_start_on_another_machine_names_it_with_a_repository_or_a_folder_there() {
+    use super::setup::start::Start;
+    let machine = "1b2c3d4e5f6a7b8c9d0e1f2a8f4e2b1c9d3a7e6f5b0c1d2e3f4a5b6c7d8e9f0a";
+    let body = |start: Start| serde_json::to_value(start).unwrap();
+    assert_eq!(
+        body(
+            Start::on_machine(
+                "app",
+                machine,
+                " acme/app ",
+                Some("claude"),
+                Some("opus"),
+                None
+            )
+            .unwrap()
+        ),
+        json!({"name": "app", "machine": machine, "repo": "acme/app", "runtime": "claude",
+            "model": "opus", "wait": false})
+    );
+    for folder in ["/srv/app", "~/work/app"] {
+        assert_eq!(
+            body(
+                Start::on_machine(
+                    "app",
+                    machine,
+                    folder,
+                    Some("codex"),
+                    None,
+                    Some("acme/app")
+                )
+                .unwrap()
+            ),
+            json!({"name": "app", "dir": folder, "machine": machine, "runtime": "codex",
+                "watch": ["acme/app"], "wait": false})
+        );
+    }
+    // Where its tools aren't listed, the profile's default tool starts.
+    assert_eq!(
+        body(Start::on_machine("app", machine, "acme/app", None, None, None).unwrap()),
+        json!({"name": "app", "machine": machine, "repo": "acme/app", "wait": false})
+    );
+    for invalid in [
+        Start::on_machine("app", machine, "work/app/x", None, None, None),
+        // GitHub names no owner or repository `.` or `..`: these are paths.
+        Start::on_machine("app", machine, "./app", None, None, None),
+        Start::on_machine("app", machine, "../app", None, None, None),
+        Start::on_machine("app", machine, "acme/.", None, None, None),
+        Start::on_machine("app", machine, "acme/..", None, None, None),
+        Start::on_machine("app", machine, "app", None, None, None),
+        Start::on_machine("app", machine, "", None, None, None),
+        Start::on_machine("app", machine, "acme/app", None, Some("opus"), None),
+        Start::on_machine("app", machine, "acme/app", Some("shell"), None, None),
+        Start::on_machine("app", "../x", "acme/app", None, None, None),
+        Start::on_machine("app", "", "acme/app", None, None, None),
+    ] {
+        assert_eq!(invalid.err(), Some(Error::Invalid));
+    }
+}
+
+#[test]
+fn a_refused_start_on_another_machine_shows_backbones_reason_and_its_checks() {
+    use super::setup::start::Start;
+    let (_directory, listener, socket) = crate::transport::tests::local_listener();
+    let entry = served_entry(&socket);
+    let mut identity = entry.clone();
+    for field in ["state", "socket", "tmux_socket", "credential_reference"] {
+        identity.as_object_mut().unwrap().remove(field);
+    }
+    let fixture = |text: &str| serde_json::from_str::<Value>(text).unwrap();
+    let offline = json!({"detail": {"code": "machine_unreachable", "message": "Machine desktop is offline."}});
+    let server = serve(
+        listener,
+        vec![
+            (200, identity),
+            (
+                409,
+                fixture(include_str!("setup/fixtures/error-start-refused.json")),
+            ),
+            (
+                200,
+                fixture(include_str!("setup/fixtures/agent-started-refused.json")),
+            ),
+            (503, offline),
+        ],
+    );
+    let connection = Profile::parse(&serde_json::to_vec(&entry).unwrap())
+        .unwrap()
+        .connect()
+        .unwrap();
+    let start = Start::on_machine("alice", "1b2c3d4e", "acme/app", None, None, None).unwrap();
+    let id = "019a7c105c407a108b203c40d5e6f708";
+    assert_eq!(
+        connection.start_first_agent(&start, id).err(),
+        Some(AddError::Refused(
+            "alice cannot start on desktop: 2 checks failed (swarm worktrees must finish and be \
+             removed first: /Users/alice/code/app/.backbone/swarms/team; desktop runs a version \
+             of Backbone too old to check a start there: update it first)"
+                .into()
+        ))
+    );
+    let started = connection.start_first_agent(&start, id).unwrap();
+    assert_eq!(
+        (started.ok, started.reason.as_deref()),
+        (
+            false,
+            Some("the brief could not be written: no space left on device")
+        )
+    );
+    assert_eq!(
+        connection.start_first_agent(&start, id).err(),
+        Some(AddError::Refused("Machine desktop is offline.".into()))
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn the_profiles_machines_and_another_machines_tools_are_read() {
+    use super::{runtime_catalog::Authentication, setup::start::Tools};
+    use crate::MachineState;
+    let (_directory, listener, socket) = crate::transport::tests::local_listener();
+    let entry = served_entry(&socket);
+    let mut identity = entry.clone();
+    for field in ["state", "socket", "tmux_socket", "credential_reference"] {
+        identity.as_object_mut().unwrap().remove(field);
+    }
+    let fixture = |text: &str| serde_json::from_str::<Value>(text).unwrap();
+    // A service older than the route answers as for any unknown route.
+    let no_route = json!({"detail": {"code": "not_found", "message": "the API has no such route"}});
+    let listed = fixture(include_str!("setup/fixtures/machine-runtimes.json"));
+    let mut newer = listed.clone();
+    newer["schema_version"] = json!(2);
+    let mut elsewhere = listed.clone();
+    elsewhere["machine"] = json!("1b2c3d4e");
+    // A tool with no sign-in at all still says `unavailable`; it is no
+    // sign-in problem, and the tool's own field stands.
+    let mut no_sign_in = listed.clone();
+    no_sign_in["items"].as_array_mut().unwrap().push(json!({
+        "authentication": "not_applicable", "available": true, "display_name": "OpenCode",
+        "efforts": [], "id": "opencode", "models": [], "reports_state": "hooks + terminal",
+        "setup_supported": true, "unattended": {"args": [], "sandboxed": false, "supported": true},
+        "sign_in": {"storage": "unavailable", "message": "opencode has no sign-in here"}}));
+    let older = fixture(include_str!(
+        "setup/fixtures/machine-runtimes-older-backbone.json"
+    ));
+    // Another unavailable reply, which names no machine, is still a refusal.
+    let busy = json!({"detail": {"code": "unavailable", "message": "the home is starting"}});
+    let server = serve(
+        listener,
+        vec![
+            (200, identity),
+            (200, fixture(include_str!("setup/fixtures/machines.json"))),
+            (
+                200,
+                json!({"items": [{"name": "builder", "state": "idle"}], "total": 1}),
+            ),
+            (
+                200,
+                fixture(include_str!("setup/fixtures/machine-runtimes.json")),
+            ),
+            (404, no_route),
+            (
+                503,
+                fixture(include_str!(
+                    "setup/fixtures/machine-runtimes-unreachable.json"
+                )),
+            ),
+            (
+                404,
+                fixture(include_str!(
+                    "setup/fixtures/machine-runtimes-not-found.json"
+                )),
+            ),
+            (200, newer),
+            (200, elsewhere),
+            (503, older.clone()),
+            (503, older),
+            (503, busy),
+            (200, no_sign_in),
+        ],
+    );
+    let connection = Profile::parse(&serde_json::to_vec(&entry).unwrap())
+        .unwrap()
+        .connect()
+        .unwrap();
+    let machines = connection.machines().unwrap();
+    assert_eq!(
+        machines
+            .iter()
+            .map(|m| (m.name.as_str(), m.home, m.state))
+            .collect::<Vec<_>>(),
+        [
+            ("laptop", true, MachineState::Online),
+            ("desktop", false, MachineState::Offline)
+        ]
+    );
+    assert_eq!(
+        machines[1].last_seen.as_deref(),
+        Some("2026-11-10T13:40:12Z")
+    );
+    assert_eq!(connection.agent_names().unwrap(), ["builder"]);
+    let machine = "5f0c9a1e7b2d4c6e8f0a1b3c5d7e9f2a4b6c8d0e1f3a5b7c9d2e4f6a8b0c1d3e";
+    let Tools::Listed {
+        catalog,
+        checked_at,
+    } = connection.machine_tools(machine).unwrap()
+    else {
+        panic!("the machine's tools were not listed");
+    };
+    assert_eq!(checked_at.as_deref(), Some("2026-11-27T16:00:00Z"));
+    // Signed in or not as that machine stores a login.
+    assert_eq!(
+        catalog
+            .items()
+            .iter()
+            .map(|r| (r.id.as_str(), r.available, r.authentication))
+            .collect::<Vec<_>>(),
+        [
+            ("claude", true, Authentication::Authenticated),
+            ("codex", false, Authentication::NotAuthenticated)
+        ]
+    );
+    assert!(matches!(
+        connection.machine_tools(machine),
+        Ok(Tools::NotListed(None))
+    ));
+    assert_eq!(
+        connection.machine_tools(machine).err(),
+        Some(AddError::Refused(
+            "machine 'build-box' cannot be reached now, so its runtimes are not known".into()
+        ))
+    );
+    assert_eq!(
+        connection.machine_tools("nope").err(),
+        Some(AddError::Refused(
+            "no machine of this profile has the ID 'nope'".into()
+        ))
+    );
+    // A newer shape is told apart from a malformed one, and another
+    // machine's reply is never taken for the one asked about.
+    assert_eq!(
+        connection.machine_tools(machine).err(),
+        Some(AddError::Connection(Error::Unsupported))
+    );
+    assert_eq!(
+        connection.machine_tools(machine).err(),
+        Some(AddError::Connection(Error::Invalid))
+    );
+    // A reachable machine on an older Backbone: not listed, with its reason.
+    let Ok(Tools::NotListed(Some(reason))) = connection.machine_tools(machine) else {
+        panic!("an older Backbone's machine was not told apart");
+    };
+    assert_eq!(
+        reason,
+        "machine 'build-box' runs an older Backbone that cannot list its runtimes; upgrade it to see them"
+    );
+    // Only for the machine it names.
+    assert_eq!(
+        connection.machine_tools("1b2c3d4e").err(),
+        Some(AddError::Refused(reason))
+    );
+    assert_eq!(
+        connection.machine_tools(machine).err(),
+        Some(AddError::Refused("the home is starting".into()))
+    );
+    let Ok(Tools::Listed { catalog, .. }) = connection.machine_tools(machine) else {
+        panic!("the machine's tools were not listed");
+    };
+    let opencode = catalog.items().iter().find(|r| r.id == "opencode").unwrap();
+    assert_eq!(
+        (opencode.available, opencode.authentication),
+        (true, Authentication::NotApplicable)
+    );
+    assert_eq!(
+        connection.machine_tools("../agents").err(),
+        Some(AddError::Connection(Error::Invalid))
+    );
+    let requests = server.join().unwrap();
+    assert!(
+        requests[1].starts_with("get /api/profile/machines "),
+        "{}",
+        requests[1]
+    );
+    assert!(
+        requests[2].starts_with("get /api/agents "),
+        "{}",
+        requests[2]
+    );
+    assert!(
+        requests[3].starts_with(&format!("get /api/profile/machines/{machine}/runtimes ")),
+        "{}",
+        requests[3]
+    );
+}
 mod browsers;
 mod peers;

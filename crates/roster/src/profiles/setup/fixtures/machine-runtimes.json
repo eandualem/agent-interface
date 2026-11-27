@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "machine": "5f0c9a1e7b2d4c6e8f0a1b3c5d7e9f2a4b6c8d0e1f3a5b7c9d2e4f6a8b0c1d3e",
+  "machine_name": "build-box",
+  "checked_at": "2026-11-27T16:00:00Z",
+  "items": [
+    {"authentication": "unknown", "available": true, "display_name": "Claude Code",
+     "efforts": ["low", "medium", "high", "xhigh", "max"], "id": "claude", "models": ["opus", "sonnet", "haiku"],
+     "reports_state": "hooks + terminal", "setup_supported": true,
+     "unattended": {"args": ["--dangerously-skip-permissions"], "sandboxed": false, "supported": true},
+     "sign_in": {"storage": "present"}},
+    {"authentication": "unknown", "available": false, "display_name": "Codex",
+     "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"], "id": "codex", "models": ["gpt-5.6-sol", "gpt-6-astra"],
+     "reports_state": "hooks + terminal", "setup_supported": true,
+     "unattended": {"args": ["-a", "never", "-s", "workspace-write"], "sandboxed": true, "supported": true},
+     "sign_in": {"storage": "missing"}}
+  ]
+}
