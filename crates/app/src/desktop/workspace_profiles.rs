@@ -658,8 +658,10 @@ impl Browser {
         if self.roster_updates.is_none() && cx.has_global::<agent_status::Sources>() {
             self.roster_updates =
                 Some(cx.observe_global::<agent_status::Sources>(|browser, cx| {
-                    browser.close_finished_swarm_tabs(cx);
-                    cx.notify();
+                    // A changed roster already redraws every window.
+                    if browser.close_finished_swarm_tabs(cx) {
+                        cx.notify();
+                    }
                 }));
         }
     }

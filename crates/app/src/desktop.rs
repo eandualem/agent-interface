@@ -1618,10 +1618,11 @@ impl Browser {
     /// Close the tabs of swarms that finished: once a list read in full no
     /// longer names a swarm seen running, a tab still showing only that swarm
     /// goes. What is running is noted on every update; closing waits until
-    /// nothing else is being saved or edited.
-    fn close_finished_swarm_tabs(&mut self, cx: &mut Context<Self>) {
+    /// nothing else is being saved or edited. Whether it changed what the
+    /// window shows: a library update taken, or a close saved.
+    fn close_finished_swarm_tabs(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(layout) = &self.layout else {
-            return;
+            return false;
         };
         let mut read: HashMap<&str, (String, Vec<agent_interface_roster::Swarm>)> = HashMap::new();
         for space in &layout.model().workspaces {
@@ -1667,13 +1668,17 @@ impl Browser {
             || self.resize.is_some()
             || self.pane_drag.is_some()
         {
-            return;
+            return false;
         }
-        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
-            self.apply(update);
-        }
+        let applied = match self.library.as_ref().and_then(Library::take_update) {
+            Some(update) => {
+                self.apply(update);
+                true
+            }
+            None => false,
+        };
         let Some(layout) = &self.layout else {
-            return;
+            return applied;
         };
         let (base, mut proposed) = layout.save_snapshot();
         let mut closed = false;
@@ -1692,6 +1697,7 @@ impl Browser {
             self.pending_save = Some((base, proposed));
             self.save(cx);
         }
+        applied || closed
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
