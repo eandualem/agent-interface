@@ -395,7 +395,9 @@ working on it: click links and buttons, double click, drag to select text,
 and scroll with the wheel or trackpad, also inside the page's own scrolling
 areas. Only left clicks reach the page, and as plain clicks: right and
 middle clicks, Ctrl-clicks and Cmd-clicks could open Chrome's own menu or a
-new tab that the view doesn't show, so they do nothing, and Shift and Option
+new tab that the view doesn't show, so they are not sent to the page (a
+Ctrl- or Cmd-click still selects the pane and gives the keyboard back to the
+app, as any click on a pane does), and Shift and Option
 are left off clicks, as a Shift-click opens a new window and an
 Option-click downloads the link. Click in the page to type into it: a thin ring around the page shows
 that your keys go there. Typing, Enter, Tab, Backspace, the arrows, Escape

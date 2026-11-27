@@ -1676,7 +1676,9 @@ moves with the button held, and the wheel at the pointer go as
 `Input.dispatchMouseEvent`. A right or middle press, a Ctrl-click, which is
 a right click on macOS, or a Cmd-click could open Chrome's own menu or a
 link in a new tab in a browser window the view never shows, so those
-presses are not sent and change nothing. Presses and releases carry no
+presses are not sent to the page. A right or middle press changes nothing
+else; a Ctrl- or Cmd-click, like any left click on a pane, selects it and
+gives the keyboard back to the app. Presses and releases carry no
 modifiers at all, since a Shift-click opens a link in a new window and an
 Option-click downloads it; moves carry Shift and Option, and the wheel
 Shift, which scrolls across;
