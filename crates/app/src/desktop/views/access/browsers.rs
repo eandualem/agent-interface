@@ -66,15 +66,29 @@ impl Browsing {
         }
     }
 
-    /// Whether the new browser has been made and Backbone has found it
-    /// signed in to nothing yet.
+    /// Whether the new browser has been made, its Chrome runs (a read served
+    /// its DevTools endpoint), and Backbone has found it signed in to nothing
+    /// yet. Checking starts its Chrome when none runs, so a closed window is
+    /// not checked; Show the window starts it again.
     pub fn waits_for_sign_in(&self) -> bool {
         let made = self.new.as_ref().and_then(|new| new.id.as_deref());
         made.is_some()
-            && self
-                .detail
-                .as_ref()
-                .is_some_and(|d| Some(d.browser.id.as_str()) == made && d.signed_in_to.is_empty())
+            && self.detail.as_ref().is_some_and(|d| {
+                Some(d.browser.id.as_str()) == made
+                    && d.signed_in_to.is_empty()
+                    && d.devtools.is_some()
+            })
+    }
+
+    /// Choose the browser `id`: what was read or asked of another is dropped.
+    pub fn choose(&mut self, id: Option<String>) {
+        if self.chosen != id {
+            self.chosen = id;
+            self.detail = None;
+            self.older.clear();
+            self.older_before = None;
+            self.deleting = None;
+        }
     }
 
     /// Whether the chosen browser's detail asks to confirm its deletion.
@@ -149,11 +163,8 @@ impl Pane {
         if self.browsing.chosen.as_ref().is_some_and(listed) {
             return;
         }
-        self.browsing.chosen = items.first().map(|b| b.id.clone());
-        self.browsing.deleting = None;
-        self.browsing.detail = None;
-        self.browsing.older.clear();
-        self.browsing.older_before = None;
+        let first = items.first().map(|b| b.id.clone());
+        self.browsing.choose(first);
         // Its detail is read at once, after the read under way.
         self.again |= self.browsing.chosen.is_some();
     }
@@ -161,11 +172,7 @@ impl Pane {
     /// Choose the browser `id` and read it.
     pub(super) fn choose_browser(&mut self, id: Option<String>, cx: &mut Context<Self>) {
         if self.browsing.chosen != id {
-            self.browsing.chosen = id;
-            self.browsing.deleting = None;
-            self.browsing.detail = None;
-            self.browsing.older.clear();
-            self.browsing.older_before = None;
+            self.browsing.choose(id);
             self.menu = None;
             self.notice = None;
         }
@@ -385,8 +392,15 @@ impl Pane {
     }
 
     /// Show a browser Backbone returned for the change `key`.
-    pub(super) fn browsed(&mut self, key: &str, detail: Detail) {
+    pub(super) fn browsed(&mut self, key: &str, mut detail: Detail) {
         let id = detail.browser.id.clone();
+        // Only a read gives the DevTools endpoint, so a change's reply keeps
+        // the one read before it.
+        if detail.devtools.is_none()
+            && let Some(read) = self.browsing.detail.as_ref().filter(|d| d.browser.id == id)
+        {
+            detail.devtools = read.devtools.clone();
+        }
         if let Some(model) = self.model.as_mut() {
             model.apply_browser(detail.browser.clone());
         }
@@ -403,11 +417,11 @@ impl Pane {
                         new.chosen.push(agent.clone());
                     }
                 }
-                self.browsing.chosen = Some(id);
+                self.browsing.choose(Some(id));
             }
             ("access-browser-save", Some(_)) => {
                 self.browsing.new = None;
-                self.browsing.chosen = Some(id);
+                self.browsing.choose(Some(id));
             }
             _ => {}
         }
@@ -426,8 +440,7 @@ impl Pane {
             self.browsing.new = None;
         }
         if self.browsing.chosen.as_deref() == Some(id) {
-            self.browsing.chosen = None;
-            self.browsing.detail = None;
+            self.browsing.choose(None);
         }
         self.keep_browser();
     }
@@ -2408,6 +2421,24 @@ mod tests {
         );
         browsing.read(Some(newer));
         assert_eq!((browsing.older.len(), browsing.older_before), (0, None));
+    }
+
+    #[test]
+    fn choosing_another_browser_drops_what_was_read_or_asked_of_the_last() {
+        let detail = detail();
+        let mut browsing = Browsing {
+            chosen: Some("youtube".into()),
+            detail: Some(detail.clone()),
+            older: detail.recent.clone(),
+            older_before: Some(30),
+            new: None,
+            deleting: Some("youtube".into()),
+        };
+        browsing.choose(Some("youtube".into()));
+        assert_eq!(browsing.older.len(), 3);
+        browsing.choose(Some("telegram".into()));
+        assert!(browsing.detail.is_none() && browsing.older.is_empty());
+        assert_eq!((browsing.older_before, browsing.deleting), (None, None));
     }
 
     #[test]

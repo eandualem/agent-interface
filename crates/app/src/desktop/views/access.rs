@@ -354,8 +354,8 @@ impl Pane {
         let connection = self.connection.clone();
         let shown = self.browsing.shown_id(self.shown == Shown::Browsers);
         // Backbone reads a new browser's sign-in only when it is checked, so
-        // the poll checks it while the sheet waits for one; a read the check
-        // itself sets off does not check again.
+        // the poll checks it while the sheet waits for one and its Chrome
+        // runs; a read the check itself sets off does not check again.
         let check = self.browsing.waits_for_sign_in() && std::mem::take(&mut self.check_due);
         let read = cx.background_executor().spawn(async move {
             let overview = connection.access_overview()?;

@@ -92,8 +92,10 @@ class Records:
         detail["browser"] = copy.deepcopy(browser)
         holder = browser.get("holder")
         detail["holder"] = holder and dict(holder, session=41, agent_browser_session=holder["agent"])
-        # No Chrome runs in this check, so nothing can be watched.
-        detail["devtools"] = None
+        # No Chrome runs in this check. A browser waiting for its sign-in is
+        # served an endpoint, as Backbone serves one while its window is open,
+        # so the app checks it; nothing connects to it.
+        detail["devtools"] = "ws://127.0.0.1:9/devtools/browser/fixture" if id in self.signing else None
         detail["signed_in_to"] = [dict(domain=d, account=d, note=None) for d in browser["signed_in_to"]]
         if id != "youtube":
             detail["requests"] = self.asking.get(id, [])
@@ -134,7 +136,7 @@ class Records:
             self.asking.pop(browser["id"], None)
             return self.detail(browser["id"])
         if action == "check" and browser["id"] in self.signing:
-            browser["signed_in_to"] = [self.signing[browser["id"]]]
+            browser["signed_in_to"] = [self.signing.pop(browser["id"])]
         if action in ("window", "check", "policies"):
             return self.detail(browser["id"])
         return 404, {"detail": {"code": "not_found", "message": "No such route in this check."}}
