@@ -10,6 +10,8 @@ members = [
     "crates/tmux",
     "crates/term",
     "crates/roster",
+    "crates/release",
+    "crates/install",
     "crates/app",
     "crates/webview-host",
     "crates/native-fs",

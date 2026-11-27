@@ -12,6 +12,13 @@ terminal** or pick a tmux session from its list. Opening an empty workspace does
 shell. To open another saved library, open Settings, choose **Open another**,
 and select its folder. The shortcut is Command-O on macOS or Ctrl+Shift+O on Linux.
 
+First run with Agent Backbone creates a profile and then starts its first agent,
+the guide. Under **More options**, **Orchestrator** makes the guide the
+profile's orchestrator: the agent that speaks for the profile and may reach
+beyond its own repository. It stays off unless you turn it on. An Agent
+Backbone too old to take this choice says so; run `backbone upgrade`, or turn
+the choice off and start again.
+
 Ordinary terminals and attached tmux sessions run on the same computer as the
 app. In a workspace with a profile, agents on the profile's other machines open
 in native panes too; see [Agents on other machines](#agents-on-other-machines).
@@ -229,8 +236,10 @@ how to list them when their panes close.
 
 Click **+** beside TABS or press Command-T to add an empty tab. Command-D splits
 right; Command-Shift-D splits below. Both split actions are also in tab options.
-Drag a tab onto another tab in the sidebar to move it to that position;
-the order is saved while the selected tab stays selected.
+Drag a tab in the sidebar above or below another tab, or a workspace in the
+switcher before or after another, to move it there: a line shows where it will
+land, and Escape lets go with nothing moved. The order is saved, and the
+selection stays where it was.
 The existing pane remains intact and the new pane asks what it should run: Open
 terminal, or pick a tmux session from its list. New tabs
 use the launch directory, or your home folder when the app was opened from the

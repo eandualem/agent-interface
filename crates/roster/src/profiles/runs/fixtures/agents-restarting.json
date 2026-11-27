@@ -71,9 +71,9 @@
       "takes_issues": true,
       "restart": {
         "id": 12,
-        "phase": "waiting",
+        "phase": "stopping",
         "resume": false,
-        "start_at": "2026-11-19T15:04:00Z"
+        "start_at": null
       },
       "held_queue": null,
       "queued": 0

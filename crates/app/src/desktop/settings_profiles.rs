@@ -13,7 +13,7 @@ enum List {
     Loading,
     /// Agent Backbone is not installed: no `backbone` command was found.
     Absent,
-    Failed(&'static str),
+    Failed(SharedString),
     Ready(Vec<Item>),
 }
 
@@ -223,7 +223,7 @@ impl Render for Profiles {
                 ))
             }
             List::Failed(message) => {
-                page = page.child(ui::group_note(*message)).child(
+                page = page.child(ui::group_note(message.clone())).child(
                     div().flex().child(
                         ui::button("profiles-retry", "Check again", ui::Button::Secondary)
                             .on_click(cx.listener(|page, _, _, cx| page.refresh(cx))),

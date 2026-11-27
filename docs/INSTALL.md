@@ -1,7 +1,7 @@
 # Install Agent Interface
 
 You do not need to install Rust or Zig yourself. The installer installs Agent
-Interface; it does not install Agent Backbone (see
+Interface, then Agent Backbone once it is published (see
 [Connect Agent Backbone](#connect-agent-backbone)). Terminal sessions require
 **tmux 3.4 or newer**.
 
@@ -210,10 +210,33 @@ and the app's [diagnostic logging](GUIDE.md#find-work-and-change-appearance).
 
 ## Connect Agent Backbone
 
-The installer does not install Agent Backbone, and running it again does not
-add it: the Agent Backbone service is not distributed yet
-([#268](https://github.com/eandualem/agent-interface/issues/268)). With the
-service installed, open Agent Interface to continue onboarding. Onboarding
+Once the app is installed, the installer also installs Agent Backbone, the
+service that runs your agents. On Linux it installs the `backbone` program as
+`~/.local/bin/backbone`. On macOS it installs the app bundle
+`~/Applications/Agent Backbone.app`, and makes `~/.local/bin/backbone` a
+symbolic link to the program inside, so the `backbone` command and the service
+are one program. The installer downloads the latest Backbone release's
+manifest and its signature, and the newly installed app checks that signature
+against the release key built into the app. The installer then downloads that
+version's archive, and the app checks its SHA-256 against the signed manifest
+before it puts Backbone in place. Agent
+Backbone is not published yet: until it is, the installer says so and
+installs only the app.
+
+Running the installer again updates Backbone to its latest release. It never
+installs a version older than the one installed, also after `backbone
+upgrade` updated it. If Backbone's release is refused or can't be downloaded,
+the app stays installed and the installer says what happened; run the
+installer again to retry. `--archive` installs only the app archive you give
+it; run the installer without `--archive` to install Backbone.
+
+If `~/.local/bin/backbone` or, on macOS, `~/Applications/Agent Backbone.app`
+exists and this installer didn't put it there, or the earlier Agent Backbone's
+login service is defined, the installer changes none of them and doesn't
+install Backbone. It says an earlier Backbone was found and
+left in place, and finishes installing the app.
+
+With the service installed, open Agent Interface to continue onboarding. Onboarding
 creates your first profile, and offers to install Git, tmux or an agent tool
 when one is missing; each agent tool signs in inside its own terminal. Without
 Agent Backbone, Agent Interface works as a native workspace for tmux: first run
@@ -264,7 +287,11 @@ The distribution Bubblewrap policy is shared system sandbox support, like the
 runtime libraries. Uninstalling this app does not remove it or change other apps'
 sandbox configuration.
 
-These commands leave your data and terminal sessions intact. See the
+These commands leave your data and terminal sessions intact, and leave Agent
+Backbone installed. If you remove Backbone's `~/.local/bin/backbone` yourself,
+and on macOS its bundle `~/Applications/Agent Backbone.app`, also remove the
+installer's marker beside the program, `~/.local/bin/.agent-interface-backbone`.
+See the
 [user guide](GUIDE.md) for library and settings locations.
 
 On WSL, also remove the Windows Start registration only if its installer marker

@@ -340,9 +340,20 @@ pub(super) fn whose_accounts(accounts: Accounts) -> Option<&'static str> {
     }
 }
 
-pub(super) fn message(error: &Error) -> &'static str {
-    use agent_interface_roster::profiles::Error as ProfileError;
-    match error {
+pub(super) fn message(error: &Error) -> SharedString {
+    use agent_interface_roster::profiles::{Error as ProfileError, MINIMUM_BACKBONE};
+    let text = match error {
+        Error::Profile(ProfileError::Outdated(running)) => {
+            return format!(
+                "This profile\u{2019}s Agent Backbone is version {running}. This app needs \
+                 {MINIMUM_BACKBONE} or newer. Run `backbone upgrade`, then try again."
+            )
+            .into();
+        }
+        Error::Profile(ProfileError::VersionUnknown) => {
+            "This profile\u{2019}s Agent Backbone didn\u{2019}t report a version this app can \
+             read. Run `backbone upgrade`, then try again."
+        }
         Error::CommandFailed => "Profile discovery was refused or failed.",
         Error::TimedOut => "Profile discovery timed out. Try again.",
         Error::Cancelled => "Profile selection was cancelled.",
@@ -362,7 +373,8 @@ pub(super) fn message(error: &Error) -> &'static str {
         Error::Invalid | Error::TooLarge | Error::Profile(ProfileError::Invalid) => {
             "The provider returned invalid profile information."
         }
-    }
+    };
+    text.into()
 }
 
 impl Render for ProfilePicker {

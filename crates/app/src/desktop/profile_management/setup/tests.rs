@@ -119,6 +119,36 @@ fn answered(cancel: bool, status: &str, code: &str, retry: &str) -> Snapshot {
 }
 
 #[test]
+fn a_backbone_too_old_for_the_orchestrator_says_so_and_other_refusals_are_unchanged() {
+    // What a Backbone from before the choice says of the field it doesn't know.
+    let too_old = "the request is not one this version takes: unknown field `orchestrator`, \
+                   expected one of `name`, `directory`";
+    for (message, old) in [
+        (too_old, true),
+        (
+            "brief.template `orchestrator-v1` is not one setup has",
+            false,
+        ),
+        ("the agent's name is not one setup takes", false),
+    ] {
+        let mut s = answered(false, "failed", "invalid_request", "new_request");
+        s.first_result.as_mut().unwrap().message = Some(message.into());
+        let (text, _) = outcome(&s).unwrap();
+        assert_eq!(
+            text.starts_with("This Agent Backbone is too old"),
+            old,
+            "{message}"
+        );
+        assert_eq!(
+            text.starts_with("Setup refused the request"),
+            !old,
+            "{message}"
+        );
+        // Nothing was written, so a new request follows with the choices changed.
+        assert!(text.ends_with("change what you need and start again."));
+    }
+}
+#[test]
 fn every_answer_s_words_agree_with_its_status_and_buttons() {
     // Every code setup gives a first agent or its cancellation, and one it
     // doesn't know. Those the app has words of its own for show them;
@@ -445,39 +475,54 @@ pub(in crate::desktop::profile_management) fn served_socket(
     let server = std::thread::spawn(move || {
         let mut requests = Vec::new();
         for (status, body) in replies {
-            // A client that stopped early fails the test instead of hanging it.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            let mut stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error)
-                        if error.kind() == std::io::ErrorKind::WouldBlock
-                            && std::time::Instant::now() < deadline =>
-                    {
-                        std::thread::sleep(std::time::Duration::from_millis(5))
+            // The version check each connection makes first is answered
+            // without taking a reply or being recorded.
+            let (mut stream, request) = loop {
+                // A client that stopped early fails the test instead of hanging it.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error)
+                            if error.kind() == std::io::ErrorKind::WouldBlock
+                                && std::time::Instant::now() < deadline =>
+                        {
+                            std::thread::sleep(std::time::Duration::from_millis(5))
+                        }
+                        Err(error) => panic!("fixture accept: {error}"),
                     }
-                    Err(error) => panic!("fixture accept: {error}"),
+                };
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut header = Vec::new();
+                while !header.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    header.push(byte[0]);
                 }
-            };
-            stream.set_nonblocking(false).unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                let mut request = String::from_utf8(header).unwrap().to_ascii_lowercase();
+                if let Some(length) = request
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length: "))
+                {
+                    let mut body = vec![0; length.trim().parse().unwrap()];
+                    stream.read_exact(&mut body).unwrap();
+                    request.push_str(&String::from_utf8(body).unwrap());
+                }
+                if !request.starts_with("get /health ") {
+                    break (stream, request);
+                }
+                let version = agent_interface_roster::profiles::MINIMUM_BACKBONE.to_string();
+                let body = serde_json::json!({ "version": version }).to_string();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
                 .unwrap();
-            let mut header = Vec::new();
-            while !header.ends_with(b"\r\n\r\n") {
-                let mut byte = [0];
-                stream.read_exact(&mut byte).unwrap();
-                header.push(byte[0]);
-            }
-            let mut request = String::from_utf8(header).unwrap().to_ascii_lowercase();
-            if let Some(length) = request
-                .lines()
-                .find_map(|line| line.strip_prefix("content-length: "))
-            {
-                let mut body = vec![0; length.trim().parse().unwrap()];
-                stream.read_exact(&mut body).unwrap();
-                request.push_str(&String::from_utf8(body).unwrap());
-            }
+            };
             requests.push(request);
             let body = body.to_string();
             write!(

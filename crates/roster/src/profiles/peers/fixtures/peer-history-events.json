@@ -1,0 +1,102 @@
+{
+  "items": [
+    {
+      "connection": {
+        "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+        "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+      },
+      "message_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c70",
+      "direction": "outgoing",
+      "text": "Is the staging build ready?",
+      "submitted_at": "2026-11-21T10:00:00Z",
+      "expires_at": "2026-11-28T10:00:00Z",
+      "state": "revision_requested",
+      "receipt": {
+        "kind": "missing"
+      },
+      "revision": 1,
+      "local_agent": "main",
+      "decided_at": "2026-11-21T10:02:00Z"
+    },
+    {
+      "connection": {
+        "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+        "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+      },
+      "message_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c71",
+      "direction": "outgoing",
+      "text": "Is the staging build of version 2 ready?",
+      "submitted_at": "2026-11-21T10:03:00Z",
+      "expires_at": "2026-11-28T10:03:00Z",
+      "state": "delivered",
+      "receipt": {
+        "kind": "confirmed",
+        "outcome": "delivered",
+        "recorded_at": "2026-11-21T10:05:10Z"
+      },
+      "revises": "0190c3a2c1107a3b8c9d0e1f2a3b4c70",
+      "revision": 2,
+      "local_agent": "main",
+      "decided_at": "2026-11-21T10:04:00Z"
+    },
+    {
+      "connection": {
+        "peer_id": "v1:4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+        "generation": "0190c3a2c1107a3b8c9d0e1f2a3b4c5d"
+      },
+      "message_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c72",
+      "direction": "incoming",
+      "text": "Version 2 is ready.",
+      "submitted_at": "2026-11-21T10:06:00Z",
+      "expires_at": "2026-11-28T10:06:00Z",
+      "state": "delivered",
+      "receipt": {
+        "kind": "confirmed",
+        "outcome": "delivered",
+        "recorded_at": "2026-11-21T10:06:02Z"
+      },
+      "local_agent": "main"
+    }
+  ],
+  "older": null,
+  "events": [
+    {
+      "id": 1,
+      "at": "2026-11-21T09:00:00Z",
+      "kind": "connected"
+    },
+    {
+      "id": 2,
+      "at": "2026-11-21T09:05:00Z",
+      "kind": "gate_changed",
+      "direction": "incoming",
+      "from": "review",
+      "to": "auto"
+    },
+    {
+      "id": 3,
+      "at": "2026-11-21T10:02:00Z",
+      "kind": "revision_requested",
+      "message_id": "0190c3a2c1107a3b8c9d0e1f2a3b4c70",
+      "note": "Please include the version."
+    },
+    {
+      "id": 4,
+      "at": "2026-11-21T10:03:00Z",
+      "kind": "gate_changed",
+      "direction": "outgoing",
+      "from": "review",
+      "to": "auto"
+    },
+    {
+      "id": 5,
+      "at": "2026-11-21T11:00:00Z",
+      "kind": "disconnect_requested"
+    },
+    {
+      "id": 6,
+      "at": "2026-11-21T11:00:05Z",
+      "kind": "disconnected"
+    }
+  ]
+}

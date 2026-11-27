@@ -326,6 +326,28 @@ impl ViewPane {
             pane.update(cx, |p, cx| p.pick_peer(selection, cx));
         }
     }
+    /// Tell a Connections pane which workspace and profile it is in, for
+    /// its saved peer list choice and this profile's name.
+    pub(super) fn place_connections(
+        &self,
+        profile: Option<&str>,
+        workspace: &str,
+        name: Option<&str>,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) {
+        if let Some(pane) = &self.connections {
+            // Placed while the window draws, where a notify brings no frame
+            // of its own: a change is drawn on the next frame.
+            if pane.update(cx, |pane, _| pane.place(profile, workspace, name)) {
+                let pane = pane.downgrade();
+                window.on_next_frame(move |_, cx| {
+                    let _ = pane.update(cx, |_, cx| cx.notify());
+                });
+            }
+        }
+    }
+
     pub(super) fn connection_attention(&self, cx: &gpui::App) -> bool {
         self.connections
             .as_ref()

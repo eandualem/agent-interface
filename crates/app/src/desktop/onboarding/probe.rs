@@ -43,6 +43,9 @@ pub enum Backbone {
     NotSetUp,
     /// Set up, but the last request failed.
     Unreachable(&'static str),
+    /// Answering, but older than this app supports or of no version it can
+    /// read; the reason says what to do.
+    Outdated(String),
     /// Answering.
     Running,
 }
@@ -251,11 +254,22 @@ pub fn answers(client: Option<crate::profiles::Client>) -> Backbone {
     let Some(served) = items.iter().find(|item| item.state == State::Ready) else {
         return Backbone::NotSetUp;
     };
-    let roster = client
+    let connected = client
         .show(&served.profile_id, &live)
         .ok()
-        .and_then(|profile| profile.connect().ok())
-        .and_then(|connection| connection.roster().ok());
+        .map(|profile| profile.connect());
+    let roster = match connected {
+        Some(Err(
+            error @ (agent_interface_roster::profiles::Error::Outdated(_)
+            | agent_interface_roster::profiles::Error::VersionUnknown),
+        )) => {
+            let error = crate::profiles::Error::Profile(error);
+            return Backbone::Outdated(super::super::profile_picker::message(&error).into());
+        }
+        connected => connected
+            .and_then(Result::ok)
+            .and_then(|connection| connection.roster().ok()),
+    };
     match roster {
         Some(_) => Backbone::Running,
         None => Backbone::Unreachable(UNANSWERED),

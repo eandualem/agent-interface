@@ -776,6 +776,14 @@ struct Browser {
     watched_swarms: HashMap<(String, String), (String, std::collections::HashSet<String>)>,
     tabs_scroll: gpui::ScrollHandle,
     workspaces_scroll: gpui::ScrollHandle,
+    /// The tab or workspace a drag is over, and whether it lands after it.
+    reorder_target: Option<(String, bool)>,
+    /// A drop made while a save ran, applied when that save finishes.
+    queued_reorder: Option<sidebar::Reorder>,
+    /// Whether the current press started a tab or workspace drag. GPUI holds
+    /// back only the click of the element that owns a drag, so the clicks
+    /// inside a tab row check this; it lasts until the next press.
+    dragged_since_press: bool,
     shown_workspace: Option<(String, gpui::Pixels)>,
     shell_environment: Option<Result<agent_interface_tmux::shells::Environment, String>>,
     shell_after_save: Option<Leaf>,
@@ -783,6 +791,9 @@ struct Browser {
     /// The profile's shells of panes being closed, ended once the close is
     /// saved and no pane holds them.
     shells_after_close: Option<(agent_interface_roster::profiles::Connection, Vec<String>)>,
+    /// A workspace being deleted, whose saved peer list choices are
+    /// forgotten once the deletion is saved.
+    forget_after_delete: Option<String>,
     /// A close waits for its shells' check, or for the person's answer.
     close_pending: bool,
     /// The pane Open terminal asked for, focused once its shell is attached.
@@ -1144,6 +1155,7 @@ impl Browser {
         self.shell_after_save = None;
         self.shell_to_open = None;
         self.shells_after_close = None;
+        self.forget_after_delete = None;
         self.resize = None;
         self.pane_drag = None;
         self.pane_motion = None;
@@ -1428,6 +1440,9 @@ impl Browser {
             return;
         };
         self.pending_save = Some(proposal);
+        // Settings are shared by every library, so only this deletion, once
+        // saved, says a saved peer list choice is no longer needed.
+        self.forget_after_delete = Some(expected.to_owned());
         self.workspace_menu = false;
         self.editing = None;
         self.tab_menu = None;
@@ -1753,6 +1768,16 @@ impl Browser {
                             }
                         }
                         browser.creation_from = None;
+                        if let Some(workspace) = browser.forget_after_delete.take()
+                            && !result.conflict
+                            && settings::forget_peer_list_of(&workspace)
+                        {
+                            settings::save_in_background(settings::Settings::current(), |result| {
+                                if let Err(error) = result {
+                                    tracing::warn!(%error, "A deleted workspace's peer list not forgotten");
+                                }
+                            });
+                        }
                         if let Some((connection, ids)) = browser.shells_after_close.take()
                             && !result.conflict
                             && let Some(layout) = &browser.layout
@@ -1774,8 +1799,15 @@ impl Browser {
                             browser.bind_workspace(item, connection, &name, cx);
                         }
                         browser.first_open_saved(!result.conflict, cx);
+                        if let Some(reorder) = browser.finish_queued_reorder(Some(&result)) {
+                            browser.drop_reorder(reorder, cx);
+                        }
                     }
                     Err(error) => {
+                        // A drop made during the failed save is not applied,
+                        // and a drag under way can no longer land.
+                        browser.finish_queued_reorder(None);
+                        browser.reorder_target = None;
                         browser.save_failed = true;
                         browser.pending_save = Some((base, local));
                         // The status bar leads with "Changes not saved".
@@ -1846,6 +1878,7 @@ impl Browser {
         self.shell_after_save = None;
         self.shell_to_open = None;
         self.shells_after_close = None;
+        self.forget_after_delete = None;
         self.resize = None;
         self.pane_drag = None;
         // A carried pane has no drag left to let it go.
@@ -3367,7 +3400,8 @@ impl Render for Browser {
                         .is_some_and(|layout| saved_view(layout.model(), id, &pane.view)))
         });
         for (id, view) in shown.clone() {
-            if view.kind == agent_interface_core::ViewKind::Connections
+            let connections = view.kind == agent_interface_core::ViewKind::Connections;
+            if connections
                 && self.views.get(&id).is_some_and(|(_, events)| {
                     !events.belongs_to(self.pane_navigation_origin(&id).as_ref())
                 })
@@ -3406,7 +3440,21 @@ impl Render for Browser {
                     pane.update(cx, |pane, cx| pane.open_section(section, window, cx));
                 }
                 self.views
-                    .insert(id, (pane, navigation_origin::ViewEvents::default()));
+                    .insert(id.clone(), (pane, navigation_origin::ViewEvents::default()));
+            }
+            // Placed on every draw, so a profile name that loads after the
+            // pane exists still reaches it.
+            if connections
+                && let Some((pane, _)) = self.views.get(&id)
+                && let Some(space) = self
+                    .layout
+                    .as_ref()
+                    .and_then(|layout| layout.model().workspace_for_pane(&id))
+            {
+                let name = self.workspace_profiles.profile_name(space);
+                pane.update(cx, |pane, cx| {
+                    pane.place_connections(space.profile_id.as_deref(), &space.id, name, window, cx)
+                });
             }
         }
         if let Some((workspace, key, selection)) = self.peer_to_open.take()
@@ -3737,6 +3785,8 @@ impl Render for Browser {
                 browser.reader_edit("a", window, cx)
             }))
             .capture_any_mouse_down(cx.listener(|browser, _, _, cx| {
+                // A new press is a click until it starts a drag.
+                browser.dragged_since_press = false;
                 // A GPUI focus handle alone does not change AppKit's first
                 // responder. Native clicks must leave an embedded HTML field.
                 for (view, _) in browser.views.values() {
@@ -3776,6 +3826,13 @@ impl Render for Browser {
                             cx.stop_propagation();
                             return;
                         }
+                    }
+                    // Escape lets go of a dragged tab or workspace where it began.
+                    if event.keystroke.key == "escape" && cx.has_active_drag() {
+                        browser.reorder_target = None;
+                        cx.stop_active_drag(window);
+                        cx.stop_propagation();
+                        return;
                     }
                     if browser.editing.is_some() {
                         return;

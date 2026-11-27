@@ -1,0 +1,27 @@
+[package]
+name = "agent-interface-install"
+description = "The installer's commands that install Agent Backbone from its signed release"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+backbone-release = { path = "../release" }
+semver = "=1.0.28"
+tempfile.workspace = true
+# Reads Backbone's release archive, a gzip-compressed tar. Only what reading
+# needs: no extended attributes.
+flate2 = "=1.1.10"
+tar = { version = "=0.4.46", default-features = false }
+
+[dev-dependencies]
+# Signs fixture releases with a key the tests make, in the tests and in the
+# installer tests' example program, never in a shipped build.
+minisign = "=0.10.0"
+# Digests of the tests' fixture archives, as the vendored crate computes them.
+sha2 = "=0.11.1"

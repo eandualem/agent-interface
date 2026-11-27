@@ -14,8 +14,9 @@ use tokio::net::UnixStream;
 
 struct Authentication<'a> {
     /// Sent as `x-backbone-profile-id`. The owner-only socket is the
-    /// credential, so nothing else authenticates a request.
-    profile_id: &'a str,
+    /// credential, so nothing else authenticates a request. Left out for a
+    /// route of the service itself, such as `/health`.
+    profile_id: Option<&'a str>,
     /// Sent as `x-backbone-request-id`, so a repeat after a lost reply gets
     /// the first result. Left out, the Rust service makes one.
     request_id: Option<&'a str>,
@@ -37,10 +38,24 @@ pub(crate) fn profile_response(
     timeout: Duration,
 ) -> Result<Response, Option<u16>> {
     let auth = Authentication {
-        profile_id,
+        profile_id: Some(profile_id),
         request_id: None,
     };
     exchange(socket, method(&body), path, auth, body, limit, timeout)
+}
+
+/// Read a route of the service itself, such as `/health`, which names no profile.
+pub(crate) fn service_response(
+    socket: &str,
+    path: &str,
+    limit: usize,
+    timeout: Duration,
+) -> Result<Response, Option<u16>> {
+    let auth = Authentication {
+        profile_id: None,
+        request_id: None,
+    };
+    exchange(socket, "GET", path, auth, None, limit, timeout)
 }
 
 /// Remove a resource on a verified profile connection.
@@ -52,7 +67,7 @@ pub(crate) fn profile_delete(
     timeout: Duration,
 ) -> Result<Response, Option<u16>> {
     let auth = Authentication {
-        profile_id,
+        profile_id: Some(profile_id),
         request_id: None,
     };
     exchange(socket, "DELETE", path, auth, None, limit, timeout)
@@ -72,7 +87,7 @@ pub(crate) fn profile_write(
     timeout: Duration,
 ) -> Result<Response, Option<u16>> {
     let auth = Authentication {
-        profile_id,
+        profile_id: Some(profile_id),
         request_id,
     };
     exchange(socket, method, path, auth, body, limit, timeout)
@@ -144,7 +159,9 @@ fn exchange(
             if body.is_some() {
                 request = request.header("Content-Type", "application/json");
             }
-            request = request.header("X-Backbone-Profile-ID", auth.profile_id);
+            if let Some(id) = auth.profile_id {
+                request = request.header("X-Backbone-Profile-ID", id);
+            }
             if let Some(id) = auth.request_id {
                 request = request.header("X-Backbone-Request-ID", id);
             }

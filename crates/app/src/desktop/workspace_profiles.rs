@@ -13,7 +13,7 @@ use crate::profiles::{
     Client, Error,
     selection::{Attempt, Completion, Selection},
 };
-use gpui::{Context, Entity, Window, prelude::*};
+use gpui::{Context, Entity, SharedString, Window, prelude::*};
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum Owner {
@@ -362,9 +362,9 @@ impl Browser {
     }
 
     /// Why the selected workspace has no connection. `None` while still connecting.
-    pub(super) fn profile_failure(&self) -> Option<&'static str> {
+    pub(super) fn profile_failure(&self) -> Option<SharedString> {
         if matches!(self.profile_client, Some(Err(_))) {
-            return Some("Agent Backbone could not be found on this computer.");
+            return Some("Agent Backbone could not be found on this computer.".into());
         }
         let space = self.layout.as_ref()?.model().workspace()?;
         self.workspace_profiles

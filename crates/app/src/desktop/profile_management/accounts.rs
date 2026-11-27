@@ -299,6 +299,10 @@ fn failed(failure: Failure) -> String {
         Failure::Connection(
             Error::BindingRequired | Error::BindingMismatch | Error::Unsupported,
         ) => CHANGED.into(),
+        Failure::Connection(error @ (Error::Outdated(_) | Error::VersionUnknown)) => {
+            crate::desktop::profile_picker::message(&crate::profiles::Error::Profile(error))
+                .to_string()
+        }
         Failure::Connection(Error::Invalid) => UNREADABLE.into(),
         Failure::Connection(Error::Refused(status)) => {
             format!("The service refused it ({status}).")

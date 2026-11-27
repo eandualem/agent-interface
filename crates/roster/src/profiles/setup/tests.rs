@@ -4,6 +4,7 @@ use super::*;
 fn service(name: &str) -> Value {
     serde_json::from_str(match name {
         "first_agent" => include_str!("fixtures/setup-first-agent.json"),
+        "orchestrator" => include_str!("fixtures/setup-first-agent-orchestrator.json"),
         "cancel" => include_str!("fixtures/setup-cancel-first-agent.json"),
         "step" => include_str!("fixtures/setup-event-step.json"),
         "result" => include_str!("fixtures/setup-event-result.json"),
@@ -42,6 +43,7 @@ pub(super) fn guide() -> Agent {
         brief: Brief::Template {
             template: TEMPLATE.into(),
         },
+        orchestrator: false,
     }
 }
 pub(super) fn prepared(agent: Agent) -> Prepared {
@@ -91,6 +93,29 @@ fn the_body_is_the_services_fixture_and_its_cancellation_changes_only_the_action
         assert_eq!(body, service(fixture));
     }
     assert_eq!(prepared.profile_id(), PROFILE);
+}
+
+#[test]
+fn an_orchestrator_is_the_services_fixture_and_its_cancellation_repeats_the_choice() {
+    let fixture = service("orchestrator");
+    let id = fixture["request_id"].as_str().unwrap();
+    let agent = Agent {
+        orchestrator: true,
+        ..guide()
+    };
+    let prepared = Prepared::first_agent(id, &served(), agent, true).unwrap();
+    let body: Value = serde_json::from_slice(prepared.bytes(Action::FirstAgent)).unwrap();
+    assert_eq!(body, fixture);
+    let mut cancel = fixture;
+    cancel["action"] = json!("cancel_first_agent");
+    let body: Value = serde_json::from_slice(prepared.bytes(Action::CancelFirstAgent)).unwrap();
+    assert_eq!(body, cancel);
+    // A saved request, read again after a restart, keeps the choice too.
+    let restored = Prepared::restore(&prepared.checkpoint().unwrap()).unwrap();
+    assert_eq!(
+        restored.bytes(Action::FirstAgent),
+        prepared.bytes(Action::FirstAgent)
+    );
 }
 
 #[test]

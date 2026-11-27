@@ -17,6 +17,12 @@ macro_rules! icons {
 
 icons!(
     "locate-fixed",
+    "arrow-right",
+    "check-check",
+    "triangle-alert",
+    "corner-down-left",
+    "panel-left-close",
+    "panel-left-open",
     "link-2-off",
     "clock",
     "info",

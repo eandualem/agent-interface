@@ -48,7 +48,7 @@
     }
   ],
   "restart": null,
-  "move": null,
+  "handover": null,
   "machine": {"id": "5f2c9e0d1b7a4e38", "name": "laptop"},
   "waiting": null,
   "background": {"running": 1, "queued": 0, "processes": 1},

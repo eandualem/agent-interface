@@ -1,6 +1,7 @@
 //! Agent Backbone profiles: explicit discovery and a pinned local connection.
 
 use std::{
+    fmt,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
     sync::Arc,
@@ -59,6 +60,54 @@ pub enum Error {
     RegistrationChanged,
     /// Another HTTP refusal, retaining only its status.
     Refused(u16),
+    /// The service is older than [`MINIMUM_BACKBONE`]; it holds the version it reported.
+    Outdated(ReportedVersion),
+    /// The service reported no version this app can read.
+    VersionUnknown,
+}
+
+/// The lowest Agent Backbone version this app works with, compared with the
+/// `version` the service reports from `GET /health`. Raised when the app
+/// first needs a newer Backbone.
+pub const MINIMUM_BACKBONE: semver::Version = semver::Version::new(0, 1, 0);
+
+/// A version a service reported, kept as its text so [`Error`] stays `Copy`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct ReportedVersion {
+    text: [u8; 64],
+    len: u8,
+}
+
+impl ReportedVersion {
+    /// `None` when its text does not fit, so it is reported as unknown.
+    fn new(version: &semver::Version) -> Option<Self> {
+        let version = version.to_string();
+        let mut text = [0; 64];
+        text.get_mut(..version.len())?
+            .copy_from_slice(version.as_bytes());
+        Some(Self {
+            text,
+            len: version.len() as u8,
+        })
+    }
+
+    /// The version as the service reported it, such as `0.0.9`.
+    pub fn as_str(&self) -> &str {
+        // Only whole version text is stored, so it is always valid UTF-8.
+        std::str::from_utf8(&self.text[..usize::from(self.len)]).unwrap_or_default()
+    }
+}
+
+impl fmt::Display for ReportedVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl fmt::Debug for ReportedVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self.as_str(), f)
+    }
 }
 
 /// Why a skill or document was not added.
@@ -212,6 +261,7 @@ impl Profile {
     /// Runs on an I/O worker; does not discover or start a service.
     pub fn connect(&self) -> Result<Connection, Error> {
         let binding = self.binding.as_ref().ok_or(Error::NotReady)?;
+        supported(&binding.socket)?;
         let mut connection = Connection {
             identity: Identity {
                 profile_id: self.item.profile_id.clone(),
@@ -667,6 +717,40 @@ pub fn is_shell(session: &str) -> bool {
     session.strip_prefix(SHELL).is_some_and(|id| {
         id.len() == 12 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
     })
+}
+
+/// Refuse a service older than [`MINIMUM_BACKBONE`], or one whose `GET /health`
+/// gives no version this app can read. `/health` names no profile.
+fn supported(socket: &Path) -> Result<(), Error> {
+    let response = local::service_response(
+        socket.to_str().ok_or(Error::Invalid)?,
+        "/health",
+        RESPONSE_LIMIT,
+        Duration::from_secs(15),
+    )
+    .map_err(|_| Error::Unavailable)?;
+    // A service without `/health` predates the version check.
+    if response.status == 404 {
+        return Err(Error::VersionUnknown);
+    }
+    if response.body.len() > RESPONSE_LIMIT {
+        return Err(Error::Invalid);
+    }
+    successful(&response)?;
+    let health: serde_json::Value =
+        serde_json::from_slice(&response.body).map_err(|_| Error::VersionUnknown)?;
+    // Only an object's string `version` counts.
+    let version = health
+        .as_object()
+        .and_then(|health| health.get("version")?.as_str())
+        .and_then(|version| semver::Version::parse(version).ok())
+        .ok_or(Error::VersionUnknown)?;
+    // Full semantic precedence: a pre-release of the minimum is older than it.
+    if version < MINIMUM_BACKBONE {
+        tracing::debug!(event = "provider_version_outdated", %version, minimum = %MINIMUM_BACKBONE, "Provider older than the supported minimum");
+        return Err(ReportedVersion::new(&version).map_or(Error::VersionUnknown, Error::Outdated));
+    }
+    Ok(())
 }
 
 fn successful(response: &local::Response) -> Result<(), Error> {

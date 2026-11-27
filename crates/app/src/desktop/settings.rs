@@ -60,6 +60,10 @@ static SETUP_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool
 static SETUP_PROFILE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 static SETUP_REQUEST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 static SETUP_IDENTITY: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
+static PEER_LISTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+/// At most this many minimised peer lists are kept, so the file stays small.
+/// They are kept in the order they were minimised, so the oldest gives way.
+const MAX_PEER_LISTS: usize = 512;
 
 /// How panes show their header now.
 pub fn pane_headers() -> PaneHeaders {
@@ -96,6 +100,9 @@ pub struct Settings {
     pub setup_request: Option<String>,
     /// The Git name and email typed for that request, set once it is made.
     pub setup_identity: Option<(String, String)>,
+    /// The workspaces whose Connections peer list was minimised, each by
+    /// its profile and workspace (see `views::connections`).
+    pub minimised_peer_lists: Vec<String>,
 }
 
 impl Default for Settings {
@@ -114,6 +121,7 @@ impl Default for Settings {
             setup_profile: None,
             setup_request: None,
             setup_identity: None,
+            minimised_peer_lists: Vec::new(),
         }
     }
 }
@@ -202,6 +210,28 @@ impl Settings {
             };
             settings.setup_identity = text("git_name").zip(text("git_email"));
         }
+        if let Some(lists) = table
+            .get("connections")
+            .and_then(|connections| connections.get("minimised"))
+            .and_then(toml::Value::as_array)
+        {
+            let mut keys: Vec<String> = lists
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .filter(|key| {
+                    !key.is_empty() && key.len() <= 256 && !key.chars().any(char::is_control)
+                })
+                .map(str::to_owned)
+                .collect();
+            // The newest are last: a repeated key counts where it was last
+            // listed, and an over-long list keeps the newest.
+            let mut seen = std::collections::HashSet::new();
+            keys.reverse();
+            keys.retain(|key| seen.insert(key.clone()));
+            keys.reverse();
+            keys.drain(..keys.len().saturating_sub(MAX_PEER_LISTS));
+            settings.minimised_peer_lists = keys;
+        }
         if let Some(shortcuts) = table.get("shortcuts").and_then(toml::Value::as_table) {
             settings.shortcuts = super::shortcuts::Bindings::from_entries(
                 shortcuts
@@ -264,6 +294,15 @@ impl Settings {
                 ));
             }
         }
+        if !self.minimised_peer_lists.is_empty() {
+            let keys = self
+                .minimised_peer_lists
+                .iter()
+                .map(|key| toml::Value::String(key.clone()).to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            text.push_str(&format!("\n[connections]\nminimised = [{keys}]\n"));
+        }
         let changed = self.shortcuts.changed();
         if !changed.is_empty() {
             text.push_str("\n[shortcuts]\n");
@@ -295,6 +334,9 @@ impl Settings {
         *SETUP_IDENTITY
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.setup_identity.clone();
+        *PEER_LISTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.minimised_peer_lists.clone();
     }
 
     /// The settings windows are drawing with now.
@@ -322,8 +364,47 @@ impl Settings {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone(),
+            minimised_peer_lists: PEER_LISTS
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
         }
     }
+}
+
+/// Whether the Connections peer list saved as `key` is minimised.
+pub fn peer_list_minimised(key: &str) -> bool {
+    PEER_LISTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .any(|saved| saved == key)
+}
+
+/// Remember whether the peer list `key` is minimised, without saving it.
+/// When the list is full, the one minimised longest ago gives way.
+pub fn set_peer_list_minimised(key: &str, minimised: bool) {
+    let mut keys = PEER_LISTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    keys.retain(|saved| saved != key);
+    if minimised {
+        if keys.len() >= MAX_PEER_LISTS {
+            keys.remove(0);
+        }
+        keys.push(key.to_owned());
+    }
+}
+
+/// Forget the minimised peer lists of the workspace `workspace`, and say
+/// whether any went. A key is `profile/workspace`, or the workspace alone.
+pub fn forget_peer_list_of(workspace: &str) -> bool {
+    let mut keys = PEER_LISTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = keys.len();
+    keys.retain(|key| key.rsplit_once('/').map_or(key.as_str(), |(_, id)| id) != workspace);
+    keys.len() != before
 }
 
 /// The dragged navigation panel width in pixels, if any.
@@ -620,6 +701,21 @@ mod tests {
     }
 
     #[test]
+    fn saved_peer_lists_keep_the_newest_and_a_repeat_where_it_was_last() {
+        let keys = (0..=MAX_PEER_LISTS)
+            .map(|n| format!("\"{n:012x}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let parsed = Settings::parse(&format!(
+            "[connections]\nminimised = [\"a\", {keys}, \"a\"]\n"
+        ))
+        .minimised_peer_lists;
+        assert_eq!(parsed.len(), MAX_PEER_LISTS);
+        assert_eq!(parsed.first().map(String::as_str), Some("000000000002"));
+        assert_eq!(parsed.last().map(String::as_str), Some("a"));
+    }
+
+    #[test]
     fn settings_round_trip_and_invalid_values_keep_defaults() {
         let mut shortcuts = super::super::shortcuts::Bindings::default();
         shortcuts
@@ -642,6 +738,7 @@ mod tests {
             setup_profile: Some("0123abcd".into()),
             setup_request: Some("89ef4567".into()),
             setup_identity: Some(("Sam O'Brien \"ops\"".into(), "sam@example.com".into())),
+            minimised_peer_lists: vec!["0123abcd/4c1f0e9a2b3d".into(), "5d6e7f8a9b0c".into()],
         };
         assert_eq!(Settings::parse(&light.to_toml()), light);
         let partial = Settings {
@@ -656,6 +753,37 @@ mod tests {
         };
         applied.apply();
         assert_eq!(Settings::current(), applied);
+        assert!(peer_list_minimised("5d6e7f8a9b0c"));
+        assert!(!peer_list_minimised("0123abcd/ffffffffffff"));
+        set_peer_list_minimised("0123abcd/ffffffffffff", true);
+        set_peer_list_minimised("5d6e7f8a9b0c", false);
+        assert_eq!(
+            Settings::current().minimised_peer_lists,
+            ["0123abcd/4c1f0e9a2b3d", "0123abcd/ffffffffffff"]
+        );
+        // A full list still takes a new minimise: the oldest give way.
+        for n in 0..MAX_PEER_LISTS {
+            set_peer_list_minimised(&format!("0123abcd/{n:012x}"), true);
+        }
+        assert!(!peer_list_minimised("0123abcd/4c1f0e9a2b3d"));
+        assert!(!peer_list_minimised("0123abcd/ffffffffffff"));
+        set_peer_list_minimised("000000000003", true);
+        assert!(peer_list_minimised("000000000003"));
+        assert!(!peer_list_minimised("0123abcd/000000000000"));
+        assert_eq!(
+            Settings::current().minimised_peer_lists.len(),
+            MAX_PEER_LISTS
+        );
+        // A deleted workspace's lists are forgotten, with or without a profile.
+        assert!(forget_peer_list_of("000000000003"));
+        assert!(!peer_list_minimised("000000000003"));
+        assert!(!peer_list_minimised("0123abcd/000000000003"));
+        assert!(peer_list_minimised("0123abcd/000000000004"));
+        assert_eq!(
+            Settings::current().minimised_peer_lists.len(),
+            MAX_PEER_LISTS - 2
+        );
+        assert!(!forget_peer_list_of("000000000003"));
         Settings::default().apply();
         assert_eq!(Settings::current(), Settings::default());
         assert_eq!(Settings::parse("not toml ["), Settings::default());

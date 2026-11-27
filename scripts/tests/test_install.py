@@ -16,8 +16,24 @@ import tempfile
 import threading
 import unittest
 
-INSTALL = Path(__file__).resolve().parents[2] / "install.sh"
+ROOT = Path(__file__).resolve().parents[2]
+INSTALL = ROOT / "install.sh"
 APP_ID = "io.github.eandualem.agent-interface"
+BACKBONE_FIXTURE = []
+
+
+def backbone_fixture():
+    """The app's Backbone commands with a test release key, built once."""
+    if not BACKBONE_FIXTURE:
+        build = subprocess.run(
+            ["cargo", "build", "--locked", "-p", "agent-interface-install", "--example", "backbone-fixture",
+             "--message-format=json-render-diagnostics"],
+            cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True)
+        for line in build.stdout.splitlines():
+            message = json.loads(line)
+            if message.get("reason") == "compiler-artifact" and message["target"]["name"] == "backbone-fixture":
+                BACKBONE_FIXTURE.append(message["executable"])
+    return BACKBONE_FIXTURE[0]
 
 
 class InstallTests(unittest.TestCase):
@@ -33,6 +49,7 @@ class InstallTests(unittest.TestCase):
         self.command("getconf", "echo glibc 2.39")
         self.env = dict(os.environ, HOME=str(self.home), PATH=str(self.tools) + os.pathsep + os.environ["PATH"])
         self.env.pop("XDG_DATA_HOME", None)
+        self.env.pop("XDG_CONFIG_HOME", None)
         self.env.pop("WSL_DISTRO_NAME", None)
         # Ordinary fixtures must never inspect or configure the host's sandbox
         # policy. Sandbox cases opt into their own redirected paths below.
@@ -61,7 +78,12 @@ class InstallTests(unittest.TestCase):
         executable = root + ("/MacOS" if mac else "/bin") + "/" + name
         files = {resources + "/INSTALLER": APP_ID + "\n",
                  resources + "/TARGET": target + "\n",
-                 executable: f"#!/bin/sh\necho '{name} {version}'\n"}
+                 # Without a fixture, the Backbone commands answer as a
+                 # shipped build with no release key does.
+                 executable: "#!/bin/sh\n[ \"$1\" != backbone-install ] || {\n"
+                             '    [ -z "${TEST_BACKBONE_FIXTURE:-}" ] || exec "$TEST_BACKBONE_FIXTURE" "$@"\n'
+                             "    echo 'Agent Backbone is not published yet.' >&2; exit 3\n}\n"
+                             f"echo '{name} {version}'\n"}
         if not mac:
             files[root + "/agent-interface.png"] = "fixture icon"
         if extra:
@@ -595,6 +617,266 @@ sys.exit(0 if outcome in ('ok', 'corrupt') else int(outcome))
         backups = list(self.launcher.parent.glob(".agent-interface-previous.*"))
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_bytes(), before)
+
+
+    def backbone_releases(self):
+        """Serve the app and fixture Backbone releases, signed with a test key."""
+        self.releases = self.root / "releases"
+        self.releases.mkdir()
+        self.keys = self.root / "keys"
+        self.keys.mkdir()
+        fixture = backbone_fixture()
+        subprocess.run([fixture, "keygen", str(self.keys)], check=True)
+        self.env.update(TEST_BACKBONE_FIXTURE=fixture, BACKBONE_FIXTURE_KEY=(self.keys / "public").read_text(),
+                        TEST_ARCHIVE=str(self.package()), TEST_RELEASES=str(self.releases),
+                        TEST_DOWNLOADS=str(self.root / "downloads"), TEST_SLEEPS=str(self.root / "sleeps"))
+        self.backbone = self.home / ".local/bin/backbone"
+        self.command("sleep", 'printf "%s\\n" "$1" >> "$TEST_SLEEPS"')
+        stub = self.root / "download.py"
+        # Files are served from releases/TAG/NAME. NAME.once, when present,
+        # is served in its place once, and NAME.gone makes it missing once,
+        # as while the latest release changes. TEST_INTERRUPT interrupts the
+        # installer at its first Backbone download.
+        stub.write_text('''import os, shutil, signal, sys
+from pathlib import Path
+args = sys.argv[1:]
+url = next(arg for arg in args if arg.startswith('https://'))
+if url.endswith('/releases/latest'):
+    print('https://github.com/eandualem/agent-interface/releases/tag/vfixture', end='')
+    sys.exit(0)
+output = Path(args[args.index('-o') + 1])
+tag, name = url.split('/releases/download/', 1)[1].split('/')
+archive = os.environ['TEST_ARCHIVE']
+if tag == 'vfixture':
+    shutil.copyfile(archive + '.sha256' if name.endswith('.sha256') else archive, output)
+else:
+    with open(os.environ['TEST_DOWNLOADS'], 'a') as log:
+        log.write(f'{tag}/{name}\\n')
+    if os.environ.get('TEST_INTERRUPT'):
+        os.kill(os.getppid(), signal.SIGINT)
+        sys.exit(22)
+    served = Path(os.environ['TEST_RELEASES'], tag, name)
+    once = served.with_name(name + '.once')
+    gone = served.with_name(name + '.gone')
+    if gone.exists():
+        gone.unlink()
+        print('curl: (22) The requested URL returned error: 404', file=sys.stderr)
+        sys.exit(22)
+    elif once.exists():
+        once.rename(output)
+    elif served.exists():
+        shutil.copyfile(served, output)
+    else:
+        print('curl: (22) The requested URL returned error: 404', file=sys.stderr)
+        sys.exit(22)
+if '--write-out' in args:
+    print('200', end='')
+''')
+        self.command("curl", f"exec {shlex.quote(sys.executable)} {shlex.quote(str(stub))} \"$@\"")
+
+    def sign(self, path):
+        subprocess.run([backbone_fixture(), "sign", str(self.keys), str(path)], check=True)
+
+    def publish_backbone(self, version, targets=("x86_64-unknown-linux-gnu",), digest=None):
+        """Publish Backbone VERSION and point the latest release at it."""
+        release = self.releases / f"backbone-v{version}"
+        release.mkdir()
+        lines = ["backbone-release-manifest 1", f"version {version}"]
+        for target in targets:
+            name = f"backbone-{version}-{target}.tar.gz"
+            # On macOS, Backbone is an app bundle.
+            program = ("Agent Backbone.app/Contents/MacOS/backbone" if target.endswith("-apple-darwin")
+                       else "backbone")
+            with tarfile.open(release / name, "w:gz") as tar:
+                for member, text, mode in ((program, f"#!/bin/sh\necho 'backbone {version}'\n", 0o755),
+                                           ("LICENSE", "MIT\n", 0o644)):
+                    info = tarfile.TarInfo(member)
+                    data = text.encode()
+                    info.size, info.mode = len(data), mode
+                    tar.addfile(info, io.BytesIO(data))
+            sha256 = digest or hashlib.sha256((release / name).read_bytes()).hexdigest()
+            lines.append(f"artifact {target} {name} {sha256}")
+        manifest = release / "backbone-release-manifest"
+        manifest.write_text("\n".join(lines) + "\n")
+        self.sign(manifest)
+        latest = self.releases / "backbone-latest"
+        latest.mkdir(exist_ok=True)
+        for name in (manifest.name, manifest.name + ".minisig"):
+            shutil.copyfile(release / name, latest / name)
+        return latest / (manifest.name + ".minisig")
+
+    def bad_signature(self):
+        """A signature by the test key of other bytes than the manifest."""
+        other = self.root / "other"
+        other.write_text("another manifest\n")
+        self.sign(other)
+        return Path(str(other) + ".minisig").read_bytes()
+
+    def backbone_version(self):
+        return subprocess.check_output([self.backbone], text=True).strip()
+
+    def backbone_downloads(self):
+        path = self.root / "downloads"
+        return path.read_text().splitlines() if path.exists() else []
+
+    def assert_app_installed(self, result):
+        self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "agent-interface 0.0.0")
+        self.assertIn(f"Installed {self.destination}", result.stdout)
+
+    LATEST = ["backbone-latest/backbone-release-manifest", "backbone-latest/backbone-release-manifest.minisig"]
+
+    def test_backbone_clean_install(self):
+        self.backbone_releases()
+        self.publish_backbone("0.2.0")
+        result = self.install(None)
+        self.assert_app_installed(result)
+        self.assertEqual(self.backbone_version(), "backbone 0.2.0")
+        self.assertEqual(self.backbone.stat().st_mode & 0o777, 0o755)
+        self.assertIn(f"Installed Agent Backbone 0.2.0 in {self.backbone}", result.stdout)
+        self.assertEqual(self.backbone_downloads(), self.LATEST + [
+            "backbone-v0.2.0/backbone-0.2.0-x86_64-unknown-linux-gnu.tar.gz"])
+        self.assertEqual(sorted(path.name for path in self.backbone.parent.iterdir()),
+                         [".agent-interface-backbone", "agent-interface", "backbone"])
+
+    def test_backbone_bad_signature_is_downloaded_again_once(self):
+        self.backbone_releases()
+        signature = self.publish_backbone("0.2.0")
+        signature.with_name(signature.name + ".once").write_bytes(self.bad_signature())
+        result = self.install(None)
+        self.assertEqual(self.backbone_version(), "backbone 0.2.0")
+        self.assertIn("again in 5 seconds", result.stderr)
+        self.assertEqual((self.root / "sleeps").read_text(), "5\n")
+        self.assertEqual(self.backbone_downloads()[:4], self.LATEST * 2)
+
+    def test_backbone_missing_file_is_downloaded_again_once(self):
+        self.backbone_releases()
+        signature = self.publish_backbone("0.2.0")
+        signature.with_name(signature.name + ".gone").write_text("")
+        result = self.install(None)
+        self.assertEqual(self.backbone_version(), "backbone 0.2.0")
+        self.assertIn("again in 5 seconds", result.stderr)
+        self.assertEqual(self.backbone_downloads()[:4], self.LATEST * 2)
+
+    def test_backbone_interrupt_keeps_the_app(self):
+        self.backbone_releases()
+        self.publish_backbone("0.2.0")
+        self.env["TEST_INTERRUPT"] = "1"
+        self.install(None, success=False)
+        self.assertEqual(subprocess.check_output([self.link, "--version"], text=True).strip(), "agent-interface 0.0.0")
+        self.assertEqual(sorted(path.name for path in self.destination.parent.iterdir()),
+                         [".agent-interface-download", "agent-interface"])
+        self.assertFalse(self.backbone.exists())
+
+    def test_backbone_second_bad_signature_is_refused(self):
+        self.backbone_releases()
+        self.publish_backbone("0.2.0").write_bytes(self.bad_signature())
+        result = self.install(None)
+        self.assert_app_installed(result)
+        self.assertFalse(self.backbone.exists())
+        self.assertIn("signature does not hold", result.stderr)
+        self.assertIn("Agent Backbone was not installed. Rerun the installer to try again.", result.stderr)
+        self.assertEqual(self.backbone_downloads(), self.LATEST * 2)
+
+    def test_backbone_older_release_is_refused(self):
+        self.backbone_releases()
+        self.publish_backbone("0.3.0")
+        self.install(None)
+        self.publish_backbone("0.2.0")
+        result = self.install(None)
+        self.assertIn("older than 0.3.0", result.stderr)
+        self.assertIn("Agent Backbone was not updated. Rerun the installer to try again.", result.stderr)
+        self.assertEqual(self.backbone_version(), "backbone 0.3.0")
+
+    def test_backbone_missing_target_and_wrong_digest_are_refused(self):
+        self.backbone_releases()
+        self.publish_backbone("0.2.0", targets=("aarch64-apple-darwin",))
+        result = self.install(None)
+        self.assertIn("has nothing for x86_64-unknown-linux-gnu", result.stderr)
+        self.assertEqual(self.backbone_downloads(), self.LATEST)
+        self.publish_backbone("0.3.0", digest="0" * 64)
+        result = self.install(None)
+        self.assertIn("digest differs", result.stderr)
+        self.assertIn("Rerun the installer", result.stderr)
+        self.assertFalse(self.backbone.exists())
+        self.assertEqual(sorted(path.name for path in self.backbone.parent.iterdir()), ["agent-interface"])
+
+    def test_backbone_earlier_installation_is_left_in_place(self):
+        self.backbone_releases()
+        self.publish_backbone("0.2.0")
+        self.backbone.parent.mkdir(parents=True)
+        self.backbone.write_text("#!/bin/sh\necho earlier\n")
+        self.backbone.chmod(0o755)
+        service = self.home / ".config/systemd/user/agent-backbone.service"
+        for case in ("program", "service"):
+            with self.subTest(case=case):
+                result = self.install(None)
+                self.assert_app_installed(result)
+                self.assertIn("earlier Agent Backbone was found and left in place", result.stderr)
+                self.assertNotIn("Rerun the installer", result.stderr)
+                self.assertEqual(self.backbone_downloads(), [])
+            if case == "program":
+                self.assertEqual(self.backbone_version(), "earlier")
+                # Next, only the earlier service's login service is in the way.
+                self.backbone.unlink()
+                service.parent.mkdir(parents=True)
+                service.write_text("[Unit]\n")
+        self.assertEqual(service.read_text(), "[Unit]\n")
+        self.assertFalse(self.backbone.exists())
+
+    def test_backbone_rerun_updates(self):
+        self.backbone_releases()
+        self.publish_backbone("0.2.0")
+        self.install(None)
+        self.publish_backbone("0.3.0")
+        result = self.install(None)
+        self.assertIn("Installed Agent Backbone 0.3.0", result.stdout)
+        self.assertEqual(self.backbone_version(), "backbone 0.3.0")
+
+    def test_backbone_rerun_after_backbone_upgrade(self):
+        self.backbone_releases()
+        self.publish_backbone("0.2.0")
+        self.install(None)
+        # `backbone upgrade` replaces the program in place; it stays this
+        # installer's, at the version it reports.
+        self.backbone.write_text("#!/bin/sh\necho 'backbone 0.4.0'\n")
+        self.publish_backbone("0.3.0")
+        result = self.install(None)
+        self.assertIn("older than 0.4.0", result.stderr)
+        self.assertEqual(self.backbone_version(), "backbone 0.4.0")
+        self.publish_backbone("0.5.0")
+        self.install(None)
+        self.assertEqual(self.backbone_version(), "backbone 0.5.0")
+
+    def test_backbone_mac_installs_the_bundle(self):
+        self.command("uname", 'case "$1" in -s) echo Darwin;; -m) echo arm64;; esac')
+        self.command("codesign", "exit 0")
+        self.backbone_releases()
+        self.env["TEST_ARCHIVE"] = str(self.package(target="aarch64-apple-darwin"))
+        targets = ("aarch64-apple-darwin",)
+        self.publish_backbone("0.2.0", targets=targets)
+        bundle = self.home / "Applications/Agent Backbone.app"
+        result = self.install(None)
+        self.assertIn(f"Installed Agent Backbone 0.2.0 in {bundle}", result.stdout)
+        self.assertEqual(os.readlink(self.backbone), str(bundle / "Contents/MacOS/backbone"))
+        self.assertEqual(self.backbone_version(), "backbone 0.2.0")
+        # With only the bundle left in place, a refused release leaves
+        # Backbone not updated.
+        self.backbone.unlink()
+        self.publish_backbone("0.3.0", targets=targets, digest="0" * 64)
+        result = self.install(None)
+        self.assertIn("digest differs", result.stderr)
+        self.assertIn("Agent Backbone was not updated. Rerun the installer to try again.", result.stderr)
+
+    def test_backbone_shipped_build_without_a_key(self):
+        self.backbone_releases()
+        self.publish_backbone("0.2.0")
+        del self.env["BACKBONE_FIXTURE_KEY"]
+        result = self.install(None)
+        self.assert_app_installed(result)
+        self.assertIn("Agent Backbone is not published yet, so it was not installed.", result.stderr)
+        self.assertNotIn("Rerun the installer", result.stderr)
+        self.assertFalse(self.backbone.exists())
+        self.assertEqual(self.backbone_downloads(), [])
 
 
 if __name__ == "__main__":

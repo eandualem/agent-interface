@@ -87,7 +87,8 @@ pub(crate) fn provider_with_tmux(
             listener.set_nonblocking(true).unwrap();
             let deadline = Instant::now() + Duration::from_secs(10);
             // The roster's push stream, which these providers don't have, is
-            // refused without taking a scripted reply.
+            // refused, and the version check answered, without taking a
+            // scripted reply.
             let (mut stream, request) = loop {
                 let mut stream = loop {
                     match listener.accept() {
@@ -118,6 +119,17 @@ pub(crate) fn provider_with_tmux(
                     write!(
                         stream,
                         "HTTP/1.1 404 Fixture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                    .unwrap();
+                    continue;
+                }
+                if request.starts_with("get /health ") {
+                    let body = json!({"version": profiles::MINIMUM_BACKBONE.to_string()});
+                    let body = body.to_string();
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
                     )
                     .unwrap();
                     continue;

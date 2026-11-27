@@ -56,7 +56,7 @@ fn owner_routes_use_the_profile_socket_generation_and_original_request_key() {
     review.direction = Direction::Incoming;
     assert!(matches!(
         c.review_peer_message(&review, Decision::Revise("change"), "other-key"),
-        Err(Error::Invalid)
+        Err(AddError::Connection(Error::Invalid))
     ));
     c.disconnect_peer("gen", "disconnect-key").unwrap();
     assert!(matches!(
@@ -182,6 +182,51 @@ fn a_refused_connection_request_keeps_the_service_reason() {
 }
 
 #[test]
+fn a_refused_peer_change_keeps_the_service_reason() {
+    let (dir, listener, socket) = crate::transport::tests::local_listener();
+    let (profile, identity) = profile_at(dir.path(), &socket);
+    let gone = "no active peer connection for this generation";
+    let reviewed = "this message has already been reviewed";
+    let refusal = |code, message| json!({"detail":{"code":code,"message":message}});
+    let server = serve(
+        listener,
+        vec![
+            (200, identity),
+            (404, refusal("not_found", gone)),
+            (409, refusal("conflict", reviewed)),
+            (404, refusal("not_found", gone)),
+            (409, json!({})),
+            (503, refusal("unavailable", "the service is shutting down")),
+        ],
+    );
+    let c = profile.connect().unwrap();
+    let message: crate::profiles::peers::Message = serde_json::from_value(json!({"connection":{"generation":"gen","peer_id":"peer"},"message_id":"m","direction":"incoming","text":"t","submitted_at":"now","expires_at":"later","state":"pending_review","receipt":{"kind":"missing"}})).unwrap();
+    let reason = |text: &str| Err(AddError::Refused(text.into()));
+    assert_eq!(
+        c.set_peer_gate("gen", Direction::Incoming, Policy::Auto, "k1")
+            .map(drop),
+        reason(gone)
+    );
+    assert_eq!(
+        c.review_peer_message(&message, Decision::Pass, "k2")
+            .map(drop),
+        reason(reviewed)
+    );
+    assert_eq!(c.disconnect_peer("gen", "k3").map(drop), reason(gone));
+    // Without a reason the status is kept.
+    assert_eq!(
+        c.disconnect_peer("gen", "k4").map(drop),
+        Err(AddError::Connection(Error::Refused(409)))
+    );
+    // A server error keeps its status, so the app retries the same request.
+    assert_eq!(
+        c.disconnect_peer("gen", "k5").map(drop),
+        Err(AddError::Connection(Error::Refused(503)))
+    );
+    server.join().unwrap();
+}
+
+#[test]
 fn a_new_policy_only_affects_its_own_direction() {
     let data: super::super::peers::Gates =
         serde_json::from_value(json!({"outgoing":"future","incoming":"review"})).unwrap();
@@ -201,7 +246,9 @@ fn parse<T: serde::de::DeserializeOwned>(text: &str) -> T {
 
 #[test]
 fn service_fixtures_parse_into_the_client_shapes() {
-    use super::super::peers::{Answer, Invitation, Message, Overview, Page, Peer, Receipt, Review};
+    use super::super::peers::{
+        Answer, History, Invitation, Message, Overview, Page, Peer, Receipt, Review,
+    };
     let overview: Overview = parse(fixture!("peer-overview"));
     assert_eq!(overview.pending_reviews, 2);
     assert_eq!(overview.invitations[1].state, "declined");
@@ -219,14 +266,22 @@ fn service_fixtures_parse_into_the_client_shapes() {
         answer.invitation.generation.as_deref(),
         Some(answer.connection.unwrap().connection.generation.as_str())
     );
-    let history: Page<Message> = parse(fixture!("peer-history"));
+    let history: History = parse(fixture!("peer-history"));
     assert_eq!(history.older.as_deref(), Some("p1-example-cursor"));
     assert!(matches!(history.items[1].receipt, Receipt::Uncertain));
     assert!(
         matches!(&history.items[3].receipt, Receipt::Confirmed { outcome, .. } if outcome == "declined")
     );
-    let older: Page<Message> = parse(fixture!("peer-history-older"));
+    // Written before homes recorded events, revisions and agents.
+    let older: History = parse(fixture!("peer-history-older"));
     assert!(older.older.is_none());
+    assert!(older.events.is_empty());
+    assert!(
+        older
+            .items
+            .iter()
+            .all(|m| m.revision.is_none() && m.local_agent.is_none() && m.decided_at.is_none())
+    );
     let refused = older
         .items
         .iter()
@@ -237,6 +292,13 @@ fn service_fixtures_parse_into_the_client_shapes() {
     assert_eq!(failure.retry_at.as_deref(), Some("2026-11-21T12:05:00Z"));
     let pending: Peer = parse(fixture!("peer-disconnect"));
     assert_eq!(pending.state, "revocation_pending");
+    assert!(pending.revocation_failure.is_none());
+    let refused: Peer = parse(fixture!("peer-disconnect-refused"));
+    assert_eq!(refused.state, "revocation_pending");
+    assert_eq!(
+        refused.revocation_failure.unwrap().code,
+        "generation_mismatch"
+    );
     let reviews: Page<Review> = parse(fixture!("peer-reviews"));
     assert_eq!(reviews.items.len(), 2);
     let revoked: Message = parse(fixture!("peer-revoked-message"));
@@ -252,6 +314,50 @@ fn service_fixtures_parse_into_the_client_shapes() {
     for key in ["disconnect_requested", "disconnect_confirmed"] {
         serde_json::from_value::<Peer>(actions[key].clone()).unwrap();
     }
+}
+
+#[test]
+fn history_events_revisions_and_local_agents_parse_and_unknown_kinds_are_kept_apart() {
+    use super::super::peers::{EventKind, History, Message};
+    let history: History = parse(fixture!("peer-history-events"));
+    let ids: Vec<_> = history.events.iter().map(|e| e.id).collect();
+    assert_eq!(ids, [1, 2, 3, 4, 5, 6]);
+    assert_eq!(history.events[0].kind, EventKind::Connected);
+    assert_eq!(
+        history.events[1].kind,
+        EventKind::GateChanged {
+            direction: Direction::Incoming,
+            from: Policy::Review,
+            to: Policy::Auto
+        }
+    );
+    assert_eq!(
+        history.events[2].kind,
+        EventKind::RevisionRequested {
+            message_id: history.items[0].message_id.clone(),
+            note: "Please include the version.".into()
+        }
+    );
+    assert_eq!(history.events[4].kind, EventKind::DisconnectRequested);
+    assert_eq!(history.events[5].kind, EventKind::Disconnected);
+    let revisions: Vec<_> = history.items.iter().map(|m| m.revision).collect();
+    assert_eq!(revisions, [Some(1), Some(2), None]);
+    assert!(
+        history
+            .items
+            .iter()
+            .all(|m| m.local_agent.as_deref() == Some("main"))
+    );
+    assert_eq!(
+        history.items[1].decided_at.as_deref(),
+        Some("2026-11-21T10:04:00Z")
+    );
+    let revoked: Message = parse(fixture!("peer-revoked-message"));
+    assert_eq!(revoked.revision, Some(1));
+    let later: History = parse(
+        r#"{"items":[],"older":null,"events":[{"id":7,"at":"2026-11-21T12:00:00Z","kind":"renamed","name":"x"}]}"#,
+    );
+    assert_eq!(later.events[0].kind, EventKind::Unknown);
 }
 
 #[test]

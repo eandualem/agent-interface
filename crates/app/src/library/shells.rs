@@ -475,8 +475,20 @@ mod tests {
         assert!(binding::bind(&root, &backup, binding::Use::Recover(&renamed)).is_err());
         fs::remove_file(&renamed).unwrap();
         std::os::unix::fs::symlink(&moved, &renamed).unwrap();
+        // `bind` releases its lock before returning, even while other tests
+        // start processes that briefly hold a copy of the lock file.
+        let released = || {
+            let lock = fs::OpenOptions::new()
+                .write(true)
+                .open(root.join("library-bindings.lock"))
+                .unwrap();
+            lock.try_lock().unwrap();
+            lock.unlock().unwrap();
+        };
         assert!(binding::bind(&root, &backup, binding::Use::Recover(&renamed)).is_err());
+        released();
         binding::bind(&root, &moved, binding::Use::Recover(&renamed)).unwrap();
+        released();
         assert_eq!(creation_in(&root, uid, &moved, leaf, true).unwrap(), socket);
         ensure_fixture_session(&socket, leaf);
     }

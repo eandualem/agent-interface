@@ -38,12 +38,18 @@ pub(super) mod tests {
         for field in ["state", "socket", "tmux_socket", "credential_reference"] {
             entry.as_object_mut().unwrap().remove(field);
         }
-        let handshake = serve_on(
-            listener.try_clone().unwrap(),
-            None,
-            ok(&entry.to_string()),
-            Duration::ZERO,
-        );
+        let (health_listener, identity) =
+            (listener.try_clone().unwrap(), listener.try_clone().unwrap());
+        let handshake = thread::spawn(move || {
+            let version = crate::profiles::MINIMUM_BACKBONE.to_string();
+            let health = ok(&serde_json::json!({"version": version}).to_string());
+            serve_on(health_listener, None, health, Duration::ZERO)
+                .join()
+                .unwrap();
+            serve_on(identity, None, ok(&entry.to_string()), Duration::ZERO)
+                .join()
+                .unwrap()
+        });
         let connection = profile.connect().unwrap();
         handshake.join().unwrap();
         (directory, connection, listener)

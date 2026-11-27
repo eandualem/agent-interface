@@ -14,7 +14,9 @@ or its packages, and neither the app nor `install.sh` runs Python.
 | `package.py` | Builds the optimized app for this computer and packs it with its notices into an installable archive and checksum in `dist/`. |
 | `test-linux-desktop.py` | Opens the real Linux window in a disposable Xvfb desktop and checks it, with private library, home and tmux state. CI runs it. |
 | `test-linux-onboarding.py` | Clicks through first run in a private Linux desktop against a stand-in Agent Backbone. `test-linux-desktop.py` runs it. |
+| `test-linux-reorder.py` | Drags a tab and a workspace in a private Linux desktop and checks the order stored in `layouts.db`. `test-linux-desktop.py` runs it. |
 | `test-linux-documents.py` | Renders a retained Document in a disposable Xvfb desktop with WebKit's sandbox on. CI runs it. |
+| `test-linux-connections.py` | Opens the Connections pane's sample data in a disposable Xvfb desktop and captures it, so a change to the pane can be looked at. `test-linux-desktop.py` runs it. |
 | `tests/test_install.py` | Tests `install.sh` with inert archives in private home folders. |
 | `tests/test_sweep_target.py` | Tests which artifacts `sweep_target.py` keeps. |
 | `tests/fixtures/fake_backbone.py` | A stand-in for the Agent Backbone service, used by the Linux checks. |

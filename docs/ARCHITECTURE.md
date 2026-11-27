@@ -82,11 +82,14 @@ refusal or ended stream leaves the reason and an explicit reopen action in the p
 | `native-fs` | Safe descriptor-based native filesystem checks; narrowly scoped Darwin ACL FFI, no paths or application state |
 | `webview-host` | Borrowed XCB-to-Xlib window-handle adaptation for Linux document embedding; no application state or process ownership |
 | `app` | Native windows, input routing, storage and terminal workers, and integration between the other crates |
+| `install` | The installer's `backbone-install` commands: verify an Agent Backbone release and put Backbone in place; no app state |
+| `release` | Vendored from Agent Backbone: verifies a Backbone release's signed manifest, version and archive digest |
 
-`app` connects the product crates. `store` also depends on `core`; the other
-product libraries do not depend on one another. GPUI stays inside `app` and
-terminal-engine types stay inside `term`. The dependency constraints are encoded
-in [`deny.toml`](../deny.toml).
+`app` connects the product crates. `store` also depends on `core`, and
+`install` on `release`; the other product libraries do not depend on one
+another. `install` has no GPUI, so the installer tests build it alone. GPUI
+stays inside `app` and terminal-engine types stay inside `term`. The
+dependency constraints are encoded in [`deny.toml`](../deny.toml).
 
 Development-only crates are separate: `test-support` provides disposable tmux
 fixtures and `bench` runs measurements.
@@ -109,6 +112,14 @@ together with the previewed place. Leaf identities retain their terminal/view
 entities. A changed tab or tree, in the shown tab or the one the pane came
 from, cancels an in-progress drag; persistence keeps the existing schema and
 conflict rules.
+
+Tabs and workspaces are reordered by dragging their rows and switcher slots in
+`app::desktop::sidebar`; `core` moves a workspace by id. A line on the row or
+slot under the pointer shows where a release lands, and Escape ends the drag
+with nothing changed. A drop saves through the same save worker. A drop made
+while another save runs is kept by id and applied to the layout that save
+leaves, or discarded if that save fails or conflicts, so the notice that the
+edit was not saved stays shown.
 
 ## Output, drawing and input
 
@@ -336,7 +347,7 @@ The guide's screen (`profile_management/choices.rs` in guide mode) has its
 name, the tool it runs in and Start. Each tool card says whether that tool is
 signed in in the profile, will ask for sign-in when it starts, or needs installing.
 Install uses the tool's official installer and the login shell's PATH. The first choice is a signed-in tool, else an installed one.
-Folder, instructions, model and greeting sit under More options. The
+Folder, instructions, model, greeting and orchestrator sit under More options. The
 guide starts as `guide`, working in `~/Agents/guide`, which setup creates
 (`create_directory`); a folder the person chooses must already exist. Its brief
 is the coordinating `orchestrator-v1` template or the person's own
@@ -417,12 +428,23 @@ credential, so no key is read or sent. The socket must be owned by the app's
 effective user with mode 0600, inside a directory owned by that user with mode
 0700, and the connected peer's UID must match before any HTTP is sent. This
 authenticates the OS account, not an individual process within that account.
-There is no TCP fallback. Every request carries `X-Backbone-Profile-ID`, and a
+There is no TCP fallback. Every request for a profile carries
+`X-Backbone-Profile-ID`, and a
 request that changes a record may carry `X-Backbone-Request-ID`, so a repeat
 after a lost reply gets the first result. A failed entry keeps the service's
 `reason`, a sentence for a person that the workspace shows as given.
 
-Connecting reads `GET /api/profile` and compares the profile, the machine and
+Connecting first reads the service's `GET /health`, which names no profile,
+and compares its `version` with `MINIMUM_BACKBONE` in `roster::profiles`, the
+lowest Agent Backbone the app works with, by semantic-version precedence. An
+older service, including a pre-release of the minimum, is refused with both
+versions and a request to run `backbone upgrade`; a missing or unreadable
+version, or a service without `/health`, is refused the same way rather than
+treated as compatible. The minimum is 0.1.0, which every development build of
+Backbone reports, so it refuses nothing yet. It is raised when the app first
+needs a newer Backbone.
+
+Connecting then reads `GET /api/profile` and compares the profile, the machine and
 the service's `instance_id` with the entry just read. The instance changes at
 every service start, so later checks on the same connection compare only the
 profile and the machine; the machine ID fills the identity's installation and
@@ -1059,6 +1081,28 @@ build-time advisory exception are described below.
   and `phf_codegen` 0.13.1, `precomputed-hash` 0.1.1 and
   `new_debug_unreachable` 1.0.6 (MIT). On macOS `phf`, `phf_shared` and
   `phf_generator` 0.13.1 (MIT) are new to the build as well.
+- **`backbone-release` 0.1.0 (vendored):** Agent Backbone's release
+  verifier, from agent-backbone-rs `crates/release` at commit `0294cd55`,
+  MIT. Its sources are unchanged; its manifest writes out the workspace
+  fields. It uses `minisign-verify` 0.3.0 (MIT, no dependencies of its own),
+  `semver` 1.0.28 and `sha2` 0.11.1 (MIT OR Apache-2.0), pinned exactly to
+  the versions Agent Backbone builds it with. `sha2` 0.11.1 brings its own
+  `digest` 0.11.3, `block-buffer` 0.12.1, `crypto-common` 0.2.2,
+  `hybrid-array` 0.4.15, `const-oid` 0.10.3 and `cpufeatures` 0.3.1 (MIT OR
+  Apache-2.0), beside the workspace's `sha2` 0.10.9.
+- **`semver` 1.0.28:** MIT OR Apache-2.0, pinned exactly as above. The
+  `roster` crate also uses it to compare the version a service reports with
+  the lowest Backbone the app supports.
+- **`tar` 0.4.46:** MIT OR Apache-2.0, pinned exactly with default features
+  off, as Agent Backbone pins it; reads Backbone's release archive in the
+  `install` crate. It adds `filetime` 0.2.30 (MIT OR Apache-2.0). The existing
+  **`flate2` 1.1.10** (MIT OR Apache-2.0), now pinned exactly there,
+  decompresses the archive.
+- **`minisign` 0.10.0:** MIT, development only. It signs fixture releases in
+  the `install` crate's tests and the installer tests' example program. Its
+  `scrypt` 0.11.0, `salsa20` 0.10.2 (MIT OR Apache-2.0), `ct-codecs` 1.1.8
+  (MIT), `rpassword` 7.5.5 and `rtoolbox` 0.0.6 (Apache-2.0) are in test
+  builds only.
 - **`base64` 0.23.1:** MIT OR Apache-2.0, pinned exactly. The roster sends a
   skill folder's files to the Rust Backbone service in Base64, and the app
   reads the screencast frames of agents' browsers from Base64.
@@ -1127,8 +1171,8 @@ notices and source/build metadata.
 macOS receives an ad-hoc-signed `Agent Interface.app` bundle; Linux receives a glibc
 binary linked to the system desktop libraries. Neither package includes a
 language runtime, build toolchain, tmux server or application daemon. The
-installer does not install Agent Backbone: first run looks for the `backbone`
-command on the login shell's PATH and runs its own setup.
+installer then installs Agent Backbone from its signed release, as described
+below; first run finds the `backbone` command and runs its own setup.
 
 Archive transfers use curl's progress bar; quiet commands emit elapsed-time
 updates from a shell helper that is stopped and reaped when the command
@@ -1189,6 +1233,87 @@ uucode/Unicode, simdutf, Highway, X11 color data and compiler runtimes. The
 package retains Lucide's ISC notice and SQLite's public-domain dedication.
 The manual package workflow uses `actions/upload-artifact` v7.0.0 (MIT), pinned
 to a full commit, to retain build artifacts; it does not publish releases.
+
+### Agent Backbone from its signed release
+
+Once the app is in place, the installer installs Agent Backbone from its own
+releases in this repository: `backbone-latest` holds only the current
+version's `backbone-release-manifest` and its minisign signature, and
+`backbone-vX.Y.Z` holds that version's archives. The shell downloads only
+these fixed `releases/download/...` URLs, with curl, and makes no API calls.
+Every check is made by the new app binary's `backbone-install` commands, in
+the `install` crate, through `release`: Agent Backbone's `backbone-release`
+crate, vendored from `crates/release` at commit `0294cd55` (MIT) with only
+its manifest changed.
+
+1. `check` refuses when the build has no release key or an earlier Backbone
+   is in the way, before anything is downloaded. It takes the target, like the
+   other two, because the target's archive decides the layout below.
+2. `verify-manifest` verifies the manifest's signature against the release key
+   built into the app, refuses a version older than the installed one, and
+   prints the version and this target's archive name. The two files of
+   `backbone-latest` are replaced one after the other, so a signature that does
+   not hold, or a missing file, gets one more download five seconds later.
+3. `install` verifies the manifest again, checks the archive's SHA-256 against
+   it and puts Backbone in place, by the layout of the target's archive.
+
+On Linux the archive holds exactly `backbone` and `LICENSE`, as regular files.
+`install` unpacks `backbone` and renames it over `~/.local/bin/backbone` from a
+temporary file in that directory, so nothing partial is ever in place.
+
+On macOS, a target ending in `-apple-darwin`, Backbone is a signed app bundle,
+so that macOS keeps one named Local Network permission for it across upgrades.
+The archive holds `Agent Backbone.app/` and `LICENSE`. `install` accepts only
+folders and regular files under `Agent Backbone.app/`, each once and by a
+plain relative path, and refuses links, other entry types, absolute paths,
+`.` or `..` components and anything else at the root.
+`Agent Backbone.app/Contents/MacOS/backbone` must be present. Files keep the
+archive's permission bits, without setuid, setgid or sticky bits, so the
+program stays executable and the bundle's signature holds; the installer never
+writes inside a placed bundle and never signs it. In order, `install`:
+
+1. removes folders named `.agent-backbone.*` in `~/Applications`, which an
+   interrupted run left; links and files with that name are not its own and
+   stay;
+2. unpacks the bundle into a new such folder, so a refused archive changes
+   nothing more;
+3. writes the marker;
+4. renames a bundle already in place into that folder, and the new bundle to
+   `~/Applications/Agent Backbone.app`;
+5. renames a new symbolic link to the bundle's program over
+   `~/.local/bin/backbone`;
+6. removes the folder, and the previous bundle with it.
+
+The release key's signature of the manifest is the root of trust. The archive
+is trusted only through the digest the signed manifest names, and nothing in
+the manifest is read before its signature holds, so neither GitHub nor the
+connection needs to be trusted. The key's public half is the constant
+`RELEASE_KEY` in the `install` crate. While it is unset, a build trusts no
+release, and the installer says Backbone is not published yet. The installer
+tests sign their fixture releases with a key they make, through an example
+program of the `install` crate that packaging never builds.
+
+The installer replaces `~/.local/bin/backbone` only while its marker
+`~/.local/bin/.agent-interface-backbone` exists. The marker lies outside the
+app's installation, so app updates and rollbacks keep it, and `backbone
+upgrade` replacing the program or the bundle in place keeps it the
+installer's. On macOS the marker also names the link and the bundle, and the
+installer owns them while `~/.local/bin/backbone` is missing or a link to
+exactly `~/Applications/Agent Backbone.app/Contents/MacOS/backbone`, and the
+bundle, if present, is a folder. A marker of the other layout owns nothing. The
+installed version, against which an older release is refused, is the one
+the owned program reports for `--version`, run through the link on macOS; a
+program the installer does not own is never run. The marker is written before
+the renames, so an interruption leaves either no program or an owned one. On
+macOS an owned link that is missing or leads to a missing program counts as no
+installed version, which a rerun completes. A program, link or bundle the
+installer does not own, or a defined login service of the earlier Backbone
+(`~/Library/LaunchAgents/dev.agent-backbone.plist`, or the systemd user unit
+`agent-backbone.service`), is left in place and Backbone is not installed.
+Each outcome has its own exit status for the installer to report. A refusal
+or failure leaves the app installed, and the installer still exits 0, since
+the app's installation succeeded. `--archive` installs only the given app
+archive, offline, and skips Backbone.
 
 
 ### Retained Sheets
@@ -1410,9 +1535,16 @@ lost response reuses the same request key and body. Incoming messages can be
 passed or declined. Outgoing drafts can also be returned to the local agent
 with a revision note. After a local disconnect the thread reads "Stopped
 here, remote confirmation pending" until the peer acknowledges the revocation.
+If the relay refuses the revocation for good, the thread says so with the
+relay's code, because the peer may then never learn of the disconnect.
 History pagination uses the service cursor. When reads
 fail the pane retains the last snapshot and pauses changes. The separate sample
 preview uses in-memory records and decisions which expire when the person exits.
+They are held in the service's own record shapes, so the preview is drawn by
+the same code as the live pane. Whether a workspace's peer list is minimised is
+saved in `settings.toml` under `[connections]`, keyed by profile and workspace
+ID, or by the workspace ID alone when there is no profile; only a choice made
+at the wide width is saved, so a narrow Connections pane never overwrites it.
 Neither path sends keystrokes to a terminal.
 
 ### Agent browsers
@@ -1675,8 +1807,9 @@ updates, while focus changes within the same workspace remain valid. Attachment
 and terminal openers also capture the pane origin before their own refresh; a
 nested refresh cannot turn an earlier bound action into a lookup on another source.
 Sidebar workspace/tab choices, menu openers, pane focus and tmux window controls
-retain their rendered origin. Reorder and resize gestures reject binding or
-connection changes even when saved IDs and tree contents remain unchanged;
+retain their rendered origin. Tab reorder and resize gestures reject binding or
+connection changes even when saved IDs and tree contents remain unchanged; a
+workspace move checks only that both workspaces still exist;
 retired terminal entities cannot receive window-selection callbacks. Workspace
 menus also retain an opening generation, so an old action cannot consume or
 replace a newer menu. The unavailable-profile retry button retains its displayed

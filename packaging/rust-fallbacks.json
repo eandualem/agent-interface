@@ -23,6 +23,7 @@
   "lyon_path@1.0.19",
   "lyon_tessellation@1.0.22",
   "malloc_buf@0.0.6",
+  "minisign-verify@0.3.0",
   "objc-sys@0.3.5",
   "objc2-app-kit@0.2.2",
   "objc2-app-kit@0.3.2",

@@ -67,6 +67,16 @@ pub struct Peer {
     pub state: String,
     /// Current delivery policy in both directions.
     pub gates: Gates,
+    /// The relay's lasting refusal of a local disconnect, only while the
+    /// state is `revocation_pending`.
+    pub revocation_failure: Option<RevocationFailure>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+/// Why the relay refused to carry a disconnect to the other profile.
+pub struct RevocationFailure {
+    /// Verbatim relay refusal code.
+    pub code: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -131,6 +141,70 @@ pub struct Message {
     pub receipt: Receipt,
     /// Upload refusal and retry time, when provided.
     pub upload_failure: Option<UploadFailure>,
+    /// Which draft an outgoing message is, 1 for a first draft; absent on
+    /// incoming messages and on older records.
+    pub revision: Option<u32>,
+    /// The local orchestrator that sent an outgoing message, or the agent an
+    /// incoming one was handed to; absent until it was, and on older records.
+    pub local_agent: Option<String>,
+    /// When the local owner passed, declined or asked for a revision; absent
+    /// for an automatic pass, while the message waits, and on older records.
+    pub decided_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+/// One oldest-first history page with the connection's events in its span.
+pub struct History {
+    /// Messages ordered oldest first within this page.
+    pub items: Vec<Message>,
+    /// Opaque cursor to the preceding page.
+    pub older: Option<String>,
+    /// Events ordered oldest first; absent when the page has none.
+    #[serde(default)]
+    pub events: Vec<Event>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+/// Something that happened to a connection, at a time on this profile's clock.
+pub struct Event {
+    /// Stable event ID within its generation.
+    pub id: u64,
+    /// When it happened.
+    pub at: String,
+    /// What happened.
+    #[serde(flatten)]
+    pub kind: EventKind,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+/// The kinds of connection event.
+pub enum EventKind {
+    /// The connection was established.
+    Connected,
+    /// The owner changed one direction's gate.
+    GateChanged {
+        /// The direction changed.
+        direction: Direction,
+        /// The policy before.
+        from: Policy,
+        /// The policy after.
+        to: Policy,
+    },
+    /// The owner sent an outgoing draft back with a note.
+    RevisionRequested {
+        /// The draft sent back.
+        message_id: String,
+        /// The owner's note.
+        note: String,
+    },
+    /// The local owner asked to disconnect.
+    DisconnectRequested,
+    /// The connection ended.
+    Disconnected,
+    /// A kind this client does not know.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -200,16 +274,21 @@ impl Connection {
     }
 
     // The caller retains the same key and payload across an uncertain reply.
+    /// A change the service refuses (4xx) keeps its reason, written for the
+    /// person; a server error keeps its status, so the change can be retried.
     fn change_peer<T: DeserializeOwned>(
         &self,
         method: &'static str,
         path: String,
         body: Value,
         key: &str,
-    ) -> Result<T, Error> {
+    ) -> Result<T, AddError> {
         let response = self.send_peer(method, &path, &body, key)?;
+        if (400..500).contains(&response.status) {
+            added(&response)?;
+        }
         successful(&response)?;
-        serde_json::from_slice(&response.body).map_err(|_| Error::Invalid)
+        Ok(serde_json::from_slice(&response.body).map_err(|_| Error::Invalid)?)
     }
 
     fn send_peer(
@@ -226,8 +305,9 @@ impl Connection {
         self.write(method, path, Some(body), Some(key))
     }
 
-    /// [`Self::change_peer`] for a connection request, whose conflict or
-    /// invalid-request refusal keeps the service's reason.
+    /// A connection request keeps the service's reason only for a conflict or
+    /// an invalid request; any other refusal, such as a 404 from a service
+    /// without the route, keeps its status.
     fn request_peer<T: DeserializeOwned>(
         &self,
         path: String,
@@ -262,9 +342,9 @@ impl Connection {
         &self,
         generation: &Generation,
         before: Option<&str>,
-    ) -> Result<Page<Message>, Error> {
+    ) -> Result<History, Error> {
         let path = format!("{ROOT}/{}/history", segment(&generation.generation)?);
-        let page: Page<Message> = self.read_peer(page_path(path, before))?;
+        let page: History = self.read_peer(page_path(path, before))?;
         if page.items.iter().any(|m| &m.connection != generation) {
             return Err(Error::BindingMismatch);
         }
@@ -298,9 +378,9 @@ impl Connection {
         direction: Direction,
         policy: Policy,
         key: &str,
-    ) -> Result<Peer, Error> {
+    ) -> Result<Peer, AddError> {
         if policy == Policy::Unknown {
-            return Err(Error::Invalid);
+            return Err(Error::Invalid.into());
         }
         let path = format!("{ROOT}/{}/gates", segment(generation)?);
         self.change_peer(
@@ -317,9 +397,9 @@ impl Connection {
         message: &Message,
         decision: Decision<'_>,
         key: &str,
-    ) -> Result<Message, Error> {
+    ) -> Result<Message, AddError> {
         if message.state != "pending_review" {
-            return Err(Error::Invalid);
+            return Err(Error::Invalid.into());
         }
         let body = match decision {
             Decision::Pass => json!({"action":"pass"}),
@@ -329,7 +409,7 @@ impl Connection {
             {
                 json!({"action":"ask_to_revise","note":note})
             }
-            Decision::Revise(_) => return Err(Error::Invalid),
+            Decision::Revise(_) => return Err(Error::Invalid.into()),
         };
         let path = format!(
             "{ROOT}/{}/messages/{}/review",
@@ -340,7 +420,7 @@ impl Connection {
     }
 
     /// Request local revocation of this generation.
-    pub fn disconnect_peer(&self, generation: &str, key: &str) -> Result<Peer, Error> {
+    pub fn disconnect_peer(&self, generation: &str, key: &str) -> Result<Peer, AddError> {
         self.change_peer(
             "POST",
             format!("{ROOT}/{}/disconnect", segment(generation)?),
