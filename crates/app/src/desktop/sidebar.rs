@@ -1548,17 +1548,42 @@ impl Browser {
                 .map(|(label, badge)| (label, peer_rows::badge_color(badge)))
                 .collect()
         };
-        let summary_text = parts
+        // One line that sends a part that does not fit onto a second, hidden
+        // line, so whole parts give way, the last first: what waits on the
+        // person is kept longest and no part is cut. The empty first item
+        // lets the first part go too.
+        let line = t.size.keycap;
+        let summary_parts = parts
             .into_iter()
             .enumerate()
-            .flat_map(|(index, (label, color))| {
-                let separator = (index > 0).then(|| div().text_color(c.muted).child("·"));
-                separator
-                    .into_iter()
-                    .chain([div().text_color(color).child(label)])
+            .map(|(index, (label, color))| {
+                div()
+                    .flex_shrink_0()
+                    .h(px(line))
+                    .flex()
+                    .items_center()
+                    .gap(px(t.space.s4))
+                    .when(index > 0, |part| {
+                        part.pl(px(t.space.s4))
+                            .child(div().text_color(c.muted).child("·"))
+                    })
+                    .child(div().text_color(color).child(label))
             });
+        let summary = ui::text(
+            div()
+                .min_w_0()
+                .h(px(line))
+                .overflow_hidden()
+                .flex()
+                .flex_wrap()
+                .justify_end()
+                .whitespace_nowrap(),
+            &t.text.meta,
+        )
+        .child(div().w(px(0.)).h(px(line)))
+        .children(summary_parts);
         let heading = section_toggle("CONNECTIONS", self.connections_collapsed)
-            .child(ui::text(div().flex().gap(px(t.space.s4)), &t.text.meta).children(summary_text))
+            .child(summary)
             .on_click(cx.listener(|b, _, _, cx| {
                 b.connections_collapsed = !b.connections_collapsed;
                 cx.notify();
