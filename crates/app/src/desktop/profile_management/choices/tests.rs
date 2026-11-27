@@ -538,14 +538,75 @@ fn this_machine_is_chosen_first_and_an_offline_one_cannot_be() {
 #[test]
 fn an_offline_machine_says_when_it_was_last_seen() {
     let seen = agent_interface_roster::views::epoch_seconds("2026-11-10T13:40:12Z").unwrap();
+    let offline = MachineState::Offline;
     assert_eq!(
-        unavailable("desktop", Some("2026-11-10T13:40:12Z"), seen + 2.0 * 3600.0),
+        unavailable(
+            "desktop",
+            offline,
+            Some("2026-11-10T13:40:12Z"),
+            seen + 2.0 * 3600.0
+        ),
         "desktop is offline (last seen 2h ago), so it can't be chosen."
     );
     assert_eq!(
-        unavailable("desktop", None, seen),
+        unavailable("desktop", offline, None, seen),
         "desktop is offline (not heard from yet), so it can't be chosen."
     );
+    // A state this app doesn't know isn't called offline.
+    assert_eq!(
+        unavailable(
+            "desktop",
+            MachineState::Unknown,
+            Some("2026-11-10T13:40:12Z"),
+            seen
+        ),
+        "desktop's state isn't known, so it can't be chosen."
+    );
+}
+
+#[test]
+fn a_start_on_another_machine_waits_for_its_tools_and_a_free_name() {
+    let listed = Elsewhere::Listed {
+        catalog: catalog(&runtimes()),
+        checked_at: None,
+    };
+    let Elsewhere::Listed { catalog: tools, .. } = &listed else {
+        unreachable!()
+    };
+    let codex = &tools.items()[0];
+    let id = |tool: Option<Option<&Runtime>>| tool.map(|tool| tool.map(|r| r.id.as_str()));
+    // Listed: the tool chosen there, with a model it has.
+    assert_eq!(
+        id(elsewhere_tool(false, Some(&listed), Some(codex), None)),
+        Some(Some("codex"))
+    );
+    assert_eq!(id(elsewhere_tool(false, Some(&listed), None, None)), None);
+    assert_eq!(
+        id(elsewhere_tool(
+            false,
+            Some(&listed),
+            Some(codex),
+            Some("opus")
+        )),
+        None
+    );
+    // Not listed: the profile's default tool, no tool or model sent.
+    let unlisted = Elsewhere::NotListed;
+    assert_eq!(
+        id(elsewhere_tool(false, Some(&unlisted), None, None)),
+        Some(None)
+    );
+    // Being read, or unknown: no start.
+    let refused = Elsewhere::Refused("machine 'desktop' cannot be reached now".into());
+    for waiting in [None, Some(&Elsewhere::Reading), Some(&refused)] {
+        assert_eq!(id(elsewhere_tool(false, waiting, Some(codex), None)), None);
+    }
+    // A name the profile already has: no start, whatever is listed.
+    assert_eq!(
+        id(elsewhere_tool(true, Some(&listed), Some(codex), None)),
+        None
+    );
+    assert_eq!(id(elsewhere_tool(true, Some(&unlisted), None, None)), None);
 }
 
 #[test]

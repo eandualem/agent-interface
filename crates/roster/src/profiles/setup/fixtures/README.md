@@ -1,6 +1,8 @@
 # Setup fixtures
 
-Agent Backbone's own fixtures, copied byte for byte, except:
+Agent Backbone's own protocol fixtures, copied byte for byte, except
+`first-agent-result.json`, which is this app's own, and these, which
+Backbone's fixtures don't have yet:
 
 | File | Source |
 |---|---|

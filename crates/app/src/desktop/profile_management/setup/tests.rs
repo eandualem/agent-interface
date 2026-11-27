@@ -697,3 +697,14 @@ fn every_unreadable_setup_record_offers_forget() {
     assert!(!unreadable(Error::Missing));
     assert!(!unreadable(Error::Storage(journal::Error::Unavailable)));
 }
+
+#[test]
+fn a_start_on_another_machine_says_where_it_is() {
+    assert_eq!(
+        started_elsewhere("app", "linux-box"),
+        (
+            "app started".to_owned(),
+            "Started on linux-box; it appears in the panel.".to_owned()
+        )
+    );
+}

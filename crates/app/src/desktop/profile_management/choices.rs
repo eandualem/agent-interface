@@ -91,6 +91,9 @@ pub(super) struct Form {
     machine: Option<String>,
     /// What that machine's tools are, once read.
     elsewhere: Option<Elsewhere>,
+    /// Counts reads of another machine's tools: only the latest one's
+    /// answer is shown.
+    tools_read: u64,
     _fields: Vec<Subscription>,
     project: Option<PathBuf>,
     runtime: Option<String>,
@@ -185,6 +188,7 @@ impl Form {
             agents: Vec::new(),
             machine: None,
             elsewhere: None,
+            tools_read: 0,
             _fields: fields,
             project: None,
             runtime: None,
@@ -263,9 +267,16 @@ impl Form {
             })
     }
     /// Choose where the agent starts: this machine (`None`) or another
-    /// online one. Another tool list applies, so the tool starts over.
+    /// online one. Another tool list applies, so the tool starts over. The
+    /// machine already chosen, clicked after its tools couldn't be read,
+    /// reads them again.
     fn choose_machine(&mut self, clicked: Option<String>, cx: &mut Context<Self>) {
-        if self.finished || !switch_machine(&mut self.machine, &self.machines, clicked.as_deref()) {
+        let again = clicked.is_some()
+            && clicked == self.machine
+            && matches!(self.elsewhere, Some(Elsewhere::Refused(_)));
+        if self.finished
+            || !(again || switch_machine(&mut self.machine, &self.machines, clicked.as_deref()))
+        {
             return;
         }
         self.changed = true;
@@ -280,6 +291,8 @@ impl Form {
             return;
         };
         self.elsewhere = Some(Elsewhere::Reading);
+        self.tools_read += 1;
+        let read_at = self.tools_read;
         let name = self.elsewhere_name().unwrap_or_default();
         let profile = self.profile.clone();
         let asked = machine.clone();
@@ -292,7 +305,10 @@ impl Form {
         cx.spawn(async move |this, cx| {
             let read = work.await;
             let _ = this.update(cx, |form, cx| {
-                if form.finished || form.machine.as_ref() != Some(&machine) {
+                if form.finished
+                    || form.tools_read != read_at
+                    || form.machine.as_ref() != Some(&machine)
+                {
                     return;
                 }
                 form.elsewhere = Some(match read {
@@ -707,27 +723,18 @@ impl Form {
     /// made or checked on this one.
     fn elsewhere_start(&self, machine: &str, cx: &Context<Self>) -> Option<Start> {
         let name = agent_name(self.name.read(cx).value());
-        if self.agents.contains(&name) {
+        if let Some(Elsewhere::Listed { catalog, .. }) = &self.elsewhere
+            && catalog.identity() != &self.profile.expected_identity().ok()?
+        {
             return None;
         }
-        let runtime = match self.elsewhere.as_ref()? {
-            Elsewhere::Listed { catalog, .. } => {
-                if catalog.identity() != &self.profile.expected_identity().ok()? {
-                    return None;
-                }
-                let runtime = self.runtime()?;
-                if self
-                    .model
-                    .as_ref()
-                    .is_some_and(|model| !runtime.models.contains(model))
-                {
-                    return None;
-                }
-                Some(runtime.id.as_str())
-            }
-            Elsewhere::NotListed => None,
-            Elsewhere::Reading | Elsewhere::Refused(_) => return None,
-        };
+        let runtime = elsewhere_tool(
+            self.agents.contains(&name),
+            self.elsewhere.as_ref(),
+            self.runtime(),
+            self.model.as_deref(),
+        )?
+        .map(|runtime| runtime.id.as_str());
         let watch = self.repository.read(cx).value().trim();
         Start::on_machine(
             &name,
@@ -1034,8 +1041,36 @@ fn switch_machine(
     }
     open
 }
+/// Whether a start on another machine can go, and in which tool: `None`
+/// while its name is `taken` in the profile or its tools are being read or
+/// can't be known, else the tool chosen from those listed, or `Some(None)`,
+/// the profile's default tool, where they aren't listed.
+fn elsewhere_tool<'a>(
+    taken: bool,
+    tools: Option<&Elsewhere>,
+    chosen: Option<&'a Runtime>,
+    model: Option<&str>,
+) -> Option<Option<&'a Runtime>> {
+    if taken {
+        return None;
+    }
+    match tools? {
+        Elsewhere::Listed { .. } => {
+            let runtime = chosen?;
+            if model.is_some_and(|model| !runtime.models.iter().any(|m| m == model)) {
+                return None;
+            }
+            Some(Some(runtime))
+        }
+        Elsewhere::NotListed => Some(None),
+        Elsewhere::Reading | Elsewhere::Refused(_) => None,
+    }
+}
 /// Why another machine can't be chosen, under the Machine row.
-fn unavailable(name: &str, last_seen: Option<&str>, now: f64) -> String {
+fn unavailable(name: &str, state: MachineState, last_seen: Option<&str>, now: f64) -> String {
+    if state != MachineState::Offline {
+        return format!("{name}'s state isn't known, so it can't be chosen.");
+    }
     let seen = last_seen
         .and_then(agent_interface_roster::views::epoch_seconds)
         .map_or_else(
@@ -1196,7 +1231,7 @@ impl Render for Form {
                             segment.opacity(0.5).cursor_default()
                         });
                         if !open {
-                            offline.push(unavailable(&label, machine.last_seen.as_deref(), now));
+                            offline.push(unavailable(&label, machine.state, machine.last_seen.as_deref(), now));
                         }
                     }
                     machine_rows.push(line("Machine", row.into_any_element()));
@@ -1326,6 +1361,7 @@ impl Render for Form {
                         Some(Elsewhere::NotListed) if elsewhere.is_some() => note(format!("Backbone doesn't list {there}'s tools yet, so it starts in the profile's default tool.").into()).into_any_element(),
                         Some(Elsewhere::Refused(why)) if elsewhere.is_some() => attention(why.clone().into()).into_any_element(),
                         _ if shown.iter().any(|r| eligible(r, false)) => tools.into_any_element(),
+                        _ if elsewhere.is_some() => note(format!("No tool on {there} can set up an agent yet.").into()).into_any_element(),
                         _ => note("No tool in this profile can set up an agent yet.".into()).into_any_element(),
                     },
                 ));

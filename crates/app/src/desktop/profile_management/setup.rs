@@ -985,6 +985,7 @@ impl Pane {
         // Started on another machine: it shows in the panel under that
         // machine, and nothing here attaches to it.
         if let Some(there) = self.elsewhere().filter(|_| self.running()) {
+            let (title, note) = started_elsewhere(name, there);
             return div()
                 .size_full()
                 .flex()
@@ -997,11 +998,9 @@ impl Pane {
                         .items_center()
                         .gap(px(t.space.s8))
                         .child(ui::step_dot(ui::Step::Done))
-                        .child(div().text_color(c.text).child(format!("{name} started"))),
+                        .child(div().text_color(c.text).child(title)),
                 )
-                .child(meta(format!(
-                    "Started on {there}; it appears in the panel."
-                )))
+                .child(meta(note))
                 .child(
                     ui::button("setup-done", "Done", ui::Button::Primary)
                         .on_click(cx.listener(|pane, _, _, cx| pane.back(cx))),
@@ -1077,6 +1076,15 @@ impl Pane {
             .child(actions)
             .into_any_element()
     }
+}
+
+/// What a start on another machine says once it runs: its terminal is
+/// there, so it is found in the panel.
+fn started_elsewhere(name: &str, there: &str) -> (String, String) {
+    (
+        format!("{name} started"),
+        format!("Started on {there}; it appears in the panel."),
+    )
 }
 
 /// What a start is doing, from the step the provider last reported.

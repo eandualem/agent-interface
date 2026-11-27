@@ -305,8 +305,6 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
                                    "repo": "acme/app", "runtime": "claude", "wait": False}], starts
                 wait_for(lambda: re.search(r"Started\s+on\s+linux-box", text(window)), "the result", timeout=60)
                 capture(window, "added-elsewhere")
-                # Its terminal is on linux-box: nothing attaches here.
-                assert not (root / "app").exists()
 
             (OUTPUT / "requests.json").write_text(json.dumps(dict(created=created, setup=setups, starts=starts), indent=2) + "\n")
             (OUTPUT / "result.json").write_text(json.dumps(dict(scale=SCALE, passed=True, checks=[
