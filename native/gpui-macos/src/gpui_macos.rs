@@ -46,7 +46,7 @@ pub(crate) use keyboard::*;
 pub(crate) use platform::*;
 pub(crate) use window::*;
 
-pub use artifact::artifact_configuration;
+pub use artifact::{artifact_configuration, round_bottom_corners};
 pub use platform::MacPlatform;
 
 trait BoolExt {

@@ -611,9 +611,9 @@ static. State labels retain the distinction between starting and busy, and
 between blocked and waiting for a person. Each connection-owned roster worker reads
 immediately and then two seconds after each completed request, or 15 seconds
 after the start of a good one while the push stream is open. After a good
-roster it also reads the running swarms and the profile's machines (`GET /api/status/services`), which only group agents in the
-navigation panel and Team view: a failed swarm read clears swarm folding and a failed machine-status read clears machine reachability (`status unknown`) without marking agent
-states stale; remote agents still carrying `machine` from `/api/agents` remain grouped under their machine IDs. Machine IDs are compared in full against the connected profile's local machine ID; names are display-only. One-machine profiles keep the flat layout; multi-machine profiles group remote agents under their machine's name and live reachability (online, offline with last-seen age, or not in profile), surface stale `state_source` observations with their evidence, and offer Start, Stop and Restart directly through the profile service, reporting the service's refusal reason when a machine cannot be reached. Each window remembers the swarms it has seen running; when a
+roster it also reads the running swarms and the profile's machines (`GET /api/status/services`), which only arrange agents in the
+navigation panel and Team view (swarms fold under their initiator; machines are a tag in the panel and groups in Team): a failed swarm read clears swarm folding and a failed machine-status read clears machine reachability (`status unknown`) without marking agent
+states stale; remote agents still carrying `machine` from `/api/agents` keep their machine tag. Machine IDs are compared in full against the connected profile's local machine ID; names are display-only. The panel lists every agent in one tree (`agent_groups::tree`, a pure function of the roster, swarms and runs): an agent on another machine carries a tag with that machine's name, which reads `name · offline` when the machine is offline or not in the profile, with its last-seen age on hover; offline agents on another machine are dimmed rows sorted last unless something under them lifts them, and an agent's active review runs, its browser and its swarms with their members fold under it. The panel and Team view surface stale `state_source` observations with their evidence, and offer Start, Stop and Restart directly through the profile service, reporting the service's refusal reason when a machine cannot be reached. Each window remembers the swarms it has seen running; when a
 readable list stops naming one, it closes the tabs still named after that swarm
 whose every pane attaches to a session seen in that swarm, on its tmux server. A failed or partly unreadable list never counts as
 a finish, and a swarm that ends while the app is closed leaves its tab. Its live model
@@ -977,8 +977,23 @@ Stored HTML is not rewritten; the script changes the page in memory:
 - **Selection.** Selected text keeps its own colour over a translucent accent,
   as in native readers, unless the document styles its own selection.
 
-Layout and media keep their authored presentation. The view is hidden while
-native overlays or pane dragging need that space. Closing the document or
+Layout and media keep their authored presentation. The web view is a native
+rectangle laid over the pane card, so where it meets the card's rounded bottom
+corners it would cover them and the focus outline. While laying out, each card
+notes its inside for its window (`pane_cards` calls `artifact_web::note_card`;
+a window forgets its cards each time it renders, so a closed pane's card is
+never found). A web view whose bottom corners meet a card's handles only those
+corners: on macOS it rounds its own layer to the card's inner radius
+(`gpui_macos::round_bottom_corners`, beside `artifact_configuration`, since
+the app crate forbids unsafe code), choosing the corner pair from the layer's
+effective flip; on Linux, where the view is a separate X11 child window that
+can only be clipped to aliased steps, it stops one pane radius short of the
+card's bottom and the card's own surface shows in that strip. A view beside a
+panel meets only the card's outer bottom corner and handles that one; only a
+view that meets neither bottom corner, such as one above a footer, stays
+square. The tradeoff on Linux is a strip of the pane's surface colour under a
+page that paints its own background.
+The view is hidden while native overlays or pane dragging need that space. Closing the document or
 hiding its pane releases the web view, so reopening starts a fresh document
 runtime. Native terminals, menus and report views do not use WebKit.
 WebKit's platform processes belong to the renderer; the app adds no daemon.
@@ -1025,7 +1040,7 @@ build-time advisory exception are described below.
   Text input handlers are registered through the same module, so input-method
   candidate windows follow the caret. A window keeps the minimum size it opened with until reopened.
   The macOS artifact web view sits outside GPUI and is positioned and zoomed
-  separately.
+  separately, and rounds its own bottom corners where they meet a pane card's.
 - **`raw-window-handle` 0.6.2:** the window handle traits that wrapper
   forwards. MIT OR Apache-2.0 OR Zlib, pinned exactly; GPUI already builds
   this version, so it adds no package.
@@ -1520,8 +1535,9 @@ WebKitGTK's nonaccelerated drawing policy for headless/software environments.
 
 A Connections pane belongs to the selected workspace's profile. The sidebar,
 Jump and the new-pane chooser share one navigation path. It finds the pane by
-its saved view kind across the workspace's tabs. Opening it uses an empty pane
-or creates a tab through the library's normal save path. The store rejects
+its saved view kind across the workspace's tabs. Opening it uses an empty pane,
+else splits the focused pane to the right in the current tab, through the
+library's normal save path; Option-click on a panel row creates a tab instead. The store rejects
 concurrent edits that would leave two Connections panes in one workspace. It
 saves the pane as an extension on an empty chooser so earlier schema-v2 readers
 can reopen the library. Folded sidebar sections retain their state in each window's Browser.

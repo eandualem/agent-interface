@@ -233,6 +233,9 @@ All in `components.rs`; each takes its look from the tokens.
 | `chip`, `segments`, `segment` | Filter pill, filled when on; a segmented control's frame and its choices |
 | `meter`, `stacked_meter`, `legend` | A bar filled to a share; a bar split by shares; a swatch, label and value |
 | `badge` | Small mono label, such as an agent's CLI |
+| `machine_tag` | Another machine an agent runs on: `server` icon and name on `field` with a `line_strong` border; `attention_text` and `name · offline` when that machine is offline or gone, with its last-seen time as the tooltip |
+| `glance_counts` | What an agent's row counts of everything under it, open or folded: running reviews (a still ring and dot), agents in its swarms (`users`), browsers (`globe`, no number for one). `accent_text` while it runs, `attention_text` when it needs the person, `muted` otherwise; zero items are not drawn |
+| `review_symbol` | A review run: running turns like a working `agent_symbol` with a dot at its centre; queued is a still `faint` ring and dot |
 | `view_choice` | A row of the new-pane views list: icon tile, label, description, scope |
 | `fact` | A label and value, one line of an agent's card |
 | `tool_card` | An agent tool to pick, for a profile's first agent and for Add agent alike: a radio mark (a turning arc while it installs), the name in `row_selected` and its state in `meta` (for an agent, whether it starts signed in or asks to sign in), `attention` when it needs the person; selected, the accent tint and ring. Callers add the click and any Install or Update |

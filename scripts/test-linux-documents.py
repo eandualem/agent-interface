@@ -19,12 +19,14 @@ import subprocess
 import tempfile
 import threading
 import time
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 SCALE = int(os.environ.get("DOCUMENT_TEST_SCALE", "100"))
 DPI = int(os.environ.get("DOCUMENT_TEST_DPI", "96"))
 assert SCALE in (100, 150) and DPI in (96, 144, 192)
 OUTPUT = ROOT / "target/linux-documents-smoke" / f"{SCALE}-{DPI}"
+TOKENS = tomllib.loads((ROOT / "crates/app/assets/design/tokens.toml").read_text())
 OUTPUT.mkdir(parents=True, exist_ok=True)
 
 
@@ -307,6 +309,48 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             wait_for(lambda: find('POPUPBLOCKED'), 'new window denied')
             assert set(command('xdotool', 'search', '--onlyvisible', '--pid', str(app.pid)).splitlines()) == native_windows, 'unexpected popup'
             command('import', '-window', window, str(OUTPUT / 'document.png'))
+            # The web view stops short of the focused pane's rounded bottom
+            # corners: it ends at least a pane radius above the pane's bottom
+            # edge, over the card's own surface. Keep both corners for a
+            # reader to look at.
+            def geometry(xid):
+                shell = dict(line.split('=', 1) for line in
+                             command('xdotool', 'getwindowgeometry', '--shell', xid).splitlines() if '=' in line)
+                return tuple(int(shell[key]) for key in ('X', 'Y', 'WIDTH', 'HEIGHT'))
+            wx, wy, _, _ = geometry(window)
+            views = [geometry(xid) for xid in all_app_windows() - native_xids]
+            vx, vy, vw, vh = max(views, key=lambda view: view[2] * view[3])
+            # The native interface is drawn at the interface size this run
+            # sets, whatever the display's DPI, which only WebKit follows.
+            # First check the native layout is at that scale: the web view
+            # starts the panel, the gap and the card's border in from the
+            # window's left edge. Only then measure the inset in its pixels.
+            interface_scale = SCALE / 100
+            inset = TOKENS['size']['panel_width'] + TOKENS['size']['pane_gap'] + TOKENS['size']['hairline']
+            expected_left = inset * interface_scale
+            assert abs((vx - wx) - expected_left) <= 2, (
+                f'the web view starts {vx - wx} px from the window\'s left edge, '
+                f'not {expected_left:.0f} px as the interface at scale {interface_scale} places it')
+            radius = round(TOKENS['radius']['pane'] * interface_scale)
+            hairline = max(1, round(TOKENS['size']['hairline'] * interface_scale))
+            # Down the middle of the view from its bottom edge: the strip
+            # of one colour is the card's surface, which ends at its border.
+            bottom = vy - wy + vh
+            column = command('convert', str(OUTPUT / 'document.png'), '-crop',
+                             f'1x{4 * radius}+{vx - wx + vw // 2}+{bottom}', 'txt:-')
+            colours = [tuple(int(hex_[i:i + 2], 16) for i in (0, 2, 4))
+                       for hex_ in re.findall(r'#([0-9A-Fa-f]{6})', column)]
+            strip = next((row for row, colour in enumerate(colours)
+                          if sum(abs(a - b) for a, b in zip(colour, colours[0])) > 24), len(colours))
+            assert strip < len(colours), (
+                f'no pane border within {len(colours)} px under the web view')
+            assert strip + hairline >= radius - 1, (
+                f'the web view ends {strip + hairline} px above its pane\'s bottom, under one radius '
+                f'({radius} px at interface scale {interface_scale})')
+            for side, left in (('left', vx - wx - radius), ('right', vx - wx + vw - 3 * radius)):
+                command('convert', str(OUTPUT / 'document.png'), '-crop',
+                        f'{4 * radius}x{4 * radius}+{max(left, 0)}+{vy - wy + vh - 2 * radius}',
+                        str(OUTPUT / f'document-corner-{side}.png'))
             command('xdotool', 'windowsize', '--sync', window, str(round(1100 * display_scale)), str(round(760 * display_scale)))
             wait_for(lambda: find('CLICKPASSED'), 'state retained across resize')
             if SCALE == 100 and DPI == 96:

@@ -87,6 +87,13 @@ pub(super) struct Surface {
     zoom: f32,
     /// The theme script the page last ran.
     theme: Option<std::rc::Rc<str>>,
+    /// The bottom corners last rounded, left and right, and their radius.
+    #[cfg(target_os = "macos")]
+    rounded: Option<((bool, bool), f32)>,
+    /// Whether the view's layer clipped before it was first rounded, to put
+    /// back when its corners are square again.
+    #[cfg(target_os = "macos")]
+    clipped: Option<bool>,
     occluded: bool,
     #[cfg(target_os = "linux")]
     failure: std::rc::Rc<std::cell::RefCell<Option<String>>>,
@@ -121,6 +128,11 @@ impl Surface {
         }
         self.bounds = None;
         self.theme = None;
+        #[cfg(target_os = "macos")]
+        {
+            self.rounded = None;
+            self.clipped = None;
+        }
     }
 
     pub fn occlude(&mut self, occluded: bool) {
@@ -161,6 +173,27 @@ impl Surface {
             #[cfg(target_os = "macos")]
             use wry::WebViewBuilderExtMacos;
             use wry::{Rect, WebViewBuilder};
+            // The native view is laid over the card, so it would cover the
+            // card's rounded bottom corners and their outline. macOS rounds
+            // the view's own corners; Linux stops the view short of them.
+            let here = window.window_handle().window_id();
+            let corners = CARDS.with(|cards| {
+                let cards = cards.borrow();
+                let cards = cards.iter().filter(|((at, _), _)| *at == here);
+                bottom_corners(bounds, cards.map(|(_, card)| *card))
+            });
+            let radius = {
+                let t = crate::desktop::design::tokens();
+                t.radius.pane - t.size.hairline
+            };
+            #[cfg(target_os = "linux")]
+            let bounds = if corners != (false, false) {
+                let mut inset = bounds;
+                inset.size.height = (inset.size.height - gpui::px(radius)).max(gpui::px(0.));
+                inset
+            } else {
+                bounds
+            };
             // The child view sits outside GPUI, so it takes native
             // coordinates and zooms its page to the interface size.
             #[cfg(target_os = "macos")]
@@ -288,6 +321,38 @@ impl Surface {
                 self.zoom = zoom;
                 self.view = Some(NativeView::new(view));
             }
+            #[cfg(target_os = "macos")]
+            if let Some(view) = &self.view {
+                let rounded = (corners, radius * coordinate_scale);
+                // A view never rounded needs nothing for square corners; a
+                // rounded one is undone. Only a change the layer took is kept.
+                let square = |rounded: Option<((bool, bool), f32)>| {
+                    rounded.is_none_or(|(corners, _)| corners == (false, false))
+                };
+                if corners == (false, false) && square(self.rounded) {
+                    self.rounded = Some(rounded);
+                } else if self.rounded != Some(rounded) {
+                    use wry::WebViewExtMacOS;
+                    let webview = view.webview();
+                    let object: &objc2::runtime::AnyObject = &webview;
+                    let restore = self.clipped.unwrap_or(false);
+                    if let Some(before) = gpui_macos::round_bottom_corners(
+                        object,
+                        corners,
+                        f64::from(rounded.1),
+                        restore,
+                    ) {
+                        // Remember the clipping from before the first
+                        // rounding; squared again, the layer has it back.
+                        if corners == (false, false) {
+                            self.clipped = None;
+                        } else if square(self.rounded) {
+                            self.clipped = Some(before);
+                        }
+                        self.rounded = Some(rounded);
+                    }
+                }
+            }
             self.bounds = Some(bounds);
             self.theme = Some(theme.clone());
             Ok(())
@@ -298,6 +363,50 @@ impl Surface {
             Err("HTML rendering is unavailable on this platform.".into())
         }
     }
+}
+
+/// A pane card in a window: windows of one library show the same panes.
+type CardKey = (gpui::WindowId, String);
+
+thread_local! {
+    /// The inside of each pane card, by window and pane, as last laid out.
+    static CARDS: std::cell::RefCell<std::collections::HashMap<CardKey, Bounds<Pixels>>> =
+        Default::default();
+}
+
+/// Forget `window`'s pane cards before it lays them out again.
+pub(in crate::desktop) fn forget_cards(window: &Window) {
+    let here = window.window_handle().window_id();
+    CARDS.with(|cards| cards.borrow_mut().retain(|(at, _), _| *at != here));
+}
+
+/// Note the inside of pane `id`'s card in `window`, within its border, so a
+/// web view in it knows where the card's rounded corners are.
+pub(in crate::desktop) fn note_card(window: &Window, id: &str, inside: Bounds<Pixels>) {
+    let key = (window.window_handle().window_id(), id.to_owned());
+    CARDS.with(|cards| {
+        cards.borrow_mut().insert(key, inside);
+    });
+}
+
+/// Which bottom corners of a view at `bounds` meet a bottom corner of one of
+/// the pane `cards`' insides: left and right. A corner of anything smaller
+/// than a card, such as a scrolled area, is not rounded.
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+fn bottom_corners(
+    bounds: Bounds<Pixels>,
+    cards: impl IntoIterator<Item = Bounds<Pixels>>,
+) -> (bool, bool) {
+    let meets = |a: Pixels, b: Pixels| (a - b).abs() < gpui::px(1.);
+    cards
+        .into_iter()
+        .fold((false, false), |(left, right), card| {
+            let bottom = meets(bounds.bottom(), card.bottom());
+            (
+                left || (bottom && meets(bounds.left(), card.left())),
+                right || (bottom && meets(bounds.right(), card.right())),
+            )
+        })
 }
 
 /// The web surface starts with the same reading background as native readers.
@@ -542,5 +651,44 @@ fn probe_linux_sandbox() -> Result<(), String> {
                 return Err(unavailable());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{point, px, size};
+
+    #[test]
+    fn only_corners_that_meet_a_cards_bottom_corners_are_rounded() {
+        let bounds =
+            |x: f32, y: f32, w: f32, h: f32| Bounds::new(point(px(x), px(y)), size(px(w), px(h)));
+        let card = bounds(10., 10., 400., 300.);
+        let other = bounds(420., 10., 400., 300.);
+        // A reader under its header, filling the rest of the pane.
+        assert_eq!(
+            bottom_corners(bounds(10., 38., 400., 272.), [other, card]),
+            (true, true)
+        );
+        // With a panel to its right, only its bottom-left meets a corner.
+        assert_eq!(
+            bottom_corners(bounds(10., 38., 250., 272.), [card]),
+            (true, false)
+        );
+        // Above a footer, neither does.
+        assert_eq!(
+            bottom_corners(bounds(10., 38., 400., 240.), [card]),
+            (false, false)
+        );
+        // Filling a scrolled area in the middle of a card: the area's
+        // corners are not the card's.
+        assert_eq!(
+            bottom_corners(bounds(40., 60., 300., 200.), [card]),
+            (false, false)
+        );
+        assert_eq!(
+            bottom_corners(bounds(10., 38., 400., 272.), []),
+            (false, false)
+        );
     }
 }

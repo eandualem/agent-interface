@@ -745,7 +745,7 @@ struct Browser {
     peer_to_open: Option<(
         String,
         agent_interface_roster::profiles::ConnectionKey,
-        peer_inbox::Selection,
+        peer_inbox::Opening,
     )>,
     reset_focus: bool,
     painted_pane_focus: Option<String>,
@@ -763,10 +763,10 @@ struct Browser {
     pending_save: Option<(Document, Layout)>,
     pending_creation: Option<(Create, String)>,
     creation_from: Option<Selection>,
-    /// Agents whose swarms are listed under them in the navigation panel.
+    /// Agents whose started work is listed under them in the navigation panel.
     expanded_agents: std::collections::HashSet<String>,
-    /// Remote machine IDs whose offline agents are expanded in the navigation panel.
-    expanded_machines: std::collections::HashSet<String>,
+    /// Swarms, by initiator and name, folded under their open initiator.
+    collapsed_swarms: std::collections::HashSet<String>,
     /// In-flight Start/Stop/Restart actions keyed by connection and agent name.
     agent_actions_in_flight:
         std::collections::HashSet<(agent_interface_roster::profiles::ConnectionKey, String)>,
@@ -1162,7 +1162,8 @@ impl Browser {
         self.name_click = None;
         self.tab_menu = None;
         self.agent_menu = None;
-        self.expanded_machines.clear();
+        self.expanded_agents.clear();
+        self.collapsed_swarms.clear();
         self.agent_actions_in_flight.clear();
         self.save_notice = None;
         self.stop_reader(cx);
@@ -3045,6 +3046,9 @@ impl Browser {
 
 impl Render for Browser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The cards laid out below note themselves again; a closed pane's
+        // card must not be found by a web view.
+        views::artifact_web::forget_cards(window);
         self.refresh_profiles(cx);
         self.retire_profile_panes();
         if self.resize_activation.is_none() {
@@ -3459,7 +3463,7 @@ impl Render for Browser {
                 });
             }
         }
-        if let Some((workspace, key, selection)) = self.peer_to_open.take()
+        if let Some((workspace, key, opening)) = self.peer_to_open.take()
             && let Some(layout) = &self.layout
             && let Some(space) = layout.model().workspace()
             && space.id == workspace
@@ -3472,9 +3476,16 @@ impl Render for Browser {
                     .is_some_and(|view| view.kind == agent_interface_core::ViewKind::Connections)
                 && let Some((view, _)) = self.views.get(&pane.id)
             {
-                view.update(cx, |v, cx| v.pick_peer(selection, cx));
+                match opening {
+                    peer_inbox::Opening::Peer(selection) => {
+                        view.update(cx, |v, cx| v.pick_peer(selection, cx))
+                    }
+                    peer_inbox::Opening::Connect => {
+                        view.update(cx, |v, cx| v.open_connect(window, cx))
+                    }
+                }
             } else if self.saving {
-                self.peer_to_open = Some((workspace, key, selection));
+                self.peer_to_open = Some((workspace, key, opening));
             }
         }
         // A transfer may preserve the view entity and provider, but changes the
@@ -3668,7 +3679,13 @@ impl Render for Browser {
                                     return;
                                 }
                                 let target = browser.creation_target();
-                                browser.open_connections(target.as_ref(), Some(&pane), window, cx);
+                                browser.open_connections(
+                                    target.as_ref(),
+                                    Some(&pane),
+                                    false,
+                                    window,
+                                    cx,
+                                );
                             }
                             new_pane::NewPaneEvent::OpenView(view) => {
                                 browser.open_view(&pane, view.clone(), window, cx);
