@@ -61,7 +61,7 @@ struct ViewChoice {
     kind: ViewKind,
 }
 
-const VIEWS: [ViewChoice; 8] = [
+const VIEWS: [ViewChoice; 9] = [
     ViewChoice {
         glyph: "◆",
         label: "Skills",
@@ -117,6 +117,13 @@ const VIEWS: [ViewChoice; 8] = [
         description: "Requests and reviews with other profiles",
         scope: "this profile",
         kind: ViewKind::Connections,
+    },
+    ViewChoice {
+        glyph: "⚷",
+        label: "Access",
+        description: "What each agent may reach, and requests for more",
+        scope: "this profile",
+        kind: ViewKind::Access,
     },
 ];
 

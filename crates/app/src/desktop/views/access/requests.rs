@@ -307,9 +307,15 @@ impl Pane {
                         .child(quoted(&request.reason).pr_0())
                 }))
         };
-        let warning = first
-            .warning
-            .clone()
+        // Each different warning Backbone served for the card's requests.
+        let mut warnings: Vec<String> = Vec::new();
+        for warning in card.iter().filter_map(|r| r.warning.clone()) {
+            if !warnings.contains(&warning) {
+                warnings.push(warning);
+            }
+        }
+        let warnings = warnings
+            .into_iter()
             .map(|warning| note_line("triangle-alert", c.accent_text, warning).pl(px(indent)));
         let reach = not_needed
             .clone()
@@ -394,7 +400,7 @@ impl Pane {
             .children(strip)
             .child(who)
             .child(reasons)
-            .children(warning)
+            .children(warnings)
             .children(reach)
             .children(note)
             .child(actions)

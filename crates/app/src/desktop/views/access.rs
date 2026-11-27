@@ -81,6 +81,11 @@ pub(super) struct Pane {
     reading: bool,
     /// A read asked for while one was under way, made when it ends.
     again: bool,
+    /// How many change replies have been applied, so a read that started
+    /// before one is not shown over it.
+    writes: u64,
+    /// Whether a page of decided requests is being read.
+    reading_decided: bool,
     shown: Shown,
     filter: model::Filter,
     query: Entity<NameField>,
@@ -165,6 +170,8 @@ impl Pane {
             error: None,
             reading: false,
             again: false,
+            writes: 0,
+            reading_decided: false,
             shown: Shown::Agents,
             filter: model::Filter::All,
             query,
@@ -209,6 +216,7 @@ impl Pane {
             return;
         }
         self.reading = true;
+        let writes = self.writes;
         let connection = self.connection.clone();
         let read = cx.background_executor().spawn(async move {
             let overview = connection.access_overview()?;
@@ -220,6 +228,9 @@ impl Pane {
             let _ = this.update(cx, |pane, cx| {
                 pane.reading = false;
                 match result {
+                    // Read before a change's reply was applied: the read that
+                    // follows the change shows the newer state.
+                    Ok(_) if pane.writes != writes => pane.again = true,
                     Ok((overview, pending)) => {
                         let model = pane.model.get_or_insert_with(Default::default);
                         model.overview = overview;
@@ -242,6 +253,10 @@ impl Pane {
     /// Read decided requests: the newest page, or the page older than
     /// `before`, added below those already read.
     fn read_decided(&mut self, before: Option<i64>, cx: &mut Context<Self>) {
+        if self.reading_decided {
+            return;
+        }
+        self.reading_decided = true;
         let connection = self.connection.clone();
         let read = cx
             .background_executor()
@@ -249,6 +264,7 @@ impl Pane {
         cx.spawn(async move |this, cx| {
             let result = read.await;
             let _ = this.update(cx, |pane, cx| {
+                pane.reading_decided = false;
                 match result {
                     Ok(page) => {
                         let model = pane.model.get_or_insert_with(Default::default);
@@ -257,7 +273,13 @@ impl Pane {
                             .into_iter()
                             .filter(|r| r.state != RequestState::Pending);
                         match (&mut model.decided, before) {
-                            (Some(read), Some(_)) => read.extend(decided),
+                            // A request decided here may already lead the list.
+                            (Some(read), Some(_)) => {
+                                let older: Vec<Request> = decided
+                                    .filter(|r| read.iter().all(|shown| shown.id != r.id))
+                                    .collect();
+                                read.extend(older);
+                            }
                             (read, _) => *read = Some(decided.collect()),
                         }
                         pane.decided_before = page.next_before_id.filter(|_| page.has_more);
@@ -336,12 +358,15 @@ impl Pane {
             let result = sent.await;
             let _ = this.update(cx, |pane, cx| {
                 pane.sending = None;
-                pane.notice = match result {
-                    Ok(applied) => pane.apply(applied),
-                    Err(failure) => Some(Notice {
-                        text: refusal(failure),
-                        refused: true,
-                    }),
+                if matches!(result, Ok(Applied::Decided(..))) {
+                    pane.noting = None;
+                }
+                if result.is_ok() {
+                    pane.writes += 1;
+                }
+                pane.notice = match pane.model.as_mut() {
+                    Some(model) => settle(model, result),
+                    None => None,
                 };
                 pane.read(cx);
                 cx.notify();
@@ -349,40 +374,6 @@ impl Pane {
         })
         .detach();
         cx.notify();
-    }
-
-    /// Apply a change's reply at once, and say what Backbone warned of.
-    fn apply(&mut self, applied: Applied) -> Option<Notice> {
-        let model = self.model.as_mut()?;
-        let warning = match applied {
-            Applied::Access(reply) => {
-                let warning = reply.warning.clone();
-                model.apply_access(reply);
-                warning
-            }
-            Applied::Placed(reply) => {
-                model.apply_placed(reply);
-                None
-            }
-            Applied::Decided(replies, failure) => {
-                self.noting = None;
-                let warning = replies.iter().find_map(|r| r.warning.clone());
-                for reply in replies {
-                    model.apply_decided(reply);
-                }
-                if let Some(failure) = failure {
-                    return Some(Notice {
-                        text: refusal(failure),
-                        refused: true,
-                    });
-                }
-                warning
-            }
-        };
-        warning.map(|text| Notice {
-            text,
-            refused: false,
-        })
     }
 
     /// Add what the add field names to the chosen agent.
@@ -515,13 +506,8 @@ impl Pane {
     /// The waiting cards in the order they are drawn, each by its requests'
     /// IDs.
     fn card_order(&self) -> Vec<Vec<i64>> {
-        let pending = self.listed_pending();
-        let (on_you, on_agent) = model::waiting(&pending);
-        model::cards(&on_you)
-            .into_iter()
-            .chain(model::cards(&on_agent))
-            .map(|card| card.iter().map(|r| r.id).collect())
-            .collect()
+        let pending = self.model.as_ref().map(|m| &m.pending[..]).unwrap_or(&[]);
+        model::card_order(pending, self.agent_filter.as_deref())
     }
 
     /// Approve or refuse a card's requests, with its note when one is open.
@@ -618,6 +604,42 @@ impl Pane {
     }
 }
 
+/// Apply a change's result to `model` as Backbone returned it, and say what
+/// Backbone warned of or why it refused. A refusal changes nothing, so the
+/// controls keep what Backbone holds.
+fn settle(model: &mut model::Model, result: Result<Applied, Failure>) -> Option<Notice> {
+    let refused = |failure| Notice {
+        text: refusal(failure),
+        refused: true,
+    };
+    let warning = match result {
+        Err(failure) => return Some(refused(failure)),
+        Ok(Applied::Access(reply)) => {
+            let warning = reply.warning.clone();
+            model.apply_access(reply);
+            warning
+        }
+        Ok(Applied::Placed(reply)) => {
+            model.apply_placed(reply);
+            None
+        }
+        Ok(Applied::Decided(replies, failure)) => {
+            let warning = replies.iter().find_map(|r| r.warning.clone());
+            for reply in replies {
+                model.apply_decided(reply);
+            }
+            if let Some(failure) = failure {
+                return Some(refused(failure));
+            }
+            warning
+        }
+    };
+    warning.map(|text| Notice {
+        text,
+        refused: false,
+    })
+}
+
 /// What the pane says when a read fails, over the records still drawn.
 fn failure(error: Error) -> String {
     match error {
@@ -699,6 +721,62 @@ impl Render for Pane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_interface_roster::profiles::access::Agent;
+
+    fn model() -> model::Model {
+        let tester = Agent {
+            name: "tester".into(),
+            role: Some(Role::Main),
+            ..Agent::default()
+        };
+        model::Model {
+            overview: Overview {
+                agents: vec![tester],
+                swarms: Vec::new(),
+            },
+            ..model::Model::default()
+        }
+    }
+
+    #[test]
+    fn a_reply_is_applied_with_its_warning_and_a_refusal_changes_nothing() {
+        let mut model = model();
+        let reply = AgentAccess {
+            name: "tester".into(),
+            mode: Mode::Unsandboxed,
+            warning: Some("Unsandboxed, 'tester' runs with no agent sandbox.".into()),
+            ..AgentAccess::default()
+        };
+        assert_eq!(
+            settle(&mut model, Ok(Applied::Access(reply))),
+            Some(Notice {
+                text: "Unsandboxed, 'tester' runs with no agent sandbox.".into(),
+                refused: false,
+            })
+        );
+        assert_eq!(model.agent("tester").unwrap().mode, Mode::Unsandboxed);
+        let held = model.clone();
+        let refused = Failure::Refused {
+            code: "outside_authority".into(),
+            message: "Only the owner may set how an agent is confined.".into(),
+        };
+        assert_eq!(
+            settle(&mut model, Err(refused)),
+            Some(Notice {
+                text: "Only the owner may set how an agent is confined.".into(),
+                refused: true,
+            })
+        );
+        assert_eq!(model, held);
+        // A reply without a warning leaves no notice.
+        let placed = Placed {
+            name: "tester".into(),
+            role: Role::Coordinator,
+            superior: None,
+        };
+        assert_eq!(settle(&mut model, Ok(Applied::Placed(placed))), None);
+        assert_eq!(model.agent("tester").unwrap().role, Some(Role::Coordinator));
+    }
 
     #[test]
     fn a_refused_change_shows_backbones_reason() {

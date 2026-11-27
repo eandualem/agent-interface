@@ -769,6 +769,24 @@ impl Pane {
         }
     }
 
+    /// A grant's machine as its chip: "this Mac" for this app's own, its
+    /// name for another, and none when Backbone no longer names it.
+    fn machine_chip(&self, id: Option<&String>, name: Option<&String>) -> Option<Div> {
+        let local = &self.connection.identity().installation_id;
+        let label = match (id, name) {
+            (Some(id), _) if id == local => this_machine().to_owned(),
+            (None, None) => this_machine().to_owned(),
+            (_, Some(name)) => name.clone(),
+            (Some(_), None) => return None,
+        };
+        Some(ui::machine_chip(label))
+    }
+
+    /// Whether a grant is on this app's own machine, or names none.
+    fn on_this_machine(&self, id: Option<&String>) -> bool {
+        id.is_none_or(|id| id == &self.connection.identity().installation_id)
+    }
+
     fn github(&self, agent: &Agent, cx: &mut Context<Self>) -> Div {
         let (t, c) = (tokens(), colors());
         let (items, note) = match &agent.reach {
@@ -785,43 +803,85 @@ impl Pane {
             ),
             Reach::Unknown => (&[][..], "what it reaches is not known".to_owned()),
         };
+        // The agent's repository grants, which Backbone folds into its reach:
+        // one it reaches anyway shows on that row, and one its reach leaves
+        // out, as a top-level orchestrator's reads, gets a row of its own,
+        // so every grant can be taken away.
+        let grants: Vec<(&String, Access)> = agent
+            .grants
+            .iter()
+            .filter_map(|grant| match grant {
+                Grant::Repository { repo, access } => Some((repo, *access)),
+                _ => None,
+            })
+            .collect();
+        let granted = |repo: &str| {
+            grants
+                .iter()
+                .find(|(granted, _)| granted.eq_ignore_ascii_case(repo))
+                .map(|(repo, access)| Grant::Repository {
+                    repo: (*repo).clone(),
+                    access: *access,
+                })
+        };
+        let mut rows: Vec<(String, Access, Source, Option<Grant>)> = items
+            .iter()
+            .map(|item| {
+                (
+                    item.repo.clone(),
+                    item.access,
+                    item.source,
+                    granted(&item.repo),
+                )
+            })
+            .collect();
+        for (repo, access) in &grants {
+            if !items
+                .iter()
+                .any(|item| item.repo.eq_ignore_ascii_case(repo))
+            {
+                let grant = Grant::Repository {
+                    repo: (*repo).clone(),
+                    access: *access,
+                };
+                rows.push(((*repo).clone(), *access, Source::Grant, Some(grant)));
+            }
+        }
         let mut card = ui::group_card();
-        for (at, item) in items.iter().enumerate() {
-            let key = format!("access-repo-{}", item.repo);
-            let grant = Grant::Repository {
-                repo: item.repo.clone(),
-                access: item.access,
-            };
-            let granted = item.source == Source::Grant;
+        for (at, (repo, access, source, grant)) in rows.iter().enumerate() {
+            let key = format!("access-repo-{repo}");
+            // Only a granted access can be changed here; its own repository's
+            // and its role's follow from what the agent is.
+            let changeable = grant.clone().filter(|_| *source == Source::Grant);
             card = card.child(
                 line(at == 0)
                     .child(ui::icon("git-branch", t.size.icon, c.muted))
                     .child(ui::text(
-                        ui::mono(item.repo.clone()).text_color(c.text),
+                        ui::mono(repo.clone()).text_color(c.text),
                         &t.text.status,
                     ))
-                    .when(item.source == Source::OwnRepository, |el| {
+                    .when(*source == Source::OwnRepository, |el| {
                         el.child(ui::tag("its own repository", Tone::Quiet))
                     })
                     .child(div().flex_1())
                     .child(self.access_segments(
                         &key,
-                        item.access,
-                        granted.then(|| (agent.name.clone(), grant.clone())),
+                        *access,
+                        changeable.map(|grant| (agent.name.clone(), grant)),
                         cx,
                     ))
-                    .child(if granted {
-                        self.remove(key.clone(), &agent.name, grant, cx)
-                            .into_any_element()
-                    } else {
-                        no_remove().into_any_element()
+                    .child(match grant {
+                        Some(grant) => self
+                            .remove(key.clone(), &agent.name, grant.clone(), cx)
+                            .into_any_element(),
+                        None => no_remove().into_any_element(),
                     }),
             );
         }
         section(
             "GITHUB",
             Some(note),
-            card.child(self.add_line(items.is_empty(), true, cx)),
+            card.child(self.add_line(rows.is_empty(), true, cx)),
         )
     }
 
@@ -831,15 +891,18 @@ impl Pane {
         let mut first = true;
         for grant in &agent.grants {
             let Grant::Folder {
+                machine,
                 machine_name,
                 path,
                 access,
-                ..
             } = grant
             else {
                 continue;
             };
-            let key = format!("access-folder-{path}");
+            let key = format!(
+                "access-folder-{}-{path}",
+                machine.as_deref().unwrap_or_default()
+            );
             card = card.child(
                 line(first)
                     .child(ui::icon("folder", t.size.icon, c.muted))
@@ -847,7 +910,7 @@ impl Pane {
                         ui::mono(path.clone()).text_color(c.text),
                         &t.text.status,
                     ))
-                    .child(machine(machine_name.as_ref()))
+                    .children(self.machine_chip(machine.as_ref(), machine_name.as_ref()))
                     .child(div().flex_1())
                     .child(self.access_segments(
                         &key,
@@ -870,16 +933,23 @@ impl Pane {
         let (t, c) = (tokens(), colors());
         let mut rows: Vec<AnyElement> = Vec::new();
         for grant in &agent.grants {
-            let (label, name) = match grant {
+            let (label, id, name) = match grant {
                 Grant::SecretVariable {
-                    machine_name, name, ..
-                } => (name, machine_name),
+                    machine,
+                    machine_name,
+                    name,
+                } => (name, machine, machine_name),
                 Grant::SecretFile {
-                    machine_name, path, ..
-                } => (path, machine_name),
+                    machine,
+                    machine_name,
+                    path,
+                } => (path, machine, machine_name),
                 _ => continue,
             };
-            let key = format!("access-secret-{label}");
+            let key = format!(
+                "access-secret-{}-{label}",
+                id.as_deref().unwrap_or_default()
+            );
             let (agent_name, revoked) = (agent.name.clone(), grant.clone());
             let switch_key = key.clone();
             rows.push(
@@ -890,7 +960,10 @@ impl Pane {
                         ui::mono(label.clone()).text_color(c.text),
                         &t.text.status,
                     ))
-                    .when(name.is_some(), |el| el.child(machine(name.as_ref())))
+                    // The section says it is on this machine; others are named.
+                    .when(!self.on_this_machine(id.as_ref()), |el| {
+                        el.children(self.machine_chip(id.as_ref(), name.as_ref()))
+                    })
                     .child(div().flex_1())
                     .child(self.busy(
                         &key,
@@ -907,48 +980,74 @@ impl Pane {
                     .into_any_element(),
             );
         }
-        let docker = agent
-            .grants
-            .iter()
-            .find(|grant| matches!(grant, Grant::Docker { .. }))
-            .cloned();
-        let name = agent.name.clone();
-        let on = docker.is_some();
-        rows.push(
-            line(rows.is_empty())
-                .pr(px(t.space.s12))
-                .child(ui::icon("package", t.size.icon, c.muted))
-                .child("Docker")
-                .child(
-                    ui::text(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .text_color(c.muted),
-                        &t.text.meta,
+        // One row per Docker grant, each taken away by its switch; with none,
+        // one row whose switch grants it on the agent's own machine.
+        let dockers: Vec<Option<Grant>> = {
+            let granted: Vec<Option<Grant>> = agent
+                .grants
+                .iter()
+                .filter(|grant| matches!(grant, Grant::Docker { .. }))
+                .cloned()
+                .map(Some)
+                .collect();
+            if granted.is_empty() {
+                vec![None]
+            } else {
+                granted
+            }
+        };
+        for docker in dockers {
+            let (id, name) = match &docker {
+                Some(Grant::Docker {
+                    machine,
+                    machine_name,
+                }) => (machine.clone(), machine_name.clone()),
+                _ => (None, None),
+            };
+            let key = format!("access-docker-{}", id.as_deref().unwrap_or_default());
+            let (agent_name, switch_key) = (agent.name.clone(), key.clone());
+            let on = docker.is_some();
+            rows.push(
+                line(rows.is_empty())
+                    .pr(px(t.space.s12))
+                    .child(ui::icon("package", t.size.icon, c.muted))
+                    .child("Docker")
+                    .when(!self.on_this_machine(id.as_ref()), |el| {
+                        el.children(self.machine_chip(id.as_ref(), name.as_ref()))
+                    })
+                    .child(
+                        ui::text(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .text_color(c.muted),
+                            &t.text.meta,
+                        )
+                        .child("Only you can allow this. No agent can hand it down."),
                     )
-                    .child("Only you can allow this. No agent can hand it down."),
-                )
-                .child(self.busy(
-                    "access-docker",
-                    ui::switch("access-docker", on).on_click(cx.listener(move |pane, _, _, cx| {
-                        let change = match docker.clone() {
-                            Some(grant) => Change::Revoke(name.clone(), grant),
-                            None => Change::Grant(
-                                name.clone(),
-                                Grant::Docker {
-                                    machine: None,
-                                    machine_name: None,
-                                },
-                            ),
-                        };
-                        pane.send("access-docker".into(), change, cx);
-                    })),
-                ))
-                .into_any_element(),
-        );
+                    .child(self.busy(
+                        &key,
+                        ui::switch(SharedString::from(key.clone()), on).on_click(cx.listener(
+                            move |pane, _, _, cx| {
+                                let change = match docker.clone() {
+                                    Some(grant) => Change::Revoke(agent_name.clone(), grant),
+                                    None => Change::Grant(
+                                        agent_name.clone(),
+                                        Grant::Docker {
+                                            machine: None,
+                                            machine_name: None,
+                                        },
+                                    ),
+                                };
+                                pane.send(switch_key.clone(), change, cx);
+                            },
+                        )),
+                    ))
+                    .into_any_element(),
+            );
+        }
         section(
             "SECRETS AND DOCKER",
             Some(format!("on {}", this_machine())),
@@ -1064,9 +1163,4 @@ fn dropdown(id: SharedString, value: String, mono: bool) -> Stateful<Div> {
 /// The space a row without a remove mark keeps, so access controls line up.
 fn no_remove() -> Div {
     div().w(px(tokens().size.icon_button)).flex_shrink_0()
-}
-
-/// A grant's machine as its chip, "this Mac" when the reply names none.
-fn machine(name: Option<&String>) -> Div {
-    ui::machine_chip(name.cloned().unwrap_or_else(|| this_machine().to_owned()))
 }

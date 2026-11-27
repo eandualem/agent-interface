@@ -143,7 +143,6 @@ fn each_change_uses_its_method_route_and_body() {
             (200, identity),
             (200, access.clone()),
             (200, access.clone()),
-            (200, access.clone()),
             (200, access),
             (200, fixture("agent-placed")),
             (200, fixture("agent-placed")),
@@ -160,11 +159,6 @@ fn each_change_uses_its_method_route_and_body() {
     assert_eq!(granted.grants, std::slice::from_ref(&browser));
     assert!(granted.warning.is_some());
     c.revoke("tester", &browser).unwrap();
-    let repository = Grant::Repository {
-        repo: "example/app".into(),
-        access: Access::Read,
-    };
-    c.set_ceiling("tester", &[repository]).unwrap();
     c.set_mode("tester", Mode::Unsandboxed).unwrap();
     let placed = c.place("tester", Role::Coordinator, Some("lead")).unwrap();
     assert_eq!(
@@ -184,10 +178,6 @@ fn each_change_uses_its_method_route_and_body() {
         (
             "post /api/agents/tester/revoke ",
             r#"{"grant":{"kind":"browser","machine":"5f2c9e0d1b7a4e38","machine_name":"laptop"}}"#,
-        ),
-        (
-            "put /api/agents/tester/ceiling ",
-            r#"{"ceiling":[{"access":"read","kind":"repository","repo":"example/app"}]}"#,
         ),
         ("put /api/agents/tester/mode ", r#"{"mode":"unsandboxed"}"#),
         (
@@ -293,10 +283,6 @@ fn a_change_that_cannot_be_named_is_never_sent() {
     let c = profile.connect().unwrap();
     let invalid = Err(Failure::Connection(Error::Invalid));
     assert_eq!(c.revoke("tester", &Grant::Unknown).map(drop), invalid);
-    assert_eq!(
-        c.set_ceiling("tester", &[Grant::Unknown]).map(drop),
-        invalid
-    );
     assert_eq!(c.set_mode("tester", Mode::Unknown).map(drop), invalid);
     assert_eq!(c.place("tester", Role::Unknown, None).map(drop), invalid);
     assert_eq!(

@@ -310,15 +310,19 @@ pub(super) fn decided_at(request: &Request, now: &DateTime<FixedOffset>) -> Opti
     Some(at.format("%-d %b %H:%M").to_string())
 }
 
-/// The kind of thing a grant is, to put an agent's requests of one kind on
-/// one card.
-fn kind(grant: &Grant) -> std::mem::Discriminant<Grant> {
-    std::mem::discriminant(grant)
+/// The kind of thing a grant is, with the access it asks for, so one card
+/// holds an agent's requests of one kind and one access.
+fn kind(grant: &Grant) -> (std::mem::Discriminant<Grant>, Option<Access>) {
+    let access = match grant {
+        Grant::Repository { access, .. } | Grant::Folder { access, .. } => Some(*access),
+        _ => None,
+    };
+    (std::mem::discriminant(grant), access)
 }
 
 /// Waiting requests as the board draws them: one card for an agent's
-/// requests of the same kind that wait on the same decider, in the order
-/// the first of them is met.
+/// requests of the same kind and access that wait on the same decider, in
+/// the order the first of them is met.
 pub(super) fn cards<'a>(requests: &[&'a Request]) -> Vec<Vec<&'a Request>> {
     let mut cards: Vec<Vec<&Request>> = Vec::new();
     for request in requests {
@@ -416,7 +420,9 @@ pub(super) fn not_needed(agent: &Agent, card: &[&Request]) -> Option<String> {
             Reach::Unknown => return false,
         };
         items.iter().any(|item| {
-            item.repo == repo && (item.access == Access::Write || access == Access::Read)
+            // Backbone compares repository names without case.
+            item.repo.eq_ignore_ascii_case(repo)
+                && (item.access == Access::Write || access == Access::Read)
         })
     };
     if !asked.iter().all(|(repo, access)| reaches(repo, *access)) {
@@ -436,6 +442,23 @@ pub(super) fn not_needed(agent: &Agent, card: &[&Request]) -> Option<String> {
         }
         _ => format!("{name} already reaches these repositories. Approving changes nothing."),
     })
+}
+
+/// The waiting cards the requests view draws for the requests `agent`
+/// asked, or everyone's, in its order: those on the owner, then those on an
+/// agent; each by its requests' IDs.
+pub(super) fn card_order(pending: &[Request], agent: Option<&str>) -> Vec<Vec<i64>> {
+    let listed: Vec<Request> = pending
+        .iter()
+        .filter(|r| agent.is_none_or(|agent| r.agent == agent))
+        .cloned()
+        .collect();
+    let (on_you, on_agent) = waiting(&listed);
+    cards(&on_you)
+        .into_iter()
+        .chain(cards(&on_agent))
+        .map(|card| card.iter().map(|r| r.id).collect())
+        .collect()
 }
 
 impl Model {
@@ -869,5 +892,55 @@ mod tests {
             access: Access::Write,
         };
         assert_eq!(not_needed(agent("lead"), &[&write]), None);
+    }
+
+    #[test]
+    fn reading_and_writing_are_asked_on_separate_cards() {
+        let pending = requests("pending");
+        let mut write = pending[2].clone();
+        write.id = 24;
+        write.grant = Grant::Repository {
+            repo: "example/b".into(),
+            access: Access::Write,
+        };
+        let refs = [&pending[2], &write];
+        let cards = cards(&refs);
+        assert_eq!(cards.len(), 2);
+        assert_eq!(phrase(&cards[1]).0, "asks to write");
+    }
+
+    #[test]
+    fn repository_names_match_without_case() {
+        let overview = overview();
+        let builder = overview
+            .agents
+            .iter()
+            .find(|a| a.name == "builder")
+            .unwrap();
+        let mut asked = requests("pending")[1].clone();
+        asked.grant = Grant::Repository {
+            repo: "Example/Library".into(),
+            access: Access::Read,
+        };
+        assert!(not_needed(builder, &[&asked]).is_some());
+    }
+
+    #[test]
+    fn the_keys_move_through_cards_in_the_drawn_order() {
+        let mut pending = requests("pending");
+        let mut second = pending[2].clone();
+        second.id = 22;
+        second.grant = Grant::Repository {
+            repo: "example/site".into(),
+            access: Access::Read,
+        };
+        pending.push(second);
+        // On the owner first, then on an agent; lead's two reads share one.
+        assert_eq!(
+            card_order(&pending, None),
+            [vec![21], vec![19, 22], vec![20]]
+        );
+        assert_eq!(card_order(&pending, Some("lead")), [vec![19, 22]]);
+        assert!(card_order(&pending, Some("nobody")).is_empty());
     }
 }

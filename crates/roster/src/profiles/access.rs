@@ -1,8 +1,7 @@
 //! What each agent may reach, and changes to it, through the profile's
 //! access routes: the access fields of `GET /api/agents`,
 //! `GET /api/access/requests`, `POST /api/agents/{name}/grant` and
-//! `.../revoke`, `PUT /api/agents/{name}/ceiling`, `.../mode` and
-//! `.../place`, and `POST /api/access/requests/{id}/approve` and
+//! `.../revoke`, `PUT /api/agents/{name}/mode` and `.../place`, and `POST /api/access/requests/{id}/approve` and
 //! `.../refuse`.
 //!
 //! Backbone judges every change and replies with what the record holds
@@ -417,20 +416,6 @@ impl Connection {
     pub fn revoke(&self, name: &str, grant: &Grant) -> Result<AgentAccess, Failure> {
         let body = json!({ "grant": sendable(grant)? });
         self.change_access("POST", agent_path(name, "revoke")?, body)
-    }
-
-    /// Replace the widest access the agent `name` may grant to the agents
-    /// below it. Runs on an I/O worker.
-    pub fn set_ceiling(&self, name: &str, ceiling: &[Grant]) -> Result<AgentAccess, Failure> {
-        let ceiling = ceiling
-            .iter()
-            .map(sendable)
-            .collect::<Result<Vec<_>, _>>()?;
-        self.change_access(
-            "PUT",
-            agent_path(name, "ceiling")?,
-            json!({ "ceiling": ceiling }),
-        )
     }
 
     /// Set how the agent `name` is confined. Runs on an I/O worker.
