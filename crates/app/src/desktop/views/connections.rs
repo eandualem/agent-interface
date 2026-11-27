@@ -461,7 +461,7 @@ impl Render for Pane {
         let (t, c) = (tokens(), colors());
         let entity = cx.entity().downgrade();
         let root_focus = self.root_focus.clone();
-        let reveal = self.reveal.clone();
+        let (reveal, expiring) = (self.reveal.clone(), self.reveal.clone());
         let tracker = canvas(
             move |bounds, window, cx| {
                 let pixels = f32::from(bounds.size.width);
@@ -517,7 +517,9 @@ impl Render for Pane {
                     });
                 }
             },
-            |_, (), _, _| (),
+            // Painting follows every prepaint, so each control's layer has
+            // seen the focus move by now.
+            move |_, (), _, _| expiring.expire(),
         )
         .absolute()
         .size_full();

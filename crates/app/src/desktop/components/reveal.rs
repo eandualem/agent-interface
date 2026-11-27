@@ -23,6 +23,14 @@ impl Reveal {
         *self.0.borrow_mut() = window.focused(cx).map(|focus| focus.downgrade());
     }
 
+    /// Forget a focus move no layer took, as when focus went to a control
+    /// outside the scrolling elements, so a later focus on a control with a
+    /// layer, such as by a click, does not scroll. Call once a frame after
+    /// the layers' prepaint, as from a paint callback.
+    pub fn expire(&self) {
+        self.0.borrow_mut().take();
+    }
+
     /// An invisible layer for a relatively positioned control that tracks
     /// `focus`, inside the scrolling element `scroll` tracks. When a focus
     /// move lands on the control, it scrolls the least distance that shows
