@@ -423,7 +423,7 @@ fn reconcile_selection(
     selected: &mut Option<String>,
     disarmed: &mut bool,
     refreshing: bool,
-    reading_team: bool,
+    reading_agents: bool,
 ) {
     if refreshing && selected.is_some() {
         return;
@@ -435,13 +435,15 @@ fn reconcile_selection(
             *disarmed = true;
         }
     } else if !*disarmed {
-        // The connections, and the sessions while the team is read, are
-        // there before the agents above them, whose rows they may become;
-        // the first choice waits for those.
+        // The connections, and while the agents are read the sessions and
+        // the agents' rows, are there before the agents' tree is whole: a
+        // session may become an agent's row, and a swarm member listed
+        // alone folds under its agent once the swarms are read. The first
+        // choice waits for those.
         *selected = choices
             .find(|row| match row {
                 Row::Connection(_) => !refreshing,
-                Row::Session(_) => !reading_team,
+                Row::Session(_) | Row::Tree(..) => !reading_agents,
                 _ => true,
             })
             .map(row_key);
@@ -996,13 +998,16 @@ impl Render for NewPane {
             Mode::Agents => self.team_loading,
             Mode::Reports | Mode::Views => false,
         };
-        let reading_team = self.mode == Mode::Sessions && self.team_loading;
+        // The swarms come with the roster, read apart from the team; once
+        // read, even as an error, the tree no longer changes shape.
+        let reading_agents = self.mode == Mode::Sessions
+            && (self.team_loading || (self.origin.has_provider() && !self.agents.observed()));
         reconcile_selection(
             &rows,
             &mut self.selected,
             &mut self.disarmed,
             refreshing,
-            reading_team,
+            reading_agents,
         );
         let views = matches!(self.mode, Mode::Views | Mode::Agents);
         let buttons = div()
@@ -2124,6 +2129,13 @@ mod tests {
         assert!(selected.is_none() && !disarmed);
         reconcile_selection(&early, &mut selected, &mut disarmed, false, false);
         assert_eq!(selected.as_deref(), Some("lead"));
+        // So does a swarm member listed alone before the swarms are read.
+        let alone = shown(&[], &[]);
+        let (mut selected, mut disarmed) = (None, false);
+        reconcile_selection(&alone, &mut selected, &mut disarmed, false, true);
+        assert!(selected.is_none() && !disarmed);
+        reconcile_selection(&alone, &mut selected, &mut disarmed, false, false);
+        assert_eq!(selected.as_deref(), Some("agent:lead:"));
         // Read, a list of connections alone still offers its first.
         let (mut selected, mut disarmed) = (None, false);
         reconcile_selection(
