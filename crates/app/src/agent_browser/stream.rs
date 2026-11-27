@@ -49,6 +49,11 @@ const QUALITY: u32 = 80;
 const POLL: Duration = Duration::from_millis(5);
 /// How long a read waits while no frame waits to be drawn or acknowledged.
 const IDLE: Duration = Duration::from_millis(100);
+/// How long a read waits while the view has the keyboard but no input has
+/// come lately: short enough that the first key after a pause leaves soon,
+/// long enough that a view left focused does not wake the client 200 times a
+/// second.
+const FOCUSED: Duration = Duration::from_millis(20);
 /// How long a waiting frame keeps reads short. A view that has not taken it
 /// by then is not painting, so the client looks less often.
 const EAGER: Duration = Duration::from_secs(1);
@@ -454,7 +459,7 @@ fn run(port: &dyn Fn() -> Option<u16>, target: &str, shared: &Shared, wake: &dyn
             latest.state = State::Unreachable;
             latest.acks.clear();
             latest.replaced.clear();
-            latest.input.clear();
+            forget_input(&mut latest.input);
         }
         wake();
         let mut waited = Duration::ZERO;
@@ -466,14 +471,15 @@ fn run(port: &dyn Fn() -> Option<u16>, target: &str, shared: &Shared, wake: &dyn
 }
 
 /// Start a new connection: a frame from the previous one is neither drawn
-/// nor acknowledged on it, and input given before it is not sent.
+/// nor acknowledged on it, and input given before it is not sent, except a
+/// mouse release.
 fn restart(shared: &Shared) {
     let mut latest = lock(shared);
     latest.state = State::Connecting;
     latest.frame = None;
     latest.acks.clear();
     latest.replaced.clear();
-    latest.input.clear();
+    forget_input(&mut latest.input);
 }
 
 /// A local TCP connection to `port`, waiting at most `RETRY` for each read.
@@ -573,16 +579,11 @@ fn watch(
                 latest.input_at,
             )
         };
-        // Input leaves within a short read while the view has the keyboard,
-        // gave input lately or some waits.
-        let typing = shared.focused.load(Ordering::Relaxed)
-            || input_at.is_some_and(|at| at.elapsed() < EAGER)
-            || inputs.waiting();
-        let wanted = if eager(&mut waiting_since, waiting, taken, Instant::now()) || typing {
-            POLL
-        } else {
-            IDLE
-        };
+        let wanted = read_wait(
+            eager(&mut waiting_since, waiting, taken, Instant::now()),
+            input_at.is_some_and(|at| at.elapsed() < EAGER) || inputs.waiting(),
+            shared.focused.load(Ordering::Relaxed),
+        );
         if wanted != timeout {
             if socket.get_ref().set_read_timeout(Some(wanted)).is_err() {
                 return Ended::Lost;
@@ -635,6 +636,26 @@ fn watch(
             Err(_) => return Ended::Lost,
         }
     }
+}
+
+/// How long a read waits: `POLL` while a frame waits to be acknowledged or
+/// input came within `EAGER` or waits for Chrome's answer, `FOCUSED` while
+/// the view only has the keyboard, else `IDLE`.
+fn read_wait(frames: bool, input: bool, focused: bool) -> Duration {
+    if frames || input {
+        POLL
+    } else if focused {
+        FOCUSED
+    } else {
+        IDLE
+    }
+}
+
+/// Input given before a new connection is not sent on it, except a mouse
+/// release: the page keeps a button pressed across the client's connections
+/// until it hears one.
+fn forget_input(waiting: &mut VecDeque<Input>) {
+    waiting.retain(|input| matches!(input, Input::Released(_)));
 }
 
 /// When to restart the screencast: once, `REFRESH` after the listing shows a
@@ -1277,10 +1298,32 @@ mod tests {
             assert_eq!(latest.acks, [2]);
             assert_eq!(latest.replaced, [1]);
         }
+        {
+            let mut latest = lock(&shared);
+            for input in [
+                Input::Pressed(pointer(1.)),
+                Input::Moved(pointer(2.)),
+                Input::Released(pointer(2.)),
+                Input::Text("a".into()),
+            ] {
+                push(&mut latest.input, input);
+            }
+        }
         restart(&shared);
         let latest = lock(&shared);
         assert!(latest.frame.is_none() && latest.acks.is_empty() && latest.replaced.is_empty());
         assert_eq!(latest.state, State::Connecting);
+        // Only a release goes on to the new connection, so no button stays
+        // pressed in the page.
+        assert_eq!(latest.input, [Input::Released(pointer(2.))]);
+    }
+
+    #[test]
+    fn a_view_left_focused_reads_less_often_than_one_in_use() {
+        assert_eq!(read_wait(true, false, false), POLL);
+        assert_eq!(read_wait(false, true, true), POLL);
+        assert_eq!(read_wait(false, false, true), FOCUSED);
+        assert_eq!(read_wait(false, false, false), IDLE);
     }
 
     #[test]
