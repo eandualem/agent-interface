@@ -19,7 +19,11 @@ Everything lives under FAKE_BACKBONE_ROOT (the test's temporary HOME):
   <backbone dir>/profiles/<id>/   each profile's api.sock, as the service
                                   keeps them: $XDG_DATA_HOME/backbone
   fake/state.json                 the machine, its profiles and their agents
-  fake/*.jsonl                    logs of CLI calls, HTTP requests and setup
+  fake/*.jsonl                    logs of CLI calls, HTTP requests, setup
+                                  and agent starts
+
+Each profile also has two other machines: linux-box, online, whose tools
+are listed, and desktop, offline.
 
 Nothing here starts tmux, an agent CLI or a network connection.
 """
@@ -78,6 +82,9 @@ RUNTIMES = [
 ]
 # The tools setup starts a first agent in.
 SETUP_RUNTIMES = ("claude", "codex", "antigravity")
+# The profile's other machines, as `GET /api/profile/machines` lists them.
+LINUX_BOX = "5f0c9a1e7b2d4c6e8f0a1b3c5d7e9f2a4b6c8d0e1f3a5b7c9d2e4f6a8b0c1d3e"
+DESKTOP = "1b2c3d4e5f6a7b8c9d0e1f2a8f4e2b1c9d3a7e6f5b0c1d2e3f4a5b6c7d8e9f0a"
 
 
 # ---------------------------------------------------------------- state ----
@@ -450,8 +457,7 @@ def make_handler(profile_id):
 
         def handle_request(self, method):
             length = int(self.headers.get("Content-Length") or 0)
-            if length:
-                self.rfile.read(length)
+            self.body = self.rfile.read(length) if length else b""
             self.said = None
             status = self.route(method)
             log("http.jsonl", {"profile": profile_id, "method": method, "path": self.path,
@@ -496,6 +502,36 @@ def make_handler(profile_id):
                 return respond(self, 200, {"schema_version": 1, "profile_id": profile_id,
                                            "instance_id": state["instance_id"], "runtime": runtime,
                                            "storage": storage, **({"message": message} if message else {})})
+            if method == "GET" and url.path == "/api/profile/machines":
+                this = {**state["machine"], "home": True, "addresses": [], "state": "online",
+                        "joined_at": "2026-11-01T09:00:00Z", "last_seen": None, "version": VERSION}
+                return respond(self, 200, {"machines": [this,
+                    {"id": LINUX_BOX, "name": "linux-box", "home": False, "addresses": [],
+                     "state": "online", "joined_at": "2026-11-20T10:00:00Z",
+                     "last_seen": rfc3339(time.time() - 30), "version": VERSION},
+                    {"id": DESKTOP, "name": "desktop", "home": False, "addresses": [],
+                     "state": "offline", "joined_at": "2026-11-10T12:01:30Z",
+                     "last_seen": rfc3339(time.time() - 2 * 3600), "version": None}]})
+            if method == "GET" and url.path == f"/api/profile/machines/{LINUX_BOX}/runtimes":
+                # linux-box has Claude Code signed in, and no Codex.
+                items = [{**r, "available": r["id"] == "claude",
+                          "sign_in": {"storage": "present" if r["id"] == "claude" else "missing"}}
+                         for r in RUNTIMES if r["id"] in ("claude", "codex")]
+                return respond(self, 200, {"schema_version": 1, "machine": LINUX_BOX,
+                                           "machine_name": "linux-box",
+                                           "checked_at": rfc3339(time.time() - 120), "items": items})
+            if method == "GET" and url.path == f"/api/profile/machines/{DESKTOP}/runtimes":
+                return refused(self, 503, "machine_unreachable",
+                               "machine 'desktop' cannot be reached now, so its runtimes are not known")
+            if method == "POST" and url.path == "/api/agents/start":
+                start = json.loads(self.body)
+                log("start.jsonl", {"profile": profile_id, "request_id": self.headers.get("X-Backbone-Request-ID"),
+                                    "body": start})
+                return respond(self, 200, {"ok": True, "session": start["name"], "name": start["name"],
+                                           "working_directory": start.get("dir") or "~/app",
+                                           "runtime": start.get("runtime") or "claude", "model": None,
+                                           "repo": start.get("repo") or "", "already_existed": False,
+                                           "ready": "not_waited", "evidence": []})
             # Every other route, the push stream among them, is not this
             # stand-in's; the app goes on without it.
             return respond(self, 404, {"detail": {"code": "not_found", "message": "not found"}})

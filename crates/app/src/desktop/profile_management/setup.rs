@@ -271,6 +271,9 @@ pub(super) struct Request {
     pub create: Option<PathBuf>,
     /// 32 lowercase hexadecimal digits, a UUIDv7.
     pub request_id: String,
+    /// Another machine it starts on, by name. Its terminal is there, so no
+    /// pane opens here once it runs.
+    pub elsewhere: Option<String>,
 }
 struct Served {
     request: Request,
@@ -532,7 +535,7 @@ impl Pane {
                 if let Some(served) = &mut pane.served {
                     served.answer = Some(answer);
                 }
-                if pane.running() {
+                if pane.running() && pane.elsewhere().is_none() {
                     pane.get_started(cx);
                 }
                 cx.notify();
@@ -845,6 +848,11 @@ impl Pane {
         self.back(cx);
     }
 
+    /// Another machine the start went to, by name.
+    fn elsewhere(&self) -> Option<&str> {
+        self.served.as_ref()?.request.elsewhere.as_deref()
+    }
+
     /// The agent is up, whatever it's showing.
     pub fn running(&self) -> bool {
         if let Some(served) = &self.served {
@@ -974,6 +982,39 @@ impl Pane {
             Some(served) => served.request.start.name(),
             None => snapshot.map_or("Your agent", |s| s.agent_name.as_str()),
         };
+        // Started on another machine: it appears in the panel with that
+        // machine's tag, and nothing here attaches to it.
+        if let Some(there) = self.elsewhere().filter(|_| self.running()) {
+            let (title, note) = started_elsewhere(name, there);
+            return div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .gap(px(t.space.s10))
+                .track_focus(&self.focus)
+                .capture_key_down(cx.listener(|pane, event: &gpui::KeyDownEvent, _, cx| {
+                    if event.keystroke.key.as_str() == "escape" {
+                        pane.back(cx);
+                        cx.stop_propagation();
+                    }
+                }))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(t.space.s8))
+                        .child(ui::step_dot(ui::Step::Done))
+                        .child(div().text_color(c.text).child(title)),
+                )
+                .child(meta(note))
+                .child(
+                    div().flex().items_center().gap(px(t.space.s8)).child(
+                        ui::button("setup-done", "Done", ui::Button::Primary)
+                            .on_click(cx.listener(|pane, _, _, cx| pane.back(cx))),
+                    ),
+                )
+                .into_any_element();
+        }
         let starting = self.starting() || self.running();
         let (step, title, note) = if starting {
             (
@@ -1043,6 +1084,15 @@ impl Pane {
             .child(actions)
             .into_any_element()
     }
+}
+
+/// What a start on another machine says once it runs: its terminal is
+/// there, so it is found in the panel.
+fn started_elsewhere(name: &str, there: &str) -> (String, String) {
+    (
+        format!("{name} started"),
+        format!("Started on {there}; it appears in the panel."),
+    )
 }
 
 /// What a start is doing, from the step the provider last reported.

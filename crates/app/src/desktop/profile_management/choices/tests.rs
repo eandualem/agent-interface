@@ -441,13 +441,180 @@ fn choosing_the_chosen_tool_again_changes_nothing() {
 #[test]
 fn tab_reaches_every_field_shown_in_order() {
     // Without the repository field: name, back to name.
-    assert_eq!(next_field(Some(Field::Name), false), Field::Name);
-    assert_eq!(next_field(None, false), Field::Name);
+    assert_eq!(next_field(Some(Field::Name), false, false), Field::Name);
+    assert_eq!(next_field(None, false, false), Field::Name);
     // With it: name, then the repository, back to name.
-    assert_eq!(next_field(Some(Field::Name), true), Field::Repository);
-    assert_eq!(next_field(Some(Field::Repository), true), Field::Name);
+    assert_eq!(
+        next_field(Some(Field::Name), false, true),
+        Field::Repository
+    );
+    assert_eq!(
+        next_field(Some(Field::Repository), false, true),
+        Field::Name
+    );
     // A focused field that is no longer shown goes back to the name.
-    assert_eq!(next_field(Some(Field::Repository), false), Field::Name);
+    assert_eq!(
+        next_field(Some(Field::Repository), false, false),
+        Field::Name
+    );
+    // On another machine, where it works comes after the name.
+    assert_eq!(next_field(Some(Field::Name), true, true), Field::Place);
+    assert_eq!(
+        next_field(Some(Field::Place), true, true),
+        Field::Repository
+    );
+    assert_eq!(next_field(Some(Field::Place), false, false), Field::Name);
+}
+
+/// Backbone's machines.json: the home `laptop`, online, and `desktop`, offline.
+fn machines() -> Vec<ProfileMachine> {
+    let listed: Value = serde_json::from_str(include_str!(
+        "../../../../../roster/src/profiles/setup/fixtures/machines.json"
+    ))
+    .unwrap();
+    listed["machines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| ProfileMachine {
+            id: m["id"].as_str().unwrap().into(),
+            name: m["name"].as_str().unwrap().into(),
+            home: m["home"].as_bool().unwrap(),
+            state: if m["state"] == "online" {
+                MachineState::Online
+            } else {
+                MachineState::Offline
+            },
+            joined_at: None,
+            last_seen: m["last_seen"].as_str().map(str::to_owned),
+        })
+        .collect()
+}
+
+#[test]
+fn this_machine_comes_first_and_one_machine_offers_no_choice() {
+    let listed = machines();
+    let (laptop, desktop) = (listed[0].id.clone(), listed[1].id.clone());
+    let names =
+        |chosen: Vec<ProfileMachine>| chosen.into_iter().map(|m| m.name).collect::<Vec<_>>();
+    assert_eq!(
+        names(machine_choices(listed.clone(), &laptop)),
+        ["laptop", "desktop"]
+    );
+    assert_eq!(
+        names(machine_choices(listed.clone(), &desktop)),
+        ["desktop", "laptop"]
+    );
+    // A profile of one machine, or a list without this one, shows no row.
+    assert!(machine_choices(listed[..1].to_vec(), &laptop).is_empty());
+    assert!(machine_choices(listed, "0123").is_empty());
+}
+
+#[test]
+fn this_machine_is_chosen_first_and_an_offline_one_cannot_be() {
+    let mut listed = machines();
+    let desktop = listed[1].id.clone();
+    let mut chosen = None;
+    // Offline: not chosen, and this machine stays.
+    assert!(!switch_machine(&mut chosen, &listed, Some(&desktop)));
+    assert_eq!(chosen, None);
+    listed[1].state = MachineState::Unknown;
+    assert!(!switch_machine(&mut chosen, &listed, Some(&desktop)));
+    listed[1].state = MachineState::Online;
+    assert!(switch_machine(&mut chosen, &listed, Some(&desktop)));
+    assert_eq!(chosen.as_deref(), Some(desktop.as_str()));
+    assert!(!switch_machine(&mut chosen, &listed, Some(&desktop)));
+    // This machine is chosen by none, and is always open.
+    assert!(switch_machine(&mut chosen, &listed, None));
+    assert_eq!(chosen, None);
+    // This machine's own ID is not another machine.
+    assert!(!switch_machine(
+        &mut chosen,
+        &listed,
+        Some(&listed[0].id.clone())
+    ));
+}
+
+#[test]
+fn an_offline_machine_says_when_it_was_last_seen() {
+    let seen = agent_interface_roster::views::epoch_seconds("2026-11-10T13:40:12Z").unwrap();
+    let offline = MachineState::Offline;
+    assert_eq!(
+        unavailable(
+            "desktop",
+            offline,
+            Some("2026-11-10T13:40:12Z"),
+            seen + 2.0 * 3600.0
+        ),
+        "desktop is offline (last seen 2h ago), so it can't be chosen."
+    );
+    assert_eq!(
+        unavailable("desktop", offline, None, seen),
+        "desktop is offline (not heard from yet), so it can't be chosen."
+    );
+    // A state this app doesn't know isn't called offline.
+    assert_eq!(
+        unavailable(
+            "desktop",
+            MachineState::Unknown,
+            Some("2026-11-10T13:40:12Z"),
+            seen
+        ),
+        "desktop's state isn't known, so it can't be chosen."
+    );
+}
+
+#[test]
+fn a_start_on_another_machine_waits_for_its_tools_and_a_free_name() {
+    let listed = Elsewhere::Listed {
+        catalog: catalog(&runtimes()),
+        checked_at: None,
+    };
+    let Elsewhere::Listed { catalog: tools, .. } = &listed else {
+        unreachable!()
+    };
+    let codex = &tools.items()[0];
+    fn id(tool: Option<Option<&Runtime>>) -> Option<Option<&str>> {
+        tool.map(|tool| tool.map(|r| r.id.as_str()))
+    }
+    // Listed: the tool chosen there, with a model it has.
+    assert_eq!(
+        id(elsewhere_tool(false, Some(&listed), Some(codex), None)),
+        Some(Some("codex"))
+    );
+    assert_eq!(id(elsewhere_tool(false, Some(&listed), None, None)), None);
+    assert_eq!(
+        id(elsewhere_tool(
+            false,
+            Some(&listed),
+            Some(codex),
+            Some("opus")
+        )),
+        None
+    );
+    // Not listed: the profile's default tool, no tool or model sent.
+    let unlisted = Elsewhere::NotListed(None);
+    assert_eq!(
+        id(elsewhere_tool(false, Some(&unlisted), None, None)),
+        Some(None)
+    );
+    // As where that machine's Backbone is too old to list them.
+    let older = Elsewhere::NotListed(Some("upgrade it to see them".into()));
+    assert_eq!(
+        id(elsewhere_tool(false, Some(&older), None, None)),
+        Some(None)
+    );
+    // Being read, or unknown: no start.
+    let refused = Elsewhere::Refused("machine 'desktop' cannot be reached now".into());
+    for waiting in [None, Some(&Elsewhere::Reading), Some(&refused)] {
+        assert_eq!(id(elsewhere_tool(false, waiting, Some(codex), None)), None);
+    }
+    // A name the profile already has: no start, whatever is listed.
+    assert_eq!(
+        id(elsewhere_tool(true, Some(&listed), Some(codex), None)),
+        None
+    );
+    assert_eq!(id(elsewhere_tool(true, Some(&unlisted), None, None)), None);
 }
 
 #[test]
@@ -532,4 +699,63 @@ fn start_and_enter_pass_one_gate_that_an_open_request_closes() {
     // Nothing open: the choices decide.
     assert!(may_start(None, false, || true));
     assert!(!may_start(None, false, || false));
+}
+
+#[test]
+fn a_place_on_another_machine_names_the_agent_only_with_a_valid_name() {
+    assert_eq!(place_name(" acme/App ").as_deref(), Some("app"));
+    assert_eq!(place_name("~/work/api").as_deref(), Some("api"));
+    // Home itself, or a last part no agent may be named, names nothing.
+    assert_eq!(place_name("~/"), None);
+    assert_eq!(place_name("/srv/a+b"), None);
+    // Not a place: nothing.
+    assert_eq!(place_name("work/app/x"), None);
+}
+
+#[test]
+fn only_the_latest_read_of_the_chosen_machine_is_shown() {
+    assert!(accepts_read(2, 2, Some("linux"), "linux"));
+    // A later read began: this one is superseded.
+    assert!(!accepts_read(3, 2, Some("linux"), "linux"));
+    // Another machine, or this one, is chosen now.
+    assert!(!accepts_read(2, 2, Some("desktop"), "linux"));
+    assert!(!accepts_read(2, 2, None, "linux"));
+}
+
+#[test]
+fn an_older_backbones_reason_ends_in_one_full_stop() {
+    let note = "machine 'build-box' runs an older Backbone; upgrade it to see them. It starts in the profile's default tool.";
+    assert_eq!(
+        older_note("machine 'build-box' runs an older Backbone; upgrade it to see them."),
+        note
+    );
+    assert_eq!(
+        older_note("machine 'build-box' runs an older Backbone; upgrade it to see them"),
+        note
+    );
+}
+
+#[test]
+fn a_machine_gone_from_the_list_is_not_kept_as_the_choice() {
+    let mut listed = machines();
+    let (laptop, desktop) = (listed[0].id.clone(), listed[1].id.clone());
+    assert!(still_listed(None, &listed));
+    // Listed but offline: back to this machine, as it couldn't be chosen.
+    assert!(!still_listed(Some(&desktop), &listed));
+    listed[1].state = MachineState::Unknown;
+    assert!(!still_listed(Some(&desktop), &listed));
+    listed[1].state = MachineState::Online;
+    assert!(still_listed(Some(&desktop), &listed));
+    // Gone from a newer list, which may offer no choice at all now, or
+    // this machine's own ID: back to this one.
+    assert!(!still_listed(Some(&desktop), &listed[..1]));
+    assert!(!still_listed(Some(&laptop), &listed));
+    assert!(!still_listed(Some(&desktop), &[]));
+    assert!(machine_choices(listed[..1].to_vec(), &laptop).is_empty());
+}
+
+#[test]
+fn a_name_from_a_repository_says_so() {
+    assert_eq!(named_from(" acme/app "), "From the repository");
+    assert_eq!(named_from("~/work/app"), "From the folder");
 }
