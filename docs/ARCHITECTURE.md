@@ -275,7 +275,7 @@ library directly.
 First run is the person's first profile. A profile is where agents, sign-ins,
 skills and policies live, so first run makes one with New profile's own screens
 and asks for nothing it can check or default instead. On a ready computer it
-takes two presses: Continue on the name, then Start on the guide.
+takes two presses: Continue on the name, then Start on the orchestrator.
 
 It opens with a scene of about five seconds, played once: the app's face
 laughs, looks around and winks into the icon, with the same keyframes as the
@@ -343,15 +343,16 @@ has. The workspace window then binds the library's untouched starting
 workspace to the profile (a new workspace when the library already holds
 more), as soon as its library has loaded.
 
-The guide's screen (`profile_management/choices.rs` in guide mode) has its
+The orchestrator's screen (`profile_management/choices.rs` in guide mode) has its
 name, the tool it runs in and Start. Each tool card says whether that tool is
 signed in in the profile, will ask for sign-in when it starts, or needs installing.
 Install uses the tool's official installer and the login shell's PATH. The first choice is a signed-in tool, else an installed one.
-Folder, instructions, model, greeting and orchestrator sit under More options. The
-guide starts as `guide`, working in `~/Agents/guide`, which setup creates
+Folder, instructions, model, greeting and orchestrator sit under More options; the
+orchestrator switch starts on for a profile's first agent. The
+orchestrator starts as `orchestrator`, working in `~/Agents/orchestrator`, which setup creates
 (`create_directory`); a folder the person chooses must already exist. Its brief
 is the coordinating `orchestrator-v1` template or the person's own
-instructions. The guide starts through setup's schema-3 `first_agent`
+instructions. The orchestrator starts through setup's schema-3 `first_agent`
 request, saved in the profile's setup journal before it runs and retried or
 cancelled as that saved request. While it starts, setup's steps show as one
 status line under the button, and as soon as setup says its CLI runs
@@ -369,9 +370,9 @@ reply gets the first result, and the tool list comes from
 The layer offers the same persistent interface-size setting as the workspace,
 including during the opening scene. Progress is saved as `[setup]` in
 `settings.toml`: an interrupted first run resumes without the scene, and a
-profile made before the app closed (`profile`) goes straight to its guide.
+profile made before the app closed (`profile`) goes straight to its orchestrator.
 **New Profile…** in the application menu shows the same two screens in the
-content area, titled "New profile" and "Start its guide", with Cancel and Skip
+content area, titled "New profile" and "Start its orchestrator", with Cancel and Skip
 for now. An explicit library directory skips first run.
 
 ### Limitations
@@ -1916,7 +1917,7 @@ no process.
 Profile runtime catalogs come from `backbone runtimes --json` (schema 1), run
 with the captured discovery executable and caller context. It names no profile:
 what it lists is this machine's. Add agent offers a runtime that is installed
-and listed as supporting setup; a guide offers an installed runtime among the
+and listed as supporting setup; an orchestrator offers an installed runtime among the
 CLIs first-agent setup starts. Catalogs keep authentication observations
 separate from executable availability and setup support.
 Provider paths and unattended argument examples are discarded; these reads cannot
@@ -2063,7 +2064,7 @@ handshake. Fresh first-agent setup choices remain separate from saved-request
 recovery.
 
 New profile runs as two screens across its workspace's content area: name, then
-its guide.
+its orchestrator.
 The name screen takes an explicit profile name and records one immutable create
 request in the same durable lifecycle journal. The service serves a profile from
 the moment it makes it, so the screen then runs the authenticated selection;
@@ -2075,7 +2076,7 @@ computer's own Git name and email are kept, the saved request records
 copies nothing, so once the profile is running the app sets those two in it, as
 for a name and email typed there. Otherwise the mark is omitted, keeping the
 saved request's bytes unchanged, and recovery restores whichever request was
-saved. The guide screen reads the profile's runtime catalog
+saved. The orchestrator screen reads the profile's runtime catalog
 and asks `GET /api/profile/accounts/status` once for each installed CLI, so each
 tool card can say whether it is signed in; signed in means a stored sign-in, not a
 working account. Its Start saves and sends setup's `first_agent` request; Add
@@ -2097,7 +2098,7 @@ readiness does not authorize account access or open an ambient terminal.
 Fresh setup admission validates existing durable setup records and inserts the
 new intent under one journal lock. An open request blocks every other first-agent
 request of the same profile, whatever agent it adds, since it may still make the
-profile's first agent; a guide's Start waits while one is open. A request closes
+profile's first agent; an orchestrator's Start waits while one is open. A request closes
 on confirmed readiness, safe cancellation, a cancellation answered
 `request_expired` (the request never runs now; what came of it before stays
 unknown and listed), or a result whose retry policy says this same request can
@@ -2132,7 +2133,7 @@ A failed roster read loses status, not access: tmux keeps the sessions and panes
 attached, with a status note, while the read retries.
 
 Native first-agent setup captures one profile entry and the operator
-client before loading choices. A guide checks the independent private setup
+client before loading choices. An orchestrator checks the independent private setup
 journal for open requests of the profile, which hold back a new one, and then
 reads the Rust service's runtime catalog (`backbone runtimes --json`); setup
 starts Claude Code, Codex and Antigravity only. Add agent opens no journal.
