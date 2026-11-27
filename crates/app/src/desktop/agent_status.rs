@@ -737,6 +737,19 @@ impl Sources {
     }
 }
 
+/// Slow every profile's roster reads while no window is visible; once one
+/// is, they read at once. Read-only, so it redraws no window.
+pub(super) fn set_shown(shown: bool, cx: &App) {
+    let Some(sources) = cx.try_global::<Sources>() else {
+        return;
+    };
+    for source in sources.0.values().filter_map(Weak::upgrade) {
+        if let Some(roster) = &source.roster.0 {
+            roster.set_shown(shown);
+        }
+    }
+}
+
 /// Joining a bounded in-flight request must never block the UI thread.
 #[derive(Default)]
 struct Roster(Option<crate::roster::BoundRosterSource>);

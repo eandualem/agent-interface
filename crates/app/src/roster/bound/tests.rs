@@ -921,3 +921,72 @@ fn an_open_stream_slows_the_poll_and_its_end_reads_at_once() {
         "{gap:?}"
     );
 }
+
+#[test]
+fn a_hidden_roster_reads_slowly_and_reads_at_once_when_shown() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let path = directory.path().join("api.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let identity = json!({
+        "protocol_version": 1, "profile_id": "profile-h", "display_name": "h",
+        "instance_id": "instance-h", "machine": {"id": "machine-h"}
+    });
+    let mut entry = identity.clone();
+    entry["state"] = json!("serving");
+    entry["socket"] = json!(path);
+    entry["tmux_socket"] = json!(directory.path().join("tmux.sock"));
+    entry["credential_reference"] = json!({"type": "socket"});
+    let profile = Profile::parse(&serde_json::to_vec(&entry).unwrap()).unwrap();
+    let (read, reads) = mpsc::channel();
+    // Serves until the source is dropped and the test's receiver with it.
+    thread::spawn(move || {
+        for socket in listener.incoming() {
+            let mut socket = socket.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                if socket.read_exact(&mut byte).is_err() {
+                    break;
+                }
+                request.push(byte[0]);
+            }
+            let request = String::from_utf8_lossy(&request);
+            let (status, body) = if request.starts_with("GET /health ") {
+                (200, health())
+            } else if request.starts_with("GET /api/profile ") {
+                (200, identity.to_string())
+            } else if request.starts_with("GET /api/agents ") {
+                if read.send(Instant::now()).is_err() {
+                    return;
+                }
+                (200, json!({"items": []}).to_string())
+            } else if request.starts_with("GET /api/swarms ") {
+                (200, json!({"items": []}).to_string())
+            } else if request.starts_with("GET /api/status/services ") {
+                (200, json!({"machines": []}).to_string())
+            } else {
+                // No push stream, so the roster is polled every two seconds.
+                (404, String::new())
+            };
+            let _ = write!(
+                socket,
+                "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    let source = BoundRosterSource::start(profile.connect().unwrap(), || {}).unwrap();
+    let wait = Duration::from_secs(5);
+    reads.recv_timeout(wait).unwrap();
+    source.set_shown(false);
+    // A two-second wait begun before may end with one more read; then none
+    // follows for well over that.
+    let _ = reads.recv_timeout(POLL + Duration::from_secs(1));
+    assert!(reads.recv_timeout(POLL * 2).is_err());
+    let shown = Instant::now();
+    source.set_shown(true);
+    reads.recv_timeout(wait).unwrap();
+    assert!(shown.elapsed() < Duration::from_secs(1));
+}

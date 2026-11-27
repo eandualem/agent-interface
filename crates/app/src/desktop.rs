@@ -805,6 +805,10 @@ struct Browser {
     pane_bounds: Rc<RefCell<HashMap<String, Bounds<gpui::Pixels>>>>,
     split_bounds: Rc<RefCell<HashMap<String, Bounds<gpui::Pixels>>>>,
     resize_activation: Option<gpui::Subscription>,
+    /// Whether the window is hidden, minimised or fully covered; its pane
+    /// sources then stop reading.
+    window_hidden: bool,
+    window_visibility: Option<gpui::Subscription>,
     /// The view in each shown view pane, with its event subscription.
     views: HashMap<String, (gpui::Entity<views::ViewPane>, navigation_origin::ViewEvents)>,
     /// The chooser in each shown empty pane, with its event subscription.
@@ -1698,6 +1702,38 @@ impl Browser {
             self.save(cx);
         }
         applied || closed
+    }
+
+    /// Pause the pane sources while the window is not visible; nothing is
+    /// drawn then, so they are told directly. Shown again, the next frame
+    /// sets them as the layout shows them, and each reads at once. The
+    /// roster reads slowly only while no window of the app is visible.
+    fn window_shown(
+        &mut self,
+        visibility: gpui::WindowVisibility,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.window_hidden = !visibility.is_visible();
+        let this = window.window_handle().window_id();
+        let any = visibility.is_visible()
+            || cx.windows().into_iter().any(|other| {
+                other.window_id() != this
+                    && other
+                        .update(cx, |_, window, _| window.is_visible())
+                        .unwrap_or(false)
+            });
+        agent_status::set_shown(any, cx);
+        if self.window_hidden {
+            for (view, _) in self.views.values() {
+                view.read(cx).set_visible(false, cx);
+            }
+            for (chooser, _) in self.new_panes.values() {
+                chooser.update(cx, |chooser, cx| chooser.set_visible(false, cx));
+            }
+        } else {
+            cx.notify();
+        }
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
@@ -3077,6 +3113,17 @@ impl Render for Browser {
                     }
                 }));
         }
+        if self.window_visibility.is_none() {
+            // A window opening while the others are hidden reads at full pace.
+            if window.is_visible() {
+                agent_status::set_shown(true, cx);
+            }
+            self.window_visibility = Some(
+                cx.observe_window_visibility(window, |browser, visibility, window, cx| {
+                    browser.window_shown(visibility, window, cx)
+                }),
+            );
+        }
         if self.resize.as_ref().is_some_and(|drag| {
             !self
                 .layout
@@ -3582,7 +3629,8 @@ impl Render for Browser {
         }
         for (id, (view, _)) in &self.views {
             view.read(cx).set_visible(
-                !self.profile_content_unavailable()
+                !self.window_hidden
+                    && !self.profile_content_unavailable()
                     && shown.iter().any(|(shown, _)| shown == id)
                     && expanded.is_none_or(|focused| focused == id),
                 cx,
@@ -3762,7 +3810,10 @@ impl Render for Browser {
                 })
                 .unwrap_or_default();
             chooser.update(cx, |chooser, cx| {
-                chooser.set_visible(expanded.is_none_or(|focused| focused == id), cx);
+                chooser.set_visible(
+                    !self.window_hidden && expanded.is_none_or(|focused| focused == id),
+                    cx,
+                );
                 chooser.set_browsers(browsers.clone(), cx);
                 chooser.set_connections(connections, cx);
             });
