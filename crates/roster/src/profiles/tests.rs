@@ -1123,4 +1123,5 @@ fn a_served_first_agent_starts_under_its_request_id_and_keeps_a_refusal() {
     }
 }
 mod access;
+mod browsers;
 mod peers;
