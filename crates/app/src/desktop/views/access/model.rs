@@ -6,7 +6,7 @@ use agent_interface_roster::{
     Swarm,
     profiles::access::{
         Access, Agent, AgentAccess, Grant, Mode, Overview, Placed, Reach, Request, RequestState,
-        Role,
+        Role, Source,
     },
 };
 use chrono::{DateTime, FixedOffset};
@@ -310,14 +310,27 @@ pub(super) fn decided_at(request: &Request, now: &DateTime<FixedOffset>) -> Opti
     Some(at.format("%-d %b %H:%M").to_string())
 }
 
-/// The kind of thing a grant is, with the access it asks for, so one card
-/// holds an agent's requests of one kind and one access.
-fn kind(grant: &Grant) -> (std::mem::Discriminant<Grant>, Option<Access>) {
+/// The kind of thing a grant is, with the access it asks for and the
+/// machine it is on, so one card holds an agent's requests of one kind and
+/// one access on one machine.
+fn kind(grant: &Grant) -> (std::mem::Discriminant<Grant>, Option<Access>, Option<&str>) {
     let access = match grant {
         Grant::Repository { access, .. } | Grant::Folder { access, .. } => Some(*access),
         _ => None,
     };
-    (std::mem::discriminant(grant), access)
+    (std::mem::discriminant(grant), access, machine_id(grant))
+}
+
+/// The machine a grant is on, by ID; none for a repository.
+pub(super) fn machine_id(grant: &Grant) -> Option<&str> {
+    match grant {
+        Grant::Folder { machine, .. }
+        | Grant::SecretFile { machine, .. }
+        | Grant::SecretVariable { machine, .. }
+        | Grant::Browser { machine, .. }
+        | Grant::Docker { machine, .. } => machine.as_deref(),
+        Grant::Repository { .. } | Grant::Unknown => None,
+    }
 }
 
 /// Waiting requests as the board draws them: one card for an agent's
@@ -444,6 +457,66 @@ pub(super) fn not_needed(agent: &Agent, card: &[&Request]) -> Option<String> {
     })
 }
 
+/// One line of an agent's GITHUB section.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct GithubRow {
+    pub repo: String,
+    pub access: Access,
+    pub source: Source,
+    /// The repository grant on it, which its remove mark takes away.
+    pub grant: Option<Grant>,
+}
+
+/// The agent's GITHUB lines: what it reaches, each with the repository grant
+/// on it when it holds one, then the grants its reach leaves out, such as a
+/// top-level orchestrator's reads. Backbone folds grants into reach and
+/// compares names without case, so every grant appears once and can be
+/// taken away.
+pub(super) fn github_rows(agent: &Agent) -> Vec<GithubRow> {
+    let items = match &agent.reach {
+        Reach::Profile { items } | Reach::Repositories { items } => &items[..],
+        Reach::Unknown => &[],
+    };
+    let grants: Vec<(&String, Access)> = agent
+        .grants
+        .iter()
+        .filter_map(|grant| match grant {
+            Grant::Repository { repo, access } => Some((repo, *access)),
+            _ => None,
+        })
+        .collect();
+    let grant = |repo: &String, access: Access| Grant::Repository {
+        repo: repo.clone(),
+        access,
+    };
+    let mut rows: Vec<GithubRow> = items
+        .iter()
+        .map(|item| GithubRow {
+            repo: item.repo.clone(),
+            access: item.access,
+            source: item.source,
+            grant: grants
+                .iter()
+                .find(|(repo, _)| repo.eq_ignore_ascii_case(&item.repo))
+                .map(|(repo, access)| grant(repo, *access)),
+        })
+        .collect();
+    for (repo, access) in &grants {
+        if !items
+            .iter()
+            .any(|item| item.repo.eq_ignore_ascii_case(repo))
+        {
+            rows.push(GithubRow {
+                repo: (*repo).clone(),
+                access: *access,
+                source: Source::Grant,
+                grant: Some(grant(repo, *access)),
+            });
+        }
+    }
+    rows
+}
+
 /// The waiting cards the requests view draws for the requests `agent`
 /// asked, or everyone's, in its order: those on the owner, then those on an
 /// agent; each by its requests' IDs.
@@ -518,7 +591,7 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_interface_roster::profiles::access::{Reached, Source};
+    use agent_interface_roster::profiles::access::Reached;
 
     fn overview() -> Overview {
         let agents: serde_json::Value = serde_json::from_str(include_str!(
@@ -942,5 +1015,76 @@ mod tests {
         );
         assert_eq!(card_order(&pending, Some("lead")), [vec![19, 22]]);
         assert!(card_order(&pending, Some("nobody")).is_empty());
+    }
+
+    #[test]
+    fn requests_on_different_machines_have_their_own_cards() {
+        let pending = requests("pending");
+        let docker = |id: i64, machine: &str| {
+            let mut request = pending[0].clone();
+            request.id = id;
+            request.grant = Grant::Docker {
+                machine: Some(machine.into()),
+                machine_name: None,
+            };
+            request
+        };
+        let (a, b, c) = (docker(30, "aa"), docker(31, "bb"), docker(32, "aa"));
+        let cards = cards(&[&a, &b, &c]);
+        let ids: Vec<Vec<i64>> = cards
+            .iter()
+            .map(|card| card.iter().map(|r| r.id).collect())
+            .collect();
+        assert_eq!(ids, [vec![30, 32], vec![31]]);
+    }
+
+    #[test]
+    fn every_repository_grant_has_a_github_line_to_take_it_away() {
+        let mut overview = overview();
+        let row = |rows: &[GithubRow], repo: &str| {
+            rows.iter().find(|row| row.repo == repo).cloned().unwrap()
+        };
+        // lead reads every repository, so its read grant is not in its reach.
+        let lead = &mut overview.agents[0];
+        lead.grants.push(Grant::Repository {
+            repo: "example/x".into(),
+            access: Access::Read,
+        });
+        let rows = github_rows(lead);
+        assert_eq!(rows.len(), 2);
+        let read = row(&rows, "example/x");
+        assert_eq!((read.source, read.access), (Source::Grant, Access::Read));
+        assert!(read.grant.is_some());
+        // A grant on its own repository, named in another case, shows on
+        // that line, which keeps its source.
+        let builder = &mut overview.agents[4];
+        builder.grants.push(Grant::Repository {
+            repo: "Example/App".into(),
+            access: Access::Read,
+        });
+        let rows = github_rows(builder);
+        assert_eq!(rows.len(), 2);
+        let own = row(&rows, "example/app");
+        assert_eq!(own.source, Source::OwnRepository);
+        assert_eq!(
+            own.grant,
+            Some(Grant::Repository {
+                repo: "Example/App".into(),
+                access: Access::Read,
+            })
+        );
+        // A coordinator's read grant on a team repository stays a role line.
+        let planner = &mut overview.agents[2];
+        planner.grants.push(Grant::Repository {
+            repo: "example/site".into(),
+            access: Access::Read,
+        });
+        let rows = github_rows(planner);
+        assert_eq!(rows.len(), 3);
+        let team = row(&rows, "example/site");
+        assert_eq!(team.source, Source::Role);
+        assert!(team.grant.is_some());
+        // A line its role gives without a grant has nothing to take away.
+        assert!(row(&rows, "example/app").grant.is_none());
     }
 }

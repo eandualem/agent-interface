@@ -113,6 +113,11 @@ pub(super) struct Pane {
     /// The request card whose note is open.
     noting: Option<i64>,
     note_field: Entity<NameField>,
+    /// What had focus before the add or note field took it, to give it back.
+    return_focus: Option<gpui::FocusHandle>,
+    /// The menu a press outside just closed, so the press on its own button
+    /// does not open it again.
+    dismissed: Option<(Menu, std::time::Instant)>,
     _poll: Task<()>,
     _fields: [Subscription; 3],
 }
@@ -139,21 +144,35 @@ impl Pane {
                 cx.notify();
             }
         });
-        let added = cx.subscribe(&add_field, |pane, _, event: &NameEvent, cx| match event {
-            NameEvent::Save => pane.submit_add(cx),
-            NameEvent::Cancel => {
-                pane.adding = None;
-                cx.notify();
-            }
-            NameEvent::Changed(_) => cx.notify(),
-        });
-        let noted = cx.subscribe(&note_field, |pane, _, event: &NameEvent, cx| match event {
-            NameEvent::Cancel => {
-                pane.noting = None;
-                cx.notify();
-            }
-            NameEvent::Save | NameEvent::Changed(_) => cx.notify(),
-        });
+        // Leaving a field gives the keys back to the pane.
+        let added = cx.subscribe_in(
+            &add_field,
+            window,
+            |pane, _, event: &NameEvent, window, cx| match event {
+                NameEvent::Save => {
+                    pane.submit_add(cx);
+                    pane.leave_field(window, cx);
+                }
+                NameEvent::Cancel => {
+                    pane.adding = None;
+                    pane.leave_field(window, cx);
+                }
+                NameEvent::Changed(_) => cx.notify(),
+            },
+        );
+        // Enter keeps the note for Approve or Refuse; Escape drops it.
+        let noted = cx.subscribe_in(
+            &note_field,
+            window,
+            |pane, _, event: &NameEvent, window, cx| match event {
+                NameEvent::Cancel => {
+                    pane.noting = None;
+                    pane.leave_field(window, cx);
+                }
+                NameEvent::Save => pane.leave_field(window, cx),
+                NameEvent::Changed(_) => cx.notify(),
+            },
+        );
         let poll = cx.spawn(async move |this, cx| {
             loop {
                 if this.update(cx, |pane, cx| pane.read(cx)).is_err() {
@@ -190,6 +209,8 @@ impl Pane {
             card: None,
             noting: None,
             note_field,
+            return_focus: None,
+            dismissed: None,
             _poll: poll,
             _fields: [changed, added, noted],
         }
@@ -413,12 +434,44 @@ impl Pane {
             self.add_field.update(cx, |field, cx| field.clear(cx));
         }
         self.adding = Some(adding);
-        window.focus(&self.add_field.read(cx).focus.clone(), cx);
+        let field = self.add_field.read(cx).focus.clone();
+        self.enter_field(field, window, cx);
+    }
+
+    /// Give keyboard focus to one of the pane's fields, remembering what had
+    /// it so leaving the field gives it back.
+    fn enter_field(
+        &mut self,
+        field: gpui::FocusHandle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.in_field(window, cx) {
+            self.return_focus = window.focused(cx);
+        }
+        window.focus(&field, cx);
+        cx.notify();
+    }
+
+    /// Whether the add or note field has keyboard focus.
+    fn in_field(&self, window: &Window, cx: &gpui::App) -> bool {
+        [&self.add_field, &self.note_field]
+            .iter()
+            .any(|field| field.read(cx).focus.is_focused(window))
+    }
+
+    /// Give focus back to what had it before a field took it.
+    fn leave_field(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.in_field(window, cx)
+            && let Some(focus) = self.return_focus.take()
+        {
+            window.focus(&focus, cx);
+        }
         cx.notify();
     }
 
     /// Show the requests, or the agents again.
-    fn toggle_requests(&mut self, cx: &mut Context<Self>) {
+    fn toggle_requests(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.shown = match self.shown {
             Shown::Agents => Shown::Requests,
             Shown::Requests => Shown::Agents,
@@ -426,7 +479,7 @@ impl Pane {
         self.menu = None;
         self.noting = None;
         self.adding = None;
-        cx.notify();
+        self.leave_field(window, cx);
     }
 
     /// Keys while the pane is selected: Escape closes what is open or returns
@@ -478,7 +531,7 @@ impl Pane {
                 let Some(ids) = at.and_then(|at| cards.get(at)).cloned() else {
                     return false;
                 };
-                self.decide(ids, key.key == "a", cx);
+                self.decide(ids, key.key == "a", window, cx);
             }
             "n" => {
                 let Some(first) = at.and_then(|at| cards.get(at)).and_then(|ids| ids.first())
@@ -511,7 +564,14 @@ impl Pane {
     }
 
     /// Approve or refuse a card's requests, with its note when one is open.
-    fn decide(&mut self, ids: Vec<i64>, approve: bool, cx: &mut Context<Self>) {
+    fn decide(
+        &mut self,
+        ids: Vec<i64>,
+        approve: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.leave_field(window, cx);
         let first = ids.first().copied().unwrap_or_default();
         let note = if self.noting == Some(first) {
             self.note_field.read(cx).value().trim().to_owned()
@@ -538,8 +598,8 @@ impl Pane {
         }
         self.noting = Some(first);
         self.card = Some(first);
-        window.focus(&self.note_field.read(cx).focus.clone(), cx);
-        cx.notify();
+        let field = self.note_field.read(cx).focus.clone();
+        self.enter_field(field, window, cx);
     }
 
     /// "live from Agent Backbone · read 10:31", once something was read.

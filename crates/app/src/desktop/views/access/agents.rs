@@ -83,7 +83,7 @@ impl Pane {
             "{waiting} request{} waiting",
             if waiting == 1 { "" } else { "s" }
         ))
-        .on_click(cx.listener(|pane, _, _, cx| pane.toggle_requests(cx)))
+        .on_click(cx.listener(|pane, _, window, cx| pane.toggle_requests(window, cx)))
     }
 
     fn toolbar(&self, model: &model::Model, cx: &mut Context<Self>) -> Div {
@@ -337,12 +337,13 @@ impl Pane {
                 .child(count("lock", secrets)),
             )
         })
-        .on_click(cx.listener(move |pane, _, _, cx| {
+        .on_click(cx.listener(move |pane, _, window, cx| {
             if pane.selected.as_deref() != Some(name.as_str()) {
                 pane.selected = Some(name.clone());
                 pane.menu = None;
                 pane.adding = None;
                 pane.notice = None;
+                pane.leave_field(window, cx);
             }
             cx.notify();
         }))
@@ -443,7 +444,11 @@ impl Pane {
             .relative()
             .flex_shrink_0()
             .child(button.on_click(cx.listener(move |pane, _, _, cx| {
-                pane.menu = if pane.menu == Some(menu) {
+                // A press on the button of the menu it just closed only closes it.
+                let dismissed = pane.dismissed.take().is_some_and(|(closed, at)| {
+                    closed == menu && at.elapsed() < std::time::Duration::from_millis(400)
+                });
+                pane.menu = if pane.menu == Some(menu) || dismissed {
                     None
                 } else {
                     Some(menu)
@@ -460,8 +465,9 @@ impl Pane {
                             .left_0()
                             .max_h(px(t.size.access_menu))
                             .overflow_y_scroll()
-                            .on_mouse_down_out(cx.listener(|pane, _, _, cx| {
+                            .on_mouse_down_out(cx.listener(move |pane, _, _, cx| {
                                 pane.menu = None;
+                                pane.dismissed = Some((menu, std::time::Instant::now()));
                                 cx.notify();
                             }))
                             .children(items),
@@ -762,7 +768,10 @@ impl Pane {
                             Button::Secondary,
                         )
                         .h(px(t.size.icon_button))
-                        .on_click(cx.listener(|pane, _, _, cx| pane.submit_add(cx))),
+                        .on_click(cx.listener(|pane, _, window, cx| {
+                            pane.submit_add(cx);
+                            pane.leave_field(window, cx);
+                        })),
                     ),
                 )
             }
@@ -771,7 +780,7 @@ impl Pane {
 
     /// A grant's machine as its chip: "this Mac" for this app's own, its
     /// name for another, and none when Backbone no longer names it.
-    fn machine_chip(&self, id: Option<&String>, name: Option<&String>) -> Option<Div> {
+    pub(super) fn machine_chip(&self, id: Option<&String>, name: Option<&String>) -> Option<Div> {
         let local = &self.connection.identity().installation_id;
         let label = match (id, name) {
             (Some(id), _) if id == local => this_machine().to_owned(),
@@ -789,66 +798,25 @@ impl Pane {
 
     fn github(&self, agent: &Agent, cx: &mut Context<Self>) -> Div {
         let (t, c) = (tokens(), colors());
-        let (items, note) = match &agent.reach {
-            Reach::Profile { items } => (
-                &items[..],
-                "every repository, through the profile's GitHub connection".to_owned(),
-            ),
-            Reach::Repositories { items } => (
-                &items[..],
-                format!(
-                    "{}, through the profile's GitHub connection",
-                    model::reach_label(&agent.reach)
-                ),
-            ),
-            Reach::Unknown => (&[][..], "what it reaches is not known".to_owned()),
-        };
-        // The agent's repository grants, which Backbone folds into its reach:
-        // one it reaches anyway shows on that row, and one its reach leaves
-        // out, as a top-level orchestrator's reads, gets a row of its own,
-        // so every grant can be taken away.
-        let grants: Vec<(&String, Access)> = agent
-            .grants
-            .iter()
-            .filter_map(|grant| match grant {
-                Grant::Repository { repo, access } => Some((repo, *access)),
-                _ => None,
-            })
-            .collect();
-        let granted = |repo: &str| {
-            grants
-                .iter()
-                .find(|(granted, _)| granted.eq_ignore_ascii_case(repo))
-                .map(|(repo, access)| Grant::Repository {
-                    repo: (*repo).clone(),
-                    access: *access,
-                })
-        };
-        let mut rows: Vec<(String, Access, Source, Option<Grant>)> = items
-            .iter()
-            .map(|item| {
-                (
-                    item.repo.clone(),
-                    item.access,
-                    item.source,
-                    granted(&item.repo),
-                )
-            })
-            .collect();
-        for (repo, access) in &grants {
-            if !items
-                .iter()
-                .any(|item| item.repo.eq_ignore_ascii_case(repo))
-            {
-                let grant = Grant::Repository {
-                    repo: (*repo).clone(),
-                    access: *access,
-                };
-                rows.push(((*repo).clone(), *access, Source::Grant, Some(grant)));
+        let note = match &agent.reach {
+            Reach::Profile { .. } => {
+                "every repository, through the profile's GitHub connection".to_owned()
             }
-        }
+            Reach::Repositories { .. } => format!(
+                "{}, through the profile's GitHub connection",
+                model::reach_label(&agent.reach)
+            ),
+            Reach::Unknown => "what it reaches is not known".to_owned(),
+        };
+        let rows = model::github_rows(agent);
         let mut card = ui::group_card();
-        for (at, (repo, access, source, grant)) in rows.iter().enumerate() {
+        for (at, row) in rows.iter().enumerate() {
+            let model::GithubRow {
+                repo,
+                access,
+                source,
+                grant,
+            } = row;
             let key = format!("access-repo-{repo}");
             // Only a granted access can be changed here; its own repository's
             // and its role's follow from what the agent is.

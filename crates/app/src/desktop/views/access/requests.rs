@@ -274,7 +274,7 @@ impl Pane {
         ))
         .child(div().text_color(c.muted).child(verb))
         .children(object.map(object_chip))
-        .children(model::machine_of(&first.grant).map(ui::machine_chip))
+        .children(self.grant_machine(&first.grant))
         .when(!on_you, |el| {
             el.child(div().flex_1())
                 .child(
@@ -339,12 +339,15 @@ impl Pane {
                 kind,
             )
             .h(px(t.size.button - t.space.s2))
-            .on_click(cx.listener(move |pane, _, _, cx| pane.decide(ids.clone(), true, cx)))
+            .on_click(
+                cx.listener(move |pane, _, window, cx| pane.decide(ids.clone(), true, window, cx)),
+            )
         };
         let refuse = {
             let ids = ids.clone();
-            text_button(format!("access-refuse-{key}"), "Refuse")
-                .on_click(cx.listener(move |pane, _, _, cx| pane.decide(ids.clone(), false, cx)))
+            text_button(format!("access-refuse-{key}"), "Refuse").on_click(
+                cx.listener(move |pane, _, window, cx| pane.decide(ids.clone(), false, window, cx)),
+            )
         };
         let mut actions = ui::text(
             div()
@@ -374,7 +377,8 @@ impl Pane {
                         Button::Secondary,
                     )
                     .h(px(t.size.button - t.space.s2))
-                    .on_click(cx.listener(move |pane, _, _, cx| {
+                    .on_click(cx.listener(move |pane, _, window, cx| {
+                        pane.leave_field(window, cx);
                         pane.decide_with(closed.clone(), false, NOT_NEEDED.into(), cx);
                     })),
                 )
@@ -404,6 +408,22 @@ impl Pane {
             .children(reach)
             .children(note)
             .child(actions)
+    }
+}
+
+impl Pane {
+    /// The chip for the machine a request's grant is on, as board A names
+    /// it; none for a repository.
+    fn grant_machine(
+        &self,
+        grant: &agent_interface_roster::profiles::access::Grant,
+    ) -> Option<Div> {
+        use agent_interface_roster::profiles::access::Grant;
+        if matches!(grant, Grant::Repository { .. } | Grant::Unknown) {
+            return None;
+        }
+        let id = model::machine_id(grant).map(str::to_owned);
+        self.machine_chip(id.as_ref(), model::machine_of(grant).as_ref())
     }
 }
 
