@@ -758,8 +758,10 @@ if '--write-out' in args:
         self.assertEqual(self.backbone_downloads()[:4], self.LATEST * 2)
 
     def test_backbone_before_its_first_release_keeps_the_app(self):
-        # A key is trusted, but no Backbone release has been published yet.
+        # The built-in release key is trusted, but no Backbone release has
+        # been published yet.
         self.backbone_releases()
+        del self.env["BACKBONE_FIXTURE_KEY"]
         result = self.install(None)
         self.assert_app_installed(result)
         self.assertEqual((self.root / "sleeps").read_text(), "5\n")
