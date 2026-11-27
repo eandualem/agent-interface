@@ -395,8 +395,9 @@ impl Pane {
     pub(super) fn browsed(&mut self, key: &str, mut detail: Detail) {
         let id = detail.browser.id.clone();
         // Only a read gives the DevTools endpoint, so a change's reply keeps
-        // the one read before it.
+        // the one read before it; saving closes the sign-in window's Chrome.
         if detail.devtools.is_none()
+            && key != "access-browser-save"
             && let Some(read) = self.browsing.detail.as_ref().filter(|d| d.browser.id == id)
         {
             detail.devtools = read.devtools.clone();
@@ -1536,13 +1537,16 @@ impl Pane {
                         } else {
                             ui::button("access-browser-create", "Open it", Button::Secondary)
                                 .h(px(t.size.chip + t.space.s4))
-                                .on_click(cx.listener(|pane, _, _, cx| pane.create_browser(cx)))
+                                .on_click(cx.listener(|pane, _, window, cx| {
+                                    pane.leave_field(window, cx);
+                                    pane.create_browser(cx);
+                                }))
                         })
                     })
             };
         let mut steps = div().flex().flex_col().child(step(
             Step::Done.or(new.id.is_none() || new.renaming),
-            true,
+            detail.is_some(),
             div()
                 .flex()
                 .flex_col()
