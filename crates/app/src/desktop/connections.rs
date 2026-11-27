@@ -225,6 +225,7 @@ impl Browser {
     }
 
     /// Open Connections where [`place`] says; `new_tab` is Option-click.
+    /// Returns whether it took the request.
     pub(super) fn open_connections(
         &mut self,
         target: Option<&creation_origin::Target>,
@@ -232,7 +233,7 @@ impl Browser {
         new_tab: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         if let Some(update) = self
             .library
             .as_ref()
@@ -241,10 +242,10 @@ impl Browser {
             self.apply(update);
         }
         if self.saving || self.save_failed || !target.is_some_and(|t| self.creation_is_current(t)) {
-            return;
+            return false;
         }
         let Some(space) = self.connections_workspace() else {
-            return;
+            return false;
         };
         if let Some(pane) = chooser
             && !space
@@ -258,10 +259,10 @@ impl Browser {
                         .any(|leaf| leaf.id == pane && leaf.empty)
                 })
         {
-            return;
+            return false;
         }
         let Some(place) = place(self.layout.as_ref().unwrap().model(), chooser, new_tab) else {
-            return;
+            return false;
         };
         self.editing = None;
         self.chooser = None;
@@ -277,11 +278,10 @@ impl Browser {
                 model.choose_pane(&leaf);
                 self.reset_focus = true;
                 cx.notify();
-                return;
+                return true;
             }
             Place::Here(pane) => {
-                self.open_view(&pane, View::of(ViewKind::Connections), window, cx);
-                return;
+                return self.open_view(&pane, View::of(ViewKind::Connections), window, cx);
             }
             Place::Beside => {
                 // Split the focused pane as any view opened beside it is.
@@ -297,7 +297,7 @@ impl Browser {
                         window,
                         cx,
                     );
-                    return;
+                    return true;
                 }
                 add_connections_tab
             }
@@ -305,11 +305,13 @@ impl Browser {
         };
         let layout = self.layout.as_ref().unwrap();
         let (base, mut proposed) = layout.save_snapshot();
-        if add(&mut proposed) {
-            self.creation_from = Some(Selection::capture(layout.model()));
-            self.pending_save = Some((base, proposed));
-            self.save(cx);
+        if !add(&mut proposed) {
+            return false;
         }
+        self.creation_from = Some(Selection::capture(layout.model()));
+        self.pending_save = Some((base, proposed));
+        self.save(cx);
+        true
     }
 }
 
