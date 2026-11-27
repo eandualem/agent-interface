@@ -375,12 +375,7 @@ impl BrowserView {
             return;
         }
         self.caret = Some(event.position);
-        let pressed = self.pointing.press(
-            at,
-            button,
-            event.click_count,
-            mouse_modifiers(&event.modifiers),
-        );
+        let pressed = self.pointing.press(at, button, event.click_count);
         self.send(pressed);
     }
 
@@ -389,12 +384,9 @@ impl BrowserView {
         let (Some(at), Some(button)) = (at, button(event.button)) else {
             return;
         };
-        let modifiers = mouse_modifiers(&event.modifiers);
         // Sent even while the page can't be reached, so the next connection
         // still releases the button in the page.
-        if let Some(released) = self
-            .pointing
-            .release(at, button, event.click_count, modifiers)
+        if let Some(released) = self.pointing.release(at, button, event.click_count)
             && let Some(stream) = &self.stream
         {
             stream.send(released);
@@ -878,7 +870,7 @@ fn listen(
                 y,
                 dx,
                 dy,
-                modifiers: mouse_modifiers(&event.modifiers),
+                modifiers: modifiers(&event.modifiers) & SHIFT,
             });
         });
     });
@@ -928,7 +920,7 @@ struct Pointing {
 
 impl Pointing {
     /// The press of `button` at `at`, a point of the page.
-    fn press(&mut self, at: (f32, f32), button: Button, clicks: usize, modifiers: u8) -> Input {
+    fn press(&mut self, at: (f32, f32), button: Button, clicks: usize) -> Input {
         self.held |= button.bit();
         self.last = Some((at.0, at.1, self.held));
         Input::Pressed(Pointer {
@@ -937,19 +929,13 @@ impl Pointing {
             button,
             buttons: self.held,
             clicks,
-            modifiers,
+            modifiers: CLICK,
         })
     }
 
     /// The release of `button` at `at`, if it was pressed in the frame;
     /// the other buttons stay held.
-    fn release(
-        &mut self,
-        at: (f32, f32),
-        button: Button,
-        clicks: usize,
-        modifiers: u8,
-    ) -> Option<Input> {
+    fn release(&mut self, at: (f32, f32), button: Button, clicks: usize) -> Option<Input> {
         if self.held & button.bit() == 0 {
             return None;
         }
@@ -961,7 +947,7 @@ impl Pointing {
             button,
             buttons: self.held,
             clicks,
-            modifiers,
+            modifiers: CLICK,
         }))
     }
 
@@ -977,7 +963,7 @@ impl Pointing {
         if !pressed && self.held != 0 {
             let point = at.or(self.last.map(|(x, y, _)| (x, y))).unwrap_or_default();
             for button in [Button::Left, Button::Right, Button::Middle] {
-                sent.extend(self.release(point, button, 1, modifiers));
+                sent.extend(self.release(point, button, 1));
             }
         }
         let (x, y) = match at {
@@ -1021,8 +1007,13 @@ fn pressable(pressed: MouseButton, held: &Modifiers) -> Option<Button> {
     button(pressed).filter(|_| !(held.control || held.platform))
 }
 
-/// The page's bits for the modifier keys held with the mouse: Shift and
-/// Option only, as a press with Ctrl or Cmd is not sent.
+/// The modifier keys a press or release carries: none, since a Shift-click
+/// opens a link in a new window and an Option-click downloads it, outside the
+/// view. The wheel carries Shift only, which scrolls across.
+const CLICK: u8 = 0;
+
+/// The page's bits for the modifier keys held while the mouse moves: Shift
+/// and Option only, as a press with Ctrl or Cmd is not sent.
 fn mouse_modifiers(held: &Modifiers) -> u8 {
     modifiers(held) & (ALT | SHIFT)
 }
@@ -2064,8 +2055,8 @@ mod tests {
     #[test]
     fn each_button_is_released_on_its_own_and_the_rest_stay_held() {
         let mut pointing = Pointing::default();
-        let left = pointing.press((10., 10.), Button::Left, 1, 0);
-        let right = pointing.press((10., 10.), Button::Right, 1, 0);
+        let left = pointing.press((10., 10.), Button::Left, 1);
+        let right = pointing.press((10., 10.), Button::Right, 1);
         assert_eq!(
             mice([left, right]),
             [
@@ -2076,18 +2067,18 @@ mod tests {
         // A drag with both: the move carries both, the first as its button.
         let drag = pointing.moved(Some((20., 10.)), true, 0);
         assert_eq!(mice(drag), [("moved", 20., 10., Button::Left, 3)]);
-        let right = pointing.release((20., 10.), Button::Right, 1, 0).unwrap();
+        let right = pointing.release((20., 10.), Button::Right, 1).unwrap();
         assert_eq!(mice([right]), [("released", 20., 10., Button::Right, 1)]);
         // A button not pressed in the frame is not released in the page.
-        assert!(pointing.release((20., 10.), Button::Middle, 1, 0).is_none());
-        let left = pointing.release((20., 10.), Button::Left, 1, 0).unwrap();
+        assert!(pointing.release((20., 10.), Button::Middle, 1).is_none());
+        let left = pointing.release((20., 10.), Button::Left, 1).unwrap();
         assert_eq!(mice([left]), [("released", 20., 10., Button::Left, 0)]);
     }
 
     #[test]
     fn a_release_missed_while_no_frame_was_drawn_reaches_the_page() {
         let mut pointing = Pointing::default();
-        pointing.press((10., 10.), Button::Left, 1, 0);
+        pointing.press((10., 10.), Button::Left, 1);
         // The next move reports no button down.
         let moved = pointing.moved(Some((30., 40.)), false, 0);
         assert_eq!(
@@ -2146,6 +2137,17 @@ mod tests {
         assert_eq!(pressable(MouseButton::Left, &with(true, false)), None);
         assert_eq!(pressable(MouseButton::Left, &with(false, true)), None);
         assert_eq!(pressable(MouseButton::Right, &with(false, false)), None);
+        // A Shift- or Option-click opens a window or a download outside the
+        // view, so presses and releases carry no modifiers at all.
+        let mut pointing = Pointing::default();
+        let pressed = pointing.press((1., 1.), Button::Left, 1);
+        let released = pointing.release((1., 1.), Button::Left, 1).unwrap();
+        for input in [pressed, released] {
+            let (Input::Pressed(pointer) | Input::Released(pointer)) = input else {
+                panic!("{input:?}");
+            };
+            assert_eq!(pointer.modifiers, 0);
+        }
     }
 
     #[test]

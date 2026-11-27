@@ -393,9 +393,11 @@ choose the pane again.
 You can use the page in the view as in a browser while the agent keeps
 working on it: click links and buttons, double click, drag to select text,
 and scroll with the wheel or trackpad, also inside the page's own scrolling
-areas. Only left clicks, with Shift or Option, reach the page: right and
+areas. Only left clicks reach the page, and as plain clicks: right and
 middle clicks, Ctrl-clicks and Cmd-clicks could open Chrome's own menu or a
-new tab that the view doesn't show. Click in the page to type into it: a thin ring around the page shows
+new tab that the view doesn't show, so they do nothing, and Shift and Option
+are left off clicks, as a Shift-click opens a new window and an
+Option-click downloads the link. Click in the page to type into it: a thin ring around the page shows
 that your keys go there. Typing, Enter, Tab, Backspace, the arrows, Escape
 and the page's own shortcuts reach the page, and so does text from accented
 keys and input methods. Holding a key repeats it, as in a browser; type

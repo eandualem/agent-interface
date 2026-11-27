@@ -615,7 +615,12 @@ fn watch(
                 Input::Wheel { .. } => Some(Pending::Wheel),
                 _ => None,
             };
-            let Some(id) = send(socket, Outgoing::Input(input)) else {
+            let Some(id) = send(socket, Outgoing::Input(input.clone())) else {
+                // A release that could not be sent waits for the next
+                // connection, which keeps it.
+                if matches!(input, Input::Released(_)) {
+                    lock(shared).input.push_front(input);
+                }
                 return Ended::Lost;
             };
             inputs.sent(id, kind, now);

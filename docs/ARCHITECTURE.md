@@ -1673,11 +1673,13 @@ CSS width over the width drawn, which is right at any window scale,
 letterboxed or not, and one CSS pixel per point once the viewport follows
 the pane. Presses and releases of the left button with their click count,
 moves with the button held, and the wheel at the pointer go as
-`Input.dispatchMouseEvent`, with Shift and Option but not Ctrl or Cmd. A
-right or middle press, a Ctrl-click, which is a right click on macOS, or a
-Cmd-click could open Chrome's own menu or a link in a new tab in a browser
-window the view never shows, so those presses are not sent and change
-nothing, and Ctrl and Cmd are left out of moves, releases and the wheel;
+`Input.dispatchMouseEvent`. A right or middle press, a Ctrl-click, which is
+a right click on macOS, or a Cmd-click could open Chrome's own menu or a
+link in a new tab in a browser window the view never shows, so those
+presses are not sent and change nothing. Presses and releases carry no
+modifiers at all, since a Shift-click opens a link in a new window and an
+Option-click downloads it; moves carry Shift and Option, and the wheel
+Shift, which scrolls across;
 trackpad deltas keep their smoothness, and a wheel's lines are 40 CSS pixels
 each. Nothing beside the frame reaches the page, except that a drag begun
 inside keeps sending its moves and its release at the frame's nearest edge.
@@ -1734,14 +1736,16 @@ Presses, keys and text are never joined or reordered, so a move waiting is
 sent before a later press. The platform repeats a drag held still every 16
 ms; the view sends a repeated point once. The client's reads wait 5 ms while
 input came in the last second or waits for Chrome's answer, so input leaves
-within a few milliseconds; 20 ms while the view only has the keyboard or the
-pointer is over the page, so the first key or click after a pause leaves
-within 20 ms without the client waking 200 times a second; and 100 ms
-otherwise. An error answer to an input request is logged once and leaves the
+within a few milliseconds; 20 ms while the view has the keyboard or the
+pointer is over the page in the active window, so the first key or click
+after a pause leaves within 20 ms without the client waking 200 times a
+second; and 100 ms otherwise, so a first input then leaves within one
+100 ms read. An error answer to an input request is logged once and leaves the
 screencast as it is; an error answer to the screencast's own requests still
 counts as a refusal. Input given while the client reconnects is dropped, not
-replayed on the new connection, except a mouse release: the page keeps a
-button pressed across the client's connections until it hears one.
+replayed on the new connection, except a mouse release, also one whose
+sending failed as the connection broke: the page keeps a button pressed
+across the client's connections until it hears one.
 
 ### Bound native Policies
 
