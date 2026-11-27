@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Capture the panel's agents tree and a connection opening beside a pane.
+"""Capture the agents tree in the panel and the new pane, and a connection.
 
 A stand-in profile serves agents on three machines: this one, another online
 and another offline. One agent has two running reviews, a browser and two
-swarms. The check captures the tree folded and open, then clicks a
-connection row and captures Connections opened beside the focused pane.
+swarms. The check captures the panel's tree folded and open, then clicks a
+connection row and captures Connections opened beside the focused pane. Last,
+in a tab whose pane is empty, it opens that agent in the new pane with the
+right arrow, moves to a swarm member and attaches it with Enter.
 
 Run under xvfb-run + dbus-run-session as a normal user. Uses no live provider,
 real home, credentials or tmux server. The captures land in
@@ -223,9 +225,12 @@ with tempfile.TemporaryDirectory(prefix="agents-smoke-", dir="/tmp") as director
     library = root / "library"
     library.mkdir()
     leaf = dict(id="000000000003", agent=None, view="tags")
+    # A second tab whose only pane is empty: the new pane.
+    chooser = dict(id="000000000005", agent=None, empty=True)
     model = dict(version=2, focus=False, selected="000000000001", workspaces=[
         dict(id="000000000001", name="Fixture", profile_id=PROFILE, selected="000000000002", tabs=[
-            dict(id="000000000002", name="Fixture tab", focus=leaf["id"], tree=leaf)])])
+            dict(id="000000000002", name="Fixture tab", focus=leaf["id"], tree=leaf),
+            dict(id="000000000004", name="Chooser", focus=chooser["id"], tree=chooser)])])
     with sqlite3.connect(library / "layouts.db") as db:
         db.execute("CREATE TABLE terminal_layout (id INTEGER PRIMARY KEY, value TEXT)")
         db.execute("INSERT INTO terminal_layout VALUES (1, ?)", (json.dumps(model),))
@@ -237,9 +242,15 @@ with tempfile.TemporaryDirectory(prefix="agents-smoke-", dir="/tmp") as director
         return subprocess.run(args, env=command_env, text=True, capture_output=True,
                               timeout=60 if reading else 15, check=check).stdout.strip()
 
+    profile_tmux = ["tmux", "-f", "/dev/null", "-S", str(root / "tmux/profile.sock")]
     app = wm = window = None
     with (OUTPUT / "app.txt").open("w") as app_log, (OUTPUT / "wm.txt").open("w") as wm_log:
         try:
+            # The new pane lists the agents with a session on the profile's
+            # own, private tmux server, which the cleanup below ends.
+            for name in ("lead", "detach-coordinator", "quiet"):
+                subprocess.run([*profile_tmux, "new-session", "-d", "-s", name, "sleep 600"],
+                               env=env, check=True, timeout=15)
             wm = subprocess.Popen(["xfwm4", "--compositor=on", "--sm-client-disable"],
                                   env=env, stdout=wm_log, stderr=subprocess.STDOUT)
             wait_for(lambda: "_GTK_FRAME_EXTENTS" in command("xprop", "-root", "_NET_SUPPORTED"), "window manager")
@@ -336,10 +347,63 @@ with tempfile.TemporaryDirectory(prefix="agents-smoke-", dir="/tmp") as director
                                  for word in found("Example")), "Connections opened on the peer")
             assert find("Tags") or find("TAGS"), "the Tags pane was replaced"
             capture("connections-beside")
+
+            # The new pane, right of the panel.
+            click("Chooser")
+
+            def in_pane(text):
+                return next((word for word in found(text) if int(word["left"]) > panel_right), None)
+
+            # Its agents are read once the profile's team is: until then its
+            # sessions are listed as plain sessions.
+            wait_for(lambda: find("BACKBONE"), "the new pane's agents")
+            wait_for(lambda: in_pane("lead"), "lead's row in the new pane")
+            wait_for(lambda: find("expand"), "the new pane's hint bar")
+            assert find("collapse"), "the hint bar lacks collapse"
+            wait_for(lambda: in_pane("CONNECTIONS"), "the new pane's connections section")
+            # Its members are not top-level rows any more: nothing in the pane
+            # holds "coordinator" while lead is folded, whole or split.
+            assert not any("coordinator" in word["text"] for word in read()
+                           if int(word["left"]) > panel_right), "a swarm member is a top-level row"
+            # Keys go to the filter field; it is empty, so the arrows fold.
+            field = wait_for(lambda: in_pane("Filter"), "the new pane's filter")
+            press(int(field["left"]) + int(field["width"]) // 2, int(field["top"]) + int(field["height"]) // 2)
+            # lead works, so it is the first row; Up stops there, from any of
+            # the pane's rows: four agents, the fixture's connections and
+            # All connections.
+            for _ in range(12):
+                command("xdotool", "key", "Up")
+                time.sleep(0.2)
+            command("xdotool", "key", "Right")
+            wait_for(lambda: in_pane("coordinator"), "a swarm member under lead by its short name")
+            capture("new-pane-open")
+            # Under lead: two reviews with no view here, which the arrows
+            # skip, then its browser, the detach swarm and its coordinator.
+            for _ in range(3):
+                command("xdotool", "key", "Down")
+                time.sleep(0.3)
+            # The member is chosen: its row says what Enter does.
+            member = wait_for(lambda: in_pane("coordinator"), "the swarm member's row")
+
+            def chosen():
+                return any(abs(int(word["top"]) - int(member["top"])) < int(member["height"])
+                           for word in found("attach") if int(word["left"]) > panel_right)
+
+            wait_for(chosen, "the swarm member chosen, saying attach here")
+            command("xdotool", "key", "Return")
+
+            def attached():
+                clients = command(*profile_tmux, "list-clients", "-F", "#{session_name}", check=False)
+                return "detach-coordinator" in clients.split()
+
+            wait_for(attached, "Enter attaching the swarm member here")
+            capture("new-pane-attached")
             (OUTPUT / "result.json").write_text(json.dumps(dict(checks=[
                 "one list across three machines", "offline remote agent last", "folded hides children",
                 "chevron opens reviews, browser host and short member names", "chevron folds again",
-                "connection row opens Connections beside the focused pane"]), indent=2))
+                "connection row opens Connections beside the focused pane",
+                "new pane: right arrow opens an agent to its swarm members",
+                "new pane: Enter on a member attaches it"]), indent=2))
         finally:
             for process in (app, wm):
                 if process and process.poll() is None:

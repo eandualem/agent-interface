@@ -261,7 +261,8 @@ A pane can show a view instead of a terminal.
 An empty pane shows the new-pane chooser (`desktop/new_pane.rs`): Open
 terminal, a filter and the tmux sessions. In a workspace with a verified
 profile connection it also shows **Reports & updates** and **Skills, usage,
-team…**, the profile's agents before the other sessions, the seven Reports &
+team…**, the profile's agents as one tree and its connections before the
+other sessions, the seven Reports &
 updates sections and the views list. Tab and Shift-Tab move between the lists; a chosen section opens
 once and is not saved with the pane. Each view lives in `desktop/views/` and
 follows its design board with its own header (`view_header`), controls, list
