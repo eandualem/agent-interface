@@ -1122,4 +1122,5 @@ fn a_served_first_agent_starts_under_its_request_id_and_keeps_a_refusal() {
         assert_eq!(invalid.err(), Some(Error::Invalid));
     }
 }
+mod access;
 mod peers;

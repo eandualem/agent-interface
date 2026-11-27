@@ -1,0 +1,7 @@
+{
+ "detail": {
+  "code": "outside_authority",
+  "message": "Only the owner may set how an agent is confined.",
+  "action": "access.mode"
+ }
+}
