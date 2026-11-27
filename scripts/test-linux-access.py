@@ -251,6 +251,17 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
                 words = found(text)
                 return words[0] if words else None
 
+            def click_word(word):
+                x = int(word["left"]) + int(word["width"]) // 2
+                y = int(word["top"]) + int(word["height"]) // 2
+                # The window has to see the pointer arrive before the press.
+                command("xdotool", "mousemove", "--window", window, str(x), str(y))
+                time.sleep(0.2)
+                command("xdotool", "click", "1")
+
+            def click(text):
+                click_word(wait_for(lambda: find(text), text))
+
             def capture(name):
                 # Move the pointer off the pane, so no row is drawn hovered.
                 command("xdotool", "mousemove", "--window", window, "5", "5")
