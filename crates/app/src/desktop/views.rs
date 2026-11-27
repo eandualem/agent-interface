@@ -547,23 +547,22 @@ impl ViewPane {
                         if request != pane.request() {
                             return;
                         }
-                        match update {
-                            Ok(data) => {
-                                if let Data::Document(document) = &data {
-                                    pane.documents.error = None;
-                                    documents::serve(pane, document, cx);
-                                }
-                                if let Data::Reports(page) = &data {
-                                    pane.reports.observe(page);
-                                }
-                                pane.error = None;
-                                pane.data = Some(data);
-                                pane.read_at = Some(std::time::Instant::now());
-                            }
-                            // Keep the last data and say it is stale.
-                            Err(error) => pane.error = Some(error),
+                        let mut served = false;
+                        if let Ok(Data::Document(document)) = &update {
+                            served = pane.documents.error.take().is_some()
+                                || pane.documents.loaded.as_ref() != Some(document);
+                            documents::serve(pane, document, cx);
                         }
-                        cx.notify();
+                        let changed = apply_read(
+                            &mut pane.data,
+                            &mut pane.error,
+                            &mut pane.read_at,
+                            &mut pane.reports,
+                            update,
+                        );
+                        if served || changed {
+                            cx.notify();
+                        }
                     }
                 });
                 if updated.is_err() {
@@ -1455,6 +1454,38 @@ fn count(tokens: u64) -> String {
     }
 }
 
+/// Show a view's read: new data, or why the read failed over the last data,
+/// which stays. Whether that changed what the pane shows, so an identical
+/// read does not redraw the window. `read_at` is kept current either way.
+fn apply_read(
+    data: &mut Option<Data>,
+    error: &mut Option<&'static str>,
+    read_at: &mut Option<std::time::Instant>,
+    reports: &mut reports::State,
+    update: Result<Data, &'static str>,
+) -> bool {
+    // The banner's age changes while the error stays.
+    let said = error.map(|error| stale_banner(error, *read_at));
+    let changed = match update {
+        Ok(new) => {
+            let observed = match &new {
+                Data::Reports(page) => reports.observe(page),
+                _ => false,
+            };
+            let changed = observed || data.as_ref() != Some(&new);
+            *data = Some(new);
+            *error = None;
+            *read_at = Some(std::time::Instant::now());
+            changed
+        }
+        Err(failed) => {
+            *error = Some(failed);
+            false
+        }
+    };
+    changed || said != error.map(|error| stale_banner(error, *read_at))
+}
+
 /// A view's read that could not be made, unlike a refusal, which keeps
 /// [`views::UNAVAILABLE`].
 const NOT_ANSWERING: &str = "Backbone is not answering.";
@@ -1512,6 +1543,27 @@ mod tests {
             stale_banner(views::UNAVAILABLE, read),
             "Backbone could not provide this view. Showing the last data read."
         );
+    }
+
+    #[test]
+    fn an_identical_read_does_not_notify() {
+        let (mut data, mut error, mut read_at) = (None, None, None);
+        let mut reports = reports::State::default();
+        let card = |name: &str| {
+            Data::Agent(Box::new(views::Agent {
+                name: name.into(),
+                ..Default::default()
+            }))
+        };
+        let mut read =
+            |update| apply_read(&mut data, &mut error, &mut read_at, &mut reports, update);
+        assert!(read(Ok(card("worker"))));
+        assert!(!read(Ok(card("worker"))));
+        assert!(read(Ok(card("reviewer"))));
+        assert!(read(Err(views::UNAVAILABLE)));
+        assert!(!read(Err(views::UNAVAILABLE)));
+        assert!(read(Ok(card("reviewer"))));
+        assert!(read_at.is_some());
     }
 
     #[test]

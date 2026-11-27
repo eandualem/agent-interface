@@ -58,8 +58,25 @@ impl State {
         self.choosing_agent = false;
     }
 
+    /// [`Self::take`] `page`; whether that changed anything the reader shows.
+    pub fn observe(&mut self, page: &ReportPage) -> bool {
+        let before = (
+            self.agents.clone(),
+            self.opening,
+            self.open.clone(),
+            self.runtimes.clone(),
+            self.feed.clone(),
+        );
+        self.take(page);
+        before.0 != self.agents
+            || before.1 != self.opening
+            || before.2 != self.open
+            || before.3 != self.runtimes
+            || before.4 != self.feed
+    }
+
     /// Authored text is immutable; correction metadata can change after opening.
-    pub fn observe(&mut self, page: &ReportPage) {
+    fn take(&mut self, page: &ReportPage) {
         if !page.agents.is_empty() {
             self.agents = page.agents.clone();
         }
