@@ -43,9 +43,10 @@ use backbone_release::{Refusal, TrustedKey, VerifiedManifest};
 use semver::Version;
 
 /// The release key's public half, the base64 line of its minisign `.pub`
-/// file, or `None` while no key is made: a build without it trusts no
+/// file (key ID 7BE270324422E708), or `None` for a build that trusts no
 /// release and installs no Backbone.
-pub const RELEASE_KEY: Option<&str> = None;
+pub const RELEASE_KEY: Option<&str> =
+    Some("RWQI5yJEMnDieyjjynCH+HnNmcBujqcE05G39/vwSN8l6UvVFkEBR5UU");
 
 /// The exit statuses the installer tells apart.
 pub mod status {
