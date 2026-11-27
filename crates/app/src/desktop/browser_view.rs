@@ -388,6 +388,10 @@ impl BrowserView {
     /// A move over the frame, or anywhere while a button pressed in it is
     /// held. A drag that began elsewhere is not the page's.
     fn moved(&mut self, event: &MouseMoveEvent, at: Option<(f32, f32)>) {
+        // A release missed while no frame was drawn ends the drag.
+        if event.pressed_button.is_none() {
+            self.held = None;
+        }
         let Some((x, y)) = at else {
             return;
         };
@@ -413,7 +417,8 @@ impl BrowserView {
     /// before this, and a printable key waits for its text.
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.typed = None;
-        if !window.is_window_active() {
+        // Without a page shown, keys stay the app's.
+        if !window.is_window_active() || self.frame.is_none() {
             return;
         }
         let keystroke = &event.keystroke;
