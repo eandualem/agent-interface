@@ -179,6 +179,16 @@ fn remember_ordinary_directories(
     shells: impl FnOnce() -> std::io::Result<Option<(std::path::PathBuf, Vec<String>)>>,
     mut read: impl FnMut(&mut agent_interface_core::Leaf, &Path) -> std::io::Result<()>,
 ) {
+    // The listing counts against the same deadline as the reads.
+    let deadline = Instant::now() + DIRECTORY_DEADLINE;
+    if !previous
+        .tree
+        .leaves()
+        .iter()
+        .any(|leaf| leaf.runs_terminal())
+    {
+        return;
+    }
     let (socket, sessions) = match shells() {
         Ok(Some(shells)) => shells,
         Ok(None) => return,
@@ -187,7 +197,7 @@ fn remember_ordinary_directories(
             return;
         }
     };
-    remember_directories(model, previous, |leaf| {
+    remember_directories_until(model, previous, deadline, |leaf| {
         if !library::ordinary_session(&leaf.id).is_some_and(|session| sessions.contains(&session)) {
             return Err(std::io::Error::other("Ordinary shell is not running"));
         }
@@ -200,9 +210,24 @@ fn remember_ordinary_directories(
 pub(super) fn remember_directories(
     model: &mut Layout,
     previous: &Tab,
+    refresh: impl FnMut(&mut agent_interface_core::Leaf) -> std::io::Result<()>,
+) {
+    remember_directories_until(
+        model,
+        previous,
+        Instant::now() + DIRECTORY_DEADLINE,
+        refresh,
+    );
+}
+
+const DIRECTORY_DEADLINE: Duration = Duration::from_secs(3);
+
+fn remember_directories_until(
+    model: &mut Layout,
+    previous: &Tab,
+    deadline: Instant,
     mut refresh: impl FnMut(&mut agent_interface_core::Leaf) -> std::io::Result<()>,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(3);
     let mut directories = HashMap::new();
     for leaf in previous
         .tree
@@ -472,6 +497,17 @@ mod tests {
             |_, _| panic!("no session is read"),
         );
         assert_eq!(model, before);
+        // A tab with no terminal leaf runs no tmux at all.
+        let mut model = Layout::initial("/saved".into());
+        model.add_tab(None, "/saved".into(), true);
+        let tab = model.tab().unwrap().clone();
+        assert!(!tab.tree.leaves()[0].runs_terminal());
+        remember_ordinary_directories(
+            &mut model,
+            &tab,
+            || panic!("no shells are listed"),
+            |_, _| panic!("no session is read"),
+        );
     }
 
     #[test]

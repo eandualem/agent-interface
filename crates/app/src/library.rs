@@ -74,10 +74,11 @@ impl Library {
                 tracing::debug!(event = "library_opened", "Library opened");
                 let mut version = None;
                 let mut last_error = None;
-                // The token at which the record last failed to decode. Only a
-                // commit can change that result; a lock or busy error retries.
+                // The token at which the committed record was last refused.
+                // Only another commit can change that result.
                 let mut unreadable = None;
                 loop {
+                    let mut refused = None;
                     let result = store.data_version().and_then(|current| {
                         if (version == Some(current) && last_error.is_none())
                             || unreadable == Some(current)
@@ -86,11 +87,9 @@ impl Library {
                         }
                         #[cfg(test)]
                         tests::count_load(&directory);
-                        let document = store.load().inspect_err(|error| {
-                            if !error.is_transient() {
-                                unreadable = Some(current);
-                            }
-                        })?;
+                        let document = store
+                            .read_document()?
+                            .inspect_err(|_| refused = Some(current))?;
                         if version.is_none()
                             && let Err(error) = remember_once(&directory, shells::remember_server)
                         {
@@ -101,6 +100,11 @@ impl Library {
                         version = Some(current);
                         Ok(Some(document))
                     });
+                    // A failed read, such as a lock that ends without a commit,
+                    // reads the record again at the next poll.
+                    if result.is_err() {
+                        unreadable = refused;
+                    }
                     match result {
                         Ok(Some(document)) => {
                             tracing::debug!(
@@ -163,7 +167,8 @@ impl Drop for Library {
 /// The location each library's shell server was last remembered at, by the
 /// filesystem identity of its directory and `layouts.db`. A save restarts the
 /// reader of the same library, which need not register its server again.
-static REMEMBERED: Mutex<BTreeMap<(u64, u64, u64), PathBuf>> = Mutex::new(BTreeMap::new());
+type Identity = (u64, u64, u64, Option<std::time::SystemTime>);
+static REMEMBERED: Mutex<BTreeMap<Identity, PathBuf>> = Mutex::new(BTreeMap::new());
 
 /// Run `remember` on the first start of a library in this process, and again
 /// once the library at `directory` is another one or has moved. A failure is
@@ -174,7 +179,13 @@ fn remember_once(
 ) -> io::Result<()> {
     let identity = std::fs::metadata(directory).and_then(|folder| {
         let database = std::fs::metadata(directory.join("layouts.db"))?;
-        Ok((folder.dev(), folder.ino(), database.ino()))
+        // The creation time tells a recreated file from one that reuses its inode.
+        Ok((
+            folder.dev(),
+            folder.ino(),
+            database.ino(),
+            database.created().ok(),
+        ))
     });
     let lock = || REMEMBERED.lock().unwrap_or_else(|e| e.into_inner());
     if let Ok(identity) = identity
@@ -265,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_record_is_read_again_only_after_a_commit() {
+    fn an_unreadable_record_is_read_again_only_after_a_commit_or_a_failed_read() {
         let directory = tempfile::tempdir().unwrap();
         let writer = Connection::open(directory.path().join("layouts.db")).unwrap();
         writer
@@ -292,6 +303,17 @@ mod tests {
         assert_ne!(first, second);
         std::thread::sleep(POLL_INTERVAL * 3);
         assert_eq!(loads(directory.path()), 2);
+        // A lock that ends without a commit leaves the token unchanged, yet the
+        // reader reads the record again rather than keep showing the lock.
+        writer.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        woken.recv_timeout(Duration::from_secs(5)).unwrap();
+        let locked = library.take_update().unwrap().error.unwrap().detail;
+        assert_eq!(locked, "database is locked");
+        writer.execute_batch("ROLLBACK").unwrap();
+        woken.recv_timeout(Duration::from_secs(5)).unwrap();
+        let update = library.take_update().unwrap();
+        assert_eq!(update.error.unwrap().detail, second);
+        assert_eq!(loads(directory.path()), 3);
     }
 
     #[test]
