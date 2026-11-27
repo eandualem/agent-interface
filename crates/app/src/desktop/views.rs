@@ -34,6 +34,7 @@ use super::{
 use agent_interface_roster::profiles::Connection;
 use source::Source;
 
+mod access;
 mod activity;
 mod additions;
 mod agent;

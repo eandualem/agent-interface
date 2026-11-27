@@ -1,0 +1,633 @@
+//! What the Access pane shows, worked out from what Backbone served: agents
+//! grouped by role and swarm, each row's words, the filters' counts, the
+//! chain of agents above one, and the requests split by who they wait on.
+//! Replies to changes are applied here as Backbone returned them.
+use agent_interface_roster::{
+    Swarm,
+    profiles::access::{
+        Agent, AgentAccess, Grant, Mode, Overview, Placed, Reach, Request, RequestState, Role,
+    },
+};
+use chrono::{DateTime, FixedOffset};
+
+/// The served records the pane draws.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct Model {
+    pub overview: Overview,
+    /// Every waiting request, the newest first.
+    pub pending: Vec<Request>,
+    /// Decided requests read so far, the newest first; none until read.
+    pub decided: Option<Vec<Request>>,
+}
+
+/// The agent list's groups, in the board's order.
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct Groups<'a> {
+    pub orchestrators: Vec<&'a Agent>,
+    pub coordinators: Vec<&'a Agent>,
+    pub main: Vec<&'a Agent>,
+    pub swarms: Vec<SwarmGroup<'a>>,
+}
+
+/// One swarm's row, collapsed to its members.
+#[derive(Debug, PartialEq)]
+pub(super) struct SwarmGroup<'a> {
+    pub name: String,
+    /// The agent that started it, when the swarms read says.
+    pub initiator: Option<String>,
+    pub members: Vec<&'a Agent>,
+}
+
+impl Groups<'_> {
+    /// How many agents the swarms hold.
+    pub fn swarm_agents(&self) -> usize {
+        self.swarms.iter().map(|swarm| swarm.members.len()).sum()
+    }
+}
+
+/// The list's filters.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Filter {
+    #[default]
+    All,
+    /// Orchestrators and coordinators.
+    AboveOthers,
+    /// Agents granted the browser.
+    Browser,
+    Unsandboxed,
+}
+
+impl Filter {
+    pub const ALL: [Self; 4] = [
+        Self::All,
+        Self::AboveOthers,
+        Self::Browser,
+        Self::Unsandboxed,
+    ];
+
+    pub fn matches(self, agent: &Agent) -> bool {
+        match self {
+            Self::All => true,
+            Self::AboveOthers => matches!(agent.role, Some(Role::Orchestrator | Role::Coordinator)),
+            Self::Browser => browsers(agent) > 0,
+            Self::Unsandboxed => agent.mode == Mode::Unsandboxed,
+        }
+    }
+
+    /// How many of `agents` it keeps.
+    pub fn count(self, agents: &[Agent]) -> usize {
+        agents.iter().filter(|agent| self.matches(agent)).count()
+    }
+}
+
+/// The swarm `agent` works in: its `swarm:` tag, or the swarm listing it.
+fn swarm_of<'a>(agent: &'a Agent, swarms: &'a [Swarm]) -> Option<&'a str> {
+    agent
+        .tags
+        .iter()
+        .find_map(|tag| tag.strip_prefix("swarm:"))
+        .filter(|name| !name.is_empty())
+        .or_else(|| {
+            swarms
+                .iter()
+                .find(|swarm| swarm.members.contains(&agent.name))
+                .map(|swarm| swarm.name.as_str())
+        })
+}
+
+/// Group `agents`, those `filter` keeps, by role; swarm agents by their
+/// swarm, in the order each swarm is first met. A swarm agent whose swarm is
+/// not known, or an agent of a role this version does not know, is listed
+/// with the main agents, so no agent is hidden.
+pub(super) fn groups<'a>(overview: &'a Overview, filter: Filter) -> Groups<'a> {
+    let mut groups = Groups::default();
+    for agent in overview.agents.iter().filter(|agent| filter.matches(agent)) {
+        match agent.role {
+            Some(Role::Orchestrator) => groups.orchestrators.push(agent),
+            Some(Role::Coordinator) => groups.coordinators.push(agent),
+            Some(Role::SwarmCoordinator | Role::SwarmMember) => {
+                match swarm_of(agent, &overview.swarms) {
+                    Some(name) => match groups.swarms.iter_mut().find(|s| s.name == name) {
+                        Some(swarm) => swarm.members.push(agent),
+                        None => groups.swarms.push(SwarmGroup {
+                            name: name.to_owned(),
+                            initiator: overview
+                                .swarms
+                                .iter()
+                                .find(|swarm| swarm.name == name)
+                                .map(|swarm| swarm.initiator.clone()),
+                            members: vec![agent],
+                        }),
+                    },
+                    None => groups.main.push(agent),
+                }
+            }
+            _ => groups.main.push(agent),
+        }
+    }
+    groups
+}
+
+/// Who a row says the agent answers to.
+pub(super) fn answers_to(agent: &Agent) -> String {
+    match &agent.superior {
+        None => "answers to you".into(),
+        Some(superior) => format!("under {superior}"),
+    }
+}
+
+/// How many repositories a row says the agent reaches.
+pub(super) fn reach_label(reach: &Reach) -> String {
+    let items = match reach {
+        Reach::Profile { .. } => return "every repository".into(),
+        Reach::Repositories { items } => items.len(),
+        Reach::Unknown => return "repositories not known".into(),
+    };
+    match items {
+        0 => "no repository".into(),
+        1 => "1 repository".into(),
+        n => format!("{n} repositories"),
+    }
+}
+
+/// How many browser grants the agent holds.
+pub(super) fn browsers(agent: &Agent) -> usize {
+    agent
+        .grants
+        .iter()
+        .filter(|grant| matches!(grant, Grant::Browser { .. }))
+        .count()
+}
+
+/// How many secrets, variables and files, the agent holds.
+pub(super) fn secrets(agent: &Agent) -> usize {
+    agent
+        .grants
+        .iter()
+        .filter(|grant| {
+            matches!(
+                grant,
+                Grant::SecretVariable { .. } | Grant::SecretFile { .. }
+            )
+        })
+        .count()
+}
+
+/// The role's name as the pane writes it.
+pub(super) fn role_label(role: Role) -> &'static str {
+    match role {
+        Role::Orchestrator => "Orchestrator",
+        Role::Coordinator => "Coordinator",
+        Role::Main => "Main agent",
+        Role::SwarmCoordinator => "Swarm coordinator",
+        Role::SwarmMember => "Swarm member",
+        Role::Unknown => "Role not known",
+    }
+}
+
+/// The agents above `name`, nearest first, up to the one directly under the
+/// owner. It stops before an agent met twice, so a cycle in the records
+/// ends, and at a superior that is not listed, which it still names.
+pub(super) fn chain(agents: &[Agent], name: &str) -> Vec<String> {
+    let mut chain: Vec<String> = Vec::new();
+    let mut at = agents.iter().find(|agent| agent.name == name);
+    while let Some(superior) = at.and_then(|agent| agent.superior.as_ref()) {
+        if superior == name || chain.contains(superior) {
+            break;
+        }
+        chain.push(superior.clone());
+        at = agents.iter().find(|agent| &agent.name == superior);
+    }
+    chain
+}
+
+/// How many waiting requests `name` made.
+pub(super) fn asks(pending: &[Request], name: &str) -> usize {
+    pending
+        .iter()
+        .filter(|request| request.agent == name)
+        .count()
+}
+
+/// Waiting requests split into those on the owner and those on an agent,
+/// each in the served order.
+pub(super) fn waiting(pending: &[Request]) -> (Vec<&Request>, Vec<&Request>) {
+    pending
+        .iter()
+        .filter(|request| request.state == RequestState::Pending)
+        .partition(|request| request.waits_on.is_none())
+}
+
+/// "N requests from M agents".
+pub(super) fn from_agents(requests: &[&Request]) -> String {
+    let mut agents: Vec<&str> = requests.iter().map(|r| r.agent.as_str()).collect();
+    agents.sort_unstable();
+    agents.dedup();
+    let (n, m) = (requests.len(), agents.len());
+    format!(
+        "{n} request{} from {m} agent{}",
+        if n == 1 { "" } else { "s" },
+        if m == 1 { "" } else { "s" }
+    )
+}
+
+fn time(at: &str, now: &DateTime<FixedOffset>) -> Option<DateTime<FixedOffset>> {
+    DateTime::parse_from_rfc3339(at)
+        .ok()
+        .map(|at| at.with_timezone(&now.timezone()))
+}
+
+/// A wait, in its largest whole unit.
+fn age(at: &DateTime<FixedOffset>, now: &DateTime<FixedOffset>) -> String {
+    let minutes = (*now - *at).num_minutes().max(0);
+    let (n, unit) = match minutes {
+        0..60 => (minutes, "minute"),
+        60..1440 => (minutes / 60, "hour"),
+        _ => (minutes / 1440, "day"),
+    };
+    format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
+}
+
+/// "The oldest has waited 8 days.", from the oldest waiting request; none
+/// when nothing waits or no time can be read.
+pub(super) fn oldest_wait(pending: &[Request], now: &DateTime<FixedOffset>) -> Option<String> {
+    let oldest = pending
+        .iter()
+        .filter(|request| request.state == RequestState::Pending)
+        .filter_map(|request| time(&request.requested_at, now))
+        .min()?;
+    Some(format!("The oldest has waited {}.", age(&oldest, now)))
+}
+
+/// When a request was made: "asked 12 minutes ago" within a day, then
+/// "asked 18 Nov, 8 days ago"; with `date_only`, "asked 25 Nov".
+pub(super) fn asked(request: &Request, now: &DateTime<FixedOffset>, date_only: bool) -> String {
+    let Some(at) = time(&request.requested_at, now) else {
+        return "asked at a time not known".into();
+    };
+    let date = at.format("%-d %b");
+    if date_only {
+        return format!("asked {date}");
+    }
+    if *now - at < chrono::Duration::days(1) {
+        format!("asked {} ago", age(&at, now))
+    } else {
+        format!("asked {date}, {} ago", age(&at, now))
+    }
+}
+
+/// How a decided request ended and who decided it: "approved by you",
+/// "refused by planner".
+pub(super) fn decided_label(request: &Request) -> String {
+    let state = match request.state {
+        RequestState::Approved => "approved",
+        RequestState::Refused => "refused",
+        RequestState::Pending => "waiting",
+        RequestState::Unknown => "decided",
+    };
+    match (&request.decided_by, request.state) {
+        (_, RequestState::Pending) => state.into(),
+        (None, _) => format!("{state} by you"),
+        (Some(by), _) => format!("{state} by {by}"),
+    }
+}
+
+/// When a decided request was decided: "21 Nov 16:02".
+pub(super) fn decided_at(request: &Request, now: &DateTime<FixedOffset>) -> Option<String> {
+    let at = time(request.decided_at.as_deref()?, now)?;
+    Some(at.format("%-d %b %H:%M").to_string())
+}
+
+impl Model {
+    /// The agent named `name`.
+    pub fn agent(&self, name: &str) -> Option<&Agent> {
+        self.overview.agents.iter().find(|agent| agent.name == name)
+    }
+
+    /// Apply a change's reply: the agent's record as Backbone holds it now.
+    /// False, changing nothing, when no listed agent has its name.
+    pub fn apply_access(&mut self, reply: AgentAccess) -> bool {
+        let Some(agent) = self
+            .overview
+            .agents
+            .iter_mut()
+            .find(|a| a.name == reply.name)
+        else {
+            return false;
+        };
+        agent.mode = reply.mode;
+        agent.grants = reply.grants;
+        agent.ceiling = reply.ceiling;
+        agent.reach = reply.reach;
+        true
+    }
+
+    /// Apply a placement's reply. False when no listed agent has its name.
+    pub fn apply_placed(&mut self, reply: Placed) -> bool {
+        let Some(agent) = self
+            .overview
+            .agents
+            .iter_mut()
+            .find(|a| a.name == reply.name)
+        else {
+            return false;
+        };
+        agent.role = Some(reply.role);
+        agent.superior = reply.superior;
+        true
+    }
+
+    /// Apply a decision's reply: the request leaves the waiting ones and,
+    /// once decided requests are read, leads them.
+    pub fn apply_decided(&mut self, reply: Request) {
+        self.pending.retain(|request| request.id != reply.id);
+        if reply.state == RequestState::Pending {
+            self.pending.insert(0, reply);
+            return;
+        }
+        if let Some(decided) = &mut self.decided {
+            decided.retain(|request| request.id != reply.id);
+            decided.insert(0, reply);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_interface_roster::profiles::access::{Access, Reached, Source};
+
+    fn overview() -> Overview {
+        let agents: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../../roster/src/profiles/access/fixtures/agents.json"
+        ))
+        .unwrap();
+        let agents = agents["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["role"].is_string())
+            .map(|item| serde_json::from_value(item.clone()).unwrap())
+            .collect();
+        let swarms = vec![Swarm {
+            name: "app-squad".into(),
+            initiator: "builder".into(),
+            members: vec![
+                "app-squad-coordinator".into(),
+                "app-squad-coder".into(),
+                "app-squad-reviewer".into(),
+            ],
+        }];
+        Overview { agents, swarms }
+    }
+
+    fn requests(name: &str) -> Vec<Request> {
+        let text = match name {
+            "pending" => {
+                include_str!(
+                    "../../../../../roster/src/profiles/access/fixtures/requests-pending.json"
+                )
+            }
+            _ => {
+                include_str!("../../../../../roster/src/profiles/access/fixtures/requests-all.json")
+            }
+        };
+        let page: serde_json::Value = serde_json::from_str(text).unwrap();
+        serde_json::from_value(page["items"].clone()).unwrap()
+    }
+
+    fn now() -> DateTime<FixedOffset> {
+        DateTime::parse_from_rfc3339("2026-11-26T10:31:00+00:00").unwrap()
+    }
+
+    fn names(agents: &[&Agent]) -> Vec<String> {
+        agents.iter().map(|agent| agent.name.clone()).collect()
+    }
+
+    #[test]
+    fn agents_group_by_role_and_swarm_in_the_served_order() {
+        let overview = overview();
+        let groups = groups(&overview, Filter::All);
+        assert_eq!(names(&groups.orchestrators), ["lead", "overseer"]);
+        assert_eq!(names(&groups.coordinators), ["planner", "outreach"]);
+        assert_eq!(names(&groups.main), ["builder", "docs-site", "tester"]);
+        assert_eq!(groups.swarms.len(), 1);
+        let swarm = &groups.swarms[0];
+        assert_eq!(swarm.name, "app-squad");
+        assert_eq!(swarm.initiator.as_deref(), Some("builder"));
+        assert_eq!(
+            names(&swarm.members),
+            [
+                "app-squad-coordinator",
+                "app-squad-coder",
+                "app-squad-reviewer"
+            ]
+        );
+        assert_eq!(groups.swarm_agents(), 3);
+    }
+
+    #[test]
+    fn a_swarm_agent_is_found_by_the_swarms_list_or_kept_with_main_agents() {
+        let mut overview = overview();
+        // Without its tag, the swarms list still places it.
+        overview.agents[8].tags.clear();
+        // A swarm agent no swarm names, and a role this version does not know.
+        overview.agents[9].tags = vec!["swarm:".into()];
+        overview.swarms[0].members.pop();
+        overview.agents[6].role = Some(Role::Unknown);
+        let groups = groups(&overview, Filter::All);
+        assert_eq!(
+            names(&groups.swarms[0].members),
+            ["app-squad-coordinator", "app-squad-coder"]
+        );
+        assert_eq!(
+            names(&groups.main),
+            ["builder", "docs-site", "tester", "app-squad-reviewer"]
+        );
+        // A swarm the swarms read does not list has no initiator.
+        overview.swarms.clear();
+        let groups = super::groups(&overview, Filter::All);
+        assert_eq!(groups.swarms[0].initiator, None);
+    }
+
+    #[test]
+    fn filters_count_and_keep_their_agents() {
+        let overview = overview();
+        let agents = &overview.agents;
+        let counts: Vec<_> = Filter::ALL.iter().map(|f| f.count(agents)).collect();
+        assert_eq!(counts, [10, 4, 3, 1]);
+        let unsandboxed = groups(&overview, Filter::Unsandboxed);
+        assert_eq!(names(&unsandboxed.main), ["docs-site"]);
+        assert!(unsandboxed.orchestrators.is_empty() && unsandboxed.swarms.is_empty());
+        let browser = groups(&overview, Filter::Browser);
+        assert_eq!(names(&browser.orchestrators), ["lead"]);
+        assert_eq!(names(&browser.coordinators), ["outreach"]);
+    }
+
+    #[test]
+    fn rows_say_who_the_agent_answers_to_and_what_it_reaches() {
+        let overview = overview();
+        let agent = |name: &str| overview.agents.iter().find(|a| a.name == name).unwrap();
+        assert_eq!(answers_to(agent("lead")), "answers to you");
+        assert_eq!(answers_to(agent("builder")), "under planner");
+        assert_eq!(reach_label(&agent("lead").reach), "every repository");
+        assert_eq!(reach_label(&agent("planner").reach), "3 repositories");
+        assert_eq!(reach_label(&agent("docs-site").reach), "1 repository");
+        assert_eq!(reach_label(&agent("tester").reach), "no repository");
+        assert_eq!(reach_label(&Reach::Unknown), "repositories not known");
+        assert_eq!(
+            (browsers(agent("docs-site")), secrets(agent("docs-site"))),
+            (1, 2)
+        );
+        assert_eq!(
+            role_label(agent("app-squad-coder").role.unwrap()),
+            "Swarm member"
+        );
+    }
+
+    #[test]
+    fn the_chain_above_an_agent_ends_at_the_owner_or_a_cycle() {
+        let mut overview = overview();
+        assert_eq!(
+            chain(&overview.agents, "app-squad-coder"),
+            ["app-squad-coordinator", "builder", "planner", "lead"]
+        );
+        assert!(chain(&overview.agents, "lead").is_empty());
+        assert!(chain(&overview.agents, "nobody").is_empty());
+        // A superior that is not listed is named, and the chain ends there.
+        overview.agents[6].superior = Some("gone".into());
+        assert_eq!(chain(&overview.agents, "tester"), ["gone"]);
+        // lead under planner under lead: each is named once.
+        overview.agents[0].superior = Some("planner".into());
+        assert_eq!(chain(&overview.agents, "builder"), ["planner", "lead"]);
+        assert_eq!(chain(&overview.agents, "lead"), ["planner"]);
+        overview.agents[6].superior = Some("tester".into());
+        assert!(chain(&overview.agents, "tester").is_empty());
+    }
+
+    #[test]
+    fn waiting_requests_split_by_who_decides_and_count_per_agent() {
+        let pending = requests("pending");
+        let (on_you, on_agent) = waiting(&pending);
+        let ids: Vec<_> = on_you.iter().map(|r| r.id).collect();
+        assert_eq!(ids, [21, 19]);
+        assert_eq!(on_agent[0].waits_on.as_deref(), Some("builder"));
+        assert_eq!(from_agents(&on_you), "2 requests from 2 agents");
+        assert_eq!(from_agents(&on_agent), "1 request from 1 agent");
+        assert_eq!(asks(&pending, "tester"), 1);
+        assert_eq!(asks(&pending, "builder"), 0);
+        // Decided requests never count as waiting.
+        let all = requests("all");
+        let (on_you, on_agent) = waiting(&all);
+        assert_eq!(on_you.len() + on_agent.len(), 3);
+    }
+
+    #[test]
+    fn waits_and_decisions_read_in_words() {
+        let pending = requests("pending");
+        let now = now();
+        assert_eq!(
+            oldest_wait(&pending, &now).as_deref(),
+            Some("The oldest has waited 8 days.")
+        );
+        assert_eq!(oldest_wait(&[], &now), None);
+        assert_eq!(asked(&pending[0], &now, false), "asked 12 minutes ago");
+        assert_eq!(asked(&pending[2], &now, false), "asked 18 Nov, 8 days ago");
+        assert_eq!(asked(&pending[1], &now, true), "asked 25 Nov");
+        let mut hours = pending[0].clone();
+        hours.requested_at = "2026-11-26T07:30:00Z".into();
+        assert_eq!(asked(&hours, &now, false), "asked 3 hours ago");
+        assert_eq!(
+            oldest_wait(&[hours], &now).as_deref(),
+            Some("The oldest has waited 3 hours.")
+        );
+        let all = requests("all");
+        assert_eq!(decided_label(&all[3]), "approved by planner");
+        assert_eq!(decided_label(&all[4]), "refused by you");
+        assert_eq!(decided_label(&all[0]), "waiting");
+        assert_eq!(decided_at(&all[3], &now).as_deref(), Some("21 Nov 16:02"));
+        assert_eq!(decided_at(&all[0], &now), None);
+        // Dates are read in the viewer's offset.
+        let east = now.with_timezone(&FixedOffset::east_opt(10 * 3600).unwrap());
+        assert_eq!(decided_at(&all[4], &east).as_deref(), Some("17 Nov 15:30"));
+    }
+
+    #[test]
+    fn replies_replace_what_backbone_now_holds() {
+        let mut model = Model {
+            overview: overview(),
+            pending: requests("pending"),
+            decided: None,
+        };
+        let reply: AgentAccess = serde_json::from_str(include_str!(
+            "../../../../../roster/src/profiles/access/fixtures/agent-access.json"
+        ))
+        .unwrap();
+        assert!(model.apply_access(reply.clone()));
+        let tester = model.agent("tester").unwrap();
+        assert_eq!(tester.grants, reply.grants);
+        assert_eq!(browsers(tester), 1);
+        let unknown = AgentAccess {
+            name: "nobody".into(),
+            ..reply
+        };
+        let before = model.clone();
+        assert!(!model.apply_access(unknown));
+        assert_eq!(model, before);
+
+        let placed = Placed {
+            name: "tester".into(),
+            role: Role::Coordinator,
+            superior: Some("overseer".into()),
+        };
+        assert!(model.apply_placed(placed));
+        let tester = model.agent("tester").unwrap();
+        assert_eq!(tester.role, Some(Role::Coordinator));
+        assert_eq!(
+            chain(&model.overview.agents, "tester"),
+            ["overseer", "lead"]
+        );
+        assert!(!model.apply_placed(Placed {
+            name: "nobody".into(),
+            role: Role::Main,
+            superior: None,
+        }));
+
+        let mut approved = model.pending[0].clone();
+        approved.state = RequestState::Approved;
+        model.apply_decided(approved.clone());
+        assert_eq!(model.pending.len(), 2);
+        assert_eq!(model.decided, None);
+        model.decided = Some(requests("all")[3..].to_vec());
+        let mut refused = model.pending[0].clone();
+        refused.state = RequestState::Refused;
+        model.apply_decided(refused.clone());
+        let decided = model.decided.as_ref().unwrap();
+        assert_eq!((decided[0].id, decided.len()), (refused.id, 3));
+        assert_eq!(model.pending.len(), 1);
+        // A reply still waiting stays with the waiting requests.
+        let mut still = model.pending[0].clone();
+        still.waits_on = None;
+        model.apply_decided(still);
+        assert_eq!(model.pending.len(), 1);
+        assert_eq!(model.pending[0].waits_on, None);
+
+        // A reach reply replaces the listed repositories.
+        let mut reply = AgentAccess {
+            name: "builder".into(),
+            ..AgentAccess::default()
+        };
+        reply.reach = Reach::Repositories {
+            items: vec![Reached {
+                repo: "example/app".into(),
+                access: Access::Write,
+                source: Source::OwnRepository,
+            }],
+        };
+        assert!(model.apply_access(reply));
+        assert_eq!(
+            reach_label(&model.agent("builder").unwrap().reach),
+            "1 repository"
+        );
+    }
+}
