@@ -16,6 +16,7 @@ use gpui::{
 use crate::library::{Library, Update, WindowLayout};
 mod agent_groups;
 mod agent_status;
+mod browser_view;
 mod chooser;
 mod chooser_source;
 mod creation_origin;
@@ -427,6 +428,7 @@ fn open_browser_with_status(
                 ..Browser::default()
             };
             browser.open(directory, cx);
+            browser.watch_agent_browsers(cx);
             browser.workspace_profiles = workspace_profiles;
             browser.profile_client = profile_client;
             // Stopping the library joins its storage worker, which can wait on
@@ -807,6 +809,19 @@ struct Browser {
     views: HashMap<String, (gpui::Entity<views::ViewPane>, navigation_origin::ViewEvents)>,
     /// The chooser in each shown empty pane, with its event subscription.
     new_panes: HashMap<String, (gpui::Entity<new_pane::NewPane>, gpui::Subscription)>,
+    /// The agent-browser sessions running on this machine, read every two seconds.
+    agent_browsers: Vec<crate::agent_browser::Session>,
+    _agent_browsers: Option<Task<()>>,
+    /// The agent whose browser each empty pane shows. Kept only in memory:
+    /// the pane is saved as an empty pane.
+    browser_panes: HashMap<String, String>,
+    /// The view in each shown Browser pane.
+    browser_views: HashMap<String, gpui::Entity<browser_view::BrowserView>>,
+    /// The Browser pane last chosen: its view gives its agent's browser the
+    /// pane's size.
+    browser_chosen: Option<String>,
+    /// The viewport last set for each agent's page, shared by the views.
+    browser_shapes: browser_view::Shapes,
     /// The section each pane opening Reports & updates shows once its view
     /// appears, and the pane whose save is still deciding its choice.
     opening_sections: HashMap<String, views::Section>,
@@ -3528,13 +3543,15 @@ impl Render for Browser {
                 self.views.get_mut(&id).unwrap().1.subscription = Some(events);
             }
         }
-        let expanded = self.layout.as_ref().and_then(|layout| {
+        let focused = self.layout.as_ref().and_then(|layout| {
             let model = layout.model();
             model
                 .focus_mode()
-                .then(|| model.tab().map(|tab| tab.focus.as_str()))
+                .then(|| model.tab().map(|tab| tab.focus.clone()))
                 .flatten()
         });
+        self.sync_browser_views(&drawn, focused.as_deref(), window, cx);
+        let expanded = focused.as_deref();
         for (id, terminal) in &self.terminals {
             if !leaves.iter().any(|leaf| &leaf.id == id)
                 || expanded.is_some_and(|focused| focused != id)
@@ -3558,6 +3575,7 @@ impl Render for Browser {
         let empty: Vec<String> = drawn
             .iter()
             .filter(|leaf| leaf.empty && leaf.attachment.is_none())
+            .filter(|leaf| !self.browser_panes.contains_key(&leaf.id))
             .map(|leaf| leaf.id.clone())
             .collect();
         let placement = self.selected_navigation_origin().zip(
@@ -3629,6 +3647,9 @@ impl Render for Browser {
                             new_pane::NewPaneEvent::Attach(name) => {
                                 browser.attach_into(&pane, name, None, window, cx)
                             }
+                            new_pane::NewPaneEvent::Browser(agent) => {
+                                browser.show_agent_browser_in(&pane, agent, cx)
+                            }
                             new_pane::NewPaneEvent::OpenView(view)
                                 if view.kind == agent_interface_core::ViewKind::Connections =>
                             {
@@ -3666,9 +3687,15 @@ impl Render for Browser {
                 self.new_panes.insert(id, (chooser, events));
             }
         }
+        let browsers: Vec<(String, String)> = self
+            .agent_browsers
+            .iter()
+            .map(|session| (session.name.clone(), self.agent_browser_label(session, cx)))
+            .collect();
         for (id, (chooser, _)) in &self.new_panes {
             chooser.update(cx, |chooser, cx| {
                 chooser.set_visible(expanded.is_none_or(|focused| focused == id), cx);
+                chooser.set_browsers(browsers.clone(), cx);
             });
         }
         if let Some(request) = self.shell_to_open.take()

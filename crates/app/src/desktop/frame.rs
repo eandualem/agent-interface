@@ -161,6 +161,7 @@ impl Browser {
             terminals: &self.terminals,
             views: &self.views,
             new_panes: &self.new_panes,
+            browser_views: &self.browser_views,
             chooser: self.chooser.as_ref(),
             split_bounds: &self.split_bounds,
             pane_bounds: &self.pane_bounds,

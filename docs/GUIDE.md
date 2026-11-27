@@ -364,6 +364,44 @@ A remote agent's pane is drawn natively like any other terminal. It shows
 what the profile allows. While it connects the pane shows **Connecting…**; after
 a failure it shows the reason with **Open again** and **Detach**.
 
+## Watch an agent's browser
+
+An agent that drives a browser with
+[agent-browser](https://github.com/vercel-labs/agent-browser) gets a
+**Browser** row under it in the sidebar's **AGENTS** section, showing the
+page's title or address. The row appears when the agent starts a session
+named exactly as the agent, for example
+`agent-browser --session <agent name> open https://example.com`, and goes
+when the session closes. Only agents on this computer are matched, and only
+sessions in agent-browser's usual folder: `AGENT_BROWSER_SOCKET_DIR`, else
+`$XDG_RUNTIME_DIR/agent-browser`, else `~/.agent-browser`. Sessions in an
+agent-browser namespace are not shown.
+
+Click the row to open the **Browser** view, in a visible empty pane or a new
+tab. An empty pane's chooser also lists each agent's browser under
+**BROWSERS**; choosing one opens the view in that pane. The view's header
+names the agent and the page, by its title or else its site. Below it, the
+page fills the pane as a live picture: all of it, as large as the pane holds
+it, from the pane's top left corner. The agent's browser takes the pane's
+size, the way a terminal does, so the agent works on the page exactly as you
+see it: a tall pane gives it a tall page, and a narrow pane gives it the
+site's narrow layout. Closing the view leaves the agent's browser at that
+size. If the agent sets its own page size, it keeps it until you resize or
+choose the pane again. The picture is for watching and cannot
+be clicked or typed into. To act in the page, click **Open in Chrome**: it
+brings the agent's own Chrome window to the front, or, when the session runs
+without a window (headless), opens the page's address in your Chrome. When
+agent-browser attached to a browser it did not open, when a headless page
+has no web address, when the agent's browser has no profile of its own (it
+may be using your Chrome's), or on Linux, the button is disabled and says
+why when you point at it. When the browser closes the view says **The browser ended.**;
+if the page can't be reached the view says so and keeps trying. Only a
+browser that agent-browser opened itself can be watched; one it attached to
+can't be reached.
+
+A Browser view is not kept when the app restarts: its pane reopens empty,
+and the row opens it again.
+
 ## Connections
 
 **Connections** shows a profile's links with other Agent Backbone profiles. Open

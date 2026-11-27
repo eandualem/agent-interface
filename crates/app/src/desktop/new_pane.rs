@@ -38,6 +38,8 @@ pub(super) enum NewPaneEvent {
     OpenView(View),
     /// Reports & updates, opening on one section.
     OpenSection(Section),
+    /// The Browser view of this agent's browser.
+    Browser(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -183,6 +185,8 @@ enum Row {
     Heading(&'static str, &'static str),
     Agent(Box<Member>),
     Session(String),
+    /// An agent's browser, by agent name.
+    Browser(String),
     View(usize),
     Section(usize),
     Pick(View),
@@ -244,6 +248,8 @@ pub(super) struct NewPane {
     loading: bool,
     team: Option<Team>,
     team_loading: bool,
+    /// Running agent-browser sessions by name, each with its label.
+    browsers: Vec<(String, String)>,
     visible: bool,
     backbone: bool,
     scroll: ScrollHandle,
@@ -354,6 +360,7 @@ impl NewPane {
             loading: session_source.is_some(),
             team: None,
             team_loading: team_source.is_some(),
+            browsers: Vec::new(),
             visible: true,
             backbone: origin.has_provider(),
             origin,
@@ -384,6 +391,14 @@ impl NewPane {
         self.loading = self.session_source.is_some();
         self.team_loading = self.team_source.is_some();
         cx.notify();
+    }
+
+    /// The running agent-browser sessions, by name with their labels.
+    pub fn set_browsers(&mut self, browsers: Vec<(String, String)>, cx: &mut Context<Self>) {
+        if self.browsers != browsers {
+            self.browsers = browsers;
+            cx.notify();
+        }
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
@@ -465,6 +480,18 @@ impl NewPane {
                         "",
                     ));
                     rows.extend(others.into_iter().map(Row::Session));
+                }
+                let local: Vec<&str> = self
+                    .team
+                    .iter()
+                    .flat_map(|team| team.members.iter())
+                    .filter(|member| self.origin.remote_profile(member).is_none())
+                    .map(|member| member.name.as_str())
+                    .collect();
+                let browsers = agent_browsers(&self.browsers, &local, |text| self.matches(text));
+                if !browsers.is_empty() {
+                    rows.push(Row::Heading("BROWSERS", "watch only"));
+                    rows.extend(browsers.into_iter().map(Row::Browser));
                 }
             }
             Mode::Reports => {
@@ -588,6 +615,7 @@ impl NewPane {
                 None => cx.emit(NewPaneEvent::Attach(member.name)),
             },
             Row::Session(name) => cx.emit(NewPaneEvent::Attach(name)),
+            Row::Browser(agent) => cx.emit(NewPaneEvent::Browser(agent)),
             Row::View(index) => match VIEWS[index].kind {
                 ViewKind::Agent => self.set_mode(Mode::Agents, cx),
                 kind => cx.emit(NewPaneEvent::OpenView(View::of(kind))),
@@ -747,6 +775,30 @@ impl Render for NewPane {
                 Row::Session(name) => ui::choice_frame(id, selected)
                     .child(ui::icon("terminal", t.size.icon, c.muted))
                     .child(mono(name.clone()).flex_1().text_color(c.text))
+                    .child(ui::choice_key(key))
+                    .into_any_element(),
+                Row::Browser(agent) => ui::choice_frame(id, selected)
+                    .child(ui::icon("globe", t.size.icon, c.muted))
+                    .child(mono(agent.clone()).flex_shrink_0().text_color(c.text))
+                    .child(
+                        ui::text(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .text_color(c.muted),
+                            &t.text.meta,
+                        )
+                        .child(
+                            self.browsers
+                                .iter()
+                                .find(|(name, _)| name == agent)
+                                .map(|(_, label)| label.clone())
+                                .unwrap_or_default(),
+                        ),
+                    )
                     .child(ui::choice_key(key))
                     .into_any_element(),
                 Row::View(view) => {
@@ -948,6 +1000,7 @@ fn row_key(row: &Row) -> String {
             member.machine.as_ref().map_or("", |m| m.id.as_str())
         ),
         Row::Session(name) => name.clone(),
+        Row::Browser(agent) => format!("browser:{agent}"),
         Row::Pick(view) => format!(
             "agent:{}:{}",
             view.agent.as_deref().unwrap_or_default(),
@@ -956,6 +1009,20 @@ fn row_key(row: &Row) -> String {
         Row::View(index) => VIEWS[*index].label.to_owned(),
         Row::Section(index) => SECTIONS[*index].label.to_owned(),
     }
+}
+
+/// The agents among `local` with a running browser that `matches` the filter,
+/// by agent name or label.
+fn agent_browsers(
+    browsers: &[(String, String)],
+    local: &[&str],
+    matches: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    browsers
+        .iter()
+        .filter(|(name, label)| local.contains(&name.as_str()) && (matches(name) || matches(label)))
+        .map(|(name, _)| name.clone())
+        .collect()
 }
 
 fn agent_row(
@@ -1068,6 +1135,24 @@ mod tests {
         );
         assert!(numbered_row(&presented, 0, vec![]).is_none());
         assert!(numbered_row(&presented, 3, vec![Row::Session("gamma".into())]).is_none());
+    }
+
+    #[test]
+    fn only_the_browsers_of_local_agents_are_offered() {
+        let browsers = [
+            ("coder".to_owned(), "Example Domain".to_owned()),
+            ("scratch".to_owned(), "https://example.org/".to_owned()),
+            ("reviewer".to_owned(), "https://example.net/".to_owned()),
+        ];
+        let local = ["coder", "reviewer"];
+        assert_eq!(
+            agent_browsers(&browsers, &local, |_| true),
+            ["coder", "reviewer"]
+        );
+        assert_eq!(
+            agent_browsers(&browsers, &local, |text| text.contains("Example")),
+            ["coder"]
+        );
     }
 
     #[test]
