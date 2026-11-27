@@ -12,6 +12,8 @@ use gpui::{
 };
 use std::{cell::RefCell, rc::Rc};
 
+use super::tokens;
+
 /// The control a keyboard focus move landed on, until it is in view.
 #[derive(Clone, Default)]
 pub struct Reveal(Rc<RefCell<Option<WeakFocusHandle>>>);
@@ -48,7 +50,10 @@ impl Reveal {
                 }
                 pending.take();
                 let offset = scroll.offset();
-                let y = shown_offset(scroll.bounds(), bounds, offset.y, scroll.max_offset().y);
+                // A little room around the control keeps its border and
+                // focus ring, outside the layer's box, in view too.
+                let shown = bounds.dilate(px(tokens().space.s4));
+                let y = shown_offset(scroll.bounds(), shown, offset.y, scroll.max_offset().y);
                 if y != offset.y {
                     scroll.set_offset(point(offset.x, y));
                     // The scrolling element has placed its children for this
