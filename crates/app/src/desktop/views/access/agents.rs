@@ -323,7 +323,16 @@ impl Pane {
             )
         })
         .when(agent.mode == Mode::Unsandboxed, |row| {
-            row.child(ui::tag("unsandboxed", Tone::Quiet))
+            // Board A's chip on a row: smaller than a tag elsewhere, so the
+            // name keeps its room beside the counts.
+            row.child(
+                ui::tag("unsandboxed", Tone::Quiet)
+                    .flex()
+                    .items_center()
+                    .h(px(t.size.keycap))
+                    .px(px(t.space.s6))
+                    .text_size(t.text.key.size()),
+            )
         })
         .when(browsers + secrets > 0, |row| {
             row.child(

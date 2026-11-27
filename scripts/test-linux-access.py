@@ -370,8 +370,19 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
             wait_for(lambda: find("CONFINEMENT"), "the first agent's detail")
             capture("agents")
 
+            def click_agent(name):
+                # An agent's row in the Access list, never the panel's agent
+                # list beside it, which names the same agents: only words
+                # right of the list's first heading count. The whole name must
+                # show, so a row that cuts it short fails here.
+                heading = wait_for(lambda: find("ORCHESTRATORS"), "the agent list")
+                edge = int(heading["left"]) - 20
+                click_word(wait_for(lambda: next(
+                    (word for word in found(name) if int(word["left"]) >= edge), None),
+                    f"{name}'s whole name in the Access list"))
+
             # An unsandboxed main agent with folders, secrets and Docker.
-            click("docs-site")
+            click_agent("docs-site")
             # Only an unsandboxed agent's line says "everything".
             wait_for(lambda: find("everything"), "docs-site's confinement line")
             # Parts of its rows OCR keeps: the arm runner read SITE_API_KEY as
@@ -381,7 +392,7 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
             capture("agent-detail")
 
             # Backbone refuses the confinement change; its reason is shown.
-            click("tester")
+            click_agent("tester")
             # A sandboxed agent's line, "Reaches only what is listed below.";
             # docs-site's line also starts with "Reaches".
             wait_for(lambda: find("listed"), "tester's confinement line")
