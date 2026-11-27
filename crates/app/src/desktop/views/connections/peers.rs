@@ -238,6 +238,35 @@ pub(in crate::desktop) fn badge_color(badge: Badge) -> gpui::Rgba {
     }
 }
 
+/// A connection row's trailing word in its badge's colour, after a dot when
+/// it waits on the person: the panel's and the new pane's.
+pub(in crate::desktop) fn badge(label: &str, badge: Badge) -> Div {
+    let (t, c) = (tokens(), colors());
+    ui::text(
+        div()
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap(px(t.space.s4 + 1.0))
+            .text_color(badge_color(badge)),
+        &t.text.meta,
+    )
+    .when(badge == Badge::Waiting, |state| {
+        state.child(ui::dot(c.accent))
+    })
+    .child(label.to_owned())
+}
+
+/// A connection's name colour: dimmer for an unnamed profile.
+pub(in crate::desktop) fn name_color(name: Option<&str>) -> gpui::Rgba {
+    let c = colors();
+    if name.is_some_and(|n| !n.trim().is_empty()) {
+        c.text
+    } else {
+        c.text_2
+    }
+}
+
 impl Pane {
     /// Whether the list is minimised now.
     pub(super) fn list_minimised(&self) -> bool {

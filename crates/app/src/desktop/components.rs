@@ -325,11 +325,7 @@ pub fn agent_status(status: &super::agent_status::Status) -> Div {
         .flex()
         .items_center()
         .gap(px(t.space.s6))
-        .child(agent_symbol(if status.stale {
-            AgentState::Unknown
-        } else {
-            status.state
-        }))
+        .child(agent_symbol(shown_state(status.state, status.stale)))
         .child(agent_status_text(status))
 }
 
@@ -645,6 +641,101 @@ pub fn field_frame(focused: bool) -> Div {
     )
     .when(focused, |el| el.border_color(c.accent))
     .when(!focused, |el| el.border_color(c.line))
+}
+
+// ---------------------------------------------------------------- shared panel and chooser rows
+//
+// What the panel and the new pane both draw: the agents tree's lines and how
+// they nest, the slot beside a row's text, and a one-line tooltip. Each view
+// keeps its own frames, handlers and selection.
+
+/// A one-line tooltip.
+pub struct Tip(pub SharedString);
+
+impl Render for Tip {
+    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+        menu().child(self.0.clone())
+    }
+}
+
+/// A slot the size of an agent symbol, holding `child` at its centre.
+pub fn symbol_slot(child: impl IntoElement) -> Div {
+    div()
+        .flex_shrink_0()
+        .size(px(tokens().size.agent_symbol))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(child)
+}
+
+/// A 14 px icon in the place of a 16 px agent symbol.
+pub fn icon_slot(name: &str) -> Div {
+    let (t, c) = (tokens(), colors());
+    symbol_slot(icon(name, t.size.icon, c.muted))
+}
+
+/// The state an agent's symbol shows: a stale one shows as Unknown, never
+/// as current.
+pub fn shown_state(state: AgentState, stale: bool) -> AgentState {
+    if stale { AgentState::Unknown } else { state }
+}
+
+/// A row of the agents tree, indented one level for each `depth`, with a
+/// hairline per level joining it to the symbol of the row it sits under.
+/// `lead` is what a top-level row has before its symbol besides its
+/// padding, such as a chevron's slot. The first `continued` levels' lines
+/// go on from the row above, up through the list's `gap`; the others start
+/// at this row's top.
+pub fn nested(
+    depth: usize,
+    row: AnyElement,
+    lead: f32,
+    (gap, continued): (f32, usize),
+) -> AnyElement {
+    let (t, c) = (tokens(), colors());
+    if depth == 0 {
+        return row;
+    }
+    let mut wrapper = div().relative().flex_shrink_0();
+    let mut at = 0.0;
+    for level in 1..=depth {
+        // Under the symbol's middle.
+        let lead = t.space.s10 + t.size.agent_symbol / 2.0 - t.size.hairline
+            + if level == 1 { lead } else { 0.0 };
+        wrapper = wrapper.child(
+            div()
+                .absolute()
+                .top(px(if level <= continued { -gap } else { 0.0 }))
+                .bottom_0()
+                .left(px(at + lead))
+                .w(px(t.size.hairline))
+                .bg(c.line_strong),
+        );
+        at += lead + t.space.s4 + t.size.hairline;
+    }
+    wrapper.pl(px(at)).child(row).into_any_element()
+}
+
+/// A review, browser or swarm line of the agents tree: its symbol, and its
+/// label in its colour, which each view lays out beside its own meta. An
+/// agent's and a member's rows differ by view, so they have none here.
+pub fn tree_line(line: &super::agent_groups::Row) -> Option<(Div, Div)> {
+    use super::agent_groups::Row;
+    let c = colors();
+    let label = |label: &str, color: Rgba| div().text_color(color).child(label.to_owned());
+    match line {
+        Row::Review { review, .. } => Some((
+            review_symbol(review.running),
+            label(
+                &review.reviewer,
+                if review.running { c.text } else { c.muted },
+            ),
+        )),
+        Row::Browser { label: host, .. } => Some((icon_slot("globe"), label(host, c.text_2))),
+        Row::Swarm { name, .. } => Some((icon_slot("users"), label(name, c.text_2))),
+        Row::Agent { .. } | Row::Member { .. } => None,
+    }
 }
 
 // ---------------------------------------------------------------- views
