@@ -29,6 +29,8 @@ pub(super) struct Browsing {
     pub older_before: Option<i64>,
     /// The new browser being made.
     pub new: Option<NewBrowser>,
+    /// The browser whose deletion waits for the person to confirm it.
+    pub deleting: Option<String>,
 }
 
 /// The new browser sheet.
@@ -77,6 +79,15 @@ impl Browsing {
         if let Some(detail) = detail
             && self.shown_id(true).as_deref() == Some(detail.browser.id.as_str())
         {
+            // Newer use moves the recent rows past the older ones read, so
+            // they are read again from the new end.
+            let ids = |d: &Detail| d.recent.iter().map(|s| s.id).collect::<Vec<_>>();
+            if self.detail.as_ref().is_some_and(|shown| {
+                shown.browser.id == detail.browser.id && ids(shown) != ids(&detail)
+            }) {
+                self.older.clear();
+                self.older_before = None;
+            }
             self.detail = Some(detail);
         }
     }
@@ -121,12 +132,15 @@ impl Pane {
         self.browsing.detail = None;
         self.browsing.older.clear();
         self.browsing.older_before = None;
+        // Its detail is read at once, after the read under way.
+        self.again |= self.browsing.chosen.is_some();
     }
 
     /// Choose the browser `id` and read it.
     pub(super) fn choose_browser(&mut self, id: Option<String>, cx: &mut Context<Self>) {
         if self.browsing.chosen != id {
             self.browsing.chosen = id;
+            self.browsing.deleting = None;
             self.browsing.detail = None;
             self.browsing.older.clear();
             self.browsing.older_before = None;
@@ -295,8 +309,11 @@ impl Pane {
             .map(|d| d.policies.clone())
             .unwrap_or_default();
         let save = Save {
-            name: Some(self.name_field.read(cx).value().trim().to_owned()),
-            opens_at: Some(self.opens_field.read(cx).value().trim().to_owned()),
+            // An emptied field keeps what Backbone has.
+            name: Some(self.name_field.read(cx).value().trim().to_owned())
+                .filter(|name| !name.is_empty()),
+            opens_at: Some(self.opens_field.read(cx).value().trim().to_owned())
+                .filter(|opens| !opens.is_empty()),
             grants: new.chosen.clone(),
             policies: Some(Policies {
                 keep_on_sites: new.keep_on_sites,
@@ -314,6 +331,10 @@ impl Pane {
     /// Close the new browser sheet; once Backbone has made the browser, this
     /// signs it out and deletes it.
     pub(super) fn cancel_new(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // While the browser is being made there is nothing yet to cancel.
+        if self.sending.as_deref() == Some("access-browser-create") {
+            return;
+        }
         let made = self.browsing.new.as_ref().and_then(|new| new.id.clone());
         self.leave_field(window, cx);
         match made {
@@ -673,11 +694,8 @@ impl Pane {
                     let id = id.clone();
                     move |pane, _, _, cx| {
                         pane.menu = None;
-                        pane.send(
-                            "access-browser-delete".into(),
-                            Change::Browser(BrowserChange::Delete(id.clone())),
-                            cx,
-                        );
+                        pane.browsing.deleting = Some(id.clone());
+                        cx.notify();
                     }
                 })),
         ];
@@ -787,6 +805,7 @@ impl Pane {
             .flex()
             .flex_col()
             .child(header)
+            .children(self.confirm_delete(browser, cx))
             .child(body)
             .child(
                 ui::text(
@@ -814,6 +833,59 @@ impl Pane {
                     if given == 1 { "is" } else { "are" },
                 )),
             )
+    }
+
+    /// "Delete <name> and its sign-ins?" with Keep, the default, and Delete,
+    /// while the person decides: deleting loses every sign-in at once.
+    fn confirm_delete(&self, browser: &Browser, cx: &mut Context<Self>) -> Option<Div> {
+        let (t, c) = (tokens(), colors());
+        if self.browsing.deleting.as_deref() != Some(browser.id.as_str()) {
+            return None;
+        }
+        let id = browser.id.clone();
+        Some(
+            ui::text(
+                div()
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .gap(px(t.space.s8))
+                    .px(px(t.space.s20))
+                    .py(px(t.space.s6))
+                    .bg(c.attention_soft)
+                    .border_b(px(t.size.hairline))
+                    .border_color(c.line)
+                    .text_color(c.text),
+                &t.text.status,
+            )
+            .child(div().flex_1().min_w_0().child(format!(
+                "Delete {} and its sign-ins? This can't be undone.",
+                browser.name
+            )))
+            .child(
+                ui::button("access-browser-keep-it", "Keep", Button::Secondary)
+                    .h(px(t.size.chip + t.space.s4))
+                    .on_click(cx.listener(|pane, _, _, cx| {
+                        pane.browsing.deleting = None;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                self.busy(
+                    "access-browser-delete",
+                    ui::button("access-browser-delete-it", "Delete", Button::Danger)
+                        .h(px(t.size.chip + t.space.s4))
+                        .on_click(cx.listener(move |pane, _, _, cx| {
+                            pane.browsing.deleting = None;
+                            pane.send(
+                                "access-browser-delete".into(),
+                                Change::Browser(BrowserChange::Delete(id.clone())),
+                                cx,
+                            );
+                        })),
+                ),
+            ),
+        )
     }
 
     /// "<agent> is using it now · since 10:12 · 3 tabs", and Take it back.
@@ -1530,10 +1602,15 @@ impl Pane {
                         .on_click(cx.listener(|pane, _, window, cx| pane.save_new(window, cx)))
                 })
             })
-            .child(
+            // While the browser is being made there is nothing yet to cancel.
+            .child(if creating {
                 ui::text_action("access-browser-cancel", "Cancel")
-                    .on_click(cx.listener(|pane, _, window, cx| pane.cancel_new(window, cx))),
-            )
+                    .opacity(c.pane_dim)
+                    .cursor_default()
+            } else {
+                ui::text_action("access-browser-cancel", "Cancel")
+                    .on_click(cx.listener(|pane, _, window, cx| pane.cancel_new(window, cx)))
+            })
             .child(div().flex_1())
             .when(new.id.is_some(), |el| {
                 el.child(meta("Cancelling signs out and deletes this Chrome.".into()))
@@ -2263,6 +2340,32 @@ mod tests {
         // The owner's own use is the browser's last use for every agent.
         assert_eq!(note(&detail.recent[2], "uploader"), "last used yesterday");
         assert_eq!(row_note(None, "poster", youtube, &now), "no agent uses it");
+    }
+
+    #[test]
+    fn older_use_read_is_kept_until_newer_use_moves_the_recent_rows() {
+        let detail = detail();
+        let mut browsing = Browsing {
+            chosen: Some("youtube".into()),
+            detail: Some(detail.clone()),
+            older: detail.recent.clone(),
+            older_before: Some(30),
+            new: None,
+            deleting: None,
+        };
+        // The same rows read again on the next poll keep the older ones.
+        browsing.read(Some(detail.clone()));
+        assert_eq!((browsing.older.len(), browsing.older_before), (3, Some(30)));
+        let mut newer = detail;
+        newer.recent.insert(
+            0,
+            Session {
+                id: 42,
+                ..newer.recent[0].clone()
+            },
+        );
+        browsing.read(Some(newer));
+        assert_eq!((browsing.older.len(), browsing.older_before), (0, None));
     }
 
     #[test]

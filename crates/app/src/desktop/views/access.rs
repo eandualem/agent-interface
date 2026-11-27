@@ -727,6 +727,12 @@ impl Pane {
         if key.modifiers.modified() {
             return false;
         }
+        // A deletion waiting to be confirmed is kept by Escape and Return.
+        if matches!(key.key.as_str(), "escape" | "enter") && self.browsing.deleting.take().is_some()
+        {
+            cx.notify();
+            return true;
+        }
         if key.key == "escape" {
             let closed = self.menu.take().is_some()
                 || self.adding.take().is_some()

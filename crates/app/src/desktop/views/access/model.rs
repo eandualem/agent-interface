@@ -318,9 +318,6 @@ pub(super) fn decided_at(request: &Request, now: &DateTime<FixedOffset>) -> Opti
     Some(at.format("%-d %b %H:%M").to_string())
 }
 
-/// The kind of thing a grant is, with the access it asks for and the
-/// machine it is on, so one card holds an agent's requests of one kind and
-/// one access on one machine.
 /// What makes requests alike: their kind, access and machine, and for a
 /// browser which one.
 type Kind<'a> = (
@@ -330,6 +327,9 @@ type Kind<'a> = (
     Option<&'a str>,
 );
 
+/// The kind of thing a grant is, with the access it asks for, the machine it
+/// is on and the browser it names, so one card holds an agent's requests of
+/// one kind and one access on one machine.
 fn kind(grant: &Grant) -> Kind<'_> {
     let (access, browser) = match grant {
         Grant::Repository { access, .. } | Grant::Folder { access, .. } => (Some(*access), None),
