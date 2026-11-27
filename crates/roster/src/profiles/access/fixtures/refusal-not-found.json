@@ -1,0 +1,6 @@
+{
+ "detail": {
+  "code": "not_found",
+  "message": "No agent named 'tester' is registered in this profile."
+ }
+}

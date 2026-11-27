@@ -78,7 +78,7 @@ refusal or ended stream leaves the reason and an explicit reopen action in the p
 | `store` | Initializing, reading and transactionally saving schema-v2 `layouts.db` files |
 | `tmux` | Server discovery and validation, control-mode protocol, pane capture, recovery and input commands |
 | `term` | Terminal engine ownership, input encoding and owned display snapshots |
-| `roster` | Agent Backbone roster and pane-view reads, plus explicit user feedback through bounded local requests |
+| `roster` | Agent Backbone roster and pane-view reads, plus explicit user feedback and access changes through bounded local requests |
 | `native-fs` | Safe descriptor-based native filesystem checks; narrowly scoped Darwin ACL FFI, no paths or application state |
 | `webview-host` | Borrowed XCB-to-Xlib window-handle adaptation for Linux document embedding; no application state or process ownership |
 | `app` | Native windows, input routing, storage and terminal workers, and integration between the other crates |
@@ -455,7 +455,12 @@ the profile and the service's run, so the profile alone is compared there.
 `Connection::roster` reads the agents endpoint on that same binding. A failed
 refresh must not present an old agent state as current. The core does not
 depend on Backbone. The `roster::views` adapter reads and decodes view data;
-`app::desktop::views` renders it in native panes. Each Unix request owns a
+`app::desktop::views` renders it in native panes. `roster::profiles::access`
+reads each agent's role, place, confinement, grants and GitHub reach from the
+agents endpoint, and the requests for access, and sends the Access pane's
+changes on the same binding: grants, revocations, confinement and placement,
+and decisions on requests. The pane applies each reply as Backbone returns it
+and reads again; it never changes anything ahead of Backbone's answer. Each Unix request owns a
 short-lived runtime and connection so timeouts cancel all associated work.
 Selection changes coalesce and cancel obsolete request chains. Views and
 empty-pane choosers hidden by an expanded pane pause their polling. Revealing a

@@ -1,0 +1,6 @@
+{
+ "detail": {
+  "code": "invalid_request",
+  "message": "path: use an absolute path."
+ }
+}

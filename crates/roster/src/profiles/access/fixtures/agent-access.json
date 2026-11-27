@@ -1,0 +1,17 @@
+{
+ "name": "tester",
+ "mode": "sandboxed",
+ "grants": [
+  {
+   "kind": "browser",
+   "machine": "5f2c9e0d1b7a4e38",
+   "machine_name": "laptop"
+  }
+ ],
+ "ceiling": [],
+ "reach": {
+  "kind": "repositories",
+  "items": []
+ },
+ "warning": "With the browser, 'tester' acts as you on the sites the profile's browser is signed in to."
+}

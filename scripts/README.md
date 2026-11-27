@@ -17,6 +17,7 @@ or its packages, and neither the app nor `install.sh` runs Python.
 | `test-linux-reorder.py` | Drags a tab and a workspace in a private Linux desktop and checks the order stored in `layouts.db`. `test-linux-desktop.py` runs it. |
 | `test-linux-documents.py` | Renders a retained Document in a disposable Xvfb desktop with WebKit's sandbox on. CI runs it. |
 | `test-linux-connections.py` | Opens the Connections pane's sample data in a disposable Xvfb desktop and captures it, so a change to the pane can be looked at. `test-linux-desktop.py` runs it. |
+| `test-linux-access.py` | Opens the Access pane against the roster crate's access fixtures in a disposable Xvfb desktop, makes a refused and a granted change, and captures the list, an agent's detail, both changes and the requests. `test-linux-desktop.py` runs it. |
 | `tests/test_install.py` | Tests `install.sh` with inert archives in private home folders. |
 | `tests/test_sweep_target.py` | Tests which artifacts `sweep_target.py` keeps. |
 | `tests/fixtures/fake_backbone.py` | A stand-in for the Agent Backbone service, used by the Linux checks. |

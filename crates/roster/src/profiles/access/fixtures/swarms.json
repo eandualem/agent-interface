@@ -1,0 +1,23 @@
+{
+ "items": [
+  {
+   "name": "app-squad",
+   "status": "active",
+   "repo": "example/app",
+   "issue": 12,
+   "initiator": "builder",
+   "coordinator": "app-squad-coordinator",
+   "members": [
+    {
+     "name": "app-squad-coordinator"
+    },
+    {
+     "name": "app-squad-coder"
+    },
+    {
+     "name": "app-squad-reviewer"
+    }
+   ]
+  }
+ ]
+}

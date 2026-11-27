@@ -238,6 +238,7 @@ All in `components.rs`; each takes its look from the tokens.
 | `tool_card` | An agent tool to pick, for a profile's first agent and for Add agent alike: a radio mark (a turning arc while it installs), the name in `row_selected` and its state in `meta` (for an agent, whether it starts signed in or asks to sign in), `attention` when it needs the person; selected, the accent tint and ring. Callers add the click and any Install or Update |
 | `choice_button`, `filter_frame`, `choice_frame`, `choice_key`, `hint_bar` | The chooser's two buttons, filter, selectable row with its ring, number key and centred key row |
 | `view_header`, `back_button`, `pill`, `info_card` | A view's 28 px header; the reading view's way back; a tag; a summary panel |
+| `agent_mark`, `machine_chip`, `note_footer` | An agent's upper-case initial on a round tint from its name (`access_mark`, `access_mark_large`); the machine a grant is on, a server icon and its name in a mono badge; a view's bottom row with a note on the left and a mono note, such as the matching command, on the right |
 | `tag` with `Tone` | How something is delivered: `Plain` for `all` and plain facts, `Tag` in the accent tint for a tag, `Quiet` outline for a direct assignment; a record's state: `Tag` for active, `Attention` for waiting on the person, `Done` for complete |
 | `grouped_page`, `group_title`, `group_label`, `group_card`, `group_row`, `group_note` | How a view lays out a list people browse: a padded page with a centred column no wider than `grouped_width`; a major section's title (`group_title` text) and one line saying what it holds; a subgroup's label, which may be a `tag`; rows on a rounded `panel` card, one line each, `group_row` tall, separated by hairlines, with a name, meta on the right and a chevron; a quiet line for what a section does not list |
 | `number_tile` | A round tile with a position, such as a policy's place in a brief |
@@ -278,8 +279,10 @@ Views follow four rules:
   Usage are sections of the Agent view. The team-wide Skills, Policies and
   Tags views never name agents in their rows; they say how a thing is
   delivered (layer, tag, `all`) and how many agents that reaches.
-- **Read only.** Every view only reads; nothing approves, tags, edits or
-  starts anything.
+- **Read only, except where acting is the view's job.** Views only read;
+  nothing approves, tags, edits or starts anything. Connections and Access
+  are the exceptions: they send the person's own decision to Backbone and
+  show what Backbone returns, a refusal and its reason included.
 - **Group, then list.** A list people browse is grouped: sections for what
   kind of thing it is, subgroups for where it comes from or who receives it,
   and one line per row. Descriptions belong in the reader, not the list.
