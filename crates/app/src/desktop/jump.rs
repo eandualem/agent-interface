@@ -229,7 +229,7 @@ impl Browser {
                         group: "AGENTS",
                         label: name.clone(),
                         meta,
-                        agent: Some(if stale { AgentState::Unknown } else { *state }),
+                        agent: Some(ui::shown_state(*state, stale)),
                         target: Target::Agent(target),
                     });
                 }

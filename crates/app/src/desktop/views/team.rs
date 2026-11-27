@@ -558,11 +558,10 @@ pub(super) fn agent_row(
         .when(!guide.is_empty(), |el| {
             el.child(mono(guide).text_color(c.faint))
         })
-        .child(ui::agent_symbol(if status.stale {
-            AgentState::Unknown
-        } else {
-            status.state
-        }))
+        .child(ui::agent_symbol(ui::shown_state(
+            status.state,
+            status.stale,
+        )))
         .child(
             ui::text(div().flex_shrink_0(), &t.text.row)
                 .text_color(if !status.stale && (state.working() || state.needs_you()) {

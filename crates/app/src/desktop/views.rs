@@ -47,7 +47,7 @@ mod connections;
 /// The Connections pieces the panel draws its connection rows with.
 pub(super) mod peer_rows {
     pub(in crate::desktop) use super::connections::{
-        Badge, Entry, badge_color, display_name, entries, hinted, peer_mark,
+        Badge, Entry, badge, badge_color, display_name, entries, hinted, name_color, peer_mark,
     };
 }
 mod conversation;
