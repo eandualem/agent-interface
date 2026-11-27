@@ -1029,11 +1029,12 @@ fn place_name(typed: &str) -> Option<String> {
     folder_name(std::path::Path::new(typed))
         .filter(|name| agent_interface_roster::valid_agent(name))
 }
-/// The name a machine change puts in the field, when it changes it: the
-/// name the form filled in, `filled`, follows what the new choice `offers`,
-/// and empties when that names nothing. A name the person typed stays.
+/// The name a machine change puts in the field, when it changes it: an
+/// empty field, or the name the form filled in, `filled`, follows what the
+/// new choice `offers`, and empties when that names nothing. A name the
+/// person typed stays.
 fn refilled(current: &str, filled: Option<&str>, offers: Option<String>) -> Option<String> {
-    (filled == Some(current)).then(|| offers.unwrap_or_default())
+    (current.is_empty() || filled == Some(current)).then(|| offers.unwrap_or_default())
 }
 /// A folder's name as an agent name: lower case, spaces as hyphens.
 fn folder_name(path: &std::path::Path) -> Option<String> {
