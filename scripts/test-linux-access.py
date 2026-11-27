@@ -251,6 +251,11 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
                 words = found(text)
                 return words[0] if words else None
 
+            def has(fragment):
+                # OCR can misread an identifier's underscores, digits or
+                # slashes, so these waits look for a plain part of a word.
+                return any(fragment in word["text"] for word in read())
+
             def click_word(word):
                 x = int(word["left"]) + int(word["width"]) // 2
                 y = int(word["top"]) + int(word["height"]) // 2
@@ -276,13 +281,17 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
 
             # An unsandboxed main agent with folders, secrets and Docker.
             click("docs-site")
-            wait_for(lambda: find("SITE_API_KEY"), "docs-site's secrets")
+            # Only an unsandboxed agent's line says "everything".
+            wait_for(lambda: find("everything"), "docs-site's confinement line")
+            wait_for(lambda: find("SECRETS"), "docs-site's secrets")
             wait_for(lambda: find("FOLDERS"), "docs-site's folders")
             capture("agent-detail")
 
             # Backbone refuses the confinement change; its reason is shown.
             click("tester")
-            wait_for(lambda: find("Reaches"), "tester's confinement line")
+            # A sandboxed agent's line, "Reaches only what is listed below.";
+            # docs-site's line also starts with "Reaches".
+            wait_for(lambda: find("listed"), "tester's confinement line")
             # The detail's Unsandboxed segment is the lowest, below the
             # toolbar's filter chip of the same word.
             segment = wait_for(lambda: (found("Unsandboxed") or [None])[-1], "the Unsandboxed segment")
@@ -294,10 +303,10 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
 
             # A repository granted from the detail is read back from Backbone.
             click("Add")
-            wait_for(lambda: find("owner/name"), "the add field")
+            wait_for(lambda: has("owner/"), "the add field")
             command("xdotool", "type", "--delay", "20", "example/extra")
             command("xdotool", "key", "Return")
-            wait_for(lambda: find("example/extra"), "the granted repository read back")
+            wait_for(lambda: has("extra"), "the granted repository read back")
             capture("granted")
             assert any(method == "POST" and path == "/api/agents/tester/grant"
                        and body["grant"] == dict(kind="repository", repo="example/extra", access="read")
@@ -314,7 +323,7 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
             command("xdotool", "key", "Down")
             command("xdotool", "key", "n")
             # The footer says "note" too; the field's hint is the second.
-            wait_for(lambda: len(found("note")) >= 2, "the note field")
+            wait_for(lambda: sum("note" in word["text"] for word in read()) >= 2, "the note field")
             command("xdotool", "type", "--delay", "20", "for this check")
             command("xdotool", "key", "Return")
             command("xdotool", "key", "a")
