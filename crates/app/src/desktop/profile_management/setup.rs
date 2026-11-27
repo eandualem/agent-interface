@@ -992,6 +992,12 @@ impl Pane {
                 .flex_col()
                 .gap(px(t.space.s10))
                 .track_focus(&self.focus)
+                .capture_key_down(cx.listener(|pane, event: &gpui::KeyDownEvent, _, cx| {
+                    if event.keystroke.key.as_str() == "escape" {
+                        pane.back(cx);
+                        cx.stop_propagation();
+                    }
+                }))
                 .child(
                     div()
                         .flex()
@@ -1002,8 +1008,10 @@ impl Pane {
                 )
                 .child(meta(note))
                 .child(
-                    ui::button("setup-done", "Done", ui::Button::Primary)
-                        .on_click(cx.listener(|pane, _, _, cx| pane.back(cx))),
+                    div().flex().items_center().gap(px(t.space.s8)).child(
+                        ui::button("setup-done", "Done", ui::Button::Primary)
+                            .on_click(cx.listener(|pane, _, _, cx| pane.back(cx))),
+                    ),
                 )
                 .into_any_element();
         }

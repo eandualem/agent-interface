@@ -814,8 +814,7 @@ impl Form {
     /// Name the agent after the repository or folder typed for another
     /// machine, unless the person typed a name.
     fn name_from_place(&mut self, cx: &mut Context<Self>) {
-        let typed = self.place.read(cx).value().trim().to_owned();
-        let name = place(&typed).and_then(|_| folder_name(std::path::Path::new(&typed)));
+        let name = place_name(self.place.read(cx).value());
         self.name_from(name, cx);
     }
     fn name_from(&mut self, name: Option<String>, cx: &mut Context<Self>) {
@@ -973,6 +972,14 @@ const GUIDE: &str = "orchestrator";
 /// A typed name as an agent name: spaces as hyphens.
 fn agent_name(typed: &str) -> String {
     typed.split_whitespace().collect::<Vec<_>>().join("-")
+}
+/// The agent name a repository or folder typed for another machine gives:
+/// its last part, when that is a valid name.
+fn place_name(typed: &str) -> Option<String> {
+    let typed = typed.trim();
+    place(typed)?;
+    folder_name(std::path::Path::new(typed))
+        .filter(|name| agent_interface_roster::valid_agent(name))
 }
 /// A folder's name as an agent name: lower case, spaces as hyphens.
 fn folder_name(path: &std::path::Path) -> Option<String> {
@@ -1189,7 +1196,7 @@ impl Render for Form {
                     )
             }
             State::Failed => {
-                body = body.child(ui::button("retry-setup-catalog", "Check again", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.load(false, cx))))
+                body = body.child(ui::button("retry-setup-catalog", "Check again", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| { form.load(false, cx); form.read_machines(cx); })))
             }
             State::Ready { pending, .. } => {
                 if *pending > 0 {

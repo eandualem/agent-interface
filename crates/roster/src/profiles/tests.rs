@@ -1118,6 +1118,7 @@ fn a_served_first_agent_starts_under_its_request_id_and_keeps_a_refusal() {
         Start::new("guide", Path::new("/a"), "shell", None, None),
         Start::new("guide", Path::new("/a"), "claude", None, Some("acme")),
         Start::new("guide", Path::new("/a"), "claude", None, Some("acme/app/x")),
+        Start::new("guide", Path::new("/a"), "claude", None, Some("acme/..")),
     ] {
         assert_eq!(invalid.err(), Some(Error::Invalid));
     }
@@ -1190,6 +1191,11 @@ fn a_start_on_another_machine_names_it_with_a_repository_or_a_folder_there() {
     );
     for invalid in [
         Start::on_machine("app", machine, "work/app/x", None, None, None),
+        // GitHub names no owner or repository `.` or `..`: these are paths.
+        Start::on_machine("app", machine, "./app", None, None, None),
+        Start::on_machine("app", machine, "../app", None, None, None),
+        Start::on_machine("app", machine, "acme/.", None, None, None),
+        Start::on_machine("app", machine, "acme/..", None, None, None),
         Start::on_machine("app", machine, "app", None, None, None),
         Start::on_machine("app", machine, "", None, None, None),
         Start::on_machine("app", machine, "acme/app", None, Some("opus"), None),
@@ -1270,6 +1276,11 @@ fn the_profiles_machines_and_another_machines_tools_are_read() {
     let fixture = |text: &str| serde_json::from_str::<Value>(text).unwrap();
     // A service older than the route answers as for any unknown route.
     let no_route = json!({"detail": {"code": "not_found", "message": "the API has no such route"}});
+    let listed = fixture(include_str!("setup/fixtures/machine-runtimes.json"));
+    let mut newer = listed.clone();
+    newer["schema_version"] = json!(2);
+    let mut elsewhere = listed.clone();
+    elsewhere["machine"] = json!("1b2c3d4e");
     let server = serve(
         listener,
         vec![
@@ -1296,6 +1307,8 @@ fn the_profiles_machines_and_another_machines_tools_are_read() {
                     "setup/fixtures/machine-runtimes-not-found.json"
                 )),
             ),
+            (200, newer),
+            (200, elsewhere),
         ],
     );
     let connection = Profile::parse(&serde_json::to_vec(&entry).unwrap())
@@ -1354,6 +1367,16 @@ fn the_profiles_machines_and_another_machines_tools_are_read() {
         Some(AddError::Refused(
             "no machine of this profile has the ID 'nope'".into()
         ))
+    );
+    // A newer shape is told apart from a malformed one, and another
+    // machine's reply is never taken for the one asked about.
+    assert_eq!(
+        connection.machine_tools(machine).err(),
+        Some(AddError::Connection(Error::Unsupported))
+    );
+    assert_eq!(
+        connection.machine_tools(machine).err(),
+        Some(AddError::Connection(Error::Invalid))
     );
     assert_eq!(
         connection.machine_tools("../agents").err(),

@@ -133,10 +133,12 @@ pub fn place(text: &str) -> Option<Place> {
     folder.then(|| Place::Folder(text.into()))
 }
 
-/// A repository as GitHub names it: `owner/name`.
+/// A repository as GitHub names it: `owner/name`, neither of them `.` or `..`.
 pub fn repository(text: &str) -> bool {
     let part = |part: &str| {
         !part.is_empty()
+            && part != "."
+            && part != ".."
             && part
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
@@ -314,17 +316,23 @@ impl Connection {
             return Ok(Tools::NotListed);
         }
         added(&response)?;
+        // The catalog's own read tells a newer shape from a malformed one.
+        let catalog = Catalog::served(&response.body, self.identity()).map_err(AddError::from)?;
         #[derive(Deserialize)]
         struct Checked {
+            machine: String,
             #[serde(default)]
             checked_at: Option<String>,
         }
         let checked: Checked =
             serde_json::from_slice(&response.body).map_err(|_| Error::Invalid)?;
-        let catalog = Catalog::served(&response.body, self.identity()).map_err(AddError::from)?;
+        // Another machine's tools are never shown as this one's.
+        if checked.machine != machine {
+            return Err(Error::Invalid.into());
+        }
         Ok(Tools::Listed {
             catalog,
-            checked_at: checked.checked_at,
+            checked_at: checked.checked_at.filter(|at| at.len() <= 64),
         })
     }
 }

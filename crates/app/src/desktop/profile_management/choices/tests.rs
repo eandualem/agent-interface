@@ -574,7 +574,9 @@ fn a_start_on_another_machine_waits_for_its_tools_and_a_free_name() {
         unreachable!()
     };
     let codex = &tools.items()[0];
-    let id = |tool: Option<Option<&Runtime>>| tool.map(|tool| tool.map(|r| r.id.as_str()));
+    fn id(tool: Option<Option<&Runtime>>) -> Option<Option<&str>> {
+        tool.map(|tool| tool.map(|r| r.id.as_str()))
+    }
     // Listed: the tool chosen there, with a model it has.
     assert_eq!(
         id(elsewhere_tool(false, Some(&listed), Some(codex), None)),
@@ -691,4 +693,15 @@ fn start_and_enter_pass_one_gate_that_an_open_request_closes() {
     // Nothing open: the choices decide.
     assert!(may_start(None, false, || true));
     assert!(!may_start(None, false, || false));
+}
+
+#[test]
+fn a_place_on_another_machine_names_the_agent_only_with_a_valid_name() {
+    assert_eq!(place_name(" acme/App ").as_deref(), Some("app"));
+    assert_eq!(place_name("~/work/api").as_deref(), Some("api"));
+    // Home itself, or a last part no agent may be named, names nothing.
+    assert_eq!(place_name("~/"), None);
+    assert_eq!(place_name("/srv/a+b"), None);
+    // Not a place: nothing.
+    assert_eq!(place_name("work/app/x"), None);
 }
