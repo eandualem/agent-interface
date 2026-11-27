@@ -16,7 +16,7 @@ mod model;
 mod peers;
 mod rules;
 pub(in crate::desktop) use live::peer_mark;
-pub(in crate::desktop) use peers::{Badge, badge_color, entries};
+pub(in crate::desktop) use peers::{Badge, Entry, badge_color, entries};
 pub(in crate::desktop) use rules::display_name;
 
 pub(super) struct Pane {
@@ -441,7 +441,11 @@ fn field_box(content: impl IntoElement) -> Div {
 }
 
 /// A bare field with a muted hint while it is empty.
-pub(super) fn hinted(field: &Entity<NameField>, hint: &'static str, cx: &gpui::App) -> Div {
+pub(in crate::desktop) fn hinted(
+    field: &Entity<NameField>,
+    hint: &'static str,
+    cx: &gpui::App,
+) -> Div {
     let c = colors();
     div()
         .relative()

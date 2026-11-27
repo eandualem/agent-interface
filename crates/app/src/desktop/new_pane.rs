@@ -6,22 +6,26 @@
 //! what a pane can display instead of a terminal. Nothing is created until a choice is made, and the owner makes
 //! it from the [`NewPaneEvent`] this emits.
 
-use std::path::PathBuf;
+use std::{collections::HashSet, path::PathBuf};
 
 use agent_interface_core::{View, ViewKind};
 use agent_interface_roster::{
+    Swarm,
     profiles::{Connection, Error as ProfileError},
     views::{Data, Member, Team},
 };
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
-    Context, Entity, EventEmitter, ScrollHandle, SharedString, Subscription, Task, Window, div,
-    prelude::*, px,
+    AnyElement, Context, Div, Entity, EventEmitter, ScrollHandle, SharedString, Subscription, Task,
+    Window, div, prelude::*, px,
 };
 
 use super::{
+    agent_groups::{self, MachineHeader},
+    agent_status::AgentState,
     chooser_source::{Origin, Sessions},
-    views::source::Source,
+    peer_inbox::Selection,
+    views::{peer_rows, source::Source},
 };
 use super::{
     components::{self as ui, mono},
@@ -40,6 +44,14 @@ pub(super) enum NewPaneEvent {
     OpenSection(Section),
     /// The Browser view of this agent's browser.
     Browser(String),
+    /// This swarm's members together, as a tab.
+    Swarm {
+        initiator: String,
+        name: String,
+        members: Vec<String>,
+    },
+    /// Connections here, on this connection or request, or on none.
+    Connections(Option<Selection>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,13 +202,215 @@ const SECTIONS: [SectionChoice; 7] = [
 
 enum Row {
     Heading(&'static str, &'static str),
-    Agent(Box<Member>),
+    /// A line of the agents tree; whether it can be chosen, as a review
+    /// whose output this pane cannot show cannot; and the ID of the machine
+    /// of the agent it names, so a same-name agent listed again on another
+    /// machine never takes its place.
+    Tree(Box<agent_groups::Row>, bool, String),
+    /// A connection or request, or with none, all of them.
+    Connection(Option<Selection>),
     Session(String),
-    /// An agent's browser, by agent name.
-    Browser(String),
     View(usize),
     Section(usize),
     Pick(View),
+}
+
+/// The agents tree as the list shows it. Under a filter, every row that
+/// `matches` and the rows above it, whatever is folded; the folds are kept
+/// for when the filter is cleared.
+fn agent_rows(
+    entries: &[(String, AgentState)],
+    swarms: &[Swarm],
+    started: impl Fn(&str) -> agent_groups::Started,
+    machine: impl Fn(&str) -> Option<MachineHeader>,
+    (expanded, collapsed): (&HashSet<String>, &HashSet<String>),
+    matches: Option<&dyn Fn(&agent_groups::Row) -> bool>,
+) -> Vec<agent_groups::Row> {
+    let Some(matches) = matches else {
+        return agent_groups::tree(entries, swarms, started, machine, expanded, collapsed);
+    };
+    let every: HashSet<String> = entries.iter().map(|(name, _)| name.clone()).collect();
+    let rows = agent_groups::tree(entries, swarms, started, machine, &every, &HashSet::new());
+    let mut keep = vec![false; rows.len()];
+    // The rows above the current one, one per level.
+    let mut path: Vec<usize> = Vec::new();
+    for (at, row) in rows.iter().enumerate() {
+        path.truncate(row.depth());
+        path.push(at);
+        if matches(row) {
+            for above in &path {
+                keep[*above] = true;
+            }
+        }
+    }
+    let mut kept: Vec<agent_groups::Row> = rows
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(row, keep)| keep.then_some(row))
+        .collect();
+    // Open is what shows something under it.
+    for at in 0..kept.len() {
+        let deeper = kept
+            .get(at + 1)
+            .is_some_and(|next| next.depth() > kept[at].depth());
+        if let agent_groups::Row::Agent { expanded, .. }
+        | agent_groups::Row::Swarm { expanded, .. } = &mut kept[at]
+        {
+            *expanded = deeper;
+        }
+    }
+    kept
+}
+
+/// Whether a tree row `matches` the filter: an agent by its name, folder,
+/// tags or machine tag; what it started by what its row shows.
+fn tree_matches<'a>(
+    row: &agent_groups::Row,
+    member: impl Fn(&str) -> Option<&'a Member>,
+    matches: impl Fn(&str) -> bool,
+) -> bool {
+    match row {
+        agent_groups::Row::Agent { name, machine, .. } => {
+            matches(name)
+                || machine.as_ref().is_some_and(|m| matches(&m.name))
+                || member(name).is_some_and(|member| {
+                    matches(&member.repo) || member.tags.iter().any(|tag| matches(tag))
+                })
+        }
+        // A member's whole name holds its short one; its machine, its tag.
+        agent_groups::Row::Member { name, machine, .. } => {
+            matches(name) || machine.as_ref().is_some_and(|m| matches(&m.name))
+        }
+        agent_groups::Row::Swarm { name, .. } => matches(name),
+        agent_groups::Row::Review { review, .. } => matches(&review.reviewer),
+        agent_groups::Row::Browser { label, .. } => matches(label),
+    }
+}
+
+/// Whether a tree row can be chosen: a review only when its output can be
+/// watched here, from this profile's server, so its agent is `local`.
+fn choosable(row: &agent_groups::Row, local: impl Fn(&str) -> bool) -> bool {
+    match row {
+        agent_groups::Row::Review { agent, review, .. } => review.view.is_some() && local(agent),
+        _ => true,
+    }
+}
+
+/// The connection rows that `matches` the filter, then "All connections".
+fn connection_rows(entries: &[peer_rows::Entry], matches: impl Fn(&str) -> bool) -> Vec<Row> {
+    let mut rows: Vec<Row> = entries
+        .iter()
+        .filter(|entry| matches(peer_rows::display_name(entry.name.as_deref())))
+        .map(|entry| Row::Connection(Some(entry.selection.clone())))
+        .collect();
+    if matches(ALL_CONNECTIONS) {
+        rows.push(Row::Connection(None));
+    }
+    rows
+}
+
+const ALL_CONNECTIONS: &str = "All connections";
+
+/// What a row's folder text shows: its repository, else its tags. Its
+/// machine is a tag of its own.
+fn folder(member: &Member) -> String {
+    if member.repo.is_empty() {
+        member.tags.join(" · ")
+    } else {
+        member.repo.clone()
+    }
+}
+
+/// What → or ← does on the selected row.
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+    Open(String),
+    Close(String),
+    OpenSwarm(String),
+    FoldSwarm(String),
+    /// Select the row with this key.
+    Select(String),
+    Nothing,
+}
+
+/// → opens the selected agent or swarm; ← closes it, or from a row under
+/// another selects that one.
+fn step(rows: &[Row], selected: &str, open: bool) -> Step {
+    let Some(at) = rows.iter().position(|row| row_key(row) == selected) else {
+        return Step::Nothing;
+    };
+    let Row::Tree(row, ..) = &rows[at] else {
+        return Step::Nothing;
+    };
+    match (row.as_ref(), open) {
+        (
+            agent_groups::Row::Agent {
+                name,
+                children: true,
+                expanded,
+                ..
+            },
+            _,
+        ) if *expanded != open => {
+            if open {
+                Step::Open(name.clone())
+            } else {
+                Step::Close(name.clone())
+            }
+        }
+        (
+            agent_groups::Row::Swarm {
+                initiator,
+                name,
+                listed,
+                expanded,
+                ..
+            },
+            _,
+        ) if *listed > 0 && *expanded != open => {
+            let key = agent_groups::swarm_key(initiator, name);
+            if open {
+                Step::OpenSwarm(key)
+            } else {
+                Step::FoldSwarm(key)
+            }
+        }
+        (row, false) if row.depth() > 0 => rows[..at]
+            .iter()
+            .rev()
+            .find(|above| matches!(above, Row::Tree(above, ..) if above.depth() < row.depth()))
+            .map_or(Step::Nothing, |above| Step::Select(row_key(above))),
+        _ => Step::Nothing,
+    }
+}
+
+/// Apply `step` to the list's folds and selection; whether anything changed.
+fn apply(
+    step: Step,
+    expanded: &mut HashSet<String>,
+    collapsed: &mut HashSet<String>,
+    selected: &mut Option<String>,
+) -> bool {
+    match step {
+        Step::Open(agent) => expanded.insert(agent),
+        Step::Close(agent) => expanded.remove(&agent),
+        Step::OpenSwarm(key) => collapsed.remove(&key),
+        Step::FoldSwarm(key) => collapsed.insert(key),
+        Step::Select(key) => {
+            *selected = Some(key);
+            true
+        }
+        Step::Nothing => false,
+    }
+}
+
+/// Whether `key` folds the list, and which way: → and ← do in the agents
+/// list while the filter is empty; once it holds text, they move its caret.
+fn folding(mode: Mode, query: &str, key: &str) -> Option<bool> {
+    match key {
+        "right" | "left" if mode == Mode::Sessions && query.is_empty() => Some(key == "right"),
+        _ => None,
+    }
 }
 
 fn numbered_row(presented: &[String], number: usize, choices: Vec<Row>) -> Option<Row> {
@@ -208,9 +422,10 @@ fn reconcile_selection(
     rows: &[Row],
     selected: &mut Option<String>,
     disarmed: &mut bool,
-    refreshing: bool,
+    reading: bool,
+    own: impl Fn(&Row) -> bool,
 ) {
-    if refreshing && selected.is_some() {
+    if reading && selected.is_some() {
         return;
     }
     let mut choices = rows.iter().filter(|row| NewPane::selectable(row));
@@ -219,8 +434,25 @@ fn reconcile_selection(
             *selected = None;
             *disarmed = true;
         }
-    } else if !*disarmed {
-        *selected = choices.next().map(row_key);
+    } else if !*disarmed && !reading {
+        // Until every read has landed, rows change kind and place: a session
+        // becomes an agent, a member listed alone folds under its agent.
+        // The first choice waits; a person's own choice never does. Under a
+        // filter it takes the first row that matches by itself, not one
+        // kept above a match to show its place.
+        let mut first = choices.clone().filter(|row| own(row));
+        *selected = first.next().or_else(|| choices.next()).map(row_key);
+    }
+}
+
+/// Whether the list is still being read: until its sessions, its team and,
+/// for a profile, its roster with the swarms have each landed once. A read
+/// that failed has landed.
+fn reading(mode: Mode, sessions: bool, team: bool, roster: Option<bool>) -> bool {
+    match mode {
+        Mode::Sessions => sessions || team || roster == Some(false),
+        Mode::Agents => team,
+        Mode::Reports | Mode::Views => false,
     }
 }
 
@@ -255,8 +487,15 @@ pub(super) struct NewPane {
     loading: bool,
     team: Option<Team>,
     team_loading: bool,
-    /// Running agent-browser sessions by name, each with its label.
+    /// Running agent-browser sessions by name, each with its page's host.
     browsers: Vec<(String, String)>,
+    /// Agents opened in this list, by name: its own folds, apart from the panel's.
+    expanded: HashSet<String>,
+    /// Swarms folded in this list, by [`agent_groups::swarm_key`]; a swarm is
+    /// open once its agent opens.
+    collapsed_swarms: HashSet<String>,
+    /// The connections of this pane's profile, as the panel lists them.
+    connections: Vec<peer_rows::Entry>,
     visible: bool,
     backbone: bool,
     scroll: ScrollHandle,
@@ -316,7 +555,7 @@ impl NewPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let field = cx.new(|cx| NameField::filter(window, cx));
+        let field = cx.new(|cx| NameField::bare_filter(window, cx));
         let input = cx.subscribe_in(&field, window, |chooser, _, event, _, cx| {
             match event {
                 NameEvent::Changed(query) => {
@@ -368,6 +607,9 @@ impl NewPane {
             team: None,
             team_loading: team_source.is_some(),
             browsers: Vec::new(),
+            expanded: HashSet::new(),
+            collapsed_swarms: HashSet::new(),
+            connections: Vec::new(),
             visible: true,
             backbone: origin.has_provider(),
             origin,
@@ -400,10 +642,18 @@ impl NewPane {
         cx.notify();
     }
 
-    /// The running agent-browser sessions, by name with their labels.
+    /// The running agent-browser sessions, by name with their pages' hosts.
     pub fn set_browsers(&mut self, browsers: Vec<(String, String)>, cx: &mut Context<Self>) {
         if self.browsers != browsers {
             self.browsers = browsers;
+            cx.notify();
+        }
+    }
+
+    /// The connections of this pane's profile.
+    pub fn set_connections(&mut self, connections: Vec<peer_rows::Entry>, cx: &mut Context<Self>) {
+        if self.connections != connections {
+            self.connections = connections;
             cx.notify();
         }
     }
@@ -438,29 +688,53 @@ impl NewPane {
         let mut rows = Vec::new();
         match self.mode {
             Mode::Sessions => {
-                let mut agents: Vec<Member> = self
+                let mut entries: Vec<(String, AgentState)> = Vec::new();
+                for member in self
                     .team
                     .iter()
                     .flat_map(|team| team.members.iter())
-                    .filter(|member| {
-                        self.origin.remote_profile(member).is_some()
-                            || self.sessions.contains(&member.name)
-                    })
-                    .filter(|member| {
-                        self.matches(&member.name)
-                            || self.matches(&member.repo)
-                            || member.tags.iter().any(|tag| self.matches(tag))
-                            || member
-                                .machine
-                                .as_ref()
-                                .is_some_and(|m| self.matches(&m.name))
-                    })
-                    .cloned()
-                    .collect();
-                agents.sort_by_key(|member| {
-                    let rank = self.agents.get(&member.name).rank();
-                    (rank, member.name.to_ascii_lowercase())
-                });
+                    .filter(|member| self.listed(member))
+                {
+                    if entries.iter().all(|(name, _)| *name != member.name) {
+                        entries.push((member.name.clone(), self.agents.get(&member.name).state));
+                    }
+                }
+                let local = |name: &str| {
+                    self.member(name)
+                        .is_some_and(|member| self.origin.remote_profile(member).is_none())
+                };
+                let local_machine = self.agents.local_machine_id();
+                let (machines, machines_read) = self.agents.machines();
+                let matches = |row: &agent_groups::Row| {
+                    tree_matches(row, |name| self.member(name), |text| self.matches(text))
+                };
+                let tree = agent_rows(
+                    &entries,
+                    &self.agents.swarms(),
+                    |name| agent_groups::Started {
+                        reviews: self
+                            .agents
+                            .activity(name)
+                            .map(|activity| activity.reviews.clone())
+                            .unwrap_or_default(),
+                        browser: self
+                            .browsers
+                            .iter()
+                            .find(|(agent, _)| agent == name && local(name))
+                            .map(|(_, host)| host.clone()),
+                    },
+                    |name| {
+                        agent_groups::machine_tag(
+                            local_machine.as_deref(),
+                            &machines,
+                            machines_read,
+                            self.member(name)?.machine.as_ref(),
+                        )
+                    },
+                    (&self.expanded, &self.collapsed_swarms),
+                    (!self.query.is_empty())
+                        .then_some(&matches as &dyn Fn(&agent_groups::Row) -> bool),
+                );
                 let others: Vec<String> = self
                     .sessions
                     .iter()
@@ -473,9 +747,28 @@ impl NewPane {
                     .filter(|name| self.matches(name))
                     .cloned()
                     .collect();
-                if !agents.is_empty() {
+                if !tree.is_empty() {
                     rows.push(Row::Heading("BACKBONE AGENTS", "needs you first"));
-                    rows.extend(agents.into_iter().map(Box::new).map(Row::Agent));
+                    rows.extend(tree.into_iter().map(|row| {
+                        let choosable = choosable(&row, local);
+                        let machine = match &row {
+                            agent_groups::Row::Agent { name, .. }
+                            | agent_groups::Row::Member { name, .. } => self
+                                .member(name)
+                                .and_then(|member| member.machine.as_ref())
+                                .map(|machine| machine.id.clone())
+                                .unwrap_or_default(),
+                            _ => String::new(),
+                        };
+                        Row::Tree(Box::new(row), choosable, machine)
+                    }));
+                }
+                if self.origin.has_provider() {
+                    let connections = connection_rows(&self.connections, |text| self.matches(text));
+                    if !connections.is_empty() {
+                        rows.push(Row::Heading("CONNECTIONS", "other profiles"));
+                        rows.extend(connections);
+                    }
                 }
                 if !others.is_empty() {
                     rows.push(Row::Heading(
@@ -487,18 +780,6 @@ impl NewPane {
                         "",
                     ));
                     rows.extend(others.into_iter().map(Row::Session));
-                }
-                let local: Vec<&str> = self
-                    .team
-                    .iter()
-                    .flat_map(|team| team.members.iter())
-                    .filter(|member| self.origin.remote_profile(member).is_none())
-                    .map(|member| member.name.as_str())
-                    .collect();
-                let browsers = agent_browsers(&self.browsers, &local, |text| self.matches(text));
-                if !browsers.is_empty() {
-                    rows.push(Row::Heading("BROWSERS", "watch only"));
-                    rows.extend(browsers.into_iter().map(Row::Browser));
                 }
             }
             Mode::Reports => {
@@ -540,7 +821,48 @@ impl NewPane {
     }
 
     fn selectable(row: &Row) -> bool {
-        !matches!(row, Row::Heading(..))
+        !matches!(row, Row::Heading(..) | Row::Tree(_, false, _))
+    }
+
+    /// Whether number keys reach the row: only top-level rows.
+    fn numbered(row: &Row) -> bool {
+        Self::selectable(row) && !matches!(row, Row::Tree(row, ..) if row.depth() > 0)
+    }
+
+    /// The listed team member of this name.
+    fn member(&self, name: &str) -> Option<&Member> {
+        self.team
+            .iter()
+            .flat_map(|team| team.members.iter())
+            .find(|member| member.name == name && self.listed(member))
+    }
+
+    /// Whether a team member is listed: it has a session here, or it is
+    /// opened from another machine of the profile.
+    fn listed(&self, member: &Member) -> bool {
+        self.origin.remote_profile(member).is_some() || self.sessions.contains(&member.name)
+    }
+
+    /// → or ← on the selected row.
+    fn fold(&mut self, open: bool, cx: &mut Context<Self>) {
+        let Some(selected) = self.selected.clone() else {
+            return;
+        };
+        let step = step(&self.rows(), &selected, open);
+        let select = matches!(step, Step::Select(_));
+        if !apply(
+            step,
+            &mut self.expanded,
+            &mut self.collapsed_swarms,
+            &mut self.selected,
+        ) {
+            return;
+        }
+        if select {
+            self.disarmed = false;
+            self.reveal = true;
+        }
+        cx.notify();
     }
 
     fn choices(&self) -> Vec<Row> {
@@ -616,15 +938,40 @@ impl NewPane {
 
     fn choose(&mut self, row: Row, cx: &mut Context<Self>) {
         match row {
-            Row::Heading(..) => {}
-            Row::Agent(member) => match self.origin.remote_profile(&member) {
-                Some(remote) => cx.emit(NewPaneEvent::Remote(member.name, remote)),
-                None => cx.emit(NewPaneEvent::Attach(member.name)),
+            Row::Heading(..) | Row::Tree(_, false, _) => {}
+            Row::Tree(row, true, _) => match *row {
+                agent_groups::Row::Agent { name, .. } | agent_groups::Row::Member { name, .. } => {
+                    match self
+                        .member(&name)
+                        .and_then(|m| self.origin.remote_profile(m))
+                    {
+                        Some(remote) => cx.emit(NewPaneEvent::Remote(name, remote)),
+                        None => cx.emit(NewPaneEvent::Attach(name)),
+                    }
+                }
+                agent_groups::Row::Browser { agent, .. } => cx.emit(NewPaneEvent::Browser(agent)),
+                agent_groups::Row::Swarm {
+                    initiator,
+                    name,
+                    members,
+                    ..
+                } => cx.emit(NewPaneEvent::Swarm {
+                    initiator,
+                    name,
+                    members,
+                }),
+                // Its view on this profile's server, which opens read-only.
+                agent_groups::Row::Review { review, .. } => {
+                    if let Some(view) = review.view {
+                        cx.emit(NewPaneEvent::Attach(view));
+                    }
+                }
             },
+            Row::Connection(selection) => cx.emit(NewPaneEvent::Connections(selection)),
             Row::Session(name) => cx.emit(NewPaneEvent::Attach(name)),
-            Row::Browser(agent) => cx.emit(NewPaneEvent::Browser(agent)),
             Row::View(index) => match VIEWS[index].kind {
                 ViewKind::Agent => self.set_mode(Mode::Agents, cx),
+                ViewKind::Connections => cx.emit(NewPaneEvent::Connections(None)),
                 kind => cx.emit(NewPaneEvent::OpenView(View::of(kind))),
             },
             Row::Section(index) => cx.emit(NewPaneEvent::OpenSection(SECTIONS[index].section)),
@@ -651,16 +998,34 @@ impl Render for NewPane {
         let rows = self.rows();
         self.presented = rows
             .iter()
-            .filter(|row| Self::selectable(row))
+            .filter(|row| Self::numbered(row))
             .map(row_key)
             .collect();
         let count = rows.iter().filter(|row| Self::selectable(row)).count();
-        let refreshing = match self.mode {
-            Mode::Sessions => self.loading || self.team_loading,
-            Mode::Agents => self.team_loading,
-            Mode::Reports | Mode::Views => false,
-        };
-        reconcile_selection(&rows, &mut self.selected, &mut self.disarmed, refreshing);
+        let reading = reading(
+            self.mode,
+            self.loading,
+            self.team_loading,
+            self.origin.has_provider().then(|| self.agents.observed()),
+        );
+        let own: HashSet<String> = rows
+            .iter()
+            .filter(|row| match row {
+                Row::Tree(line, ..) => {
+                    self.query.is_empty()
+                        || tree_matches(line, |name| self.member(name), |text| self.matches(text))
+                }
+                _ => true,
+            })
+            .map(row_key)
+            .collect();
+        reconcile_selection(
+            &rows,
+            &mut self.selected,
+            &mut self.disarmed,
+            reading,
+            |row| own.contains(&row_key(row)),
+        );
         let views = matches!(self.mode, Mode::Views | Mode::Agents);
         let buttons = div()
             .flex()
@@ -756,10 +1121,11 @@ impl Render for NewPane {
         for (child, row) in (usize::from(self.mode != Mode::Sessions)..).zip(rows) {
             let selectable = Self::selectable(&row);
             let selected = selectable && self.selected.as_deref() == Some(row_key(&row).as_str());
-            if selectable {
+            let numbered = Self::numbered(&row);
+            if numbered {
                 number += 1;
             }
-            let key = if selectable && number <= 9 {
+            let key = if numbered && number <= 9 {
                 number.to_string()
             } else {
                 String::new()
@@ -772,40 +1138,27 @@ impl Render for NewPane {
                 SharedString::from(format!("new-pane-{}-{number}-{}", self.pane, row_key(&row)));
             let element = match &row {
                 Row::Heading(label, note) => ui::view_heading(*label, *note).into_any_element(),
-                Row::Agent(member) => {
-                    if selected {
-                        selected_remote = self.origin.remote_profile(member).is_some();
+                Row::Tree(line, choosable, _) => {
+                    if selected
+                        && let agent_groups::Row::Agent { name, .. }
+                        | agent_groups::Row::Member { name, .. } = line.as_ref()
+                    {
+                        selected_remote = self
+                            .member(name)
+                            .is_some_and(|m| self.origin.remote_profile(m).is_some());
                     }
-                    agent_row(id, member, &self.agents.get(&member.name), &key, selected)
-                        .into_any_element()
+                    let depth = line.depth();
+                    nested(
+                        depth,
+                        self.tree_row(id, line, (key, chosen.clone(), *choosable), selected, cx),
+                    )
                 }
+                Row::Connection(selection) => self
+                    .connection_row(id, selection.as_ref(), key, selected)
+                    .into_any_element(),
                 Row::Session(name) => ui::choice_frame(id, selected)
                     .child(ui::icon("terminal", t.size.icon, c.muted))
                     .child(mono(name.clone()).flex_1().text_color(c.text))
-                    .child(ui::choice_key(key))
-                    .into_any_element(),
-                Row::Browser(agent) => ui::choice_frame(id, selected)
-                    .child(ui::icon("globe", t.size.icon, c.muted))
-                    .child(mono(agent.clone()).flex_shrink_0().text_color(c.text))
-                    .child(
-                        ui::text(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis()
-                                .text_color(c.muted),
-                            &t.text.meta,
-                        )
-                        .child(
-                            self.browsers
-                                .iter()
-                                .find(|(name, _)| name == agent)
-                                .map(|(_, label)| label.clone())
-                                .unwrap_or_default(),
-                        ),
-                    )
                     .child(ui::choice_key(key))
                     .into_any_element(),
                 Row::View(view) => {
@@ -897,7 +1250,12 @@ impl Render for NewPane {
             Mode::Views => ("open view here".into(), "back to sessions".into()),
             Mode::Agents => ("open its card here".into(), "back to sessions".into()),
         };
-        let mut hints = vec![("↑↓", SharedString::from("move")), ("↵", enter)];
+        let mut hints = vec![("↑↓", SharedString::from("move"))];
+        if self.backbone && self.mode == Mode::Sessions {
+            hints.push(("→", "expand".into()));
+            hints.push(("←", "collapse".into()));
+        }
+        hints.push(("↵", enter));
         if self.backbone {
             hints.push(("⇥", tab));
         }
@@ -916,10 +1274,17 @@ impl Render for NewPane {
                     .pt(px(t.space.s20))
                     .px(px(t.space.s28))
                     .child(buttons)
-                    .child(
-                        ui::filter_frame()
-                            .child(div().flex_1().min_w_0().child(self.field.clone())),
-                    )
+                    .child(ui::filter_frame().child(
+                        if self.mode == Mode::Sessions && self.backbone {
+                            peer_rows::hinted(
+                                &self.field,
+                                "Filter agents, what they started, connections and sessions",
+                                cx,
+                            )
+                        } else {
+                            div().flex_1().min_w_0().child(self.field.clone())
+                        },
+                    ))
                     .child(list),
             )
             .child(ui::hint_bar(&hints, "Nothing is created until you choose."))
@@ -956,6 +1321,10 @@ impl NewPane {
         }
         if m.modified() {
             return false;
+        }
+        if let Some(open) = folding(self.mode, &self.query, &key.key) {
+            self.fold(open, cx);
+            return true;
         }
         match key.key.as_str() {
             "up" => self.move_by(-1, cx),
@@ -1001,13 +1370,14 @@ fn cycle(mode: Mode, back: bool) -> Mode {
 fn row_key(row: &Row) -> String {
     match row {
         Row::Heading(label, _) => (*label).to_owned(),
-        Row::Agent(member) => format!(
-            "agent:{}:{}",
-            member.name,
-            member.machine.as_ref().map_or("", |m| m.id.as_str())
-        ),
+        Row::Tree(row, _, machine) => tree_key(row, machine),
+        // tmux names hold no colon, so no session takes this.
+        Row::Connection(None) => "connections:all".to_owned(),
+        Row::Connection(Some(Selection::Peer(generation))) => {
+            format!("connection:{}", generation.generation)
+        }
+        Row::Connection(Some(Selection::Request(request))) => format!("request:{request}"),
         Row::Session(name) => name.clone(),
-        Row::Browser(agent) => format!("browser:{agent}"),
         Row::Pick(view) => format!(
             "agent:{}:{}",
             view.agent.as_deref().unwrap_or_default(),
@@ -1018,65 +1388,862 @@ fn row_key(row: &Row) -> String {
     }
 }
 
-/// The agents among `local` with a running browser that `matches` the filter,
-/// by agent name or label.
-fn agent_browsers(
-    browsers: &[(String, String)],
-    local: &[&str],
-    matches: impl Fn(&str) -> bool,
-) -> Vec<String> {
-    browsers
-        .iter()
-        .filter(|(name, label)| local.contains(&name.as_str()) && (matches(name) || matches(label)))
-        .map(|(name, _)| name.clone())
-        .collect()
+/// A tree row's identity, with the ID of the machine of the agent it names.
+/// Names never hold a slash or a colon, so these cannot collide.
+fn tree_key(row: &agent_groups::Row, machine: &str) -> String {
+    match row {
+        agent_groups::Row::Agent { name, .. } => format!("agent:{name}:{machine}"),
+        agent_groups::Row::Member { swarm, name, .. } => {
+            format!("member:{swarm}/{name}:{machine}")
+        }
+        // By its view, so a review ending above it never moves the selection.
+        agent_groups::Row::Review {
+            swarm,
+            review: agent_groups::Review {
+                view: Some(view), ..
+            },
+            ..
+        } => format!("review:{}/{view}", swarm.as_deref().unwrap_or_default()),
+        agent_groups::Row::Swarm {
+            initiator, name, ..
+        } => format!("swarm:{}", agent_groups::swarm_key(initiator, name)),
+        agent_groups::Row::Review {
+            agent,
+            swarm,
+            index,
+            ..
+        } => format!(
+            "review:{}/{agent}/{index}",
+            swarm.as_deref().unwrap_or_default()
+        ),
+        agent_groups::Row::Browser { agent, swarm, .. } => {
+            format!("browser:{}/{agent}", swarm.as_deref().unwrap_or_default())
+        }
+    }
 }
 
-fn agent_row(
-    id: SharedString,
-    member: &Member,
-    status: &super::agent_status::Status,
-    key: &str,
-    selected: bool,
-) -> gpui::Stateful<gpui::Div> {
+/// A row under an agent, indented one level for each `depth`, with a
+/// hairline per level joining it to the symbol of the row it sits under.
+fn nested(depth: usize, row: AnyElement) -> AnyElement {
     let (t, c) = (tokens(), colors());
-    let context = if member.repo.is_empty() {
-        member.tags.join(" · ")
-    } else {
-        member.repo.clone()
-    };
-    let place = match member.machine.as_ref().filter(|m| !m.name.is_empty()) {
-        Some(machine) if context.is_empty() => machine.name.clone(),
-        Some(machine) => format!("{} · {context}", machine.name),
-        None => context,
-    };
-    ui::choice_frame(id.clone(), selected)
-        .child(ui::agent_symbol(status.state))
-        .child(mono(member.name.clone()).flex_shrink_0().text_color(c.text))
-        .child(ui::badge(member.runtime.clone()))
-        .child(
-            ui::text(
-                div()
-                    .flex_1()
-                    .min_w_0()
+    if depth == 0 {
+        return row;
+    }
+    let mut wrapper = div().relative().flex_shrink_0();
+    let mut at = 0.0;
+    for level in 1..=depth {
+        // Under the symbol's middle; a top-level row has the chevron's slot
+        // before its symbol.
+        let lead = t.space.s10 + t.size.agent_symbol / 2.0 - t.size.hairline
+            + if level == 1 {
+                t.space.s20 + t.space.s10
+            } else {
+                0.0
+            };
+        wrapper = wrapper.child(
+            div()
+                .absolute()
+                // Through the gap above, so the levels' lines are unbroken.
+                .top(px(-t.space.s2))
+                .bottom_0()
+                .left(px(at + lead))
+                .w(px(t.size.hairline))
+                .bg(c.line_strong),
+        );
+        at += lead + t.space.s4 + t.size.hairline;
+    }
+    wrapper.pl(px(at)).child(row).into_any_element()
+}
+
+/// What Enter does on a selected row under an agent.
+fn attach_hint(label: &'static str) -> Div {
+    let t = tokens();
+    ui::text(
+        div()
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap(px(t.space.s4))
+            .text_color(colors().muted),
+        &t.text.meta,
+    )
+    .child(ui::key_hint("↵"))
+    .child(label)
+}
+
+/// Text in `meta` that gives way first.
+fn meta(text: impl Into<SharedString>, color: gpui::Rgba) -> Div {
+    ui::text(
+        div().flex_shrink_0().whitespace_nowrap().text_color(color),
+        &tokens().text.meta,
+    )
+    .child(text.into())
+}
+
+/// A 14 px icon in the place of a 16 px agent symbol.
+fn icon_slot(name: &'static str) -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex_shrink_0()
+        .size(px(t.size.agent_symbol))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(ui::icon(name, t.size.icon, c.muted))
+}
+
+/// A child row's frame that cannot be chosen: a `choice_frame`'s layout,
+/// without its pointer, hover or selection.
+fn quiet_frame(id: SharedString) -> gpui::Stateful<Div> {
+    let t = tokens();
+    div()
+        .id(id)
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(t.space.s10))
+        .h(px(t.size.row))
+        .px(px(t.space.s10))
+        .rounded(px(t.radius.row))
+        .relative()
+}
+
+/// The slot before a top-level row's symbol, holding its chevron.
+fn chevron_slot() -> Div {
+    div()
+        .flex_shrink_0()
+        .w(px(tokens().space.s20))
+        .flex()
+        .justify_center()
+}
+
+/// A fold's chevron as a button.
+fn chevron(id: String, open: bool) -> gpui::Stateful<Div> {
+    chevron_mark(open)
+        .id(SharedString::from(id))
+        .cursor_pointer()
+        .hover(|el| el.bg(colors().selected))
+}
+
+/// A fold's chevron showing only its state, as under a filter.
+fn chevron_mark(open: bool) -> Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .size(px(t.space.s20))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(t.radius.icon_button))
+        .child(ui::icon(
+            if open {
+                "chevron-down"
+            } else {
+                "chevron-right"
+            },
+            t.size.icon,
+            c.muted,
+        ))
+}
+
+impl NewPane {
+    /// A line of the agents tree.
+    fn tree_row(
+        &self,
+        id: SharedString,
+        line: &agent_groups::Row,
+        (key, chosen, choosable): (String, String, bool),
+        selected: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (t, c) = (tokens(), colors());
+        let child = || ui::choice_frame(id.clone(), selected).h(px(t.size.row));
+        let tag = |machine: &Option<MachineHeader>| {
+            machine
+                .as_ref()
+                .map(|machine| ui::machine_tag(&machine.name, machine.presence.attention()))
+        };
+        let fill = || div().flex_1().min_w_0();
+        match line {
+            agent_groups::Row::Agent {
+                name,
+                state,
+                machine,
+                counts,
+                children,
+                expanded,
+            } => {
+                let member = self.member(name);
+                let status = self.agents.get(name);
+                let toggled = name.clone();
+                let open = *expanded;
+                // A filter shows what matches and never folds: there the
+                // chevron only shows the state.
+                let filtered = !self.query.is_empty();
+                let slot = chevron_slot()
+                    .when(*children && filtered, |slot| slot.child(chevron_mark(open)));
+                let slot = slot.when(*children && !filtered, |slot| {
+                    slot.child(
+                        chevron(format!("new-pane-fold-{}-{name}", self.pane), open).on_click(
+                            cx.listener(move |chooser, _, _, cx| {
+                                cx.stop_propagation();
+                                if chooser.expanded.remove(&toggled) {
+                                    // Closed, it keeps the selection, on itself.
+                                    chooser.selected = Some(chosen.clone());
+                                    chooser.disarmed = false;
+                                } else {
+                                    chooser.expanded.insert(toggled.clone());
+                                }
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                });
+                ui::choice_frame(id, selected)
+                    .child(slot)
+                    .child(ui::agent_symbol(if status.stale {
+                        AgentState::Unknown
+                    } else {
+                        *state
+                    }))
+                    .child(mono(name.clone()).flex_shrink_0().text_color(c.text))
+                    .children(member.map(|member| ui::badge(member.runtime.clone())))
+                    .child(
+                        ui::text(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .text_color(c.muted),
+                            &t.text.meta,
+                        )
+                        .child(member.map(folder).unwrap_or_default()),
+                    )
+                    .children(tag(machine))
+                    .children(ui::glance_counts(counts))
+                    .child(ui::text(
+                        ui::agent_status_text(&status).flex_shrink_0(),
+                        &t.text.meta,
+                    ))
+                    .child(ui::choice_key(key))
+                    .into_any_element()
+            }
+            agent_groups::Row::Member {
+                name,
+                short,
+                state,
+                machine,
+                ..
+            } => child()
+                // A stale state is not shown as current, as the panel does.
+                .child(ui::agent_symbol(if self.agents.get(name).stale {
+                    AgentState::Unknown
+                } else {
+                    *state
+                }))
+                .child(mono(short.clone()).flex_shrink_0().text_color(c.text))
+                .children(
+                    self.member(name)
+                        .map(|member| ui::badge(member.runtime.clone())),
+                )
+                .children(tag(machine))
+                .child(fill())
+                // Only a member's row says what Enter does, as the board shows.
+                // As the hint bar says it.
+                .children(selected.then(|| {
+                    attach_hint(
+                        if self
+                            .member(name)
+                            .is_some_and(|m| self.origin.remote_profile(m).is_some())
+                        {
+                            "open remote terminal"
+                        } else {
+                            "attach here"
+                        },
+                    )
+                }))
+                .into_any_element(),
+            // One that cannot be chosen looks it: no pointer, no hover.
+            agent_groups::Row::Review { review, .. } => (if choosable {
+                child()
+            } else {
+                quiet_frame(id.clone())
+            })
+            .child(ui::review_symbol(review.running))
+            .child(
+                fill()
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
-                    .text_color(c.muted),
+                    .text_color(if review.running { c.text } else { c.muted })
+                    .child(review.reviewer.clone()),
+            )
+            .child(meta(
+                match &review.effort {
+                    Some(effort) => format!("review · {effort}"),
+                    None => "review".to_owned(),
+                },
+                c.muted,
+            ))
+            .into_any_element(),
+            agent_groups::Row::Browser { label, .. } => child()
+                .child(icon_slot("globe"))
+                .child(
+                    fill()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_color(c.text_2)
+                        .child(label.clone()),
+                )
+                .child(meta("browser", c.muted))
+                .into_any_element(),
+            agent_groups::Row::Swarm {
+                initiator,
+                name,
+                members,
+                listed,
+                expanded,
+            } => {
+                let key = agent_groups::swarm_key(initiator, name);
+                // A filter never folds, so it shows no chevron.
+                let right = if *expanded || *listed == 0 || !self.query.is_empty() {
+                    meta("open all as a tab", c.muted).into_any_element()
+                } else {
+                    chevron(format!("new-pane-swarm-{}-{key}", self.pane), false)
+                        .on_click(cx.listener(move |chooser, _, _, cx| {
+                            cx.stop_propagation();
+                            if chooser.query.is_empty() {
+                                chooser.collapsed_swarms.remove(&key);
+                                cx.notify();
+                            }
+                        }))
+                        .into_any_element()
+                };
+                child()
+                    .child(icon_slot("users"))
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_color(c.text_2)
+                            .child(name.clone()),
+                    )
+                    .child(meta(
+                        match members.len() {
+                            1 => "swarm · 1 agent".to_owned(),
+                            count => format!("swarm · {count} agents"),
+                        },
+                        c.muted,
+                    ))
+                    .child(fill())
+                    .child(right)
+                    .into_any_element()
+            }
+        }
+    }
+
+    /// A connection or request of this profile, or with none, all of them.
+    fn connection_row(
+        &self,
+        id: SharedString,
+        selection: Option<&Selection>,
+        key: String,
+        selected: bool,
+    ) -> gpui::Stateful<Div> {
+        let (t, c) = (tokens(), colors());
+        let row = ui::choice_frame(id, selected).child(chevron_slot());
+        let entry = selection.and_then(|selection| {
+            self.connections
+                .iter()
+                .find(|entry| entry.selection == *selection)
+        });
+        let Some(entry) = entry else {
+            return row
+                .child(icon_slot("link-2"))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_color(c.text)
+                        .child(ALL_CONNECTIONS),
+                )
+                .child(
+                    ui::text(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_color(c.text_2),
+                        &t.text.meta,
+                    )
+                    .child("Requests, review gates and this profile's connection ID"),
+                )
+                .child(ui::choice_key(key));
+        };
+        let named = entry.name.as_deref().is_some_and(|n| !n.trim().is_empty());
+        row.child(peer_rows::peer_mark(
+            entry.name.as_deref(),
+            t.size.agent_symbol,
+        ))
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_color(if named { c.text } else { c.text_2 })
+                .child(peer_rows::display_name(entry.name.as_deref()).to_owned()),
+        )
+        .children(entry.connected.then(|| meta("connected", c.ok)))
+        .child(div().flex_1().min_w_0())
+        .children(entry.badge.as_ref().map(|(label, badge)| {
+            ui::text(
+                div()
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .gap(px(t.space.s4 + 1.0))
+                    .text_color(peer_rows::badge_color(*badge)),
                 &t.text.meta,
             )
-            .child(place),
-        )
-        .child(ui::text(
-            ui::agent_status_text(status).flex_shrink_0(),
-            &t.text.meta,
-        ))
-        .child(ui::choice_key(key.to_owned()))
+            .when(*badge == peer_rows::Badge::Waiting, |state| {
+                state.child(ui::dot(c.accent))
+            })
+            .child(label.clone())
+        }))
+        .child(ui::choice_key(key))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn listed(entries: &[(&str, AgentState)]) -> Vec<(String, AgentState)> {
+        entries
+            .iter()
+            .map(|(name, state)| ((*name).to_owned(), *state))
+            .collect()
+    }
+
+    fn fix_swarm() -> Swarm {
+        Swarm {
+            name: "fix".into(),
+            initiator: "lead".into(),
+            members: vec!["fix-coordinator".into(), "fix-coder".into()],
+        }
+    }
+
+    fn started(name: &str) -> agent_groups::Started {
+        let review = |reviewer: &str, view: Option<&str>| agent_groups::Review {
+            reviewer: reviewer.into(),
+            effort: Some("high".into()),
+            running: true,
+            view: view.map(str::to_owned),
+        };
+        match name {
+            "lead" => agent_groups::Started {
+                reviews: vec![
+                    review("unwatched", None),
+                    review("watched", Some("run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60")),
+                ],
+                browser: None,
+            },
+            "helper" => agent_groups::Started {
+                reviews: Vec::new(),
+                browser: Some("example.com".into()),
+            },
+            _ => agent_groups::Started::default(),
+        }
+    }
+
+    fn entries() -> Vec<(String, AgentState)> {
+        listed(&[
+            ("lead", AgentState::Working),
+            ("fix-coordinator", AgentState::Working),
+            ("fix-coder", AgentState::Idle),
+            ("helper", AgentState::Idle),
+            ("solo-coder", AgentState::Idle),
+        ])
+    }
+
+    /// The list's rows for these folds, every agent here.
+    fn shown(expanded: &[&str], collapsed: &[&str]) -> Vec<Row> {
+        let expanded = expanded.iter().map(|name| (*name).to_owned()).collect();
+        let collapsed = collapsed.iter().map(|key| (*key).to_owned()).collect();
+        agent_rows(
+            &entries(),
+            &[fix_swarm()],
+            started,
+            |_| None,
+            (&expanded, &collapsed),
+            None,
+        )
+        .into_iter()
+        .map(|row| {
+            let choosable = choosable(&row, |_| true);
+            Row::Tree(Box::new(row), choosable, String::new())
+        })
+        .collect()
+    }
+
+    fn keys(rows: &[Row]) -> Vec<String> {
+        rows.iter().map(row_key).collect()
+    }
+
+    #[test]
+    fn right_opens_an_agent_down_to_its_swarm_members_and_left_climbs_back() {
+        let folded = shown(&[], &[]);
+        assert_eq!(
+            keys(&folded),
+            ["agent:lead:", "agent:helper:", "agent:solo-coder:"]
+        );
+        assert_eq!(
+            step(&folded, "agent:lead:", true),
+            Step::Open("lead".into())
+        );
+        assert_eq!(step(&folded, "agent:lead:", false), Step::Nothing);
+        // Nothing under it: no chevron, and → does nothing.
+        assert_eq!(step(&folded, "agent:solo-coder:", true), Step::Nothing);
+
+        let open = shown(&["lead"], &[]);
+        assert_eq!(
+            keys(&open),
+            [
+                "agent:lead:",
+                "review:/lead/0",
+                "review:/run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60",
+                "swarm:lead/fix",
+                "member:fix/fix-coordinator:",
+                "member:fix/fix-coder:",
+                "agent:helper:",
+                "agent:solo-coder:",
+            ]
+        );
+        // The member is a row Enter can reach.
+        let choices: Vec<String> = open
+            .iter()
+            .filter(|row| NewPane::selectable(row))
+            .map(row_key)
+            .collect();
+        assert!(choices.contains(&"member:fix/fix-coder:".to_owned()));
+        assert_eq!(
+            step(&open, "member:fix/fix-coder:", false),
+            Step::Select("swarm:lead/fix".into())
+        );
+        assert_eq!(step(&open, "member:fix/fix-coder:", true), Step::Nothing);
+        assert_eq!(
+            step(&open, "swarm:lead/fix", false),
+            Step::FoldSwarm(agent_groups::swarm_key("lead", "fix"))
+        );
+        assert_eq!(
+            step(&open, "review:/run-0193a1b2c3d47e5f8a9b0c1d2e3f4a60", false),
+            Step::Select("agent:lead:".into())
+        );
+        assert_eq!(
+            step(&open, "agent:lead:", false),
+            Step::Close("lead".into())
+        );
+
+        // A folded swarm opens with →; ← then goes up to its agent.
+        let swarm_folded = shown(&["lead"], &["lead/fix"]);
+        assert!(!keys(&swarm_folded).contains(&"member:fix/fix-coder:".to_owned()));
+        assert_eq!(
+            step(&swarm_folded, "swarm:lead/fix", true),
+            Step::OpenSwarm("lead/fix".into())
+        );
+        assert_eq!(
+            step(&swarm_folded, "swarm:lead/fix", false),
+            Step::Select("agent:lead:".into())
+        );
+    }
+
+    #[test]
+    fn a_review_without_a_view_here_cannot_be_chosen() {
+        let open = shown(&["lead"], &[]);
+        let (unwatched, watched) = (&open[1], &open[2]);
+        assert!(!NewPane::selectable(unwatched) && !NewPane::numbered(unwatched));
+        assert!(NewPane::selectable(watched));
+        // Nor one whose agent runs on another machine: its view is there.
+        let Row::Tree(row, ..) = watched else {
+            unreachable!()
+        };
+        assert!(matches!(row.as_ref(), agent_groups::Row::Review { .. }));
+        assert!(choosable(row, |agent| agent == "lead"));
+        assert!(!choosable(row, |_| false));
+    }
+
+    #[test]
+    fn a_filter_shows_matching_rows_under_their_agents_and_keeps_the_folds() {
+        let (expanded, collapsed) = (HashSet::new(), HashSet::new());
+        let filtered = |query: &str| {
+            let matches =
+                |row: &agent_groups::Row| tree_matches(row, |_| None, |text| text.contains(query));
+            agent_rows(
+                &entries(),
+                &[fix_swarm()],
+                started,
+                |_| None,
+                (&expanded, &collapsed),
+                Some(&matches),
+            )
+        };
+        let coder = filtered("coder");
+        assert_eq!(
+            coder
+                .iter()
+                .map(|row| tree_key(row, ""))
+                .collect::<Vec<_>>(),
+            [
+                "agent:lead:",
+                "swarm:lead/fix",
+                "member:fix/fix-coder:",
+                "agent:solo-coder:"
+            ]
+        );
+        // Shown open while something under them shows; nothing under the
+        // agent that matched by itself.
+        assert!(matches!(
+            &coder[0],
+            agent_groups::Row::Agent { expanded: true, .. }
+        ));
+        assert!(matches!(
+            &coder[1],
+            agent_groups::Row::Swarm { expanded: true, .. }
+        ));
+        assert!(matches!(
+            &coder[3],
+            agent_groups::Row::Agent {
+                expanded: false,
+                ..
+            }
+        ));
+        // A browser by its host, a review by its reviewer.
+        let host = filtered("example");
+        assert!(
+            matches!(&host[..], [agent_groups::Row::Agent { name, .. }, agent_groups::Row::Browser { .. }] if name == "helper")
+        );
+        assert_eq!(filtered("watched").len(), 3);
+        assert!(expanded.is_empty() && collapsed.is_empty());
+    }
+
+    #[test]
+    fn number_keys_reach_top_level_rows_only_agents_then_connections_then_sessions() {
+        let entry = |request: &str, name: Option<&str>| peer_rows::Entry {
+            selection: Selection::Request(request.into()),
+            name: name.map(str::to_owned),
+            peer_id: "ab".repeat(32),
+            connected: false,
+            badge: None,
+            needs: false,
+        };
+        let connections = [entry("r1", Some("Example")), entry("r2", None)];
+        assert_eq!(
+            keys(&connection_rows(&connections, |_| true)),
+            ["request:r1", "request:r2", "connections:all"]
+        );
+        // An unnamed connection matches by the name it shows.
+        assert_eq!(
+            keys(&connection_rows(&connections, |text| text.contains("Unnamed"))),
+            ["request:r2"]
+        );
+        let build = || {
+            let mut rows = vec![Row::Heading("BACKBONE AGENTS", "")];
+            rows.extend(shown(&["lead"], &[]));
+            rows.push(Row::Heading("CONNECTIONS", ""));
+            rows.extend(connection_rows(&connections[..1], |_| true));
+            rows.push(Row::Heading("OTHER TMUX SESSIONS", ""));
+            rows.push(Row::Session("scratch".into()));
+            rows
+        };
+        let rows = build();
+        let presented: Vec<String> = rows
+            .iter()
+            .filter(|row| NewPane::numbered(row))
+            .map(row_key)
+            .collect();
+        assert_eq!(
+            presented,
+            [
+                "agent:lead:",
+                "agent:helper:",
+                "agent:solo-coder:",
+                "request:r1",
+                "connections:all",
+                "scratch"
+            ]
+        );
+        let choices = || {
+            build()
+                .into_iter()
+                .filter(NewPane::selectable)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            row_key(&numbered_row(&presented, 4, choices()).unwrap()),
+            "request:r1"
+        );
+        assert_eq!(
+            row_key(&numbered_row(&presented, 6, choices()).unwrap()),
+            "scratch"
+        );
+    }
+
+    #[test]
+    fn the_folder_text_leaves_the_machine_to_its_tag() {
+        let member = Member {
+            name: "remote".into(),
+            repo: "example/project".into(),
+            machine: Some(agent_interface_roster::Machine {
+                id: "b".repeat(64),
+                name: "build-box".into(),
+            }),
+            ..Member::default()
+        };
+        assert_eq!(folder(&member), "example/project");
+        let tagged = Member {
+            repo: String::new(),
+            tags: vec!["writer".into(), "research".into()],
+            ..member.clone()
+        };
+        assert_eq!(folder(&tagged), "writer · research");
+        // The tag shows only another machine, and members carry theirs.
+        let tag = |name: &str| {
+            (name == "fix-coder").then(|| MachineHeader {
+                id: "b".repeat(64),
+                name: "build-box".into(),
+                presence: agent_groups::MachinePresence::Online,
+            })
+        };
+        let rows = agent_rows(
+            &entries(),
+            &[fix_swarm()],
+            started,
+            tag,
+            (&HashSet::from(["lead".to_owned()]), &HashSet::new()),
+            None,
+        );
+        assert!(rows.iter().any(|row| matches!(row, agent_groups::Row::Member { name, machine: Some(m), .. } if name == "fix-coder" && m.name == "build-box")));
+        assert!(matches!(
+            &rows[0],
+            agent_groups::Row::Agent { machine: None, .. }
+        ));
+        // The filter finds a member by its machine's tag.
+        let on_box: Vec<_> = rows
+            .iter()
+            .filter(|row| tree_matches(row, |_| None, |text| text.contains("build-box")))
+            .collect();
+        assert!(
+            matches!(&on_box[..], [agent_groups::Row::Member { name, .. }] if name == "fix-coder")
+        );
+    }
+
+    #[test]
+    fn arrows_fold_only_the_agents_list_with_an_empty_filter() {
+        assert_eq!(folding(Mode::Sessions, "", "right"), Some(true));
+        assert_eq!(folding(Mode::Sessions, "", "left"), Some(false));
+        // With text, the filter's caret moves; elsewhere they do nothing.
+        assert_eq!(folding(Mode::Sessions, "co", "right"), None);
+        assert_eq!(folding(Mode::Views, "", "left"), None);
+        assert_eq!(folding(Mode::Sessions, "", "down"), None);
+    }
+
+    #[test]
+    fn a_step_changes_the_list_folds_and_selection_it_names() {
+        let (mut expanded, mut collapsed, mut selected) = (HashSet::new(), HashSet::new(), None);
+        let mut run = |step| apply(step, &mut expanded, &mut collapsed, &mut selected);
+        assert!(run(Step::Open("lead".into())));
+        assert!(!run(Step::Open("lead".into())));
+        assert!(run(Step::FoldSwarm("lead/fix".into())));
+        assert!(run(Step::Select("swarm:lead/fix".into())));
+        assert!(!run(Step::Nothing));
+        assert_eq!(expanded, HashSet::from(["lead".to_owned()]));
+        assert_eq!(collapsed, HashSet::from(["lead/fix".to_owned()]));
+        assert_eq!(selected.as_deref(), Some("swarm:lead/fix"));
+        let mut run = |step| apply(step, &mut expanded, &mut collapsed, &mut selected);
+        assert!(run(Step::OpenSwarm("lead/fix".into())));
+        assert!(run(Step::Close("lead".into())));
+        assert!(expanded.is_empty() && collapsed.is_empty());
+    }
+
+    #[test]
+    fn the_first_choice_waits_until_every_read_has_landed() {
+        // (a) Sessions and team read, the roster with the swarms not yet:
+        // a member is still listed alone and the connections are there.
+        assert!(reading(Mode::Sessions, false, false, Some(false)));
+        // (b) The team and roster read, the sessions not yet: only remote
+        // agents are listed, some of them members of a local initiator.
+        assert!(reading(Mode::Sessions, true, false, Some(true)));
+        assert!(reading(Mode::Sessions, false, true, Some(true)));
+        assert!(!reading(Mode::Sessions, false, false, Some(true)));
+        // Without a profile there is no roster to wait for.
+        assert!(!reading(Mode::Sessions, false, false, None));
+        assert!(reading(Mode::Agents, false, true, Some(true)));
+        assert!(!reading(Mode::Views, true, true, Some(false)));
+
+        // While reading, no row of any kind is chosen for the person.
+        let mut rows = shown(&[], &[]);
+        rows.push(Row::Heading("CONNECTIONS", ""));
+        rows.push(Row::Connection(None));
+        rows.push(Row::Session("scratch".into()));
+        let (mut selected, mut disarmed) = (None, false);
+        reconcile_selection(&rows, &mut selected, &mut disarmed, true, |_| true);
+        assert!(selected.is_none() && !disarmed);
+        reconcile_selection(&rows[3..], &mut selected, &mut disarmed, true, |_| true);
+        assert!(selected.is_none() && !disarmed);
+        // Read, the first row is chosen: the agent most in need.
+        reconcile_selection(&rows, &mut selected, &mut disarmed, false, |_| true);
+        assert_eq!(selected.as_deref(), Some("agent:lead:"));
+        // A list of connections alone still offers its first.
+        let (mut selected, mut disarmed) = (None, false);
+        reconcile_selection(&rows[4..6], &mut selected, &mut disarmed, false, |_| true);
+        assert_eq!(selected.as_deref(), Some("connections:all"));
+    }
+
+    #[test]
+    fn under_a_filter_the_first_choice_is_the_match_not_the_rows_above_it() {
+        let (expanded, collapsed) = (HashSet::new(), HashSet::new());
+        let matches = |row: &agent_groups::Row| {
+            tree_matches(row, |_| None, |text| text.contains("fix-coder"))
+        };
+        let rows: Vec<Row> = agent_rows(
+            &entries(),
+            &[fix_swarm()],
+            started,
+            |_| None,
+            (&expanded, &collapsed),
+            Some(&matches),
+        )
+        .into_iter()
+        .map(|row| Row::Tree(Box::new(row), true, String::new()))
+        .collect();
+        assert_eq!(
+            keys(&rows),
+            ["agent:lead:", "swarm:lead/fix", "member:fix/fix-coder:"]
+        );
+        let own = |row: &Row| matches!(row, Row::Tree(line, ..) if matches(line));
+        let (mut selected, mut disarmed) = (None, false);
+        reconcile_selection(&rows, &mut selected, &mut disarmed, false, own);
+        assert_eq!(selected.as_deref(), Some("member:fix/fix-coder:"));
+    }
+
+    #[test]
+    fn a_same_name_agent_on_another_machine_is_another_row() {
+        let agent = || {
+            Box::new(agent_groups::Row::Agent {
+                name: "worker".into(),
+                state: AgentState::Idle,
+                machine: None,
+                counts: agent_groups::Counts::default(),
+                children: false,
+                expanded: false,
+            })
+        };
+        let here = Row::Tree(agent(), true, "a".repeat(64));
+        let there = Row::Tree(agent(), true, "b".repeat(64));
+        assert_ne!(row_key(&here), row_key(&there));
+        let presented = vec![row_key(&here)];
+        assert!(numbered_row(&presented, 1, vec![there]).is_none());
+    }
 
     #[test]
     fn same_name_replacement_cannot_inherit_displayed_agent_selection() {
@@ -1106,6 +2273,7 @@ mod tests {
             &mut selected,
             &mut disarmed,
             false,
+            |_| true,
         );
         assert!(selected.is_none() && disarmed);
         assert_eq!(
@@ -1145,24 +2313,6 @@ mod tests {
     }
 
     #[test]
-    fn only_the_browsers_of_local_agents_are_offered() {
-        let browsers = [
-            ("coder".to_owned(), "Example Domain".to_owned()),
-            ("scratch".to_owned(), "https://example.org/".to_owned()),
-            ("reviewer".to_owned(), "https://example.net/".to_owned()),
-        ];
-        let local = ["coder", "reviewer"];
-        assert_eq!(
-            agent_browsers(&browsers, &local, |_| true),
-            ["coder", "reviewer"]
-        );
-        assert_eq!(
-            agent_browsers(&browsers, &local, |text| text.contains("Example")),
-            ["coder"]
-        );
-    }
-
-    #[test]
     fn tab_moves_through_sessions_sections_and_views_both_ways() {
         let order = [Mode::Sessions, Mode::Reports, Mode::Views];
         for (at, mode) in order.into_iter().enumerate() {
@@ -1173,21 +2323,25 @@ mod tests {
     }
 
     #[test]
-    fn row_reconciliation_keeps_pending_selection_without_delaying_the_first_choice() {
+    fn row_reconciliation_keeps_a_choice_made_while_reading() {
         let rows = vec![Row::Heading("SESSIONS", ""), Row::Session("worker".into())];
         let (mut selected, mut disarmed) = (None, false);
-        reconcile_selection(&rows, &mut selected, &mut disarmed, true);
-        assert_eq!(selected.as_deref(), Some("worker"));
+        reconcile_selection(&rows, &mut selected, &mut disarmed, true, |_| true);
+        assert!(selected.is_none());
+        // The person's own choice, made while reading, stands.
+        selected = Some("worker".into());
         // A reveal may briefly have no rows while fresh data is being read.
-        reconcile_selection(&[], &mut selected, &mut disarmed, true);
+        reconcile_selection(&[], &mut selected, &mut disarmed, true, |_| true);
         assert_eq!(selected.as_deref(), Some("worker"));
         let reordered = vec![Row::Session("other".into()), Row::Session("worker".into())];
-        reconcile_selection(&reordered, &mut selected, &mut disarmed, false);
+        reconcile_selection(&reordered, &mut selected, &mut disarmed, false, |_| true);
         assert_eq!(selected.as_deref(), Some("worker"));
-        reconcile_selection(&reordered[..1], &mut selected, &mut disarmed, false);
+        reconcile_selection(&reordered[..1], &mut selected, &mut disarmed, false, |_| {
+            true
+        });
         assert!(selected.is_none());
         assert!(disarmed);
-        reconcile_selection(&rows, &mut selected, &mut disarmed, false);
+        reconcile_selection(&rows, &mut selected, &mut disarmed, false, |_| true);
         assert!(selected.is_none());
     }
 }

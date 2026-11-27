@@ -3650,6 +3650,16 @@ impl Render for Browser {
                         if browser.pane_owner(&pane) != Some(expected) {
                             return;
                         }
+                        // What opens outside the pane's own place, such as a
+                        // tab, needs its workspace and tab still shown.
+                        let placed = chooser.placement.as_ref().is_some_and(|(origin, tab)| {
+                            browser.selected_origin_is_current(Some(origin))
+                                && browser
+                                    .layout
+                                    .as_ref()
+                                    .and_then(|layout| layout.model().tab())
+                                    .is_some_and(|selected| &selected.id == tab)
+                        });
                         match event {
                             new_pane::NewPaneEvent::OpenTerminal => {
                                 browser.open_terminal_in_empty(&pane, window, cx)
@@ -3663,29 +3673,48 @@ impl Render for Browser {
                             new_pane::NewPaneEvent::Browser(agent) => {
                                 browser.show_agent_browser_in(&pane, agent, cx)
                             }
-                            new_pane::NewPaneEvent::OpenView(view)
-                                if view.kind == agent_interface_core::ViewKind::Connections =>
-                            {
-                                let Some((origin, tab)) = &chooser.placement else {
-                                    return;
-                                };
-                                if !browser.selected_origin_is_current(Some(origin))
-                                    || !browser
-                                        .layout
-                                        .as_ref()
-                                        .and_then(|layout| layout.model().tab())
-                                        .is_some_and(|selected| &selected.id == tab)
-                                {
+                            new_pane::NewPaneEvent::Swarm {
+                                initiator,
+                                name,
+                                members,
+                            } => {
+                                if !placed {
                                     return;
                                 }
                                 let target = browser.creation_target();
-                                browser.open_connections(
+                                browser.open_swarm_tab(
+                                    (initiator.as_str(), name.as_str(), members.as_slice()),
+                                    target.as_ref(),
+                                    window,
+                                    cx,
+                                );
+                            }
+                            new_pane::NewPaneEvent::Connections(selection) => {
+                                if !placed {
+                                    return;
+                                }
+                                // Once the pane shows Connections, select the row's peer,
+                                // only if it took the request.
+                                let peer = selection.clone().and_then(|selection| {
+                                    let space = browser.connections_workspace()?;
+                                    let (key, _, _) = browser.peer_inboxes.get(&space.id)?;
+                                    Some((
+                                        space.id.clone(),
+                                        key.clone(),
+                                        peer_inbox::Opening::Peer(selection),
+                                    ))
+                                });
+                                let target = browser.creation_target();
+                                if browser.open_connections(
                                     target.as_ref(),
                                     Some(&pane),
                                     false,
                                     window,
                                     cx,
-                                );
+                                ) && peer.is_some()
+                                {
+                                    browser.peer_to_open = peer;
+                                }
                             }
                             new_pane::NewPaneEvent::OpenView(view) => {
                                 browser.open_view(&pane, view.clone(), window, cx);
@@ -3709,12 +3738,27 @@ impl Render for Browser {
         let browsers: Vec<(String, String)> = self
             .agent_browsers
             .iter()
-            .map(|session| (session.name.clone(), self.agent_browser_label(session, cx)))
+            .map(|session| (session.name.clone(), self.agent_browser_host(session, cx)))
             .collect();
         for (id, (chooser, _)) in &self.new_panes {
+            // The connections of the pane's own workspace, as its panel lists them.
+            let connections = self
+                .layout
+                .as_ref()
+                .and_then(|layout| layout.model().workspace_for_pane(id))
+                .and_then(|space| self.peer_inboxes.get(&space.id))
+                .and_then(|(_, inbox, _)| {
+                    inbox
+                        .read(cx)
+                        .summary
+                        .as_deref()
+                        .map(views::peer_rows::entries)
+                })
+                .unwrap_or_default();
             chooser.update(cx, |chooser, cx| {
                 chooser.set_visible(expanded.is_none_or(|focused| focused == id), cx);
                 chooser.set_browsers(browsers.clone(), cx);
+                chooser.set_connections(connections, cx);
             });
         }
         if let Some(request) = self.shell_to_open.take()
