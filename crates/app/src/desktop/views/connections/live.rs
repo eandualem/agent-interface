@@ -1695,42 +1695,33 @@ impl Pane {
                         },
                     )));
                 }
-                if history.items.is_empty() {
-                    rows += 1;
-                    body = body.child(event(
-                        "message-square",
-                        "No messages yet.".into(),
-                        String::new(),
-                    ));
-                }
                 let now = Local::now();
                 let mut day: Option<Local> = None;
-                // Events sit among the messages by time, each after a
-                // message sent at the same moment; unknown kinds are left out.
-                let mut events = history
-                    .events
-                    .iter()
-                    .filter_map(|e| {
-                        Some((epoch(&e.at).unwrap_or(f64::MAX), event_line(e, history)?))
-                    })
-                    .peekable();
-                for m in &history.items {
-                    let sent = epoch(&m.submitted_at).unwrap_or(f64::MAX);
-                    while let Some((_, line)) = events.next_if(|(at, _)| *at < sent) {
-                        rows += 1;
-                        body = body.child(line);
-                    }
-                    // A draft sent back is replaced by the event that says so.
-                    let sent_back = m.state == "revision_requested";
-                    if sent_back
-                        && history.events.iter().any(|e| {
-                            matches!(&e.kind, EventKind::RevisionRequested { message_id, .. }
-                            if message_id == &m.message_id)
-                        })
-                    {
-                        continue;
-                    }
-                    if let Some(at) = epoch(&m.submitted_at).and_then(Local::at)
+                for item in thread(history) {
+                    let at = match item {
+                        ThreadItem::Event(e) => &e.at,
+                        ThreadItem::Message(m) => &m.submitted_at,
+                    };
+                    let line = match item {
+                        ThreadItem::Event(e) => match event_line(e, history) {
+                            Some(line) => line,
+                            None => continue,
+                        },
+                        ThreadItem::Message(m) if m.state == "revision_requested" => {
+                            // A record without its event: the note is not known.
+                            event(
+                                "corner-down-left",
+                                format!("You asked {} to revise its message", card::local_agent(m)),
+                                String::new(),
+                            )
+                        }
+                        ThreadItem::Message(m) => {
+                            self.message_card(name, m, actions && connected, held, cx)
+                        }
+                    };
+                    let waits =
+                        matches!(item, ThreadItem::Message(m) if m.state == "pending_review");
+                    if let Some(at) = epoch(at).and_then(Local::at)
                         && let Some(now) = &now
                         && !day.is_some_and(|d| d.same_day(&at))
                     {
@@ -1738,20 +1729,11 @@ impl Pane {
                         body = body.child(ui::thread_divider(at.day_name(now), false));
                         day = Some(at);
                     }
+                    if waits && waiting_at.is_none() {
+                        waiting_at = Some(rows);
+                    }
                     rows += 1;
-                    body = body.child(if sent_back {
-                        // A record without its event: the note is not known.
-                        event(
-                            "corner-down-left",
-                            format!("You asked {} to revise its message", card::local_agent(m)),
-                            String::new(),
-                        )
-                    } else {
-                        if m.state == "pending_review" && waiting_at.is_none() {
-                            waiting_at = Some(rows - 1);
-                        }
-                        self.message_card(name, m, actions && connected, held, cx)
-                    });
+                    body = body.child(line);
                 }
                 // A thread opens on its first message waiting for the person,
                 // with its choices in view, else on its latest message.
@@ -1773,7 +1755,13 @@ impl Pane {
                         self.scroll_on_open.set(false);
                     }
                 }
-                body = body.children(events.map(|(_, line)| line));
+                if history.items.is_empty() {
+                    body = body.child(event(
+                        "message-square",
+                        "No messages yet.".into(),
+                        String::new(),
+                    ));
+                }
                 // The connection's state, unless its last event says it.
                 let said = history
                     .events
@@ -2163,6 +2151,44 @@ pub(super) fn peer_mark(name: Option<&str>, size: f32) -> Div {
     }
 }
 
+/// One entry in a thread, in the order it is drawn.
+#[derive(Clone, Copy, Debug)]
+enum ThreadItem<'a> {
+    Event(&'a api::Event),
+    Message(&'a api::Message),
+}
+
+/// A thread's messages and the events this app knows, oldest first. An
+/// event goes after a message sent at its own time, and a draft sent back
+/// gives way to the event that says so.
+fn thread(history: &api::History) -> Vec<ThreadItem<'_>> {
+    let sent_back: HashSet<&str> = history
+        .events
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EventKind::RevisionRequested { message_id, .. } => Some(message_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    let mut events = history
+        .events
+        .iter()
+        .filter(|e| e.kind != EventKind::Unknown)
+        .peekable();
+    let mut items = Vec::new();
+    for m in &history.items {
+        let sent = epoch(&m.submitted_at).unwrap_or(f64::MAX);
+        while let Some(e) = events.next_if(|e| epoch(&e.at).unwrap_or(f64::MAX) < sent) {
+            items.push(ThreadItem::Event(e));
+        }
+        if !(m.state == "revision_requested" && sent_back.contains(m.message_id.as_str())) {
+            items.push(ThreadItem::Message(m));
+        }
+    }
+    items.extend(events.map(ThreadItem::Event));
+    items
+}
+
 /// The line a connection event leaves in its thread, or none for a kind
 /// this app does not know.
 fn event_line(e: &api::Event, history: &api::History) -> Option<Div> {
@@ -2380,6 +2406,69 @@ mod tests {
             )
         );
         assert_eq!(revocation_note(&peer("disconnect_requested")), None);
+    }
+
+    fn events_fixture() -> api::History {
+        serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../roster/src/profiles/peers/fixtures/peer-history-events.json"
+        )))
+        .unwrap()
+    }
+
+    fn order(history: &api::History) -> Vec<String> {
+        thread(history)
+            .into_iter()
+            .map(|item| match item {
+                ThreadItem::Event(e) => format!("event {}", e.id),
+                ThreadItem::Message(m) => format!("message {}", &m.message_id[30..]),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn events_sit_among_messages_by_time_and_a_sent_back_draft_gives_way() {
+        let mut history = events_fixture();
+        // Event 4 is at message 71's own time, so it follows it; the draft
+        // sent back (70) is replaced by its revision event (3).
+        let expected = [
+            "event 1",
+            "event 2",
+            "event 3",
+            "message 71",
+            "event 4",
+            "message 72",
+            "event 5",
+            "event 6",
+        ];
+        assert_eq!(order(&history), expected);
+        history.events[1].kind = EventKind::Unknown;
+        assert!(!order(&history).contains(&"event 2".to_owned()));
+        // Without its event, the draft keeps its place.
+        history.events.retain(|e| e.id != 3);
+        assert_eq!(order(&history)[1], "message 70");
+    }
+
+    #[test]
+    fn an_older_page_goes_first_and_keeps_one_of_each() {
+        let whole = events_fixture();
+        let mut newer = whole.clone();
+        let mut older = whole.clone();
+        newer.items.drain(..1);
+        newer.events.drain(..2);
+        older.items.truncate(2);
+        older.events.truncate(3);
+        prepend(&mut newer, &mut older);
+        let ids = |h: &api::History| {
+            (
+                h.items
+                    .iter()
+                    .map(|m| m.message_id.clone())
+                    .collect::<Vec<_>>(),
+                h.events.iter().map(|e| e.id).collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(ids(&older), ids(&whole));
     }
 
     #[test]
