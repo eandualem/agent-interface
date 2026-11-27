@@ -1,11 +1,11 @@
 //! Owner-scoped data for the native Connections pane. Stream frames only invalidate reads.
-use super::card::LOCAL_AGENT;
+use super::card::{self, LOCAL_AGENT};
 use super::rules;
 use super::*;
 use crate::desktop::peer_inbox::{Inbox, Selection, Summary, failure};
 use crate::desktop::views::clock::Local;
 use agent_interface_roster::profiles::{AddError, Connection, Error, peers as api};
-use api::{Direction, Policy};
+use api::{Direction, EventKind, Policy};
 use std::{collections::HashSet, sync::Arc};
 
 #[derive(Clone)]
@@ -184,7 +184,7 @@ pub(super) enum Form {
 struct Snapshot {
     summary: Arc<Summary>,
     selection: Option<Selection>,
-    history: Option<api::Page<api::Message>>,
+    history: Option<api::History>,
 }
 
 impl Snapshot {
@@ -208,12 +208,7 @@ impl Snapshot {
                             return Err(Error::Invalid);
                         }
                         let mut prior = c.peer_history(id, Some(&cursor))?;
-                        let existing: HashSet<_> =
-                            page.items.iter().map(|m| m.message_id.as_str()).collect();
-                        prior
-                            .items
-                            .retain(|m| !existing.contains(m.message_id.as_str()));
-                        prior.items.append(&mut page.items);
+                        prepend(&mut page, &mut prior);
                         page = prior;
                     }
                 }
@@ -227,6 +222,18 @@ impl Snapshot {
             history,
         })
     }
+}
+
+/// Put `newer`'s messages and events after `older`'s, keeping one of each.
+fn prepend(newer: &mut api::History, older: &mut api::History) {
+    let messages: HashSet<_> = newer.items.iter().map(|m| m.message_id.as_str()).collect();
+    older
+        .items
+        .retain(|m| !messages.contains(m.message_id.as_str()));
+    older.items.append(&mut newer.items);
+    let events: HashSet<_> = newer.events.iter().map(|e| e.id).collect();
+    older.events.retain(|e| !events.contains(&e.id));
+    older.events.append(&mut newer.events);
 }
 
 /// A connection's name, or "Unnamed profile" with its short fingerprint.
@@ -266,16 +273,6 @@ fn resolve(overview: &api::Overview, selected: Option<Selection>) -> Option<Sele
         }
         _ => None,
     }
-}
-
-/// A revise decision's note and when it was sent, by message, for the
-/// event line that replaces the message's card.
-fn revise_note(change: &Change) -> Option<(String, (String, String))> {
-    let Change::Review(m, DecisionKind::Revise(note)) = change else {
-        return None;
-    };
-    let at = chrono::Local::now().format("%H:%M").to_string();
-    Some((m.message_id.clone(), (note.clone(), at)))
 }
 
 /// One gate choice: a radio button whose accessible name carries its
@@ -342,43 +339,6 @@ fn on_card(action: &Change, shown: &Snapshot, selected: Option<&Selection>) -> b
         })
 }
 
-/// The line a gate change leaves in its thread.
-fn gate_event(change: &Change) -> Option<GateEvent> {
-    let Change::Gates(generation, changes) = change else {
-        return None;
-    };
-    let text = changes
-        .iter()
-        .map(|(direction, policy, _)| {
-            format!(
-                "{} gate set to {policy:?}",
-                match direction {
-                    Direction::Incoming => "Incoming",
-                    Direction::Outgoing => "Outgoing",
-                }
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" · ");
-    let now = chrono::Local::now();
-    Some(GateEvent {
-        preview: false,
-        generation: generation.clone(),
-        at: now.timestamp_millis() as f64 / 1000.0,
-        text: format!("{} · {text}", now.format("%H:%M")),
-    })
-}
-
-/// A gate change made in this pane, shown in its thread at its time.
-pub(super) struct GateEvent {
-    /// Made on the preview's records, which keep their own.
-    pub(super) preview: bool,
-    generation: String,
-    /// Seconds since the epoch.
-    at: f64,
-    text: String,
-}
-
 struct PendingRetry {
     action: Change,
     key: String,
@@ -401,8 +361,6 @@ pub(super) struct Live {
     older_loading: bool,
     oldest: Option<String>,
     pub(super) form: Option<Form>,
-    /// Gate changes made in this pane, by generation, for their thread.
-    pub(super) events: Vec<GateEvent>,
     inbox: Entity<Inbox>,
     _events: Subscription,
 }
@@ -430,7 +388,6 @@ impl Live {
             older_loading: false,
             oldest: None,
             form: None,
-            events: Vec::new(),
             inbox,
             _events: subscription,
         }
@@ -584,13 +541,6 @@ impl Pane {
         if !action.belongs_to(self.live.selected.as_ref()) {
             return;
         }
-        if let Some(mut event) = gate_event(&action) {
-            event.preview = true;
-            self.live.events.push(event);
-        }
-        if let Some((message, note)) = revise_note(&action) {
-            self.notes.insert(message, note);
-        }
         match action {
             Change::Invite(id) => sample.invite(&id),
             Change::Answer(request, accept) => sample.answer(&request, accept),
@@ -604,7 +554,7 @@ impl Pane {
                 match decision {
                     DecisionKind::Pass => model::Decision::Pass,
                     DecisionKind::Decline => model::Decision::Decline,
-                    DecisionKind::Revise(_) => model::Decision::Revise,
+                    DecisionKind::Revise(note) => model::Decision::Revise(note),
                 },
             ),
             Change::Disconnect(generation) => sample.disconnect(&generation),
@@ -652,8 +602,6 @@ impl Pane {
                 .as_ref()
                 .map(|snapshot| &snapshot.summary.overview),
         );
-        let event = gate_event(&change);
-        let note = revise_note(&change);
         let invite = matches!(change, Change::Invite(_));
         self.live.sending = true;
         self.live.form = None;
@@ -667,9 +615,6 @@ impl Pane {
                 pane.live.sending = false;
                 match result {
                     Ok(()) => {
-                        pane.live.events.extend(event);
-                        // The note is kept once the service has taken it.
-                        pane.notes.extend(note);
                         pane.live.retry = None;
                         pane.live.status = None;
                         pane.live.inbox.update(cx, |inbox, cx| inbox.refresh(cx));
@@ -1107,14 +1052,7 @@ impl Pane {
                 {
                     match result {
                         Ok(mut page) if page.older.as_ref() != Some(&before) => {
-                            let existing: HashSet<_> = history
-                                .items
-                                .iter()
-                                .map(|m| m.message_id.as_str())
-                                .collect();
-                            page.items
-                                .retain(|m| !existing.contains(m.message_id.as_str()));
-                            page.items.append(&mut history.items);
+                            prepend(history, &mut page);
                             pane.live.oldest = page.items.first().map(|m| m.message_id.clone());
                             if pane.live.reading {
                                 pane.live.dirty = true;
@@ -1767,24 +1705,30 @@ impl Pane {
                 }
                 let now = Local::now();
                 let mut day: Option<Local> = None;
-                // Gate changes made here sit among the messages by time.
-                let mut events = self
-                    .live
+                // Events sit among the messages by time, each after a
+                // message sent at the same moment; unknown kinds are left out.
+                let mut events = history
                     .events
                     .iter()
-                    .filter(|e| {
-                        e.generation == id.generation && e.preview == self.preview.is_some()
+                    .filter_map(|e| {
+                        Some((epoch(&e.at).unwrap_or(f64::MAX), event_line(e, history)?))
                     })
                     .peekable();
                 for m in &history.items {
                     let sent = epoch(&m.submitted_at).unwrap_or(f64::MAX);
-                    while let Some(gate) = events.next_if(|e| e.at < sent) {
+                    while let Some((_, line)) = events.next_if(|(at, _)| *at < sent) {
                         rows += 1;
-                        body = body.child(event(
-                            "sliders-horizontal",
-                            gate.text.clone(),
-                            String::new(),
-                        ));
+                        body = body.child(line);
+                    }
+                    // A draft sent back is replaced by the event that says so.
+                    let sent_back = m.state == "revision_requested";
+                    if sent_back
+                        && history.events.iter().any(|e| {
+                            matches!(&e.kind, EventKind::RevisionRequested { message_id, .. }
+                            if message_id == &m.message_id)
+                        })
+                    {
+                        continue;
                     }
                     if let Some(at) = epoch(&m.submitted_at).and_then(Local::at)
                         && let Some(now) = &now
@@ -1795,28 +1739,18 @@ impl Pane {
                         day = Some(at);
                     }
                     rows += 1;
-                    body = body.child(if m.state == "revision_requested" {
-                        let (note, at) = self.notes.get(&m.message_id).cloned().unzip();
+                    body = body.child(if sent_back {
+                        // A record without its event: the note is not known.
                         event(
                             "corner-down-left",
-                            format!(
-                                "{}You asked {LOCAL_AGENT} to revise its message",
-                                at.map(|at| format!("{at} · ")).unwrap_or_default()
-                            ),
-                            note.map(|note| {
-                                format!(": \u{201c}{}\u{201d}", note.lines().next().unwrap_or(""))
-                            })
-                            .unwrap_or_default(),
+                            format!("You asked {} to revise its message", card::local_agent(m)),
+                            String::new(),
                         )
                     } else {
-                        let revision = self
-                            .preview
-                            .as_ref()
-                            .and_then(|sample| sample.revisions.get(&m.message_id).copied());
                         if m.state == "pending_review" && waiting_at.is_none() {
                             waiting_at = Some(rows - 1);
                         }
-                        self.message_card(name, m, revision, actions && connected, held, cx)
+                        self.message_card(name, m, actions && connected, held, cx)
                     });
                 }
                 // A thread opens on its first message waiting for the person,
@@ -1839,14 +1773,13 @@ impl Pane {
                         self.scroll_on_open.set(false);
                     }
                 }
-                for gate in events {
-                    body = body.child(event(
-                        "sliders-horizontal",
-                        gate.text.clone(),
-                        String::new(),
-                    ));
-                }
-                if !connected {
+                body = body.children(events.map(|(_, line)| line));
+                // The connection's state, unless its last event says it.
+                let said = history
+                    .events
+                    .last()
+                    .is_some_and(|e| e.kind == EventKind::Disconnected);
+                if !connected && !(said && peer.state == "disconnected") {
                     body = body.child(event("link-2-off", link_status(peer), String::new()));
                 }
                 column.child(body)
@@ -2230,6 +2163,47 @@ pub(super) fn peer_mark(name: Option<&str>, size: f32) -> Div {
     }
 }
 
+/// The line a connection event leaves in its thread, or none for a kind
+/// this app does not know.
+fn event_line(e: &api::Event, history: &api::History) -> Option<Div> {
+    let (icon, happened, subject) = match &e.kind {
+        EventKind::Connected => ("link-2", "Connected".to_owned(), String::new()),
+        EventKind::GateChanged { direction, to, .. } => (
+            "sliders-horizontal",
+            format!(
+                "{} gate set to {to:?}",
+                match direction {
+                    Direction::Incoming => "Incoming",
+                    Direction::Outgoing => "Outgoing",
+                }
+            ),
+            String::new(),
+        ),
+        EventKind::RevisionRequested { message_id, note } => {
+            let agent = history
+                .items
+                .iter()
+                .find(|m| &m.message_id == message_id)
+                .map_or(LOCAL_AGENT, card::local_agent);
+            (
+                "corner-down-left",
+                format!("You asked {agent} to revise its message"),
+                format!(": \u{201c}{}\u{201d}", note.lines().next().unwrap_or("")),
+            )
+        }
+        EventKind::DisconnectRequested => {
+            ("link-2-off", "You disconnected".to_owned(), String::new())
+        }
+        EventKind::Disconnected => ("link-2-off", "Disconnected".to_owned(), String::new()),
+        EventKind::Unknown => return None,
+    };
+    Some(event(
+        icon,
+        format!("{} · {happened}", rules::clock(&e.at)),
+        subject,
+    ))
+}
+
 /// Something that happened in a thread, centred on one muted line.
 fn event(icon: &str, happened: String, subject: String) -> Div {
     let (t, c) = (tokens(), colors());
@@ -2339,9 +2313,6 @@ mod tests {
         };
         let change = Change::Gates(generation, changes);
         assert!(change.still_pending(&refused));
-        assert!(gate_event(&change).is_some_and(|e| {
-            e.generation == "gen_1" && e.text.ends_with("Outgoing gate set to Auto")
-        }));
     }
 
     #[test]
@@ -2413,7 +2384,7 @@ mod tests {
 
     #[test]
     fn a_lost_decision_is_offered_on_its_card_only_when_the_card_is_shown() {
-        let history: api::Page<api::Message> = serde_json::from_str(include_str!(concat!(
+        let history: api::History = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../roster/src/profiles/peers/fixtures/peer-history.json"
         )))
@@ -2433,7 +2404,11 @@ mod tests {
                 connections: vec![],
             })),
             selection: Some(peer.clone()),
-            history: Some(api::Page { items, older: None }),
+            history: Some(api::History {
+                items,
+                older: None,
+                events: vec![],
+            }),
         };
         let lost = Change::Review(Box::new(waiting.clone()), DecisionKind::Pass);
         assert!(on_card(&lost, &shown(history.items.clone()), Some(&peer)));

@@ -246,7 +246,9 @@ fn parse<T: serde::de::DeserializeOwned>(text: &str) -> T {
 
 #[test]
 fn service_fixtures_parse_into_the_client_shapes() {
-    use super::super::peers::{Answer, Invitation, Message, Overview, Page, Peer, Receipt, Review};
+    use super::super::peers::{
+        Answer, History, Invitation, Message, Overview, Page, Peer, Receipt, Review,
+    };
     let overview: Overview = parse(fixture!("peer-overview"));
     assert_eq!(overview.pending_reviews, 2);
     assert_eq!(overview.invitations[1].state, "declined");
@@ -264,14 +266,22 @@ fn service_fixtures_parse_into_the_client_shapes() {
         answer.invitation.generation.as_deref(),
         Some(answer.connection.unwrap().connection.generation.as_str())
     );
-    let history: Page<Message> = parse(fixture!("peer-history"));
+    let history: History = parse(fixture!("peer-history"));
     assert_eq!(history.older.as_deref(), Some("p1-example-cursor"));
     assert!(matches!(history.items[1].receipt, Receipt::Uncertain));
     assert!(
         matches!(&history.items[3].receipt, Receipt::Confirmed { outcome, .. } if outcome == "declined")
     );
-    let older: Page<Message> = parse(fixture!("peer-history-older"));
+    // Written before homes recorded events, revisions and agents.
+    let older: History = parse(fixture!("peer-history-older"));
     assert!(older.older.is_none());
+    assert!(older.events.is_empty());
+    assert!(
+        older
+            .items
+            .iter()
+            .all(|m| m.revision.is_none() && m.local_agent.is_none() && m.decided_at.is_none())
+    );
     let refused = older
         .items
         .iter()
@@ -304,6 +314,50 @@ fn service_fixtures_parse_into_the_client_shapes() {
     for key in ["disconnect_requested", "disconnect_confirmed"] {
         serde_json::from_value::<Peer>(actions[key].clone()).unwrap();
     }
+}
+
+#[test]
+fn history_events_revisions_and_local_agents_parse_and_unknown_kinds_are_kept_apart() {
+    use super::super::peers::{EventKind, History, Message};
+    let history: History = parse(fixture!("peer-history-events"));
+    let ids: Vec<_> = history.events.iter().map(|e| e.id).collect();
+    assert_eq!(ids, [1, 2, 3, 4, 5, 6]);
+    assert_eq!(history.events[0].kind, EventKind::Connected);
+    assert_eq!(
+        history.events[1].kind,
+        EventKind::GateChanged {
+            direction: Direction::Incoming,
+            from: Policy::Review,
+            to: Policy::Auto
+        }
+    );
+    assert_eq!(
+        history.events[2].kind,
+        EventKind::RevisionRequested {
+            message_id: history.items[0].message_id.clone(),
+            note: "Please include the version.".into()
+        }
+    );
+    assert_eq!(history.events[4].kind, EventKind::DisconnectRequested);
+    assert_eq!(history.events[5].kind, EventKind::Disconnected);
+    let revisions: Vec<_> = history.items.iter().map(|m| m.revision).collect();
+    assert_eq!(revisions, [Some(1), Some(2), None]);
+    assert!(
+        history
+            .items
+            .iter()
+            .all(|m| m.local_agent.as_deref() == Some("main"))
+    );
+    assert_eq!(
+        history.items[1].decided_at.as_deref(),
+        Some("2026-11-21T10:04:00Z")
+    );
+    let revoked: Message = parse(fixture!("peer-revoked-message"));
+    assert_eq!(revoked.revision, Some(1));
+    let later: History = parse(
+        r#"{"items":[],"older":null,"events":[{"id":7,"at":"2026-11-21T12:00:00Z","kind":"renamed","name":"x"}]}"#,
+    );
+    assert_eq!(later.events[0].kind, EventKind::Unknown);
 }
 
 #[test]

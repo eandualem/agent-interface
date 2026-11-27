@@ -14,7 +14,9 @@
         "state": "pending_review",
         "receipt": {
           "kind": "missing"
-        }
+        },
+        "revision": 1,
+        "local_agent": "main"
       },
       "queued_at": "2026-11-21T12:00:00Z"
     },

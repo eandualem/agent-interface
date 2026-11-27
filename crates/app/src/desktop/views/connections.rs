@@ -9,11 +9,7 @@ use gpui::{
     ClipboardItem, Context, Div, Entity, Render, SharedString, Subscription, Window, canvas, div,
     prelude::*, px,
 };
-use std::{
-    cell::RefCell,
-    collections::{HashMap, HashSet},
-    time::Duration,
-};
+use std::{cell::RefCell, collections::HashSet, time::Duration};
 mod card;
 mod live;
 mod model;
@@ -72,8 +68,6 @@ pub(super) struct Pane {
     copied: Option<SharedString>,
     /// Messages whose whole body is open.
     expanded: HashSet<String>,
-    /// The notes this pane sent back with a message, and when, by message.
-    notes: HashMap<String, (String, String)>,
     _subscriptions: [Subscription; 3],
 }
 
@@ -184,7 +178,6 @@ impl Pane {
             menu: Menu::None,
             copied: None,
             expanded: HashSet::new(),
-            notes: HashMap::new(),
             _subscriptions: [search, editor_keys, menu_left],
         }
     }
@@ -220,9 +213,6 @@ impl Pane {
         self.preview = open.then(model::Sample::new);
         self.needs_you = false;
         self.expanded.clear();
-        self.notes.clear();
-        // The preview's gate changes go with its records; the live ones stay.
-        self.live.events.retain(|e| !e.preview);
         self.filter.update(cx, |field, cx| field.clear(cx));
         let first = self.preview.as_ref().and_then(|sample| {
             sample

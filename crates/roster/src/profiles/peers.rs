@@ -141,6 +141,69 @@ pub struct Message {
     pub receipt: Receipt,
     /// Upload refusal and retry time, when provided.
     pub upload_failure: Option<UploadFailure>,
+    /// Which draft this is, 1 for a first draft; absent on older records.
+    pub revision: Option<u32>,
+    /// The local orchestrator that sent an outgoing message, or the agent an
+    /// incoming one was handed to; absent until it was, and on older records.
+    pub local_agent: Option<String>,
+    /// When the local owner passed, declined or asked for a revision; absent
+    /// for an automatic pass, while the message waits, and on older records.
+    pub decided_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+/// One oldest-first history page with the connection's events in its span.
+pub struct History {
+    /// Messages ordered oldest first within this page.
+    pub items: Vec<Message>,
+    /// Opaque cursor to the preceding page.
+    pub older: Option<String>,
+    /// Events ordered oldest first; absent when the page has none.
+    #[serde(default)]
+    pub events: Vec<Event>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+/// Something that happened to a connection, at a time on this profile's clock.
+pub struct Event {
+    /// Stable event ID within its generation.
+    pub id: u64,
+    /// When it happened.
+    pub at: String,
+    /// What happened.
+    #[serde(flatten)]
+    pub kind: EventKind,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+/// The kinds of connection event.
+pub enum EventKind {
+    /// The connection was established.
+    Connected,
+    /// The owner changed one direction's gate.
+    GateChanged {
+        /// The direction changed.
+        direction: Direction,
+        /// The policy before.
+        from: Policy,
+        /// The policy after.
+        to: Policy,
+    },
+    /// The owner sent an outgoing draft back with a note.
+    RevisionRequested {
+        /// The draft sent back.
+        message_id: String,
+        /// The owner's note.
+        note: String,
+    },
+    /// The local owner asked to disconnect.
+    DisconnectRequested,
+    /// The connection ended.
+    Disconnected,
+    /// A kind this client does not know.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -278,9 +341,9 @@ impl Connection {
         &self,
         generation: &Generation,
         before: Option<&str>,
-    ) -> Result<Page<Message>, Error> {
+    ) -> Result<History, Error> {
         let path = format!("{ROOT}/{}/history", segment(&generation.generation)?);
-        let page: Page<Message> = self.read_peer(page_path(path, before))?;
+        let page: History = self.read_peer(page_path(path, before))?;
         if page.items.iter().any(|m| &m.connection != generation) {
             return Err(Error::BindingMismatch);
         }

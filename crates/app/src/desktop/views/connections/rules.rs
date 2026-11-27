@@ -42,6 +42,12 @@ pub(super) fn state_line(m: &api::Message, local: &str) -> Option<StateLine> {
     if m.state == "pending_review" {
         return None;
     }
+    // When the person decided, before the line's own ending.
+    let decided = m
+        .decided_at
+        .as_deref()
+        .map(|at| format!(" {}", clock(at)))
+        .unwrap_or_default();
     if let Receipt::Confirmed {
         outcome,
         recorded_at,
@@ -55,7 +61,11 @@ pub(super) fn state_line(m: &api::Message, local: &str) -> Option<StateLine> {
             "declined" if !incoming => {
                 return Some(line("x", format!("They declined it {at}"), Attention));
             }
-            "declined" => return Some(line("x", format!("You declined it {at}"), Muted)),
+            // The person's decline is recorded as its receipt, at one time.
+            "declined" => {
+                let at = m.decided_at.as_deref().map_or(at, clock);
+                return Some(line("x", format!("You declined it {at}"), Muted));
+            }
             _ => {}
         }
     }
@@ -65,11 +75,15 @@ pub(super) fn state_line(m: &api::Message, local: &str) -> Option<StateLine> {
         "delivered" => line("check-check", "Delivered", Ok),
         "passed" if incoming => line(
             "check",
-            format!("You passed it through · {local} has it"),
+            format!("You passed it through{decided} · {local} has it"),
             Ok,
         ),
-        "passed" => line("check", "You passed it through · sending", Muted),
-        "declined" => line("x", "You declined it", Muted),
+        "passed" => line(
+            "check",
+            format!("You passed it through{decided} · sending"),
+            Muted,
+        ),
+        "declined" => line("x", format!("You declined it{decided}"), Muted),
         "revision_requested" => line(
             "corner-down-left",
             format!("Sent back to {local} to revise"),
@@ -303,6 +317,9 @@ mod tests {
             state: state.into(),
             receipt,
             upload_failure: None,
+            revision: None,
+            local_agent: None,
+            decided_at: None,
         }
     }
 
@@ -380,6 +397,21 @@ mod tests {
             says(&message(Outgoing, "some_new_state", Missing)).1,
             "Some new state"
         );
+    }
+
+    #[test]
+    fn a_decision_line_says_when_the_person_decided() {
+        let at = "2026-11-21T12:05:00Z";
+        let mut m = message(Direction::Incoming, "passed", Receipt::Missing);
+        m.decided_at = Some(at.into());
+        let line = state_line(&m, "worker").unwrap();
+        assert_eq!(
+            line.text,
+            format!("You passed it through {} · worker has it", clock(at))
+        );
+        let mut m = message(Direction::Outgoing, "declined", Receipt::Missing);
+        m.decided_at = Some(at.into());
+        assert_eq!(says(&m).1, format!("You declined it {}", clock(at)));
     }
 
     #[test]

@@ -10,31 +10,36 @@ use agent_interface_roster::profiles::peers as api;
 use api::Direction;
 use gpui::relative;
 
-/// The local agent the app writes for: Agent Backbone does not name it.
+/// The local agent's name when Agent Backbone does not give one: on records
+/// written before it did, and for an incoming message not yet handed over.
 pub(super) const LOCAL_AGENT: &str = "main";
+
+/// The local agent that sent `m`, or that `m` was handed to.
+pub(super) fn local_agent(m: &api::Message) -> &str {
+    m.local_agent.as_deref().unwrap_or(LOCAL_AGENT)
+}
 
 impl Pane {
     /// `peer` is the connection's shown name; `actions` whether a decision
     /// can be sent now; `held` whether an open note or confirmation stays
-    /// usable, which it does while only a read is in flight; `revision`
-    /// which resubmission this is, when known.
+    /// usable, which it does while only a read is in flight.
     pub(super) fn message_card(
         &self,
         peer: &str,
         m: &api::Message,
-        revision: Option<u32>,
         actions: bool,
         held: bool,
         cx: &mut Context<Self>,
     ) -> Div {
         let (t, c) = (tokens(), colors());
+        let local = local_agent(m);
         let outgoing = m.direction == Direction::Outgoing;
         let waiting = m.state == "pending_review";
         let key = m.message_id.clone();
         let (sender, recipient) = if outgoing {
-            (LOCAL_AGENT, peer)
+            (local, peer)
         } else {
-            (peer, LOCAL_AGENT)
+            (peer, local)
         };
         let meta =
             |text: String, color| ui::text(div().text_color(color), &t.text.meta).child(text);
@@ -124,7 +129,12 @@ impl Pane {
                 .child(name(sender, outgoing, c.text))
                 .child(ui::icon("arrow-right", t.size.icon - 2.0, c.muted))
                 .child(name(recipient, !outgoing, c.text_2))
-                .children(revision.map(|n| ui::pill(format!("revision {n}"))))
+                // A first draft has no pill.
+                .children(
+                    m.revision
+                        .filter(|&n| n > 1)
+                        .map(|n| ui::pill(format!("revision {n}"))),
+                )
                 .child(div().flex_1())
                 .child(meta(rules::clock(&m.submitted_at), c.muted).flex_shrink_0()),
         );
@@ -189,7 +199,7 @@ impl Pane {
             .pb(px(t.space.s10))
             .px(px(t.space.s14))
             .flex_nowrap();
-        if let Some(state) = rules::state_line(m, LOCAL_AGENT) {
+        if let Some(state) = rules::state_line(m, local) {
             let (icon, text) = match state.tone {
                 Tone::Muted => (c.muted, c.muted),
                 Tone::Ok => (c.ok, c.muted),
@@ -225,6 +235,7 @@ impl Pane {
         cx: &mut Context<Self>,
     ) -> Div {
         let (t, c) = (tokens(), colors());
+        let local = local_agent(m);
         let bar = div()
             .flex()
             .flex_wrap()
@@ -317,14 +328,14 @@ impl Pane {
                 let send = if note.is_empty() {
                     ui::button(
                         "send-revise",
-                        format!("Send back to {LOCAL_AGENT}"),
+                        format!("Send back to {local}"),
                         ui::Button::Secondary,
                     )
                     .opacity(0.35)
                 } else {
                     self.live_button(
                         "send-revise",
-                        format!("Send back to {LOCAL_AGENT}"),
+                        format!("Send back to {local}"),
                         ui::Button::Secondary,
                         cx,
                         |p, w, cx| p.submit_live_form(w, cx),
@@ -348,7 +359,7 @@ impl Pane {
                     .border_color(c.outgoing_border)
                     .child(
                         ui::text(div().text_color(c.text_2), &t.text.meta)
-                            .child(format!("What should {LOCAL_AGENT} change?")),
+                            .child(format!("What should {local} change?")),
                     )
                     .child(
                         field_box(hinted(&self.input, "Your note", cx))
@@ -357,7 +368,7 @@ impl Pane {
                             .border_color(c.focus),
                     )
                     .child(meta(format!(
-                        "The message stays here. {LOCAL_AGENT} gets your note and sends a new version for review."
+                        "The message stays here. {local} gets your note and sends a new version for review."
                     )))
                     .child(div().flex().flex_wrap().gap(px(t.space.s8)).child(send).child(self.cancel_button(cx)))
             }
@@ -414,11 +425,8 @@ impl Pane {
                         }
                     });
                 }
-                bar.child(div().flex_1()).child(meta(rules::pass_note(
-                    m.direction,
-                    LOCAL_AGENT,
-                    peer,
-                )))
+                bar.child(div().flex_1())
+                    .child(meta(rules::pass_note(m.direction, local, peer)))
             }
         }
     }
