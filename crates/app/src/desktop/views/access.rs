@@ -708,6 +708,7 @@ impl Pane {
             Shown::Agents | Shown::Browsers => Shown::Requests,
             Shown::Requests => Shown::Agents,
         };
+        self.browsing.deleting = None;
         self.menu = None;
         self.noting = None;
         self.adding = None;
@@ -728,8 +729,11 @@ impl Pane {
             return false;
         }
         // A deletion waiting to be confirmed is kept by Escape and Return.
-        if matches!(key.key.as_str(), "escape" | "enter") && self.browsing.deleting.take().is_some()
+        if matches!(key.key.as_str(), "escape" | "enter")
+            && self.shown == Shown::Browsers
+            && self.browsing.confirming()
         {
+            self.browsing.deleting = None;
             cx.notify();
             return true;
         }

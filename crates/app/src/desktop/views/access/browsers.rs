@@ -42,6 +42,9 @@ pub(super) struct NewBrowser {
     /// what they were before, given back if the change is dropped.
     pub renaming: bool,
     pub before_rename: Option<(String, String)>,
+    /// The address the sheet sent or was given, so saving sends one only
+    /// when the person changed it.
+    pub opens_given: String,
     /// The agents chosen to use it.
     pub chosen: Vec<String>,
     /// The agents offered as chips, in their order.
@@ -74,6 +77,23 @@ impl Browsing {
                 .is_some_and(|d| Some(d.browser.id.as_str()) == made && d.signed_in_to.is_empty())
     }
 
+    /// Whether the chosen browser's detail asks to confirm its deletion.
+    pub fn confirming(&self) -> bool {
+        self.new.is_none() && self.deleting.is_some() && self.deleting == self.chosen
+    }
+
+    /// The session older use is read from next, while more is there.
+    pub fn older_from(&self) -> Option<i64> {
+        let detail = self.detail.as_ref()?;
+        if self.older.is_empty() {
+            detail
+                .has_more_recent
+                .then(|| detail.recent.last().map(|s| s.id))?
+        } else {
+            self.older_before
+        }
+    }
+
     /// Keep a detail that was read, unless another browser is shown by now.
     pub fn read(&mut self, detail: Option<Detail>) {
         if let Some(detail) = detail
@@ -103,6 +123,7 @@ impl Pane {
         self.menu = None;
         self.noting = None;
         self.adding = None;
+        self.browsing.deleting = None;
         self.leave_field(window, cx);
         self.read(cx);
     }
@@ -129,6 +150,7 @@ impl Pane {
             return;
         }
         self.browsing.chosen = items.first().map(|b| b.id.clone());
+        self.browsing.deleting = None;
         self.browsing.detail = None;
         self.browsing.older.clear();
         self.browsing.older_before = None;
@@ -160,7 +182,7 @@ impl Pane {
         cx: &mut Context<Self>,
     ) {
         let (name, asking) = match wanted {
-            Some((id, agents)) => (name_for(&id), agents),
+            Some((id, agents)) => (name_for(&id), unique(agents)),
             None => (String::new(), Vec::new()),
         };
         let agents = self
@@ -172,6 +194,7 @@ impl Pane {
             id: None,
             renaming: false,
             before_rename: None,
+            opens_given: String::new(),
             offered: offered(&asking, agents),
             chosen: asking,
             keep_on_sites: true,
@@ -179,6 +202,7 @@ impl Pane {
         self.name_field
             .update(cx, |field, cx| field.set_value(&name, cx));
         self.opens_field.update(cx, |field, cx| field.clear(cx));
+        self.browsing.deleting = None;
         self.shown = Shown::Browsers;
         self.menu = None;
         self.notice = None;
@@ -197,7 +221,7 @@ impl Pane {
         let Some(detail) = self.browsing.detail.clone() else {
             return;
         };
-        let asking: Vec<String> = detail.requests.iter().map(|a| a.agent.clone()).collect();
+        let asking = unique(detail.requests.iter().map(|a| a.agent.clone()).collect());
         let agents = self
             .model
             .as_ref()
@@ -207,6 +231,7 @@ impl Pane {
             id: Some(detail.browser.id.clone()),
             renaming: false,
             before_rename: None,
+            opens_given: String::new(),
             offered: offered(&asking, agents),
             chosen: asking,
             keep_on_sites: true,
@@ -215,6 +240,10 @@ impl Pane {
             detail.browser.name.clone(),
             host(&detail.browser.opens_at).to_owned(),
         );
+        if let Some(new) = &mut self.browsing.new {
+            new.opens_given = opens.clone();
+        }
+        self.browsing.deleting = None;
         self.name_field
             .update(cx, |field, cx| field.set_value(&name, cx));
         self.opens_field
@@ -288,6 +317,9 @@ impl Pane {
             opens_at: self.opens_field.read(cx).value().trim().to_owned(),
             machine: None,
         };
+        if let Some(new) = &mut self.browsing.new {
+            new.opens_given = create.opens_at.clone();
+        }
         self.send(
             "access-browser-create".into(),
             Change::Browser(BrowserChange::Create(create)),
@@ -312,8 +344,10 @@ impl Pane {
             // An emptied field keeps what Backbone has.
             name: Some(self.name_field.read(cx).value().trim().to_owned())
                 .filter(|name| !name.is_empty()),
+            // Backbone keeps the address it was given in full; one the
+            // person did not change is not sent again.
             opens_at: Some(self.opens_field.read(cx).value().trim().to_owned())
-                .filter(|opens| !opens.is_empty()),
+                .filter(|opens| !opens.is_empty() && *opens != new.opens_given),
             grants: new.chosen.clone(),
             policies: Some(Policies {
                 keep_on_sites: new.keep_on_sites,
@@ -361,7 +395,7 @@ impl Pane {
                 new.id = Some(id.clone());
                 new.renaming = false;
                 // The agents that asked for it come first, chosen.
-                let asking: Vec<String> = detail.requests.iter().map(|a| a.agent.clone()).collect();
+                let asking = unique(detail.requests.iter().map(|a| a.agent.clone()).collect());
                 for agent in asking.iter().rev() {
                     new.offered.retain(|offered| offered != agent);
                     new.offered.insert(0, agent.clone());
@@ -408,8 +442,11 @@ impl Pane {
         cx.spawn(async move |this, cx| {
             let result = read.await;
             let _ = this.update(cx, |pane, cx| {
-                // Another browser was chosen while this read was under way.
-                if pane.browsing.chosen.as_deref() != Some(asked.as_str()) {
+                // Another browser was chosen, or its use moved, while this
+                // read was under way.
+                if pane.browsing.chosen.as_deref() != Some(asked.as_str())
+                    || pane.browsing.older_from() != Some(before)
+                {
                     return;
                 }
                 match result {
@@ -839,7 +876,9 @@ impl Pane {
     /// while the person decides: deleting loses every sign-in at once.
     fn confirm_delete(&self, browser: &Browser, cx: &mut Context<Self>) -> Option<Div> {
         let (t, c) = (tokens(), colors());
-        if self.browsing.deleting.as_deref() != Some(browser.id.as_str()) {
+        if !self.browsing.confirming()
+            || self.browsing.deleting.as_deref() != Some(browser.id.as_str())
+        {
             return None;
         }
         let id = browser.id.clone();
@@ -1405,14 +1444,7 @@ impl Pane {
         if sessions.is_empty() {
             card = card.child(line(true).child(meta("Nobody has used it yet.".into())));
         }
-        let more = if self.browsing.older.is_empty() {
-            detail
-                .has_more_recent
-                .then(|| detail.recent.last().map(|s| s.id))
-                .flatten()
-        } else {
-            self.browsing.older_before
-        };
+        let more = self.browsing.older_from();
         let id = detail.browser.id.clone();
         section("RECENT USE", None, card).children(more.map(|before| {
             ui::link(div().id("access-browser-older").child("Older use"))
@@ -1682,11 +1714,10 @@ impl Pane {
                 )
                 .on_click(cx.listener(move |pane, _, _, cx| {
                     if let Some(new) = &mut pane.browsing.new {
-                        match new.chosen.iter().position(|chosen| chosen == &name) {
-                            Some(at) => {
-                                new.chosen.remove(at);
-                            }
-                            None => new.chosen.push(name.clone()),
+                        if new.chosen.contains(&name) {
+                            new.chosen.retain(|chosen| chosen != &name);
+                        } else {
+                            new.chosen.push(name.clone());
                         }
                     }
                     cx.notify();
@@ -1931,7 +1962,7 @@ pub(super) fn name_for(id: &str) -> String {
 /// The agents a new browser's sheet offers: those that asked for it first,
 /// then those already given another browser.
 pub(super) fn offered(asking: &[String], agents: &[Agent]) -> Vec<String> {
-    let mut offered: Vec<String> = asking.to_vec();
+    let mut offered = unique(asking.to_vec());
     for agent in agents {
         let has_browser = agent.grants.iter().any(|grant| {
             matches!(
@@ -1984,6 +2015,17 @@ fn last_used(session: &Session, now: &DateTime<FixedOffset>) -> String {
         1 => "last used yesterday".into(),
         _ => format!("last used {}", ended.format("%-d %b")),
     }
+}
+
+/// `names` with each kept once, in their order: one agent may ask twice.
+fn unique(names: Vec<String>) -> Vec<String> {
+    let mut kept: Vec<String> = Vec::new();
+    for name in names {
+        if !kept.contains(&name) {
+            kept.push(name);
+        }
+    }
+    kept
 }
 
 /// When a session began: "today 10:12", "yesterday", or its date.
@@ -2412,7 +2454,7 @@ mod tests {
             }
         ));
         assert_eq!(
-            offered(&["uploader".into()], &[agent]),
+            offered(&["uploader".into(), "uploader".into()], &[agent]),
             ["uploader", "poster"]
         );
         assert_eq!(name_for("telegram"), "Telegram");

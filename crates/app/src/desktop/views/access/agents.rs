@@ -445,6 +445,13 @@ impl Pane {
         cx: &mut Context<Self>,
     ) -> Div {
         let t = tokens();
+        // A menu with nothing to choose is not opened.
+        if items.is_empty() {
+            return div()
+                .relative()
+                .flex_shrink_0()
+                .child(button.opacity(colors().pane_dim).cursor_default());
+        }
         let open = self.menu == Some(menu);
         div()
             .relative()
@@ -468,7 +475,9 @@ impl Pane {
                             .id(SharedString::from(format!("access-menu-{menu:?}")))
                             .absolute()
                             .top(px(t.size.icon_button + t.space.s4))
-                            .left_0()
+                            // The More menu's button is at the right edge.
+                            .when(menu == Menu::BrowserMore, |el| el.right_0())
+                            .when(menu != Menu::BrowserMore, |el| el.left_0())
                             .max_h(px(t.size.access_menu))
                             .overflow_y_scroll()
                             .on_mouse_down_out(cx.listener(move |pane, _, _, cx| {
