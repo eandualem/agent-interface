@@ -319,6 +319,8 @@ struct Shared {
     stop: AtomicBool,
     /// Whether the view has the keyboard, so input may come at any moment.
     focused: AtomicBool,
+    /// Whether the pointer is over the page in the view, so a click may.
+    hovered: AtomicBool,
 }
 
 /// Every message the client sends.
@@ -372,6 +374,7 @@ impl Stream {
             latest: Mutex::default(),
             stop: AtomicBool::new(false),
             focused: AtomicBool::new(false),
+            hovered: AtomicBool::new(false),
         });
         let worker = shared.clone();
         let started = thread::Builder::new()
@@ -415,6 +418,12 @@ impl Stream {
     /// often.
     pub fn set_focused(&self, focused: bool) {
         self.shared.focused.store(focused, Ordering::Relaxed);
+    }
+
+    /// Whether the pointer is over the page in the view, so the client
+    /// looks for input often.
+    pub fn set_hovered(&self, hovered: bool) {
+        self.shared.hovered.store(hovered, Ordering::Relaxed);
     }
 
     fn latest(&self) -> std::sync::MutexGuard<'_, Latest> {
@@ -582,7 +591,7 @@ fn watch(
         let wanted = read_wait(
             eager(&mut waiting_since, waiting, taken, Instant::now()),
             input_at.is_some_and(|at| at.elapsed() < EAGER) || inputs.waiting(),
-            shared.focused.load(Ordering::Relaxed),
+            shared.focused.load(Ordering::Relaxed) || shared.hovered.load(Ordering::Relaxed),
         );
         if wanted != timeout {
             if socket.get_ref().set_read_timeout(Some(wanted)).is_err() {
@@ -640,7 +649,7 @@ fn watch(
 
 /// How long a read waits: `POLL` while a frame waits to be acknowledged or
 /// input came within `EAGER` or waits for Chrome's answer, `FOCUSED` while
-/// the view only has the keyboard, else `IDLE`.
+/// the view only has the keyboard or the pointer over the page, else `IDLE`.
 fn read_wait(frames: bool, input: bool, focused: bool) -> Duration {
     if frames || input {
         POLL
@@ -950,6 +959,7 @@ mod tests {
             latest: Mutex::default(),
             stop: AtomicBool::new(false),
             focused: AtomicBool::new(false),
+            hovered: AtomicBool::new(false),
         }
     }
 

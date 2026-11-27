@@ -3905,7 +3905,11 @@ impl Render for Browser {
                             || browser
                                 .terminals
                                 .values()
-                                .any(|terminal| terminal.read(cx).has_focus(window, cx)))
+                                .any(|terminal| terminal.read(cx).has_focus(window, cx))
+                            || browser
+                                .browser_views
+                                .values()
+                                .any(|view| view.read(cx).has_focus(window)))
                         && let Some(layout) = &mut browser.layout
                         && layout.model().focus_mode()
                     {

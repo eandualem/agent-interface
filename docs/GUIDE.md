@@ -393,10 +393,13 @@ choose the pane again.
 You can use the page in the view as in a browser while the agent keeps
 working on it: click links and buttons, double click, drag to select text,
 and scroll with the wheel or trackpad, also inside the page's own scrolling
-areas. Click in the page to type into it: a thin ring around the page shows
+areas. Only left clicks, with Shift or Option, reach the page: right and
+middle clicks, Ctrl-clicks and Cmd-clicks could open Chrome's own menu or a
+new tab that the view doesn't show. Click in the page to type into it: a thin ring around the page shows
 that your keys go there. Typing, Enter, Tab, Backspace, the arrows, Escape
 and the page's own shortcuts reach the page, and so does text from accented
-keys and input methods. The app's shortcuts still work, as do Cmd-Q and
+keys and input methods. In an expanded pane, Escape first restores the
+layout. The app's shortcuts still work, as do Cmd-Q and
 Settings. Copy, paste and cut are not passed to the page yet. To give the
 keyboard back to the app, click the sidebar or another pane, or the view's
 header, or use a shortcut that moves to another pane. The

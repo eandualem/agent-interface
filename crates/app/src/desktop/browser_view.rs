@@ -367,9 +367,12 @@ impl BrowserView {
             return;
         };
         self.caret = Some(event.position);
-        let pressed =
-            self.pointing
-                .press(at, button, event.click_count, modifiers(&event.modifiers));
+        let pressed = self.pointing.press(
+            at,
+            button,
+            event.click_count,
+            mouse_modifiers(&event.modifiers),
+        );
         self.send(pressed);
     }
 
@@ -378,7 +381,7 @@ impl BrowserView {
         let (Some(at), Some(button)) = (at, button(event.button)) else {
             return;
         };
-        let modifiers = modifiers(&event.modifiers);
+        let modifiers = mouse_modifiers(&event.modifiers);
         if let Some(released) = self
             .pointing
             .release(at, button, event.click_count, modifiers)
@@ -392,7 +395,7 @@ impl BrowserView {
         let pressed = event.pressed_button.is_some();
         for input in self
             .pointing
-            .moved(at, pressed, modifiers(&event.modifiers))
+            .moved(at, pressed, mouse_modifiers(&event.modifiers))
         {
             self.send(input);
         }
@@ -802,6 +805,9 @@ fn listen(
                 let at = (held || over)
                     .then(|| point(event.position, held))
                     .flatten();
+                if let Some(stream) = &view.stream {
+                    stream.set_hovered(over);
+                }
                 view.moved(event, at);
             });
         }
@@ -823,7 +829,7 @@ fn listen(
                 y,
                 dx,
                 dy,
-                modifiers: modifiers(&event.modifiers),
+                modifiers: mouse_modifiers(&event.modifiers),
             });
         });
     });
@@ -952,15 +958,18 @@ impl Pointing {
     }
 }
 
-/// The page's name for a mouse button; the back and forward buttons are
-/// not sent.
+/// The page's name for a mouse button the view sends: the left one only. A
+/// right or middle press could open Chrome's own menu, or a link in a new
+/// tab, in a browser window the view never shows.
 fn button(button: MouseButton) -> Option<Button> {
-    match button {
-        MouseButton::Left => Some(Button::Left),
-        MouseButton::Middle => Some(Button::Middle),
-        MouseButton::Right => Some(Button::Right),
-        MouseButton::Navigate(_) => None,
-    }
+    (button == MouseButton::Left).then_some(Button::Left)
+}
+
+/// The page's bits for the modifier keys held with the mouse: Shift and
+/// Option only, since a Ctrl-click opens Chrome's menu on macOS and a Cmd- or
+/// Ctrl-click opens a link in a new tab.
+fn mouse_modifiers(held: &Modifiers) -> u8 {
+    modifiers(held) & (ALT | SHIFT)
 }
 
 /// The page's bits for the modifier keys held; Cmd is Meta.
@@ -2039,6 +2048,26 @@ mod tests {
         assert!(pointing.moved(None, false, 0).is_empty());
         // A drag that began beside the frame is not the page's.
         assert!(pointing.moved(Some((5., 5.)), true, 0).is_empty());
+    }
+
+    #[test]
+    fn only_the_left_button_with_shift_or_option_reaches_the_page() {
+        assert_eq!(button(MouseButton::Left), Some(Button::Left));
+        for other in [
+            MouseButton::Right,
+            MouseButton::Middle,
+            MouseButton::Navigate(gpui::NavigationDirection::Back),
+        ] {
+            assert_eq!(button(other), None);
+        }
+        let held = Modifiers {
+            control: true,
+            alt: true,
+            shift: true,
+            platform: true,
+            function: false,
+        };
+        assert_eq!(mouse_modifiers(&held), ALT | SHIFT);
     }
 
     #[test]

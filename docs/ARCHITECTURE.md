@@ -1671,21 +1671,24 @@ takes both, and the agent's next snapshot shows what the person did. The
 view maps a point in the drawn frame to the page by the frame's own scale,
 the page's CSS width over the width drawn, which is right at any window
 scale, letterboxed or not, and one CSS pixel per point once the viewport
-follows the pane. Presses, releases with their click count, moves with the
-buttons held, and the wheel at the pointer go as `Input.dispatchMouseEvent`;
+follows the pane. Presses and releases of the left button with their click
+count, moves with the button held, and the wheel at the pointer go as
+`Input.dispatchMouseEvent`, with Shift and Option but not Ctrl or Cmd. A
+right or middle press, a Ctrl-click, which is a right click on macOS, or a
+Cmd-click could open Chrome's own menu or a link in a new tab in a browser
+window the view never shows, so those buttons are not sent and change
+nothing, and Ctrl and Cmd are left out;
 trackpad deltas keep their smoothness, and a wheel's lines are 40 CSS pixels
 each. Nothing beside the frame reaches the page, except that a drag begun
 inside keeps sending its moves and its release at the frame's nearest edge.
-Each button pressed in the frame is released on its own release, and one
-released while no frame was drawn, as during a reconnect, is released in
-the page at the next move. A pointer that leaves the frame with no button
+A button released while no frame was drawn, as during a reconnect, is
+released in the page at the next move. A pointer that leaves the frame with no button
 held moves once just outside the page, so its hover ends.
 Hover and the wheel reach the page whenever the pointer is over the frame in
 the active window. A press in the frame gives the view the keyboard and a
 1-point focus ring; a press anywhere else, or a shortcut that moves to
-another pane, takes it back. A right or middle press that gives the view the
-keyboard also selects its pane, as for a terminal; the back and forward
-buttons are not sent and change nothing. While the input method composes,
+another pane, takes it back. In an expanded pane, Escape first restores the
+layout, as for a terminal. While the input method composes,
 keys are its own, and no key is sent while the view shows no page, as when
 the page can't be reached. The window's shortcuts run before the view and
 keep working. A key the app or its menu acts on is never sent as well: the
@@ -1721,8 +1724,9 @@ sent before a later press. The platform repeats a drag held still every
 16 ms; the view sends a repeated point once. The client's reads wait 5 ms
 while input came in the last second or waits for Chrome's answer, so input
 leaves within a few milliseconds; 20 ms while the view only has the
-keyboard, so the first key after a pause leaves within 20 ms without the
-client waking 200 times a second; and 100 ms otherwise. An error answer
+keyboard or the pointer is over the page, so the first key or click after a
+pause leaves within 20 ms without the client waking 200 times a second; and
+100 ms otherwise. An error answer
 to an input request is logged once and leaves the screencast as it is; an
 error answer to the screencast's own requests still counts as a refusal.
 Input given while the client reconnects is dropped, not replayed on the new
