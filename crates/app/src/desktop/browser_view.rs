@@ -1,15 +1,19 @@
-//! The Browser view: a live picture of an agent's browser, for watching only.
+//! The Browser view: a live picture of an agent's browser that the person can
+//! use as a browser.
 //!
 //! The view exists while its pane is shown. It holds a [`Stream`] only then,
-//! so a hidden or closed view receives no frames. It sends the page nothing:
-//! to act in the page, Open in Chrome brings the agent's own window forward,
-//! or opens the page's address in the person's Chrome when the agent's
-//! browser has no window. The pane is saved as an empty pane, so a Browser
-//! view is not restored.
+//! so a hidden or closed view receives no frames and sends no input. Clicks,
+//! drags and the wheel in the frame reach the page at the same spot; once a
+//! click in the frame gives the view the keyboard, keys and text reach it
+//! too. Open in Chrome brings the agent's own window forward, or opens the
+//! page's address in the person's Chrome when the agent's browser has no
+//! window. The pane is saved as an empty pane, so a Browser view is not
+//! restored.
 
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
+    ops::Range,
     rc::Rc,
     sync::{
         Arc,
@@ -20,7 +24,10 @@ use std::{
 
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
-    Bounds, Context, Corners, Pixels, SharedString, Task, Window, canvas, div, prelude::*, px,
+    Bounds, Context, Corners, DispatchPhase, ElementInputHandler, EntityInputHandler, FocusHandle,
+    HitboxBehavior, KeyDownEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent, SharedString, Task,
+    UTF16Selection, Window, canvas, div, prelude::*, px,
 };
 
 use super::{
@@ -29,7 +36,7 @@ use super::{
 };
 use crate::agent_browser::{
     self, Session, Viewport,
-    stream::{Frame, State, Stream},
+    stream::{ALT, Button, CTRL, Frame, Input, Key, KeyKind, META, Pointer, SHIFT, State, Stream},
 };
 
 pub(super) struct BrowserView {
@@ -65,6 +72,20 @@ pub(super) struct BrowserView {
     fit_failed: bool,
     /// Tells this view from others in `shapes`.
     id: u64,
+    /// Holds the keyboard while the person uses the page.
+    focus: FocusHandle,
+    /// The button pressed in the frame, until it is released anywhere.
+    held: Option<Button>,
+    /// The last move sent, so a pointer held still sends no repeats.
+    moved: Option<(f32, f32, u8)>,
+    /// The printable keystroke just pressed, whose text the input handler
+    /// brings next.
+    typed: Option<(Keystroke, bool)>,
+    /// The text an input method is composing.
+    marked: Option<String>,
+    /// Where the person last pressed, near which the input method shows its
+    /// window.
+    caret: Option<Point<Pixels>>,
 }
 
 impl BrowserView {
@@ -107,6 +128,12 @@ impl BrowserView {
                 static VIEWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
                 VIEWS.fetch_add(1, Ordering::Relaxed)
             },
+            focus: cx.focus_handle(),
+            held: None,
+            moved: None,
+            typed: None,
+            marked: None,
+            caret: None,
         };
         view.set_session(session, cx);
         view
@@ -310,6 +337,133 @@ impl BrowserView {
         }
     }
 
+    /// Send `input` to the page shown, if one is.
+    fn send(&self, input: Input) {
+        if self.frame.is_some()
+            && let Some(stream) = &self.stream
+        {
+            stream.send(input);
+        }
+    }
+
+    /// A press at `at`, the page point under it, or beside the frame.
+    fn pressed(&mut self, event: &MouseDownEvent, at: Option<(f32, f32)>) {
+        let (Some((x, y)), Some(button)) = (at, button(event.button)) else {
+            return;
+        };
+        let buttons = self.held.map_or(0, Button::bit) | button.bit();
+        self.held = Some(button);
+        self.moved = None;
+        self.caret = Some(event.position);
+        self.send(Input::Pressed(Pointer {
+            x,
+            y,
+            button,
+            buttons,
+            clicks: event.click_count,
+            modifiers: modifiers(&event.modifiers),
+        }));
+    }
+
+    /// The release of the button pressed in the frame, wherever it is.
+    fn released(&mut self, event: &MouseUpEvent, at: Option<(f32, f32)>) {
+        let (Some((x, y)), Some(released)) = (at, button(event.button)) else {
+            return;
+        };
+        if self.held != Some(released) {
+            return;
+        }
+        self.held = None;
+        self.moved = None;
+        self.send(Input::Released(Pointer {
+            x,
+            y,
+            button: released,
+            buttons: 0,
+            clicks: event.click_count,
+            modifiers: modifiers(&event.modifiers),
+        }));
+    }
+
+    /// A move over the frame, or anywhere while a button pressed in it is
+    /// held. A drag that began elsewhere is not the page's.
+    fn moved(&mut self, event: &MouseMoveEvent, at: Option<(f32, f32)>) {
+        let Some((x, y)) = at else {
+            return;
+        };
+        let held = self.held.unwrap_or(Button::None);
+        if held == Button::None && event.pressed_button.is_some() {
+            return;
+        }
+        // The platform repeats a drag held still; the page needs it once.
+        if self.moved.replace((x, y, held.bit())) == Some((x, y, held.bit())) {
+            return;
+        }
+        self.send(Input::Moved(Pointer {
+            x,
+            y,
+            button: held,
+            buttons: held.bit(),
+            clicks: 0,
+            modifiers: modifiers(&event.modifiers),
+        }));
+    }
+
+    /// Keys for the page while the view has the keyboard. App shortcuts ran
+    /// before this, and a printable key waits for its text.
+    fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.typed = None;
+        if !window.is_window_active() {
+            return;
+        }
+        let keystroke = &event.keystroke;
+        // A key the app or its menu acts on is never also the page's: its
+        // binding or workspace command ran before this and may have let the
+        // key go on, as Copy does.
+        let owned = || {
+            !cx.key_bindings()
+                .borrow()
+                .all_bindings_for_input(std::slice::from_ref(keystroke))
+                .is_empty()
+                || super::shortcuts::command_for(keystroke).is_some()
+                || super::shortcuts::numbered(keystroke).is_some()
+        };
+        match key_press(keystroke, event.is_held, cfg!(target_os = "macos")) {
+            Press::Send(_) if owned() => {}
+            Press::Send(keys) => {
+                for key in keys {
+                    self.send(Input::Key(key));
+                }
+                // On macOS a Cmd key also goes on to the system, so that its
+                // own key equivalents, as Cmd-` switching windows, still work.
+                // The app's own Cmd keys are never sent, so none acts twice.
+                if !(cfg!(target_os = "macos") && keystroke.modifiers.platform) {
+                    cx.stop_propagation();
+                }
+            }
+            Press::Type => self.typed = Some((event.keystroke.clone(), event.is_held)),
+            Press::Pass => {}
+        }
+    }
+
+    /// Select All, from its shortcut or the Edit menu, selects in the page.
+    fn select_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let shortcut = if cfg!(target_os = "macos") {
+            "cmd-a"
+        } else {
+            "ctrl-a"
+        };
+        let keystroke = Keystroke::parse(shortcut).expect("select all");
+        match key_press(&keystroke, false, cfg!(target_os = "macos")) {
+            Press::Send(keys) if window.is_window_active() => {
+                for key in keys {
+                    self.send(Input::Key(key));
+                }
+            }
+            _ => cx.propagate(),
+        }
+    }
+
     /// Why Open in Chrome cannot be used now, if it cannot. `address` is the
     /// page's current address.
     fn open_refused(&self, address: Option<&str>) -> Option<&'static str> {
@@ -365,6 +519,10 @@ impl Render for BrowserView {
         if !self.attached && self.frame.is_some() {
             self.attached = true;
             self.claim(false, cx);
+        }
+        let focused = self.focus.is_focused(window);
+        if let Some(stream) = &self.stream {
+            stream.set_focused(focused && window.is_window_active());
         }
         let address = self.address();
         let site = site_name(self.title().as_deref(), address.as_deref());
@@ -433,23 +591,37 @@ impl Render for BrowserView {
             // full-resolution frame.
             (_, Some(frame), _) => {
                 let (image, shape) = (frame.image.clone(), (frame.width, frame.height));
-                let (drawn, view) = (self.area.clone(), cx.entity().downgrade());
+                let (drawn, entity) = (self.area.clone(), cx.entity());
+                let (view, focus) = (entity.downgrade(), self.focus.clone());
+                let ring = focused.then_some(c.focus);
                 canvas(
-                    |_, _, _| {},
-                    move |area, (), window, cx| {
+                    move |area, window, _| {
+                        let shown = fit(shape, area);
+                        (shown, window.insert_hitbox(shown, HitboxBehavior::Normal))
+                    },
+                    move |area, (shown, hitbox), window, cx| {
                         let size = (
                             f32::from(area.size.width),
                             f32::from(area.size.height),
                             window.scale_factor(),
                         );
                         if drawn.replace(Some(size)) != Some(size) {
+                            let view = view.clone();
                             cx.defer(move |cx| {
                                 let _ = view.update(cx, |view, cx| view.claim(false, cx));
                             });
                         }
-                        let shown = fit(shape, area);
                         let _ =
                             window.paint_image(shown, shown, Corners::default(), image, 0, false);
+                        if let Some(ring) = ring {
+                            window.paint_quad(gpui::outline(shown, ring, gpui::BorderStyle::Solid));
+                        }
+                        window.handle_input(
+                            &focus,
+                            super::zoom::input(ElementInputHandler::new(shown, entity)),
+                            cx,
+                        );
+                        listen(window, view, &focus, area, shown, shape, hitbox);
                     },
                 )
                 .size_full()
@@ -467,8 +639,444 @@ impl Render for BrowserView {
             .overflow_hidden()
             .bg(c.surface)
             .child(header)
-            .child(div().flex_1().min_h_0().child(body))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .track_focus(&self.focus)
+                    .on_key_down(cx.listener(Self::key_down))
+                    .on_action(cx.listener(|view, _: &super::SelectAll, window, cx| {
+                        view.select_all(window, cx);
+                    }))
+                    .child(body),
+            )
     }
+}
+
+/// The page's own input method: text the person types or composes goes to
+/// the page; nothing of the page's text is read back.
+impl EntityInputHandler for BrowserView {
+    fn text_for_range(
+        &mut self,
+        _: Range<usize>,
+        _: &mut Option<Range<usize>>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<String> {
+        None
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _: bool,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        let end = self.marked.as_deref().map_or(0, utf16_len);
+        Some(UTF16Selection {
+            range: end..end,
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
+        self.marked.as_deref().map(|marked| 0..utf16_len(marked))
+    }
+
+    /// The input method accepts what it composed as it stands.
+    fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
+        if let Some(marked) = self.marked.take() {
+            self.send(Input::Text(marked));
+        }
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        _: Option<Range<usize>>,
+        text: &str,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+        let composed = self.marked.take().is_some();
+        let typed = self.typed.take();
+        if text.is_empty() || !window.is_window_active() {
+            return;
+        }
+        for input in text_input(text, typed.as_ref(), composed) {
+            self.send(input);
+        }
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _: Option<Range<usize>>,
+        text: &str,
+        _: Option<Range<usize>>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+        self.typed = None;
+        self.marked = (!text.is_empty()).then(|| text.to_owned());
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        _: Range<usize>,
+        frame: Bounds<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        let at = self.caret.unwrap_or(frame.origin);
+        Some(Bounds::new(at, gpui::size(px(1.), px(tokens().size.icon))))
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _: Point<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<usize> {
+        None
+    }
+}
+
+fn utf16_len(text: &str) -> usize {
+    text.encode_utf16().count()
+}
+
+/// Send the mouse in the frame `shown`, of a page of `page` CSS pixels, to
+/// the view for the next frame. A press in the frame gives the view the
+/// keyboard; one beside it, in the rest of `area`, does not. While a button
+/// pressed in the frame is held, moves and its release anywhere reach the
+/// page at the frame's nearest edge.
+fn listen(
+    window: &mut Window,
+    view: gpui::WeakEntity<BrowserView>,
+    focus: &FocusHandle,
+    area: Bounds<Pixels>,
+    shown: Bounds<Pixels>,
+    page: (f32, f32),
+    hitbox: gpui::Hitbox,
+) {
+    let point = move |position, held| page_point(position, shown, page, held);
+    window.on_mouse_event({
+        let (view, focus, hitbox) = (view.clone(), focus.clone(), hitbox.clone());
+        move |event: &MouseDownEvent, phase, window, cx| match phase {
+            DispatchPhase::Capture => {
+                if area.contains(&event.position) && !shown.contains(&event.position) {
+                    window.prevent_default();
+                }
+            }
+            DispatchPhase::Bubble => {
+                if !hitbox.is_hovered(window) {
+                    return;
+                }
+                window.focus(&focus, cx);
+                window.prevent_default();
+                let at = point(event.position, false);
+                let _ = view.update(cx, |view, _| view.pressed(event, at));
+            }
+        }
+    });
+    window.on_mouse_event({
+        let view = view.clone();
+        move |event: &MouseUpEvent, phase, _, cx| {
+            if phase == DispatchPhase::Capture {
+                let at = point(event.position, true);
+                let _ = view.update(cx, |view, _| view.released(event, at));
+            }
+        }
+    });
+    window.on_mouse_event({
+        let (view, hitbox) = (view.clone(), hitbox.clone());
+        move |event: &MouseMoveEvent, phase, window, cx| {
+            if phase != DispatchPhase::Bubble {
+                return;
+            }
+            let over = hitbox.is_hovered(window) && window.is_window_active();
+            let _ = view.update(cx, |view, _| {
+                let held = view.held.is_some();
+                let at = (held || over)
+                    .then(|| point(event.position, held))
+                    .flatten();
+                view.moved(event, at);
+            });
+        }
+    });
+    window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+        if phase != DispatchPhase::Bubble
+            || !hitbox.should_handle_scroll(window)
+            || !window.is_window_active()
+        {
+            return;
+        }
+        let Some((x, y)) = point(event.position, false) else {
+            return;
+        };
+        let (dx, dy) = wheel(event.delta, shown, page);
+        let _ = view.update(cx, |view, _| {
+            view.send(Input::Wheel {
+                x,
+                y,
+                dx,
+                dy,
+                modifiers: modifiers(&event.modifiers),
+            });
+        });
+    });
+}
+
+/// The page point, in CSS pixels, at `position` in a frame of a page of
+/// `page` CSS pixels drawn at `shown`: none beside the frame, unless `clamp`
+/// brings it to the frame's nearest edge.
+fn page_point(
+    position: Point<Pixels>,
+    shown: Bounds<Pixels>,
+    page: (f32, f32),
+    clamp: bool,
+) -> Option<(f32, f32)> {
+    let (width, height) = (f32::from(shown.size.width), f32::from(shown.size.height));
+    if width <= 0. || height <= 0. {
+        return None;
+    }
+    let across = (f32::from(position.x) - f32::from(shown.origin.x)) / width;
+    let down = (f32::from(position.y) - f32::from(shown.origin.y)) / height;
+    if !clamp && !((0.0..1.0).contains(&across) && (0.0..1.0).contains(&down)) {
+        return None;
+    }
+    Some((across.clamp(0., 1.) * page.0, down.clamp(0., 1.) * page.1))
+}
+
+/// A wheel turn's distance in the page's CSS pixels, positive down and
+/// right: a trackpad's points scaled as the frame is, a wheel's lines at
+/// Chrome's 40 pixels each.
+fn wheel(delta: ScrollDelta, shown: Bounds<Pixels>, page: (f32, f32)) -> (f32, f32) {
+    match delta {
+        ScrollDelta::Pixels(points) => (
+            -f32::from(points.x) * page.0 / f32::from(shown.size.width),
+            -f32::from(points.y) * page.1 / f32::from(shown.size.height),
+        ),
+        ScrollDelta::Lines(lines) => (-lines.x * 40., -lines.y * 40.),
+    }
+}
+
+/// The page's name for a mouse button; the back and forward buttons are
+/// not sent.
+fn button(button: MouseButton) -> Option<Button> {
+    match button {
+        MouseButton::Left => Some(Button::Left),
+        MouseButton::Middle => Some(Button::Middle),
+        MouseButton::Right => Some(Button::Right),
+        MouseButton::Navigate(_) => None,
+    }
+}
+
+/// The page's bits for the modifier keys held; Cmd is Meta.
+fn modifiers(held: &Modifiers) -> u8 {
+    [
+        (held.alt, ALT),
+        (held.control, CTRL),
+        (held.platform, META),
+        (held.shift, SHIFT),
+    ]
+    .into_iter()
+    .filter(|(on, _)| *on)
+    .fold(0, |bits, (_, bit)| bits | bit)
+}
+
+/// What a key press in the view does.
+#[derive(Debug, PartialEq)]
+enum Press {
+    /// Its key down and up go to the page.
+    Send([Key; 2]),
+    /// A printable key, sent once the input handler brings its text, so an
+    /// input method can compose it first.
+    Type,
+    /// The app's, or nothing the page is sent.
+    Pass,
+}
+
+/// What `keystroke`, `held` down, does in the view, on macOS when `mac`:
+/// named keys and combinations with Ctrl or Cmd go to the page, except the
+/// clipboard's keys, which are not sent. Chrome on macOS runs no editing
+/// command for Cmd-A, Cmd-Z or Cmd-Shift-Z by itself, so they carry theirs.
+fn key_press(keystroke: &Keystroke, held: bool, mac: bool) -> Press {
+    let held_down = &keystroke.modifiers;
+    let pair = |kind, key: String, code, virtual_key, text, commands| {
+        let down = Key {
+            kind,
+            key,
+            code,
+            virtual_key,
+            text,
+            modifiers: modifiers(held_down),
+            repeat: held,
+            commands,
+        };
+        let up = Key {
+            kind: KeyKind::Up,
+            text: None,
+            repeat: false,
+            commands: &[],
+            ..down.clone()
+        };
+        Press::Send([down, up])
+    };
+    let command = held_down.control || held_down.platform;
+    if let Some((key, code, virtual_key, text)) = named(&keystroke.key) {
+        // Enter types a line only without Ctrl or Cmd.
+        let text = text.filter(|_| !command).map(str::to_owned);
+        let kind = if text.is_some() {
+            KeyKind::Down
+        } else {
+            KeyKind::RawDown
+        };
+        return pair(kind, key.to_owned(), code, virtual_key, text, &[]);
+    }
+    if !command {
+        let printable = keystroke
+            .key_char
+            .as_deref()
+            .is_some_and(|text| !text.is_empty() && !text.chars().any(char::is_control));
+        return if printable { Press::Type } else { Press::Pass };
+    }
+    let clipboard = if mac {
+        held_down.platform
+    } else {
+        held_down.control
+    };
+    if clipboard && matches!(keystroke.key.as_str(), "c" | "v" | "x") {
+        return Press::Pass;
+    }
+    let Some((code, virtual_key)) = physical(&keystroke.key) else {
+        return Press::Pass;
+    };
+    let key = match keystroke.key.as_str() {
+        "space" => " ".to_owned(),
+        letter if held_down.shift && letter.len() == 1 => letter.to_ascii_uppercase(),
+        key => key.to_owned(),
+    };
+    let editing = mac && held_down.platform && !held_down.control && !held_down.alt;
+    let commands: &'static [&'static str] = match (keystroke.key.as_str(), held_down.shift) {
+        ("a", false) if editing => &["selectAll"],
+        ("z", false) if editing => &["undo"],
+        ("z", true) if editing => &["redo"],
+        _ => &[],
+    };
+    pair(KeyKind::RawDown, key, code, virtual_key, None, commands)
+}
+
+/// What text the input handler brings sends: the text of the printable key
+/// just pressed, `typed`, as that key, so the page sees it pressed and
+/// typed; text an input method `composed`, or any other, inserted as it is.
+fn text_input(text: &str, typed: Option<&(Keystroke, bool)>, composed: bool) -> Vec<Input> {
+    match typed {
+        Some((keystroke, held)) if !composed && keystroke.key_char.as_deref() == Some(text) => {
+            let (code, virtual_key) = physical(&keystroke.key).unwrap_or(("", 0));
+            let down = Key {
+                kind: KeyKind::Down,
+                key: text.to_owned(),
+                code,
+                virtual_key,
+                text: Some(text.to_owned()),
+                modifiers: modifiers(&keystroke.modifiers),
+                repeat: *held,
+                commands: &[],
+            };
+            let up = Key {
+                kind: KeyKind::Up,
+                text: None,
+                repeat: false,
+                ..down.clone()
+            };
+            vec![Input::Key(down), Input::Key(up)]
+        }
+        _ => vec![Input::Text(text.to_owned())],
+    }
+}
+
+/// A named key's DOM key and code, its virtual key code, and the text it
+/// types.
+fn named(key: &str) -> Option<(&'static str, &'static str, u32, Option<&'static str>)> {
+    let (name, virtual_key, text) = match key {
+        "enter" => ("Enter", 13, Some("\r")),
+        "tab" => ("Tab", 9, None),
+        "backspace" => ("Backspace", 8, None),
+        "delete" => ("Delete", 46, None),
+        "escape" => ("Escape", 27, None),
+        "insert" => ("Insert", 45, None),
+        "up" => ("ArrowUp", 38, None),
+        "down" => ("ArrowDown", 40, None),
+        "left" => ("ArrowLeft", 37, None),
+        "right" => ("ArrowRight", 39, None),
+        "home" => ("Home", 36, None),
+        "end" => ("End", 35, None),
+        "pageup" => ("PageUp", 33, None),
+        "pagedown" => ("PageDown", 34, None),
+        "f1" => ("F1", 112, None),
+        "f2" => ("F2", 113, None),
+        "f3" => ("F3", 114, None),
+        "f4" => ("F4", 115, None),
+        "f5" => ("F5", 116, None),
+        "f6" => ("F6", 117, None),
+        "f7" => ("F7", 118, None),
+        "f8" => ("F8", 119, None),
+        "f9" => ("F9", 120, None),
+        "f10" => ("F10", 121, None),
+        "f11" => ("F11", 122, None),
+        "f12" => ("F12", 123, None),
+        _ => return None,
+    };
+    Some((name, name, virtual_key, text))
+}
+
+/// The DOM code and virtual key code of the key that types `key` on a US
+/// layout, shifted or not.
+fn physical(key: &str) -> Option<(&'static str, u32)> {
+    const LETTERS: [&str; 26] = [
+        "KeyA", "KeyB", "KeyC", "KeyD", "KeyE", "KeyF", "KeyG", "KeyH", "KeyI", "KeyJ", "KeyK",
+        "KeyL", "KeyM", "KeyN", "KeyO", "KeyP", "KeyQ", "KeyR", "KeyS", "KeyT", "KeyU", "KeyV",
+        "KeyW", "KeyX", "KeyY", "KeyZ",
+    ];
+    const DIGITS: [&str; 10] = [
+        "Digit0", "Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7", "Digit8",
+        "Digit9",
+    ];
+    let mut chars = key.chars();
+    let (Some(char), None) = (chars.next(), chars.next()) else {
+        return (key == "space").then_some(("Space", 32));
+    };
+    let digit = |digit: u8| (DIGITS[usize::from(digit)], 48 + u32::from(digit));
+    Some(match char.to_ascii_lowercase() {
+        letter @ 'a'..='z' => {
+            let index = letter as u8 - b'a';
+            (LETTERS[usize::from(index)], 65 + u32::from(index))
+        }
+        number @ '0'..='9' => digit(number as u8 - b'0'),
+        ')' => digit(0),
+        '!' => digit(1),
+        '@' => digit(2),
+        '#' => digit(3),
+        '$' => digit(4),
+        '%' => digit(5),
+        '^' => digit(6),
+        '&' => digit(7),
+        '*' => digit(8),
+        '(' => digit(9),
+        ' ' => ("Space", 32),
+        '`' | '~' => ("Backquote", 192),
+        '-' | '_' => ("Minus", 189),
+        '=' | '+' => ("Equal", 187),
+        '[' | '{' => ("BracketLeft", 219),
+        ']' | '}' => ("BracketRight", 221),
+        '\\' | '|' => ("Backslash", 220),
+        ';' | ':' => ("Semicolon", 186),
+        '\'' | '"' => ("Quote", 222),
+        ',' | '<' => ("Comma", 188),
+        '.' | '>' => ("Period", 190),
+        '/' | '?' => ("Slash", 191),
+        _ => return None,
+    })
 }
 
 /// How long a pane's size holds before the agent's browser takes it.
@@ -1064,6 +1672,188 @@ mod tests {
         assert!(sizable(Some(Window::Shown(11))));
         assert!(!sizable(Some(Window::NotStarted)));
         assert!(!sizable(None));
+    }
+
+    #[test]
+    fn a_point_in_the_frame_is_the_same_point_of_the_page() {
+        // A page of 1280 by 800 CSS pixels drawn at 640 by 400 points, below
+        // a header and beside a band: two CSS pixels a point.
+        let shown = Bounds::new(point(px(10.), px(40.)), size(px(640.), px(400.)));
+        let at =
+            |x: f32, y: f32, clamp| page_point(point(px(x), px(y)), shown, (1280., 800.), clamp);
+        assert_eq!(at(10., 40., false), Some((0., 0.)));
+        assert_eq!(at(330., 240., false), Some((640., 400.)));
+        // At one CSS pixel a point, as when the viewport follows the pane.
+        let same = page_point(point(px(110.), px(90.)), shown, (640., 400.), false);
+        assert_eq!(same, Some((100., 50.)));
+        // Beside the frame, in the band or the header, is not the page.
+        assert_eq!(at(650., 100., false), None);
+        assert_eq!(at(100., 30., false), None);
+        // A drag that began inside reaches the nearest edge.
+        assert_eq!(at(700., 30., true), Some((1280., 0.)));
+        assert_eq!(at(-5., 240., true), Some((0., 400.)));
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_page_by_its_own_pixels() {
+        let shown = Bounds::new(point(px(0.), px(0.)), size(px(640.), px(400.)));
+        let trackpad = ScrollDelta::Pixels(point(px(3.), px(-12.5)));
+        assert_eq!(wheel(trackpad, shown, (640., 400.)), (-3., 12.5));
+        assert_eq!(wheel(trackpad, shown, (1280., 800.)), (-6., 25.));
+        // A wheel's line, up: 40 pixels.
+        assert_eq!(
+            wheel(ScrollDelta::Lines(point(0., 1.)), shown, (1280., 800.)),
+            (-0., -40.)
+        );
+    }
+
+    fn keystroke(text: &str, key_char: Option<&str>) -> Keystroke {
+        let mut keystroke = Keystroke::parse(text).unwrap();
+        keystroke.key_char = key_char.map(str::to_owned);
+        keystroke
+    }
+
+    /// The key down a press sends, if it sends one.
+    fn down(text: &str, key_char: Option<&str>, mac: bool) -> Option<Key> {
+        match key_press(&keystroke(text, key_char), false, mac) {
+            Press::Send([down, up]) => {
+                assert_eq!(
+                    (up.kind, &up.key, up.text.as_ref()),
+                    (KeyKind::Up, &down.key, None)
+                );
+                Some(down)
+            }
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn printable_keys_wait_for_their_text_and_named_keys_go_at_once() {
+        for (text, key_char) in [("a", "a"), ("shift-a", "A"), ("alt-e", "´"), ("space", " ")] {
+            assert_eq!(
+                key_press(&keystroke(text, Some(key_char)), false, true),
+                Press::Type,
+                "{text}"
+            );
+        }
+        let enter = down("enter", Some("\n"), true).unwrap();
+        assert_eq!(
+            (
+                enter.kind,
+                enter.key.as_str(),
+                enter.code,
+                enter.virtual_key,
+                enter.text.as_deref()
+            ),
+            (KeyKind::Down, "Enter", "Enter", 13, Some("\r"))
+        );
+        let tab = down("shift-tab", Some("\t"), true).unwrap();
+        assert_eq!(
+            (tab.kind, tab.virtual_key, tab.modifiers),
+            (KeyKind::RawDown, 9, SHIFT)
+        );
+        for (text, key, virtual_key) in [
+            ("backspace", "Backspace", 8),
+            ("delete", "Delete", 46),
+            ("escape", "Escape", 27),
+            ("left", "ArrowLeft", 37),
+            ("pagedown", "PageDown", 34),
+            ("f5", "F5", 116),
+        ] {
+            let sent = down(text, None, true).unwrap();
+            assert_eq!((sent.key.as_str(), sent.virtual_key), (key, virtual_key));
+            assert_eq!((sent.kind, sent.text), (KeyKind::RawDown, None));
+        }
+        // A key held down repeats.
+        let Press::Send([held, _]) = key_press(&keystroke("down", None), true, true) else {
+            panic!("an arrow is sent");
+        };
+        assert!(held.repeat);
+        // Cmd-Enter submits without typing a line.
+        let submit = down("cmd-enter", None, true).unwrap();
+        assert_eq!(
+            (submit.kind, submit.modifiers, submit.text),
+            (KeyKind::RawDown, META, None)
+        );
+    }
+
+    #[test]
+    fn shortcuts_go_with_their_modifiers_and_the_clipboard_stays_the_apps() {
+        let undo = down("cmd-z", None, true).unwrap();
+        assert_eq!(
+            (
+                undo.key.as_str(),
+                undo.code,
+                undo.virtual_key,
+                undo.modifiers,
+                undo.commands
+            ),
+            ("z", "KeyZ", 90, META, &["undo"][..])
+        );
+        let redo = down("cmd-shift-z", None, true).unwrap();
+        assert_eq!(
+            (redo.key.as_str(), redo.modifiers, redo.commands),
+            ("Z", META | SHIFT, &["redo"][..])
+        );
+        assert_eq!(down("cmd-a", None, true).unwrap().commands, ["selectAll"]);
+        // Chrome on Linux finds its editing commands itself.
+        let all = down("ctrl-a", None, false).unwrap();
+        assert_eq!((all.modifiers, all.commands), (CTRL, &[][..]));
+        let slash = down("ctrl-/", None, false).unwrap();
+        assert_eq!((slash.code, slash.virtual_key), ("Slash", 191));
+        for (text, mac) in [
+            ("cmd-c", true),
+            ("cmd-v", true),
+            ("cmd-x", true),
+            ("ctrl-v", false),
+        ] {
+            assert_eq!(
+                key_press(&keystroke(text, None), false, mac),
+                Press::Pass,
+                "{text}"
+            );
+        }
+        // Ctrl-C is the clipboard's only off macOS.
+        assert!(down("ctrl-c", None, true).is_some());
+    }
+
+    #[test]
+    fn typed_text_arrives_as_its_key_and_composed_text_as_text() {
+        let typed = |text: &str, key_char: &str| (keystroke(text, Some(key_char)), false);
+        let keys = |inputs: Vec<Input>| -> Vec<(KeyKind, String, &'static str, u8)> {
+            inputs
+                .into_iter()
+                .map(|input| match input {
+                    Input::Key(key) => (key.kind, key.key, key.code, key.modifiers),
+                    other => panic!("{other:?}"),
+                })
+                .collect()
+        };
+        assert_eq!(
+            keys(text_input("a", Some(&typed("a", "a")), false)),
+            [
+                (KeyKind::Down, "a".into(), "KeyA", 0),
+                (KeyKind::Up, "a".into(), "KeyA", 0)
+            ]
+        );
+        let shifted = text_input("A", Some(&typed("shift-a", "A")), false);
+        assert_eq!(keys(shifted)[0], (KeyKind::Down, "A".into(), "KeyA", SHIFT));
+        let Input::Key(slash) = &text_input("/", Some(&typed("/", "/")), false)[0] else {
+            panic!("a key");
+        };
+        assert_eq!(slash.text.as_deref(), Some("/"));
+        // A dead key's accent, a CJK word, or text no key typed: inserted.
+        for (text, typed, composed) in [
+            ("é", Some(typed("e", "e")), true),
+            ("日本", None, true),
+            ("´", Some(typed("alt-e", "´")), true),
+            ("ü", Some(typed("u", "u")), false),
+        ] {
+            assert_eq!(
+                text_input(text, typed.as_ref(), composed),
+                [Input::Text(text.into())]
+            );
+        }
     }
 
     #[test]
