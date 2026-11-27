@@ -832,7 +832,7 @@ impl Pane {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let (t, c) = (tokens(), colors());
-        let scroll = self.connect_scroll.clone();
+        let scroll = self.list_scroll("connect-panel-scroll", window, cx);
         let meta =
             |text: &'static str| ui::text(div().text_color(c.muted), &t.text.meta).child(text);
         let close = |pane: &mut Self, cx: &mut Context<Self>| {
@@ -1467,6 +1467,7 @@ impl Pane {
                 else {
                     return empty("No longer listed", "Choose another peer.");
                 };
+                let scroll = self.list_scroll("request-scroll", window, cx);
                 let name = rules::display_name(r.display_name.as_deref());
                 let incoming = r.direction == Direction::Incoming;
                 let waiting = incoming && r.state == "pending";
@@ -1568,7 +1569,7 @@ impl Pane {
                                     .on_click(cx.listener(move |p, _, _, cx| {
                                         p.copy("copy-request-id".into(), full.clone(), cx)
                                     }));
-                                    self.in_view(copy, None, &self.request_scroll, window, cx)
+                                    self.in_view(copy, None, &scroll, window, cx)
                                 }),
                             ),
                     );
@@ -1581,7 +1582,7 @@ impl Pane {
                         cx,
                         move |p, w, cx| p.decide(Change::Answer(accept.clone(), true), w, cx),
                     );
-                    let accept = self.in_view(accept, None, &self.request_scroll, window, cx);
+                    let accept = self.in_view(accept, None, &scroll, window, cx);
                     let decline = ui::text_action("answer-false", "Decline")
                         .focus_visible(|el| {
                             el.border(px(tokens().size.focus_ring))
@@ -1595,7 +1596,7 @@ impl Pane {
                         .on_click(cx.listener(move |p, _, w, cx| {
                             p.decide(Change::Answer(decline.clone(), false), w, cx)
                         }));
-                    let decline = self.in_view(decline, None, &self.request_scroll, window, cx);
+                    let decline = self.in_view(decline, None, &scroll, window, cx);
                     card = card.child(
                         div()
                             .flex()
@@ -1621,7 +1622,7 @@ impl Pane {
                     .child(
                         div()
                             .id("request")
-                            .track_scroll(&self.request_scroll)
+                            .track_scroll(&scroll)
                             .flex_1()
                             .min_h_0()
                             .overflow_y_scroll()

@@ -299,9 +299,10 @@ impl Pane {
         // The same count as the footer's: requests and messages to review.
         let waiting = s.requests() + s.overview.pending_reviews;
         let query = self.filter.read(cx).value().to_owned();
+        let scroll = self.list_scroll("live-peers-scroll", window, cx);
         let mut rows = div()
             .id("live-peers")
-            .track_scroll(&self.peers_scroll)
+            .track_scroll(&scroll)
             .min_h_0()
             .flex_1()
             .overflow_y_scroll()
@@ -315,7 +316,7 @@ impl Pane {
         {
             shown += 1;
             let row = self.peer_row(entry, cx);
-            rows = rows.child(self.in_view(row, None, &self.peers_scroll, window, cx));
+            rows = rows.child(self.in_view(row, None, &scroll, window, cx));
         }
         if shown == 0 {
             rows = rows.child(no_rows(
@@ -552,9 +553,10 @@ impl Pane {
                     .my(px(t.space.s2))
                     .bg(c.line),
             );
+        let scroll = self.list_scroll("peer-strip-scroll", window, cx);
         let mut marks = div()
             .id("peer-strip")
-            .track_scroll(&self.strip_scroll)
+            .track_scroll(&scroll)
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
@@ -605,7 +607,7 @@ impl Pane {
                         }),
                 )
                 .on_click(cx.listener(move |p, _, _, cx| p.pick(Some(selection.clone()), cx)));
-            marks = marks.child(self.in_view(mark, None, &self.strip_scroll, window, cx));
+            marks = marks.child(self.in_view(mark, None, &scroll, window, cx));
         }
         let name = self
             .profile_name
