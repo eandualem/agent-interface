@@ -92,6 +92,11 @@ class Records:
                 if action == "place":
                     agent["role"], agent["superior"] = body["role"], body.get("superior")
                     return 200, dict(name=name, role=agent["role"], superior=agent["superior"])
+            if parts[:3] == ["api", "access", "requests"] and len(parts) == 5:
+                decided = fixture("request-approved")
+                decided.update(id=int(parts[3]), note=body.get("note", ""),
+                               state="approved" if parts[4] == "approve" else "refused")
+                return 200, decided
             return 404, {"detail": {"code": "not_found", "message": "No such route in this check."}}
 
 
@@ -301,6 +306,20 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
             wait_for(lambda: find("WAITING"), "the requests view")
             wait_for(lambda: find("Approve"), "a request's Approve")
             capture("requests")
+            # The keys alone: choose the first card, open its note, type and
+            # keep it with Return, then approve with the note. No click comes
+            # between, so the keys reach the pane only if focus came back.
+            command("xdotool", "key", "Down")
+            command("xdotool", "key", "n")
+            # The footer says "note" too; the field's hint is the second.
+            wait_for(lambda: len(found("note")) >= 2, "the note field")
+            command("xdotool", "type", "--delay", "20", "for this check")
+            command("xdotool", "key", "Return")
+            command("xdotool", "key", "a")
+            wait_for(lambda: any(method == "POST" and path.endswith("/approve")
+                                 and body.get("note") == "for this check"
+                                 for method, path, body in list(RECORDS.calls)),
+                     "the approval sent with its note by the keys")
             command("xdotool", "key", "Escape")
             wait_for(lambda: find("ORCHESTRATORS"), "the agent list again after Escape")
         finally:

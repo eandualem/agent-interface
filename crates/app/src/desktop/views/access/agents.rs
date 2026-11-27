@@ -769,8 +769,9 @@ impl Pane {
                         )
                         .h(px(t.size.icon_button))
                         .on_click(cx.listener(|pane, _, window, cx| {
-                            pane.submit_add(cx);
-                            pane.leave_field(window, cx);
+                            if pane.submit_add(cx) {
+                                pane.leave_field(window, cx);
+                            }
                         })),
                     ),
                 )

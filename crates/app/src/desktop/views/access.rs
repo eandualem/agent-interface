@@ -150,8 +150,9 @@ impl Pane {
             window,
             |pane, _, event: &NameEvent, window, cx| match event {
                 NameEvent::Save => {
-                    pane.submit_add(cx);
-                    pane.leave_field(window, cx);
+                    if pane.submit_add(cx) {
+                        pane.leave_field(window, cx);
+                    }
                 }
                 NameEvent::Cancel => {
                     pane.adding = None;
@@ -398,13 +399,15 @@ impl Pane {
     }
 
     /// Add what the add field names to the chosen agent.
-    fn submit_add(&mut self, cx: &mut Context<Self>) {
+    /// Says whether it was sent: an empty field, or one while another change
+    /// is under way, stays open with its text.
+    fn submit_add(&mut self, cx: &mut Context<Self>) -> bool {
         let (Some(adding), Some(name)) = (self.adding, self.selected.clone()) else {
-            return;
+            return false;
         };
         let value = self.add_field.read(cx).value().trim().to_owned();
-        if value.is_empty() {
-            return;
+        if value.is_empty() || self.sending.is_some() {
+            return false;
         }
         let grant = match adding {
             Adding::Repository(access) => Grant::Repository {
@@ -421,6 +424,7 @@ impl Pane {
         self.adding = None;
         self.add_field.update(cx, |field, cx| field.clear(cx));
         self.send("access-add".into(), Change::Grant(name, grant), cx);
+        true
     }
 
     /// Open the add field for `adding`, or change the access it will add.

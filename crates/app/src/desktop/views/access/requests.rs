@@ -211,6 +211,8 @@ impl Pane {
     ) -> Div {
         let (t, c) = (tokens(), colors());
         let first = card[0];
+        // Requests come newest first; a card says how long its oldest waited.
+        let oldest = card.last().copied().unwrap_or(first);
         let ids: Vec<i64> = card.iter().map(|r| r.id).collect();
         let key = first.id;
         let focused = self.card == Some(key);
@@ -253,7 +255,7 @@ impl Pane {
             .child(div().flex_1())
             .child(
                 ui::text(div().text_color(c.text_2), &t.text.meta)
-                    .child(model::asked(first, now, false)),
+                    .child(model::asked(oldest, now, false)),
             )
         });
         let (verb, object) = model::phrase(card);
@@ -281,7 +283,7 @@ impl Pane {
                     ui::text(div().text_color(c.muted), &t.text.meta).child(format!(
                         "waits on {} · {}",
                         first.waits_on.clone().unwrap_or_default(),
-                        model::asked(first, now, true)
+                        model::asked(oldest, now, true)
                     )),
                 )
         });
