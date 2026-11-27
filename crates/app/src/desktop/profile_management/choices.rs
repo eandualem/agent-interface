@@ -224,6 +224,8 @@ impl Form {
     /// was before machines could be chosen.
     fn read_machines(&mut self, cx: &mut Context<Self>) {
         let profile = self.profile.clone();
+        // A later load, or Check again, makes this read's answer stale.
+        let ticket = self.ticket.0.clone();
         let work = cx.background_executor().spawn(async move {
             let connection = profile.connect().ok()?;
             let local = connection.identity().installation_id.clone();
@@ -238,11 +240,23 @@ impl Form {
                 return;
             };
             let _ = this.update(cx, |form, cx| {
-                if !form.finished && !form.guide {
-                    form.machines = machines;
-                    form.agents = agents;
-                    cx.notify();
+                if form.finished || form.guide || !form.ticket.accepts(&ticket) {
+                    return;
                 }
+                // A machine no longer listed is never kept as the choice:
+                // the form goes back to this machine.
+                if form.machine.is_some() && !still_listed(form.machine.as_deref(), &machines) {
+                    form.machine = None;
+                    form.elsewhere = None;
+                    form.model = None;
+                    form.runtime = form
+                        .catalog()
+                        .and_then(|catalog| first_choice(catalog, false));
+                    form.changed = true;
+                }
+                form.machines = machines;
+                form.agents = agents;
+                cx.notify();
             });
         })
         .detach();
@@ -1026,6 +1040,11 @@ fn machine_choices(mut machines: Vec<ProfileMachine>, local: &str) -> Vec<Profil
     let this = machines.remove(at);
     machines.insert(0, this);
     machines
+}
+/// Whether another machine `chosen` is still one of `machines` (after this
+/// one, the first). This machine (`None`) always is.
+fn still_listed(chosen: Option<&str>, machines: &[ProfileMachine]) -> bool {
+    chosen.is_none_or(|id| machines.iter().skip(1).any(|machine| machine.id == id))
 }
 /// Choose the machine `clicked`, `None` for this one, the first of
 /// `machines`. Another must be online. Returns whether the choice changed.

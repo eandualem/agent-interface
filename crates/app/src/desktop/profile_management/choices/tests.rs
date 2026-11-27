@@ -734,3 +734,15 @@ fn an_older_backbones_reason_ends_in_one_full_stop() {
         note
     );
 }
+
+#[test]
+fn a_machine_gone_from_the_list_is_not_kept_as_the_choice() {
+    let listed = machines();
+    let (laptop, desktop) = (listed[0].id.clone(), listed[1].id.clone());
+    assert!(still_listed(None, &listed));
+    assert!(still_listed(Some(&desktop), &listed));
+    // Gone from a newer list, or this machine's own ID: back to this one.
+    assert!(!still_listed(Some(&desktop), &listed[..1]));
+    assert!(!still_listed(Some(&laptop), &listed));
+    assert!(!still_listed(Some(&desktop), &[]));
+}
