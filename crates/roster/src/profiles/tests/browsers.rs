@@ -191,6 +191,7 @@ fn each_change_uses_its_method_route_and_the_body_backbone_documents() {
             Some(json!({ "ceiling": [grant["grant"]] })),
         ),
     ];
+    let sent_count = expected.len();
     for (request, (route, body)) in requests[1..].iter().zip(expected) {
         assert!(request.starts_with(route), "{request}");
         let (_, sent) = request.split_once("\r\n\r\n").unwrap();
@@ -200,7 +201,7 @@ fn each_change_uses_its_method_route_and_the_body_backbone_documents() {
             None => assert_eq!(sent, "", "{request}"),
         }
     }
-    assert_eq!(requests.len(), 1 + expected.len());
+    assert_eq!(requests.len(), 1 + sent_count);
 }
 
 #[test]

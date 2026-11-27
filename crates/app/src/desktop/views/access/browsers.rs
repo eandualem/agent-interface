@@ -2113,8 +2113,9 @@ mod tests {
             }
         );
         let other = Grant::Browser {
+            machine: Some("5f2c9e0d1b7a4e38".into()),
+            machine_name: None,
             browser: Some("instagram".into()),
-            ..grant.clone()
         };
         let docker = Grant::Docker {
             machine: None,
@@ -2128,8 +2129,9 @@ mod tests {
         let agent = Agent {
             name: "poster".into(),
             grants: vec![Grant::Browser {
+                machine: Some("5f2c9e0d1b7a4e38".into()),
                 machine_name: Some("laptop".into()),
-                ..grant
+                browser: Some("youtube".into()),
             }],
             ..Agent::default()
         };

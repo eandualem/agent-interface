@@ -870,7 +870,7 @@ mod tests {
         let mut model = Model {
             overview: overview(),
             pending: requests("pending"),
-            decided: None,
+            ..Model::default()
         };
         let reply: AgentAccess = serde_json::from_str(include_str!(
             "../../../../../roster/src/profiles/access/fixtures/agent-access.json"
