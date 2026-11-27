@@ -441,13 +441,111 @@ fn choosing_the_chosen_tool_again_changes_nothing() {
 #[test]
 fn tab_reaches_every_field_shown_in_order() {
     // Without the repository field: name, back to name.
-    assert_eq!(next_field(Some(Field::Name), false), Field::Name);
-    assert_eq!(next_field(None, false), Field::Name);
+    assert_eq!(next_field(Some(Field::Name), false, false), Field::Name);
+    assert_eq!(next_field(None, false, false), Field::Name);
     // With it: name, then the repository, back to name.
-    assert_eq!(next_field(Some(Field::Name), true), Field::Repository);
-    assert_eq!(next_field(Some(Field::Repository), true), Field::Name);
+    assert_eq!(
+        next_field(Some(Field::Name), false, true),
+        Field::Repository
+    );
+    assert_eq!(
+        next_field(Some(Field::Repository), false, true),
+        Field::Name
+    );
     // A focused field that is no longer shown goes back to the name.
-    assert_eq!(next_field(Some(Field::Repository), false), Field::Name);
+    assert_eq!(
+        next_field(Some(Field::Repository), false, false),
+        Field::Name
+    );
+    // On another machine, where it works comes after the name.
+    assert_eq!(next_field(Some(Field::Name), true, true), Field::Place);
+    assert_eq!(
+        next_field(Some(Field::Place), true, true),
+        Field::Repository
+    );
+    assert_eq!(next_field(Some(Field::Place), false, false), Field::Name);
+}
+
+/// Backbone's machines.json: the home `laptop`, online, and `desktop`, offline.
+fn machines() -> Vec<ProfileMachine> {
+    let listed: Value = serde_json::from_str(include_str!(
+        "../../../../../roster/src/profiles/setup/fixtures/machines.json"
+    ))
+    .unwrap();
+    listed["machines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| ProfileMachine {
+            id: m["id"].as_str().unwrap().into(),
+            name: m["name"].as_str().unwrap().into(),
+            home: m["home"].as_bool().unwrap(),
+            state: if m["state"] == "online" {
+                MachineState::Online
+            } else {
+                MachineState::Offline
+            },
+            joined_at: None,
+            last_seen: m["last_seen"].as_str().map(str::to_owned),
+        })
+        .collect()
+}
+
+#[test]
+fn this_machine_comes_first_and_one_machine_offers_no_choice() {
+    let listed = machines();
+    let (laptop, desktop) = (listed[0].id.clone(), listed[1].id.clone());
+    let names =
+        |chosen: Vec<ProfileMachine>| chosen.into_iter().map(|m| m.name).collect::<Vec<_>>();
+    assert_eq!(
+        names(machine_choices(listed.clone(), &laptop)),
+        ["laptop", "desktop"]
+    );
+    assert_eq!(
+        names(machine_choices(listed.clone(), &desktop)),
+        ["desktop", "laptop"]
+    );
+    // A profile of one machine, or a list without this one, shows no row.
+    assert!(machine_choices(listed[..1].to_vec(), &laptop).is_empty());
+    assert!(machine_choices(listed, "0123").is_empty());
+}
+
+#[test]
+fn this_machine_is_chosen_first_and_an_offline_one_cannot_be() {
+    let mut listed = machines();
+    let desktop = listed[1].id.clone();
+    let mut chosen = None;
+    // Offline: not chosen, and this machine stays.
+    assert!(!switch_machine(&mut chosen, &listed, Some(&desktop)));
+    assert_eq!(chosen, None);
+    listed[1].state = MachineState::Unknown;
+    assert!(!switch_machine(&mut chosen, &listed, Some(&desktop)));
+    listed[1].state = MachineState::Online;
+    assert!(switch_machine(&mut chosen, &listed, Some(&desktop)));
+    assert_eq!(chosen.as_deref(), Some(desktop.as_str()));
+    assert!(!switch_machine(&mut chosen, &listed, Some(&desktop)));
+    // This machine is chosen by none, and is always open.
+    assert!(switch_machine(&mut chosen, &listed, None));
+    assert_eq!(chosen, None);
+    // This machine's own ID is not another machine.
+    assert!(!switch_machine(
+        &mut chosen,
+        &listed,
+        Some(&listed[0].id.clone())
+    ));
+}
+
+#[test]
+fn an_offline_machine_says_when_it_was_last_seen() {
+    let seen = agent_interface_roster::views::epoch_seconds("2026-11-10T13:40:12Z").unwrap();
+    assert_eq!(
+        unavailable("desktop", Some("2026-11-10T13:40:12Z"), seen + 2.0 * 3600.0),
+        "desktop is offline (last seen 2h ago), so it can't be chosen."
+    );
+    assert_eq!(
+        unavailable("desktop", None, seen),
+        "desktop is offline (not heard from yet), so it can't be chosen."
+    );
 }
 
 #[test]

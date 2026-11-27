@@ -365,7 +365,15 @@ follows only once it is closed, cancelled or forgotten under Earlier setups.
 Add agent starts the agent with `POST /api/agents/start` on the profile
 socket, carrying `x-backbone-request-id` (a UUIDv7) so a repeat after a lost
 reply gets the first result, and the tool list comes from
-`backbone runtimes --json`.
+`backbone runtimes --json`. When `GET /api/profile/machines` lists another
+machine, the form offers a Machine choice, this machine first and offline
+machines shown but not choosable. On another machine the agent works in a
+repository (`owner/name`, sent as `repo`) or a folder there (sent as `dir`),
+checked as text only and never made on this machine; the start names the
+machine by its full ID, and its tools come from
+`GET /api/profile/machines/{id}/runtimes`. A service without that route
+starts the profile's default tool. No pane opens here for an agent on
+another machine: it appears in the panel under that machine.
 
 The layer offers the same persistent interface-size setting as the workspace,
 including during the opening scene. Progress is saved as `[setup]` in

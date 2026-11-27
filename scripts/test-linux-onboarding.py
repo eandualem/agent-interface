@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Click through first run in a private Linux desktop: a fresh install makes
 its first profile and starts its orchestrator, all in the one workspace window.
+At 100 % it then adds an agent on another machine of the profile from Settings.
 
 Uses the real native app and a stand-in for the Rust Agent Backbone service
 (scripts/tests/fixtures/fake_backbone.py), whose machine serves no profile
@@ -275,7 +276,39 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
             assert len(spaces) == 1, spaces
             assert spaces[0]["name"] == "Personal" and spaces[0]["profile_id"] == profile_id, spaces
 
-            (OUTPUT / "requests.json").write_text(json.dumps(dict(created=created, setup=setups), indent=2) + "\n")
+            starts = []
+            if SCALE == 100:
+                # Add an agent on another machine of the profile: the form
+                # lists the machines, this one first, and desktop can't be
+                # chosen; linux-box takes a repository and its own tools.
+                command("xdotool", "key", "--window", main, "ctrl+comma")
+                window = wait_for(lambda: next((w for w in app_windows() if w != main), None),
+                                  "the settings window")
+                click(window, "Profiles")
+                click(window, "Personal")
+                click(window, "Add")
+                wait_for(lambda: re.search(r"linux-box", text(window)), "the Machine row", timeout=60)
+                value = text(window)
+                assert re.search(r"desktop\s+is\s+offline", value), value
+                click(window, "linux-box")
+                wait_for(lambda: re.search(r"Checked", text(window)), "linux-box's tools", timeout=60)
+                # Tab reaches the name, then where it works on linux-box.
+                command("xdotool", "key", "--window", window, "Tab", "Tab")
+                command("xdotool", "type", "--window", window, "--delay", "50", "acme/app")
+                wait_for(lambda: re.search(r"Start\s+app", text(window)), "the name from the repository")
+                value = capture(window, "add-agent-elsewhere")
+                assert "Claude Code" in value, value
+                click(window, "Start", last=True)
+                wait_for(lambda: log("start.jsonl"), "the start", timeout=60)
+                starts = [entry["body"] for entry in log("start.jsonl")]
+                assert starts == [{"name": "app", "machine": "5f0c9a1e7b2d4c6e8f0a1b3c5d7e9f2a4b6c8d0e1f3a5b7c9d2e4f6a8b0c1d3e",
+                                   "repo": "acme/app", "runtime": "claude", "wait": False}], starts
+                wait_for(lambda: re.search(r"Started\s+on\s+linux-box", text(window)), "the result", timeout=60)
+                capture(window, "added-elsewhere")
+                # Its terminal is on linux-box: nothing attaches here.
+                assert not (root / "app").exists()
+
+            (OUTPUT / "requests.json").write_text(json.dumps(dict(created=created, setup=setups, starts=starts), indent=2) + "\n")
             (OUTPUT / "result.json").write_text(json.dumps(dict(scale=SCALE, passed=True, checks=[
                 "nothing asked of a ready computer", "setup's initialize on a fresh machine",
                 "first profile made and served by the service",
@@ -283,7 +316,9 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
                 "sign-ins on the tool cards, from the profile's own accounts",
                 "orchestrator on the first tool that can run",
                 "orchestrator's setup request", "setup remembered as done",
-                "one workspace bound to the profile"]), indent=2) + "\n")
+                "one workspace bound to the profile",
+                *(["an agent added on another machine of the profile"] if SCALE == 100 else [])]),
+                indent=2) + "\n")
             print(f"Linux onboarding regression passed at {SCALE}%")
         except BaseException:
             try:

@@ -13,12 +13,15 @@ use crate::{
     },
     profiles::{Client, journal, setup_controller::Controller},
 };
-use agent_interface_roster::profiles::{
-    Connection, Profile,
-    runtime_catalog::{Authentication, Catalog, Runtime},
-    setup::{
-        Agent, Brief, Prepared,
-        start::{Start, repository},
+use agent_interface_roster::{
+    MachineState, ProfileMachine,
+    profiles::{
+        AddError, Connection, Profile,
+        runtime_catalog::{Authentication, Catalog, Runtime},
+        setup::{
+            Agent, Brief, Prepared,
+            start::{Start, Tools, place, repository},
+        },
     },
 };
 use gpui::{
@@ -53,6 +56,19 @@ enum State {
     },
     Failed,
 }
+/// What another machine's tools are.
+enum Elsewhere {
+    Reading,
+    Listed {
+        catalog: Catalog,
+        /// When that machine was checked, RFC 3339.
+        checked_at: Option<String>,
+    },
+    /// The service doesn't list them: the profile's default tool starts.
+    NotListed,
+    /// Why they can't be known now, as the service says.
+    Refused(String),
+}
 pub(super) struct Form {
     client: Client,
     library: PathBuf,
@@ -63,6 +79,18 @@ pub(super) struct Form {
     custom_brief: bool,
     /// A repository the agent watches, as `owner/name`, under the Rust service.
     repository: Entity<NameField>,
+    /// Where the agent works on another machine, as typed: `owner/name` or
+    /// a folder there.
+    place: Entity<NameField>,
+    /// The profile's machines, this one first, when there is another.
+    machines: Vec<ProfileMachine>,
+    /// The profile's agents, read with its machines: a start on another
+    /// machine under one of their names would move that agent instead.
+    agents: Vec<String>,
+    /// Another machine chosen, by its full ID; `None` is this one.
+    machine: Option<String>,
+    /// What that machine's tools are, once read.
+    elsewhere: Option<Elsewhere>,
     _fields: Vec<Subscription>,
     project: Option<PathBuf>,
     runtime: Option<String>,
@@ -122,6 +150,14 @@ impl Form {
         let name = cx.new(|cx| NameField::filter(window, cx));
         let brief = cx.new(|cx| NameField::feedback(window, cx));
         let repository = cx.new(|cx| NameField::bare("", window, cx));
+        let place = cx.new(|cx| NameField::bare("", window, cx));
+        let typed = cx.subscribe(&place, |form: &mut Self, _, event: &NameEvent, cx| {
+            if let NameEvent::Changed(_) = event {
+                form.changed = true;
+                form.name_from_place(cx);
+                cx.notify()
+            }
+        });
         let fields = [&name, &brief, &repository]
             .into_iter()
             .map(|field| {
@@ -133,6 +169,7 @@ impl Form {
                     }
                 })
             })
+            .chain([typed])
             .collect();
         let mut form = Self {
             client,
@@ -143,6 +180,11 @@ impl Form {
             brief,
             custom_brief: false,
             repository,
+            place,
+            machines: Vec::new(),
+            agents: Vec::new(),
+            machine: None,
+            elsewhere: None,
             _fields: fields,
             project: None,
             runtime: None,
@@ -169,7 +211,112 @@ impl Form {
             focus: cx.focus_handle(),
         };
         form.load(false, cx);
+        form.read_machines(cx);
         form
+    }
+    /// Read the profile's machines and agents, to offer another machine. A
+    /// read that fails, or a profile of one machine, leaves the form as it
+    /// was before machines could be chosen.
+    fn read_machines(&mut self, cx: &mut Context<Self>) {
+        let profile = self.profile.clone();
+        let work = cx.background_executor().spawn(async move {
+            let connection = profile.connect().ok()?;
+            let local = connection.identity().installation_id.clone();
+            let machines = machine_choices(connection.machines().ok()?, &local);
+            if machines.is_empty() {
+                return None;
+            }
+            Some((machines, connection.agent_names().ok()?))
+        });
+        cx.spawn(async move |this, cx| {
+            let Some((machines, agents)) = work.await else {
+                return;
+            };
+            let _ = this.update(cx, |form, cx| {
+                if !form.finished && !form.guide {
+                    form.machines = machines;
+                    form.agents = agents;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+    /// The tools of the machine chosen: this one's, or another's once listed.
+    fn catalog(&self) -> Option<&Catalog> {
+        match (&self.state, &self.machine, &self.elsewhere) {
+            (State::Ready { catalog, .. }, None, _) => Some(catalog),
+            (State::Ready { .. }, Some(_), Some(Elsewhere::Listed { catalog, .. })) => {
+                Some(catalog)
+            }
+            _ => None,
+        }
+    }
+    /// The name of the machine chosen, when it is another.
+    fn elsewhere_name(&self) -> Option<String> {
+        let id = self.machine.as_ref()?;
+        self.machines
+            .iter()
+            .find(|machine| &machine.id == id)
+            .map(|machine| {
+                super::super::agent_groups::machine_display_name(&machine.name, &machine.id)
+            })
+    }
+    /// Choose where the agent starts: this machine (`None`) or another
+    /// online one. Another tool list applies, so the tool starts over.
+    fn choose_machine(&mut self, clicked: Option<String>, cx: &mut Context<Self>) {
+        if self.finished || !switch_machine(&mut self.machine, &self.machines, clicked.as_deref()) {
+            return;
+        }
+        self.changed = true;
+        self.runtime = None;
+        self.model = None;
+        self.elsewhere = None;
+        let Some(machine) = self.machine.clone() else {
+            self.runtime = self
+                .catalog()
+                .and_then(|catalog| first_choice(catalog, false));
+            cx.notify();
+            return;
+        };
+        self.elsewhere = Some(Elsewhere::Reading);
+        let name = self.elsewhere_name().unwrap_or_default();
+        let profile = self.profile.clone();
+        let asked = machine.clone();
+        let work = cx.background_executor().spawn(async move {
+            profile
+                .connect()
+                .map_err(AddError::from)
+                .and_then(|connection| connection.machine_tools(&asked))
+        });
+        cx.spawn(async move |this, cx| {
+            let read = work.await;
+            let _ = this.update(cx, |form, cx| {
+                if form.finished || form.machine.as_ref() != Some(&machine) {
+                    return;
+                }
+                form.elsewhere = Some(match read {
+                    Ok(Tools::Listed {
+                        catalog,
+                        checked_at,
+                    }) => {
+                        form.runtime = first_choice(&catalog, false);
+                        Elsewhere::Listed {
+                            catalog,
+                            checked_at,
+                        }
+                    }
+                    Ok(Tools::NotListed) => Elsewhere::NotListed,
+                    Err(AddError::Refused(why)) => Elsewhere::Refused(why),
+                    Err(AddError::Connection(_)) => {
+                        Elsewhere::Refused(format!("{name}'s tools could not be read."))
+                    }
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
     /// Read the profile's tools and open setups. `keep` leaves what is shown,
     /// and the chosen tool, in place until the new read arrives.
@@ -265,10 +412,7 @@ impl Form {
         self.served.take()
     }
     fn runtime(&self) -> Option<&Runtime> {
-        let State::Ready { catalog, .. } = &self.state else {
-            return None;
-        };
-        catalog
+        self.catalog()?
             .items()
             .iter()
             .find(|r| Some(&r.id) == self.runtime.as_ref() && eligible(r, self.guide))
@@ -529,6 +673,12 @@ impl Form {
         let State::Ready { catalog, .. } = &self.state else {
             return None;
         };
+        if self.place.read(cx).composing() {
+            return None;
+        }
+        if let Some(machine) = &self.machine {
+            return self.elsewhere_start(machine, cx).map(|start| (start, None));
+        }
         if catalog.identity() != &self.profile.expected_identity().ok()? {
             return None;
         }
@@ -553,6 +703,43 @@ impl Form {
         Some((start, create.then_some(folder)))
     }
 
+    /// What starts on another machine: where it is typed, and nothing is
+    /// made or checked on this one.
+    fn elsewhere_start(&self, machine: &str, cx: &Context<Self>) -> Option<Start> {
+        let name = agent_name(self.name.read(cx).value());
+        if self.agents.contains(&name) {
+            return None;
+        }
+        let runtime = match self.elsewhere.as_ref()? {
+            Elsewhere::Listed { catalog, .. } => {
+                if catalog.identity() != &self.profile.expected_identity().ok()? {
+                    return None;
+                }
+                let runtime = self.runtime()?;
+                if self
+                    .model
+                    .as_ref()
+                    .is_some_and(|model| !runtime.models.contains(model))
+                {
+                    return None;
+                }
+                Some(runtime.id.as_str())
+            }
+            Elsewhere::NotListed => None,
+            Elsewhere::Reading | Elsewhere::Refused(_) => return None,
+        };
+        let watch = self.repository.read(cx).value().trim();
+        Start::on_machine(
+            &name,
+            machine,
+            self.place.read(cx).value(),
+            runtime,
+            runtime.and(self.model.as_deref()),
+            (!watch.is_empty()).then_some(watch),
+        )
+        .ok()
+    }
+
     /// What the screen shows, as a request to the Rust service.
     fn served_request(&self, request_id: String, cx: &Context<Self>) -> Option<setup::Request> {
         let (start, create) = self.served_start(cx)?;
@@ -562,6 +749,7 @@ impl Form {
             start,
             create,
             request_id,
+            elsewhere: self.elsewhere_name(),
         })
     }
 
@@ -613,11 +801,22 @@ impl Form {
     }
     /// Name the agent after its folder, unless the person typed a name.
     fn name_from_folder(&mut self, cx: &mut Context<Self>) {
+        let name = self.project.as_deref().and_then(folder_name);
+        self.name_from(name, cx);
+    }
+    /// Name the agent after the repository or folder typed for another
+    /// machine, unless the person typed a name.
+    fn name_from_place(&mut self, cx: &mut Context<Self>) {
+        let typed = self.place.read(cx).value().trim().to_owned();
+        let name = place(&typed).and_then(|_| folder_name(std::path::Path::new(&typed)));
+        self.name_from(name, cx);
+    }
+    fn name_from(&mut self, name: Option<String>, cx: &mut Context<Self>) {
         let current = self.name.read(cx).value().to_owned();
         if !current.is_empty() && self.folder_name.as_deref() != Some(current.as_str()) {
             return;
         }
-        let Some(name) = self.project.as_deref().and_then(folder_name) else {
+        let Some(name) = name else {
             return;
         };
         self.name.update(cx, |field, cx| field.set_value(&name, cx));
@@ -782,18 +981,73 @@ fn folder_name(path: &std::path::Path) -> Option<String> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Field {
     Name,
+    /// Where it works on another machine.
+    Place,
     Repository,
 }
-/// Where Tab goes from `at`: through the name, then the repository when it
-/// is shown, back to the name. From no field, or one no longer shown, the
-/// name.
-fn next_field(at: Option<Field>, repository: bool) -> Field {
-    let shown: Vec<Field> = [Some(Field::Name), repository.then_some(Field::Repository)]
-        .into_iter()
-        .flatten()
-        .collect();
+/// Where Tab goes from `at`: through the name, the place on another machine
+/// and the repository, each when it is shown, back to the name. From no
+/// field, or one no longer shown, the name.
+fn next_field(at: Option<Field>, place: bool, repository: bool) -> Field {
+    let shown: Vec<Field> = [
+        Some(Field::Name),
+        place.then_some(Field::Place),
+        repository.then_some(Field::Repository),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     at.and_then(|at| shown.iter().position(|field| *field == at))
         .map_or(Field::Name, |at| shown[(at + 1) % shown.len()])
+}
+/// The machines a person chooses from, this one (`local`) first, then in the
+/// service's order: none unless there is another, and this one is listed.
+fn machine_choices(mut machines: Vec<ProfileMachine>, local: &str) -> Vec<ProfileMachine> {
+    let Some(at) = machines.iter().position(|machine| machine.id == local) else {
+        return Vec::new();
+    };
+    if machines.len() < 2 {
+        return Vec::new();
+    }
+    let this = machines.remove(at);
+    machines.insert(0, this);
+    machines
+}
+/// Choose the machine `clicked`, `None` for this one, the first of
+/// `machines`. Another must be online. Returns whether the choice changed.
+fn switch_machine(
+    chosen: &mut Option<String>,
+    machines: &[ProfileMachine],
+    clicked: Option<&str>,
+) -> bool {
+    if chosen.as_deref() == clicked {
+        return false;
+    }
+    let open = clicked.is_none_or(|id| {
+        machines
+            .iter()
+            .skip(1)
+            .any(|machine| machine.id == id && machine.state == MachineState::Online)
+    });
+    if open {
+        *chosen = clicked.map(str::to_owned);
+    }
+    open
+}
+/// Why another machine can't be chosen, under the Machine row.
+fn unavailable(name: &str, last_seen: Option<&str>, now: f64) -> String {
+    let seen = last_seen
+        .and_then(agent_interface_roster::views::epoch_seconds)
+        .map_or_else(
+            || "not heard from yet".to_owned(),
+            |at| {
+                format!(
+                    "last seen {}",
+                    super::super::agent_groups::relative_seen(now - at)
+                )
+            },
+        );
+    format!("{name} is offline ({seen}), so it can't be chosen.")
 }
 /// Choose the tool `clicked`. The one already chosen changes nothing; another
 /// starts on its default model. Returns whether the choice changed.
@@ -902,7 +1156,7 @@ impl Render for Form {
             State::Failed => {
                 body = body.child(ui::button("retry-setup-catalog", "Check again", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.load(false, cx))))
             }
-            State::Ready { catalog, pending, .. } => {
+            State::Ready { pending, .. } => {
                 if *pending > 0 {
                     body = body.child(
                         div().flex().items_center().gap(px(t.space.s8))
@@ -916,6 +1170,82 @@ impl Render for Form {
                 let from_folder = self.folder_name.as_deref().is_some_and(|name| name == typed);
                 // The agent as it will be: its name, what it does, where it works.
                 let folder = self.folder(cx);
+                let attention = |text: SharedString| ui::text(div().text_color(c.attention_text), &t.text.meta).child(text);
+                let elsewhere = self.elsewhere_name();
+                let taken = elsewhere.is_some() && self.agents.contains(&name);
+                // Which machine it starts on, when the profile has another.
+                let mut machine_rows = Vec::new();
+                if !self.machines.is_empty() {
+                    let now = agent_interface_roster::views::now() as f64;
+                    let mut row = ui::segments().flex_wrap();
+                    let mut offline = Vec::new();
+                    for (at, machine) in self.machines.iter().enumerate() {
+                        let this = at == 0;
+                        let open = this || machine.state == MachineState::Online;
+                        let chosen = if this { self.machine.is_none() } else { self.machine.as_ref() == Some(&machine.id) };
+                        let label = super::super::agent_groups::machine_display_name(&machine.name, &machine.id);
+                        let segment = ui::segment(SharedString::from(format!("machine-{}", machine.id)), label.clone(), chosen)
+                            .gap(px(t.space.s6))
+                            .child(ui::dot(if open { c.ok } else { c.faint }));
+                        row = row.child(if open {
+                            let (expected, clicked) = (ticket.clone(), (!this).then(|| machine.id.clone()));
+                            segment.on_click(cx.listener(move |form, _, _, cx| {
+                                if form.ticket.accepts(&expected) { form.choose_machine(clicked.clone(), cx); }
+                            }))
+                        } else {
+                            segment.opacity(0.5).cursor_default()
+                        });
+                        if !open {
+                            offline.push(unavailable(&label, machine.last_seen.as_deref(), now));
+                        }
+                    }
+                    machine_rows.push(line("Machine", row.into_any_element()));
+                    machine_rows.extend(offline.into_iter().map(|why| line("", note(why.into()).into_any_element())));
+                }
+                let folder_rows = match &elsewhere {
+                    // Typed for that machine, never looked for on this one.
+                    Some(there) => {
+                        let typed = self.place.read(cx).value().trim().to_owned();
+                        let hint: SharedString = format!("owner/name to clone or use there, or a folder on {there} (/path or ~/path)").into();
+                        vec![
+                            line(
+                                "Folder",
+                                ui::field_frame(self.place.read(cx).focus.is_focused(window))
+                                    .flex_1()
+                                    .child(div().flex_1().min_w_0().child(self.place.clone()))
+                                    .into_any_element(),
+                            ),
+                            line("", if typed.is_empty() || place(&typed).is_some() { note(hint) } else { attention(hint) }.into_any_element()),
+                        ]
+                    }
+                    None => vec![line(
+                                "Folder",
+                                div().flex().flex_1().min_w_0().items_center().gap(px(t.space.s8))
+                                    .child(ui::icon("folder", t.size.icon, c.muted))
+                                    .child(
+                                        div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap()
+                                            .text_color(if folder.is_some() { c.code } else { c.faint })
+                                            .child(match &folder {
+                                                Some((path, _)) => home_relative(path),
+                                                None => "Choose the folder it works in".into(),
+                                            }),
+                                    )
+                                    // Setup makes this folder for the agent.
+                                    .when(folder.as_ref().is_some_and(|(_, made)| *made), |el| {
+                                        el.child(
+                                            ui::text(
+                                                div().flex_shrink_0().px(px(t.space.s6)).rounded(px(t.radius.row))
+                                                    .border(px(t.size.hairline)).border_color(c.line_strong).text_color(c.muted),
+                                                &t.text.meta,
+                                            )
+                                            .child("New"),
+                                        )
+                                    })
+                                    .child(div().flex_1())
+                                    .child(ui::button("setup-folder", if self.project.is_some() || folder.is_some() { "Change…" } else { "Choose…" }, ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.choose_folder(cx))))
+                                    .into_any_element(),
+                            )],
+                };
                 let card = div()
                     .flex()
                     .gap(px(t.space.s14))
@@ -953,7 +1283,9 @@ impl Render for Form {
                                 div().flex().flex_1().min_w_0().items_center().gap(px(t.space.s8))
                                     .child(div().flex_1().min_w_0().child(self.name.clone()))
                                     .map(|el| {
-                                        if from_folder {
+                                        if taken {
+                                            el.child(attention(format!("An agent named {name} already exists in this profile.").into()))
+                                        } else if from_folder {
                                             el.child(note("From the folder".into()))
                                         } else if name.is_empty() {
                                             el
@@ -967,57 +1299,42 @@ impl Render for Form {
                                     })
                                     .into_any_element(),
                             ))
-                            .child(line(
-                                "Folder",
-                                div().flex().flex_1().min_w_0().items_center().gap(px(t.space.s8))
-                                    .child(ui::icon("folder", t.size.icon, c.muted))
-                                    .child(
-                                        div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap()
-                                            .text_color(if folder.is_some() { c.code } else { c.faint })
-                                            .child(match &folder {
-                                                Some((path, _)) => home_relative(path),
-                                                None => "Choose the folder it works in".into(),
-                                            }),
-                                    )
-                                    // Setup makes this folder for the agent.
-                                    .when(folder.as_ref().is_some_and(|(_, made)| *made), |el| {
-                                        el.child(
-                                            ui::text(
-                                                div().flex_shrink_0().px(px(t.space.s6)).rounded(px(t.radius.row))
-                                                    .border(px(t.size.hairline)).border_color(c.line_strong).text_color(c.muted),
-                                                &t.text.meta,
-                                            )
-                                            .child("New"),
-                                        )
-                                    })
-                                    .child(div().flex_1())
-                                    .child(ui::button("setup-folder", if self.project.is_some() || folder.is_some() { "Change…" } else { "Choose…" }, ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.choose_folder(cx))))
-                                    .into_any_element(),
-                            )),
+                            .children(machine_rows)
+                            .children(folder_rows),
                     );
                 body = body.child(card);
                 // The same cards onboarding's first agent uses.
                 let mut tools = div().w_full().grid().grid_cols(2).gap(px(t.space.s8));
-                for runtime in catalog.items().iter().filter(|r| eligible(r, false)) {
+                let shown = self.catalog().map_or(&[][..], Catalog::items);
+                for runtime in shown.iter().filter(|r| eligible(r, false)) {
                     let id = runtime.id.clone();
                     let expected = ticket.clone();
                     tools = tools.child(
                         ui::tool_card(format!("runtime-{id}"), runtime.display_name.clone(), card_state(runtime.authentication), false, self.runtime.as_ref() == Some(&id), false, None)
                             .on_click(cx.listener(move |form, _, _, cx| {
                                 if form.finished || !form.ticket.accepts(&expected) { return; }
-                                let State::Ready { catalog, .. } = &form.state else { return; };
+                                let Some(catalog) = form.catalog() else { return; };
                                 if catalog.items().iter().any(|r| r.id == id && eligible(r, false)) { choose_tool(&mut form.runtime, &mut form.model, &id); cx.notify(); }
                             })),
                     );
                 }
+                let there = elsewhere.clone().unwrap_or_default();
                 body = body.child(line(
                     "Runs in",
-                    if catalog.items().iter().any(|r| eligible(r, false)) {
-                        tools.into_any_element()
-                    } else {
-                        note("No tool in this profile can set up an agent yet.".into()).into_any_element()
+                    match &self.elsewhere {
+                        Some(Elsewhere::Reading) if elsewhere.is_some() => note(format!("Checking {there}'s tools…").into()).into_any_element(),
+                        Some(Elsewhere::NotListed) if elsewhere.is_some() => note(format!("Backbone doesn't list {there}'s tools yet, so it starts in the profile's default tool.").into()).into_any_element(),
+                        Some(Elsewhere::Refused(why)) if elsewhere.is_some() => attention(why.clone().into()).into_any_element(),
+                        _ if shown.iter().any(|r| eligible(r, false)) => tools.into_any_element(),
+                        _ => note("No tool in this profile can set up an agent yet.".into()).into_any_element(),
                     },
                 ));
+                if let (Some(_), Some(Elsewhere::Listed { checked_at: Some(at), .. })) = (&elsewhere, &self.elsewhere)
+                    && let Some(at) = agent_interface_roster::views::epoch_seconds(at)
+                {
+                    let ago = super::super::agent_groups::relative_seen(agent_interface_roster::views::now() as f64 - at);
+                    body = body.child(line("", note(format!("Checked {ago}").into()).into_any_element()));
+                }
                 // The service's Add agent takes no instructions or greeting.
                 body = body.child(
                     div().id("setup-more").flex().items_center().gap(px(t.space.s6)).cursor_pointer().text_color(c.muted)
@@ -1077,6 +1394,7 @@ impl Render for Form {
                 if form.name.read(cx).composing()
                     || form.brief.read(cx).composing()
                     || form.repository.read(cx).composing()
+                    || form.place.read(cx).composing()
                 {
                     return;
                 }
@@ -1095,13 +1413,14 @@ impl Render for Form {
                         let focus = |field: &Entity<NameField>| field.read(cx).focus.clone();
                         let fields = [
                             (Field::Name, focus(&form.name)),
+                            (Field::Place, focus(&form.place)),
                             (Field::Repository, focus(&form.repository)),
                         ];
                         let at = fields
                             .iter()
                             .find(|(_, handle)| handle.is_focused(window))
                             .map(|(field, _)| *field);
-                        let next = next_field(at, form.more);
+                        let next = next_field(at, form.machine.is_some(), form.more);
                         if let Some((_, handle)) = fields.iter().find(|(field, _)| *field == next) {
                             window.focus(handle, cx);
                         }

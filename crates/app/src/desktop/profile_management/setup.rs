@@ -271,6 +271,9 @@ pub(super) struct Request {
     pub create: Option<PathBuf>,
     /// 32 lowercase hexadecimal digits, a UUIDv7.
     pub request_id: String,
+    /// Another machine it starts on, by name. Its terminal is there, so no
+    /// pane opens here once it runs.
+    pub elsewhere: Option<String>,
 }
 struct Served {
     request: Request,
@@ -532,7 +535,7 @@ impl Pane {
                 if let Some(served) = &mut pane.served {
                     served.answer = Some(answer);
                 }
-                if pane.running() {
+                if pane.running() && pane.elsewhere().is_none() {
                     pane.get_started(cx);
                 }
                 cx.notify();
@@ -845,6 +848,11 @@ impl Pane {
         self.back(cx);
     }
 
+    /// Another machine the start went to, by name.
+    fn elsewhere(&self) -> Option<&str> {
+        self.served.as_ref()?.request.elsewhere.as_deref()
+    }
+
     /// The agent is up, whatever it's showing.
     pub fn running(&self) -> bool {
         if let Some(served) = &self.served {
@@ -974,6 +982,32 @@ impl Pane {
             Some(served) => served.request.start.name(),
             None => snapshot.map_or("Your agent", |s| s.agent_name.as_str()),
         };
+        // Started on another machine: it shows in the panel under that
+        // machine, and nothing here attaches to it.
+        if let Some(there) = self.elsewhere().filter(|_| self.running()) {
+            return div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .gap(px(t.space.s10))
+                .track_focus(&self.focus)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(t.space.s8))
+                        .child(ui::step_dot(ui::Step::Done))
+                        .child(div().text_color(c.text).child(format!("{name} started"))),
+                )
+                .child(meta(format!(
+                    "Started on {there}; it appears in the panel."
+                )))
+                .child(
+                    ui::button("setup-done", "Done", ui::Button::Primary)
+                        .on_click(cx.listener(|pane, _, _, cx| pane.back(cx))),
+                )
+                .into_any_element();
+        }
         let starting = self.starting() || self.running();
         let (step, title, note) = if starting {
             (

@@ -210,7 +210,7 @@ impl MachinePresence {
     }
 }
 
-fn relative_seen(seconds: f64) -> String {
+pub(super) fn relative_seen(seconds: f64) -> String {
     if !seconds.is_finite() || seconds < 60.0 {
         return "just now".into();
     }

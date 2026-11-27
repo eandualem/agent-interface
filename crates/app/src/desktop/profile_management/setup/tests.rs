@@ -570,6 +570,7 @@ fn an_unknown_served_outcome_is_asked_again_under_its_own_request_id() {
         start: Start::new("guide", std::path::Path::new("/a"), "claude", None, None).unwrap(),
         create: None,
         request_id: first.into(),
+        elsewhere: None,
     };
     // No result yet: Try again asks about the same request, which then answers.
     assert_eq!(attempt(&request, false), Answer::Unknown(None));
@@ -630,6 +631,7 @@ fn an_unreachable_profile_keeps_an_unresolved_start_and_its_request_id() {
         start: Start::new("guide", std::path::Path::new("/a"), "claude", None, None).unwrap(),
         create: None,
         request_id: first.into(),
+        elsewhere: None,
     };
     assert_eq!(attempt(&request, false), Answer::Unknown(None));
     // Unreachable on Try again: nothing was sent, and the first send is
