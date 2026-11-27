@@ -359,7 +359,8 @@ impl Sample {
         .into();
         let now = ago(0);
         m.decided_at = Some(now.clone());
-        if m.direction == Direction::Incoming {
+        // Only a message passed through is handed to an agent.
+        if m.direction == Direction::Incoming && m.state == "passed" {
             m.local_agent = Some("main".into());
         }
         if m.state == "declined" && m.direction == Direction::Incoming {

@@ -141,7 +141,8 @@ pub struct Message {
     pub receipt: Receipt,
     /// Upload refusal and retry time, when provided.
     pub upload_failure: Option<UploadFailure>,
-    /// Which draft this is, 1 for a first draft; absent on older records.
+    /// Which draft an outgoing message is, 1 for a first draft; absent on
+    /// incoming messages and on older records.
     pub revision: Option<u32>,
     /// The local orchestrator that sent an outgoing message, or the agent an
     /// incoming one was handed to; absent until it was, and on older records.

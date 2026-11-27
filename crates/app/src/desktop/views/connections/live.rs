@@ -1762,10 +1762,11 @@ impl Pane {
                         String::new(),
                     ));
                 }
-                // The connection's state, unless its last event says it.
+                // The connection's state, unless its last shown event says it.
                 let said = history
                     .events
-                    .last()
+                    .iter()
+                    .rfind(|e| e.kind != EventKind::Unknown)
                     .is_some_and(|e| e.kind == EventKind::Disconnected);
                 if !connected && !(said && peer.state == "disconnected") {
                     body = body.child(event("link-2-off", link_status(peer), String::new()));
