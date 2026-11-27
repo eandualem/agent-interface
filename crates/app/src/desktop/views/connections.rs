@@ -26,6 +26,9 @@ pub(super) struct Pane {
     /// The open peer list and the minimised one's marks.
     peers_scroll: gpui::ScrollHandle,
     strip_scroll: gpui::ScrollHandle,
+    /// The incoming request's card and the connect popover.
+    request_scroll: gpui::ScrollHandle,
+    connect_scroll: gpui::ScrollHandle,
     /// The control Tab moved focus to, scrolled into view once drawn.
     reveal: ui::Reveal,
     /// The whole pane, to tell whether keyboard focus is in it.
@@ -159,6 +162,8 @@ impl Pane {
             thread_scroll: gpui::ScrollHandle::new(),
             peers_scroll: gpui::ScrollHandle::new(),
             strip_scroll: gpui::ScrollHandle::new(),
+            request_scroll: gpui::ScrollHandle::new(),
+            connect_scroll: gpui::ScrollHandle::new(),
             reveal: ui::Reveal::default(),
             menu_focus,
             root_focus: cx.focus_handle(),
