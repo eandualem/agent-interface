@@ -21,7 +21,9 @@ use super::{
 };
 
 mod interactions;
+mod reveal;
 pub use interactions::*;
+pub use reveal::Reveal;
 
 /// Apply a type style.
 pub fn text<E: Styled>(element: E, style: &TextStyle) -> E {

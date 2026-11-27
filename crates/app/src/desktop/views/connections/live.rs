@@ -1683,7 +1683,7 @@ impl Pane {
                 };
                 if history.older.is_some() {
                     rows += 1;
-                    body = body.child(div().flex().justify_center().child(self.live_button(
+                    let older = self.live_button(
                         "older-history",
                         "Older messages",
                         ui::Button::Secondary,
@@ -1693,7 +1693,9 @@ impl Pane {
                             pane.keep_focus(&pane.thread_focus.clone(), window, cx);
                             pane.live_older(cx)
                         },
-                    )));
+                    );
+                    let older = self.in_view(older, None, &self.thread_scroll, window, cx);
+                    body = body.child(div().flex().justify_center().child(older));
                 }
                 let now = Local::now();
                 let mut day: Option<Local> = None;
@@ -1716,7 +1718,7 @@ impl Pane {
                             )
                         }
                         ThreadItem::Message(m) => {
-                            self.message_card(name, m, actions && connected, held, cx)
+                            self.message_card(name, m, actions && connected, held, window, cx)
                         }
                     };
                     let waits =
@@ -1905,9 +1907,9 @@ impl Pane {
         } else {
             if self.width != peers::Width::Narrow {
                 main = main.child(if self.list_minimised() {
-                    self.peer_strip(&s.summary, cx)
+                    self.peer_strip(&s.summary, window, cx)
                 } else {
-                    self.peer_list(&s.summary, cx)
+                    self.peer_list(&s.summary, window, cx)
                 });
             }
             {

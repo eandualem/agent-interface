@@ -29,6 +29,7 @@ impl Pane {
         m: &api::Message,
         actions: bool,
         held: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
         let (t, c) = (tokens(), colors());
@@ -155,7 +156,7 @@ impl Pane {
         );
         let toggle = cut.as_ref().map(|(_, more)| {
             let key = key.clone();
-            ui::text(
+            let toggle = ui::text(
                 div()
                     .id(SharedString::from(format!("cut-{}", m.message_id)))
                     .focus_visible(|el| {
@@ -176,7 +177,8 @@ impl Pane {
                     pane.expanded.insert(key.clone());
                 }
                 cx.notify();
-            }))
+            }));
+            self.in_view(toggle, None, &self.thread_scroll, window, cx)
         });
         if waiting {
             return card
@@ -187,7 +189,7 @@ impl Pane {
                         .px(px(t.space.s14))
                         .child(toggle)
                 }))
-                .child(self.review_bar(peer, m, actions, held, cx));
+                .child(self.review_bar(peer, m, actions, held, window, cx));
         }
         let mut row = ui::message_meta()
             .pt(px(t.space.s8))
@@ -212,11 +214,9 @@ impl Pane {
                         .child(state.text),
                 );
         }
-        card.child(
-            row.child(div().flex_1())
-                .children(toggle)
-                .child(self.copy_text(format!("copy-{key}"), "Copy", m.text.clone(), cx)),
-        )
+        let copy = self.copy_text(format!("copy-{key}"), "Copy", m.text.clone(), cx);
+        let copy = self.in_view(copy, None, &self.thread_scroll, window, cx);
+        card.child(row.child(div().flex_1()).children(toggle).child(copy))
     }
 
     /// Under a waiting message: the decisions it offers, a confirmation, or
@@ -227,10 +227,12 @@ impl Pane {
         m: &api::Message,
         actions: bool,
         held: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
         let (t, c) = (tokens(), colors());
         let local = local_agent(m);
+        let scroll = self.thread_scroll.clone();
         let bar = div()
             .flex()
             .flex_wrap()
@@ -263,7 +265,7 @@ impl Pane {
                     .child(error),
                 )
                 .when(can_retry, |el| {
-                    el.child(self.live_button(
+                    let retry = self.live_button(
                         format!("retry-{}", m.message_id),
                         "Retry",
                         ui::Button::Secondary,
@@ -272,19 +274,23 @@ impl Pane {
                             p.keep_focus(&p.thread_focus.clone(), w, cx);
                             p.send_live(cx)
                         },
-                    ))
+                    );
+                    el.child(self.in_view(retry, None, &scroll, window, cx))
                 })
                 // As in the band, giving up on it frees the pane's actions.
-                .child(self.live_button(
-                    format!("dismiss-{}", m.message_id),
-                    "Dismiss",
-                    ui::Button::Secondary,
-                    cx,
-                    |p, w, cx| {
-                        p.keep_focus(&p.thread_focus.clone(), w, cx);
-                        p.dismiss_retry(cx)
-                    },
-                ));
+                .child({
+                    let dismiss = self.live_button(
+                        format!("dismiss-{}", m.message_id),
+                        "Dismiss",
+                        ui::Button::Secondary,
+                        cx,
+                        |p, w, cx| {
+                            p.keep_focus(&p.thread_focus.clone(), w, cx);
+                            p.dismiss_retry(cx)
+                        },
+                    );
+                    self.in_view(dismiss, None, &scroll, window, cx)
+                });
         }
         // An open note or confirmation stays while a read is in flight, so
         // typing is not lost; the choices themselves wait for the read.
@@ -296,14 +302,7 @@ impl Pane {
         match form {
             Some(true) => {
                 let decline = m.clone();
-                bar.on_key_down(cx.listener(|pane, event: &gpui::KeyDownEvent, window, cx| {
-                    if event.keystroke.key == "escape" {
-                        cx.stop_propagation();
-                        pane.cancel_form(window, cx);
-                    }
-                }))
-                .child(meta("Decline this message? It will not be delivered.".into()).flex_1())
-                .child(self.live_button(
+                let confirm = self.live_button(
                     "confirm-decline",
                     "Decline",
                     ui::Button::Danger,
@@ -315,8 +314,19 @@ impl Pane {
                             cx,
                         )
                     },
-                ))
-                .child(self.cancel_button(cx).track_focus(&self.confirm_focus))
+                );
+                let confirm = self.in_view(confirm, None, &scroll, window, cx);
+                let cancel = self.cancel_button(cx);
+                let cancel = self.in_view(cancel, Some(&self.confirm_focus), &scroll, window, cx);
+                bar.on_key_down(cx.listener(|pane, event: &gpui::KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "escape" {
+                        cx.stop_propagation();
+                        pane.cancel_form(window, cx);
+                    }
+                }))
+                .child(meta("Decline this message? It will not be delivered.".into()).flex_1())
+                .child(confirm)
+                .child(cancel)
             }
             Some(false) => {
                 let note = self.input.read(cx).value().trim().to_owned();
@@ -328,14 +338,18 @@ impl Pane {
                     )
                     .opacity(0.35)
                 } else {
-                    self.live_button(
+                    let send = self.live_button(
                         "send-revise",
                         format!("Send back to {local}"),
                         ui::Button::Secondary,
                         cx,
                         |p, w, cx| p.submit_live_form(w, cx),
-                    )
+                    );
+                    self.in_view(send, None, &scroll, window, cx)
                 };
+                let cancel = self.cancel_button(cx);
+                let cancel = self.in_view(cancel, None, &scroll, window, cx);
+                let field = self.input.read(cx).focus.clone();
                 div()
                     // Escape closes the note from its buttons too.
                     .on_key_down(cx.listener(|pane, event: &gpui::KeyDownEvent, window, cx| {
@@ -360,45 +374,49 @@ impl Pane {
                         field_box(hinted(&self.input, "Your note", cx))
                             .min_h(px(t.size.button * 2.0))
                             .items_start()
-                            .border_color(c.focus),
+                            .border_color(c.focus)
+                            .relative()
+                            .child(self.reveal.within(&field, &scroll)),
                     )
                     .child(meta(format!(
                         "The message stays here. {local} gets your note and sends a new version for review."
                     )))
-                    .child(div().flex().flex_wrap().gap(px(t.space.s8)).child(send).child(self.cancel_button(cx)))
+                    .child(div().flex().flex_wrap().gap(px(t.space.s8)).child(send).child(cancel))
             }
             None => {
                 let mut bar = bar;
                 for action in rules::review_actions(m.direction) {
                     let msg = m.clone();
-                    bar = bar.child(match action {
-                        Action::Pass => self.live_button(
-                            format!("pass-{}", m.message_id),
-                            "Pass through",
-                            ui::Button::Primary,
-                            cx,
-                            move |p, w, cx| {
-                                p.decide(
-                                    Change::Review(Box::new(msg.clone()), DecisionKind::Pass),
-                                    w,
-                                    cx,
-                                )
-                            },
+                    let (control, focus) = match action {
+                        Action::Pass => (
+                            self.live_button(
+                                format!("pass-{}", m.message_id),
+                                "Pass through",
+                                ui::Button::Primary,
+                                cx,
+                                move |p, w, cx| {
+                                    p.decide(
+                                        Change::Review(Box::new(msg.clone()), DecisionKind::Pass),
+                                        w,
+                                        cx,
+                                    )
+                                },
+                            ),
+                            None,
                         ),
-                        Action::Revise => self
-                            .live_button(
+                        Action::Revise => (
+                            self.live_button(
                                 format!("revise-{}", m.message_id),
                                 "Ask to revise",
                                 ui::Button::Secondary,
                                 cx,
                                 move |p, w, cx| p.show_form(Form::Revise(msg.clone()), w, cx),
-                            )
-                            // Focus comes back here when its note is cancelled.
-                            .when(
-                                self.revise_opener.as_deref() == Some(m.message_id.as_str()),
-                                |el| el.track_focus(&self.revise_focus),
                             ),
-                        Action::Decline => {
+                            // Focus comes back here when its note is cancelled.
+                            (self.revise_opener.as_deref() == Some(m.message_id.as_str()))
+                                .then_some(&self.revise_focus),
+                        ),
+                        Action::Decline => (
                             ring(ui::text_action(
                                 format!("decline-{}", m.message_id),
                                 "Decline",
@@ -408,17 +426,16 @@ impl Pane {
                             .px(px(t.space.s10))
                             .focusable()
                             .tab_stop(true)
-                            // Focus comes back here when its confirmation
-                            // is cancelled.
-                            .when(
-                                self.decline_opener.as_deref() == Some(m.message_id.as_str()),
-                                |el| el.track_focus(&self.decline_focus),
-                            )
                             .on_click(cx.listener(
                                 move |p, _, w, cx| p.show_form(Form::Decline(msg.clone()), w, cx),
-                            ))
-                        }
-                    });
+                            )),
+                            // Focus comes back here when its confirmation is
+                            // cancelled.
+                            (self.decline_opener.as_deref() == Some(m.message_id.as_str()))
+                                .then_some(&self.decline_focus),
+                        ),
+                    };
+                    bar = bar.child(self.in_view(control, focus, &scroll, window, cx));
                 }
                 bar.child(div().flex_1())
                     .child(meta(rules::pass_note(m.direction, local, peer)))

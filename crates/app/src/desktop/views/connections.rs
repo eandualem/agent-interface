@@ -23,6 +23,11 @@ pub(super) struct Pane {
     entry: gpui::FocusHandle,
     thread_focus: gpui::FocusHandle,
     thread_scroll: gpui::ScrollHandle,
+    /// The open peer list and the minimised one's marks.
+    peers_scroll: gpui::ScrollHandle,
+    strip_scroll: gpui::ScrollHandle,
+    /// The control Tab moved focus to, scrolled into view once drawn.
+    reveal: ui::Reveal,
     /// The whole pane, to tell whether keyboard focus is in it.
     root_focus: gpui::FocusHandle,
     /// The peer list's minimise and show buttons, one at a time, so focus
@@ -152,6 +157,9 @@ impl Pane {
             entry: cx.focus_handle().tab_stop(true),
             thread_focus: cx.focus_handle(),
             thread_scroll: gpui::ScrollHandle::new(),
+            peers_scroll: gpui::ScrollHandle::new(),
+            strip_scroll: gpui::ScrollHandle::new(),
+            reveal: ui::Reveal::default(),
             menu_focus,
             root_focus: cx.focus_handle(),
             list_focus: cx.focus_handle().tab_stop(true),
@@ -309,6 +317,32 @@ impl Pane {
         window.focus(survivor, cx);
     }
 
+    /// `control`, a tab stop inside the scrolling element `scroll` tracks,
+    /// scrolled into view when Tab moves focus to it. `focus` is the pane's
+    /// own handle when the control tracks one; otherwise the control gets a
+    /// handle that lasts while it is drawn.
+    fn in_view(
+        &self,
+        mut control: gpui::Stateful<Div>,
+        focus: Option<&gpui::FocusHandle>,
+        scroll: &gpui::ScrollHandle,
+        window: &mut Window,
+        cx: &mut gpui::App,
+    ) -> gpui::Stateful<Div> {
+        let focus = match (focus, control.interactivity().element_id.clone()) {
+            (Some(focus), _) => focus.clone(),
+            (None, Some(id)) => window
+                .use_keyed_state(id, cx, |_, cx| cx.focus_handle().tab_stop(true))
+                .read(cx)
+                .clone(),
+            (None, None) => return control,
+        };
+        control
+            .track_focus(&focus)
+            .relative()
+            .child(self.reveal.within(&focus, scroll))
+    }
+
     /// Draw the pane again after the frame being drawn, for a change made
     /// while the window draws, which brings no next frame of its own.
     fn redraw_next_frame(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -427,6 +461,7 @@ impl Render for Pane {
         let (t, c) = (tokens(), colors());
         let entity = cx.entity().downgrade();
         let root_focus = self.root_focus.clone();
+        let reveal = self.reveal.clone();
         let tracker = canvas(
             move |bounds, window, cx| {
                 let pixels = f32::from(bounds.size.width);
@@ -489,13 +524,14 @@ impl Render for Pane {
         let frame = div()
             .track_focus(&self.root_focus)
             .tab_group()
-            .capture_key_down(|event: &gpui::KeyDownEvent, window, cx| {
+            .capture_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
                 if Self::is_tab(&event.keystroke) {
                     if event.keystroke.modifiers.shift {
                         window.focus_prev(cx);
                     } else {
                         window.focus_next(cx);
                     }
+                    reveal.focus_moved(window, cx);
                     cx.stop_propagation();
                 }
             })
