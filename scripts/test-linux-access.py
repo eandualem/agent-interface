@@ -57,6 +57,8 @@ class Records:
     def __init__(self):
         self.lock = threading.Lock()
         self.agents = fixture("agents")
+        # Waiting requests; a decided one leaves them, as in Backbone.
+        self.pending = fixture("requests-pending")
         self.calls = []
 
     def agent(self, name):
@@ -96,6 +98,8 @@ class Records:
                 decided = fixture("request-approved")
                 decided.update(id=int(parts[3]), note=body.get("note", ""),
                                state="approved" if parts[4] == "approve" else "refused")
+                items = self.pending["items"]
+                items[:] = [r for r in items if r["id"] != decided["id"]]
                 return 200, decided
             return 404, {"detail": {"code": "not_found", "message": "No such route in this check."}}
 
@@ -176,8 +180,10 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
             if path == "/api/swarms":
                 return self.reply(200, fixture("swarms"))
             if path == "/api/access/requests":
-                pending = "state=pending" in query
-                return self.reply(200, fixture("requests-pending" if pending else "requests-all"))
+                if "state=pending" in query:
+                    with RECORDS.lock:
+                        return self.reply(200, copy.deepcopy(RECORDS.pending))
+                return self.reply(200, fixture("requests-all"))
             return self.reply(200, dict(items=[], has_more=False, next_cursor=None))
 
         def change(self):
@@ -341,6 +347,9 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
                                 "the requests waiting button"))
             wait_for(lambda: containing("WAIT"), "the requests view")
             wait_for(lambda: containing("Appro"), "a request's Approve")
+            # The first card's reason, "Check the sign-up page as a visitor
+            # sees it.", read here so its absence later means the card left.
+            wait_for(lambda: containing("visit"), "the first card's reason")
             capture("requests")
             # The keys alone: choose the first card, open its note, type and
             # keep it with Return, then approve with the note. No click comes
@@ -357,8 +366,9 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
                 lambda method, path, body: method == "POST" and path.endswith("/approve")
                 and body.get("note") == "for this check"),
                 "the approval sent with its note by the keys")
-            # The reply closes the note; Escape before that would only close it.
-            wait_for(lambda: len(containing("note")) <= notes, "the note closed by the reply")
+            # Once the reply is applied the approved card leaves Waiting, its
+            # note with it; Escape before that would only close the note.
+            wait_for(lambda: not containing("visit"), "the approved card gone from Waiting")
             command("xdotool", "key", "Escape")
             wait_for(lambda: find("ORCHESTRATORS"), "the agent list again after Escape")
         finally:
