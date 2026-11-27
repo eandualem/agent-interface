@@ -419,6 +419,25 @@ mod tests {
                 "sleep 60",
             ])
             .unwrap();
+        // tmux reports no folder until the pane's process has started, which
+        // can come after new-session returns on a busy machine.
+        let target = format!("={session}:");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while server
+            .run(&[
+                "display-message",
+                "-p",
+                "-t",
+                &target,
+                "#{pane_current_path}",
+            ])
+            .unwrap()
+            .trim_end()
+            != folder
+        {
+            assert!(Instant::now() < deadline, "the shell did not start");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let _ = save(
             Some(store.path()),
             &mut base,
