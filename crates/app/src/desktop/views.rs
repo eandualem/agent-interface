@@ -208,6 +208,7 @@ pub(super) struct ViewPane {
     pub view: View,
     source: Option<Source>,
     connections: Option<Entity<connections::Pane>>,
+    access: Option<Entity<access::Pane>>,
     /// Immutable origin for retained content and every operation it opens.
     connection: Option<Connection>,
     data: Option<Data>,
@@ -329,7 +330,8 @@ impl ViewPane {
         }
     }
     /// Tell a Connections pane which workspace and profile it is in, for
-    /// its saved peer list choice and this profile's name.
+    /// its saved peer list choice and this profile's name; an Access pane,
+    /// the profile's name.
     pub(super) fn place_connections(
         &self,
         profile: Option<&str>,
@@ -347,6 +349,14 @@ impl ViewPane {
                     let _ = pane.update(cx, |_, cx| cx.notify());
                 });
             }
+        }
+        if let Some(pane) = &self.access
+            && pane.update(cx, |pane, _| pane.place(name))
+        {
+            let pane = pane.downgrade();
+            window.on_next_frame(move |_, cx| {
+                let _ = pane.update(cx, |_, cx| cx.notify());
+            });
         }
     }
 
@@ -390,6 +400,7 @@ impl ViewPane {
             folders,
             source: None,
             connections: None,
+            access: None,
             connection,
             data: None,
             read_at: None,
@@ -484,6 +495,8 @@ impl ViewPane {
         }
         // The Access view reads through its own pane, never the view source.
         if pane.view.kind == ViewKind::Access {
+            let visible = pane.visible.clone();
+            pane.access = Some(cx.new(|cx| access::Pane::new(connection, visible, window, cx)));
             return pane;
         }
         if matches!(pane.view.kind, ViewKind::Skills | ViewKind::Reports) {
@@ -1131,6 +1144,9 @@ impl Render for ViewPane {
         }
         if let Some(connections) = &self.connections {
             return div().size_full().child(connections.clone());
+        }
+        if let Some(access) = &self.access {
+            return div().size_full().child(access.clone());
         }
         if let Some(artifacts) = &self.artifacts {
             return div().size_full().child(artifacts.clone());

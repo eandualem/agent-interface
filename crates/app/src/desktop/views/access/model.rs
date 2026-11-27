@@ -95,13 +95,24 @@ fn swarm_of<'a>(agent: &'a Agent, swarms: &'a [Swarm]) -> Option<&'a str> {
         })
 }
 
-/// Group `agents`, those `filter` keeps, by role; swarm agents by their
-/// swarm, in the order each swarm is first met. A swarm agent whose swarm is
-/// not known, or an agent of a role this version does not know, is listed
-/// with the main agents, so no agent is hidden.
-pub(super) fn groups<'a>(overview: &'a Overview, filter: Filter) -> Groups<'a> {
+/// Group the agents `filter` keeps, by role; swarm agents by their swarm, in
+/// the order each swarm is first met. A swarm agent whose swarm is not known,
+/// or an agent of a role this version does not know, is listed with the main
+/// agents, so no agent is hidden.
+pub(super) fn groups(overview: &Overview, filter: Filter) -> Groups<'_> {
+    matching(overview, filter, "")
+}
+
+/// As [`groups`], keeping only agents whose name holds `query`, ignoring
+/// case.
+pub(super) fn matching<'a>(overview: &'a Overview, filter: Filter, query: &str) -> Groups<'a> {
+    let query = query.trim().to_lowercase();
     let mut groups = Groups::default();
-    for agent in overview.agents.iter().filter(|agent| filter.matches(agent)) {
+    for agent in overview
+        .agents
+        .iter()
+        .filter(|agent| filter.matches(agent) && agent.name.to_lowercase().contains(&query))
+    {
         match agent.role {
             Some(Role::Orchestrator) => groups.orchestrators.push(agent),
             Some(Role::Coordinator) => groups.coordinators.push(agent),
@@ -462,6 +473,12 @@ mod tests {
         let browser = groups(&overview, Filter::Browser);
         assert_eq!(names(&browser.orchestrators), ["lead"]);
         assert_eq!(names(&browser.coordinators), ["outreach"]);
+        let named = matching(&overview, Filter::All, " SQUAD-C");
+        assert_eq!(
+            names(&named.swarms[0].members),
+            ["app-squad-coordinator", "app-squad-coder"]
+        );
+        assert!(named.main.is_empty() && named.orchestrators.is_empty());
     }
 
     #[test]

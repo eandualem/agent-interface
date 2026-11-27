@@ -3401,6 +3401,8 @@ impl Render for Browser {
         });
         for (id, view) in shown.clone() {
             let connections = view.kind == agent_interface_core::ViewKind::Connections;
+            // Access panes are told their profile's name too.
+            let access = view.kind == agent_interface_core::ViewKind::Access;
             if connections
                 && self.views.get(&id).is_some_and(|(_, events)| {
                     !events.belongs_to(self.pane_navigation_origin(&id).as_ref())
@@ -3444,7 +3446,7 @@ impl Render for Browser {
             }
             // Placed on every draw, so a profile name that loads after the
             // pane exists still reaches it.
-            if connections
+            if (connections || access)
                 && let Some((pane, _)) = self.views.get(&id)
                 && let Some(space) = self
                     .layout

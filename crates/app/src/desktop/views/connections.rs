@@ -438,7 +438,7 @@ fn field_box(content: impl IntoElement) -> Div {
 }
 
 /// A bare field with a muted hint while it is empty.
-fn hinted(field: &Entity<NameField>, hint: &'static str, cx: &gpui::App) -> Div {
+pub(super) fn hinted(field: &Entity<NameField>, hint: &'static str, cx: &gpui::App) -> Div {
     let c = colors();
     div()
         .relative()
