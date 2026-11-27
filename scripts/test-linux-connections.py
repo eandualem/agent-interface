@@ -235,8 +235,17 @@ with tempfile.TemporaryDirectory(prefix="connections-smoke-", dir="/tmp") as dir
             # A thread opens on the message waiting for the person, its
             # choices in view: Ask to revise is the first one read, as the
             # filled Pass through is not.
-            wait_for(lambda: find("Ask"), "the first thread opened with its choices in view")
+            ask = wait_for(lambda: find("Ask"), "the first thread opened with its choices in view")
             capture("thread-open")
+            # Tab from the thread goes to the first card's Copy, above the
+            # fold, and the thread scrolls up to show it with its Delivered
+            # line. The press lands in the thread's margin, left of the
+            # waiting card, which sits at the thread's right.
+            assert not find("Delivered"), "the first card's Delivered line was in view before Tab"
+            press(int(ask["left"]) - 190, int(ask["top"]) - 150)
+            command("xdotool", "key", "Tab")
+            wait_for(lambda: find("Delivered"), "Tab scrolled the first card's Copy into view")
+            capture("tab-reveal")
             scroll_thread("4")
             wait_for(lambda: find("Relay"), "the first sample thread")
             capture("message-cut")

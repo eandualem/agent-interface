@@ -288,14 +288,21 @@ impl Pane {
     }
 
     /// The open list, 248 px wide.
-    pub(super) fn peer_list(&self, s: &Summary, cx: &Context<Self>) -> Div {
+    pub(super) fn peer_list(
+        &self,
+        s: &Summary,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let (t, c) = (tokens(), colors());
         let all = entries(s);
         // The same count as the footer's: requests and messages to review.
         let waiting = s.requests() + s.overview.pending_reviews;
         let query = self.filter.read(cx).value().to_owned();
+        let scroll = self.list_scroll("live-peers-scroll", window, cx);
         let mut rows = div()
             .id("live-peers")
+            .track_scroll(&scroll)
             .min_h_0()
             .flex_1()
             .overflow_y_scroll()
@@ -308,7 +315,8 @@ impl Pane {
             .filter(|e| (!self.needs_you || e.needs) && e.matches(&query))
         {
             shown += 1;
-            rows = rows.child(self.peer_row(entry, cx));
+            let row = self.peer_row(entry, cx);
+            rows = rows.child(self.in_view(row, None, &scroll, window, cx));
         }
         if shown == 0 {
             rows = rows.child(no_rows(
@@ -510,7 +518,12 @@ impl Pane {
     }
 
     /// The minimised list: a 48 px strip of marks.
-    pub(super) fn peer_strip(&self, s: &Summary, cx: &Context<Self>) -> Div {
+    pub(super) fn peer_strip(
+        &self,
+        s: &Summary,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let (t, c) = (tokens(), colors());
         let strip = div()
             .w(px(t.size.peer_strip))
@@ -540,8 +553,10 @@ impl Pane {
                     .my(px(t.space.s2))
                     .bg(c.line),
             );
+        let scroll = self.list_scroll("peer-strip-scroll", window, cx);
         let mut marks = div()
             .id("peer-strip")
+            .track_scroll(&scroll)
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
@@ -564,36 +579,35 @@ impl Pane {
             if let Some((label, _)) = &entry.badge {
                 tip = format!("{tip} · {label}");
             }
-            marks = marks.child(
-                mark_button(id, selected)
-                    .tooltip(move |_, cx| cx.new(|_| Tip(tip.clone().into())).into())
-                    .child(peer_mark(
-                        entry.name.as_deref(),
-                        t.size.view_tile - t.space.s4,
-                    ))
-                    .children(
-                        entry
-                            .badge
-                            .as_ref()
-                            .and_then(|(_, badge)| match badge {
-                                Badge::Waiting => Some(c.accent),
-                                Badge::Failed => Some(c.attention),
-                                Badge::Quiet => None,
-                            })
-                            .map(|dot| {
-                                div()
-                                    .absolute()
-                                    .top(px(t.space.s2))
-                                    .right(px(t.space.s2))
-                                    .size(px(t.space.s8 + t.space.s4))
-                                    .rounded_full()
-                                    .bg(dot)
-                                    .border(px(t.space.s2))
-                                    .border_color(if selected { c.selected } else { c.surface })
-                            }),
-                    )
-                    .on_click(cx.listener(move |p, _, _, cx| p.pick(Some(selection.clone()), cx))),
-            );
+            let mark = mark_button(id, selected)
+                .tooltip(move |_, cx| cx.new(|_| Tip(tip.clone().into())).into())
+                .child(peer_mark(
+                    entry.name.as_deref(),
+                    t.size.view_tile - t.space.s4,
+                ))
+                .children(
+                    entry
+                        .badge
+                        .as_ref()
+                        .and_then(|(_, badge)| match badge {
+                            Badge::Waiting => Some(c.accent),
+                            Badge::Failed => Some(c.attention),
+                            Badge::Quiet => None,
+                        })
+                        .map(|dot| {
+                            div()
+                                .absolute()
+                                .top(px(t.space.s2))
+                                .right(px(t.space.s2))
+                                .size(px(t.space.s8 + t.space.s4))
+                                .rounded_full()
+                                .bg(dot)
+                                .border(px(t.space.s2))
+                                .border_color(if selected { c.selected } else { c.surface })
+                        }),
+                )
+                .on_click(cx.listener(move |p, _, _, cx| p.pick(Some(selection.clone()), cx)));
+            marks = marks.child(self.in_view(mark, None, &scroll, window, cx));
         }
         let name = self
             .profile_name

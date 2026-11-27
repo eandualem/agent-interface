@@ -828,9 +828,11 @@ impl Pane {
         local: &str,
         actions: bool,
         anchored: bool,
-        cx: &Context<Self>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let (t, c) = (tokens(), colors());
+        let scroll = self.list_scroll("connect-panel-scroll", window, cx);
         let meta =
             |text: &'static str| ui::text(div().text_color(c.muted), &t.text.meta).child(text);
         let close = |pane: &mut Self, cx: &mut Context<Self>| {
@@ -860,7 +862,7 @@ impl Pane {
         };
         let valid = matches!(check, rules::IdCheck::Valid { .. });
         let send = if valid && actions {
-            self.live_button(
+            let send = self.live_button(
                 "live-submit",
                 "Send request",
                 ui::Button::Primary,
@@ -869,7 +871,8 @@ impl Pane {
                     pane.submit_live_form(window, cx);
                     pane.focus_after_connect(window, cx);
                 },
-            )
+            );
+            self.in_view(send, None, &scroll, window, cx)
         } else {
             ui::button("live-submit", "Send request", ui::Button::Primary).opacity(0.35)
         };
@@ -888,9 +891,31 @@ impl Pane {
         };
         let copied = self.copied.as_deref() == Some("copy-local-id-popover");
         let mine = local.to_owned();
+        let cancel = self.live_button(
+            "live-cancel",
+            "Cancel",
+            ui::Button::Secondary,
+            cx,
+            move |pane, window, cx| {
+                close(pane, cx);
+                pane.focus_after_connect(window, cx);
+            },
+        );
+        let cancel = self.in_view(cancel, None, &scroll, window, cx);
+        let copy =
+            peers::small_button(
+                "copy-local-id-popover",
+                if copied { "Copied" } else { "Copy ID" },
+            )
+            .on_click(cx.listener(move |p, _, _, cx| {
+                p.copy("copy-local-id-popover".into(), mine.clone(), cx)
+            }));
+        let copy = self.in_view(copy, None, &scroll, window, cx);
+        let field = self.input.read(cx).focus.clone();
         ui::menu()
             .id("connect-panel")
             .track_focus(&self.connect_focus)
+            .track_scroll(&scroll)
             .when(anchored, |el| el.absolute().top(px(top)).left(px(left)))
             .w(px(t.size.connect_popover))
             .max_w(gpui::relative(0.92))
@@ -935,7 +960,9 @@ impl Pane {
                     .child(
                         field_box(hinted(&self.input, "v1:…", cx))
                             .font_family(t.font.mono.clone())
-                            .border_color(c.accent),
+                            .border_color(c.accent)
+                            .relative()
+                            .child(self.reveal.within(&field, &scroll)),
                     )
                     .children(status),
             )
@@ -951,16 +978,7 @@ impl Pane {
                     .items_center()
                     .gap(px(t.space.s8))
                     .child(send)
-                    .child(self.live_button(
-                        "live-cancel",
-                        "Cancel",
-                        ui::Button::Secondary,
-                        cx,
-                        move |pane, window, cx| {
-                            close(pane, cx);
-                            pane.focus_after_connect(window, cx);
-                        },
-                    )),
+                    .child(cancel),
             )
             .child(
                 div()
@@ -986,15 +1004,7 @@ impl Pane {
                         .flex()
                         .items_center(),
                     )
-                    .child(
-                        peers::small_button(
-                            "copy-local-id-popover",
-                            if copied { "Copied" } else { "Copy ID" },
-                        )
-                        .on_click(cx.listener(move |p, _, _, cx| {
-                            p.copy("copy-local-id-popover".into(), mine.clone(), cx)
-                        })),
-                    ),
+                    .child(copy),
             )
     }
 
@@ -1457,6 +1467,11 @@ impl Pane {
                 else {
                     return empty("No longer listed", "Choose another peer.");
                 };
+                let scroll = self.list_scroll(
+                    SharedString::from(format!("request-scroll-{id}")),
+                    window,
+                    cx,
+                );
                 let name = rules::display_name(r.display_name.as_deref());
                 let incoming = r.direction == Direction::Incoming;
                 let waiting = incoming && r.state == "pending";
@@ -1548,23 +1563,44 @@ impl Pane {
                                 )
                                 .gap(px(t.space.s8))
                                 .bg(c.field)
-                                .child(
-                                    ui::interaction_icon_button(
+                                .child({
+                                    let copy = ui::interaction_icon_button(
                                         "copy-request-id",
                                         if copied { "check" } else { "copy" },
                                         "Copy this connection ID",
                                     )
                                     .tab_stop(true)
-                                    .on_click(cx.listener(
-                                        move |p, _, _, cx| {
-                                            p.copy("copy-request-id".into(), full.clone(), cx)
-                                        },
-                                    )),
-                                ),
+                                    .on_click(cx.listener(move |p, _, _, cx| {
+                                        p.copy("copy-request-id".into(), full.clone(), cx)
+                                    }));
+                                    self.in_view(copy, None, &scroll, window, cx)
+                                }),
                             ),
                     );
                 if waiting && actions {
                     let (accept, decline) = (id.clone(), id.clone());
+                    let accept = self.live_button(
+                        "answer-true",
+                        "Accept",
+                        ui::Button::Primary,
+                        cx,
+                        move |p, w, cx| p.decide(Change::Answer(accept.clone(), true), w, cx),
+                    );
+                    let accept = self.in_view(accept, None, &scroll, window, cx);
+                    let decline = ui::text_action("answer-false", "Decline")
+                        .focus_visible(|el| {
+                            el.border(px(tokens().size.focus_ring))
+                                .border_color(colors().focus)
+                        })
+                        .text_color(c.text_2)
+                        .h(px(t.size.button))
+                        .px(px(t.space.s10))
+                        .focusable()
+                        .tab_stop(true)
+                        .on_click(cx.listener(move |p, _, w, cx| {
+                            p.decide(Change::Answer(decline.clone(), false), w, cx)
+                        }));
+                    let decline = self.in_view(decline, None, &scroll, window, cx);
                     card = card.child(
                         div()
                             .flex()
@@ -1572,30 +1608,8 @@ impl Pane {
                             .items_center()
                             .gap(px(t.space.s8))
                             .pt(px(t.space.s4))
-                            .child(self.live_button(
-                                "answer-true",
-                                "Accept",
-                                ui::Button::Primary,
-                                cx,
-                                move |p, w, cx| {
-                                    p.decide(Change::Answer(accept.clone(), true), w, cx)
-                                },
-                            ))
-                            .child(
-                                ui::text_action("answer-false", "Decline")
-                                    .focus_visible(|el| {
-                                        el.border(px(tokens().size.focus_ring))
-                                            .border_color(colors().focus)
-                                    })
-                                    .text_color(c.text_2)
-                                    .h(px(t.size.button))
-                                    .px(px(t.space.s10))
-                                    .focusable()
-                                    .tab_stop(true)
-                                    .on_click(cx.listener(move |p, _, w, cx| {
-                                        p.decide(Change::Answer(decline.clone(), false), w, cx)
-                                    })),
-                            )
+                            .child(accept)
+                            .child(decline)
                             .child(div().flex_1())
                             .child(meta("Declining tells them, and nothing is kept.".into())),
                     );
@@ -1612,6 +1626,7 @@ impl Pane {
                     .child(
                         div()
                             .id("request")
+                            .track_scroll(&scroll)
                             .flex_1()
                             .min_h_0()
                             .overflow_y_scroll()
@@ -1683,7 +1698,7 @@ impl Pane {
                 };
                 if history.older.is_some() {
                     rows += 1;
-                    body = body.child(div().flex().justify_center().child(self.live_button(
+                    let older = self.live_button(
                         "older-history",
                         "Older messages",
                         ui::Button::Secondary,
@@ -1693,7 +1708,9 @@ impl Pane {
                             pane.keep_focus(&pane.thread_focus.clone(), window, cx);
                             pane.live_older(cx)
                         },
-                    )));
+                    );
+                    let older = self.in_view(older, None, &self.thread_scroll, window, cx);
+                    body = body.child(div().flex().justify_center().child(older));
                 }
                 let now = Local::now();
                 let mut day: Option<Local> = None;
@@ -1716,7 +1733,7 @@ impl Pane {
                             )
                         }
                         ThreadItem::Message(m) => {
-                            self.message_card(name, m, actions && connected, held, cx)
+                            self.message_card(name, m, actions && connected, held, window, cx)
                         }
                     };
                     let waits =
@@ -1905,9 +1922,9 @@ impl Pane {
         } else {
             if self.width != peers::Width::Narrow {
                 main = main.child(if self.list_minimised() {
-                    self.peer_strip(&s.summary, cx)
+                    self.peer_strip(&s.summary, window, cx)
                 } else {
-                    self.peer_list(&s.summary, cx)
+                    self.peer_list(&s.summary, window, cx)
                 });
             }
             {
@@ -1926,7 +1943,7 @@ impl Pane {
             // ＋ is drawn only beside a list or strip; otherwise the popover
             // opens centred near the top of the pane.
             let anchored = listed && self.width != peers::Width::Narrow;
-            let panel = self.connect_panel(&local, can_send, anchored, cx);
+            let panel = self.connect_panel(&local, can_send, anchored, window, cx);
             main = main.child(if anchored {
                 panel.into_any_element()
             } else {
