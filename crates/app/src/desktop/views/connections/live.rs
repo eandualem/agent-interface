@@ -1467,7 +1467,11 @@ impl Pane {
                 else {
                     return empty("No longer listed", "Choose another peer.");
                 };
-                let scroll = self.list_scroll("request-scroll", window, cx);
+                let scroll = self.list_scroll(
+                    SharedString::from(format!("request-scroll-{id}")),
+                    window,
+                    cx,
+                );
                 let name = rules::display_name(r.display_name.as_deref());
                 let incoming = r.direction == Direction::Incoming;
                 let waiting = incoming && r.state == "pending";

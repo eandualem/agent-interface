@@ -338,11 +338,11 @@ impl Pane {
             .child(self.reveal.within(&focus, scroll))
     }
 
-    /// The scroll position of the scrolling element `key` names, kept while
-    /// it is drawn, so it opens at its top each time it is shown again.
+    /// The scroll position of a scrolling element, kept while it is drawn
+    /// under `key`, so it opens at its top each time it is shown again.
     fn list_scroll(
         &self,
-        key: &'static str,
+        key: impl Into<gpui::ElementId>,
         window: &mut Window,
         cx: &mut gpui::App,
     ) -> gpui::ScrollHandle {
