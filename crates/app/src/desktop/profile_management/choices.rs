@@ -307,8 +307,7 @@ impl Form {
             let read = work.await;
             let _ = this.update(cx, |form, cx| {
                 if form.finished
-                    || form.tools_read != read_at
-                    || form.machine.as_ref() != Some(&machine)
+                    || !accepts_read(form.tools_read, read_at, form.machine.as_deref(), &machine)
                 {
                     return;
                 }
@@ -1074,6 +1073,17 @@ fn elsewhere_tool<'a>(
         Elsewhere::Reading | Elsewhere::Refused(_) => None,
     }
 }
+/// Whether a read of `asked`'s tools, the `read_at`th, is still the one to
+/// show: no later read began, and that machine is still the one chosen.
+fn accepts_read(latest: u64, read_at: u64, chosen: Option<&str>, asked: &str) -> bool {
+    latest == read_at && chosen == Some(asked)
+}
+/// The Runs in note where another machine's Backbone gave its reason for
+/// not listing its tools.
+fn older_note(why: &str) -> String {
+    let why = why.trim_end().trim_end_matches('.');
+    format!("{why}. It starts in the profile's default tool.")
+}
 /// Why another machine can't be chosen, under the Machine row.
 fn unavailable(name: &str, state: MachineState, last_seen: Option<&str>, now: f64) -> String {
     if state != MachineState::Offline {
@@ -1367,7 +1377,7 @@ impl Render for Form {
                     match &self.elsewhere {
                         Some(Elsewhere::Reading) if elsewhere.is_some() => note(format!("Checking {there}'s tools…").into()).into_any_element(),
                         Some(Elsewhere::NotListed(None)) if elsewhere.is_some() => note(format!("Backbone doesn't list {there}'s tools yet, so it starts in the profile's default tool.").into()).into_any_element(),
-                        Some(Elsewhere::NotListed(Some(why))) if elsewhere.is_some() => note(format!("{why}. It starts in the profile's default tool.").into()).into_any_element(),
+                        Some(Elsewhere::NotListed(Some(why))) if elsewhere.is_some() => note(older_note(why).into()).into_any_element(),
                         Some(Elsewhere::Refused(why)) if elsewhere.is_some() => attention(why.clone().into()).into_any_element(),
                         _ if shown.iter().any(|r| eligible(r, false)) => tools.into_any_element(),
                         _ if elsewhere.is_some() => note(format!("No tool on {there} can set up an agent yet.").into()).into_any_element(),

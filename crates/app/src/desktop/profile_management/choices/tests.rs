@@ -711,3 +711,26 @@ fn a_place_on_another_machine_names_the_agent_only_with_a_valid_name() {
     // Not a place: nothing.
     assert_eq!(place_name("work/app/x"), None);
 }
+
+#[test]
+fn only_the_latest_read_of_the_chosen_machine_is_shown() {
+    assert!(accepts_read(2, 2, Some("linux"), "linux"));
+    // A later read began: this one is superseded.
+    assert!(!accepts_read(3, 2, Some("linux"), "linux"));
+    // Another machine, or this one, is chosen now.
+    assert!(!accepts_read(2, 2, Some("desktop"), "linux"));
+    assert!(!accepts_read(2, 2, None, "linux"));
+}
+
+#[test]
+fn an_older_backbones_reason_ends_in_one_full_stop() {
+    let note = "machine 'build-box' runs an older Backbone; upgrade it to see them. It starts in the profile's default tool.";
+    assert_eq!(
+        older_note("machine 'build-box' runs an older Backbone; upgrade it to see them."),
+        note
+    );
+    assert_eq!(
+        older_note("machine 'build-box' runs an older Backbone; upgrade it to see them"),
+        note
+    );
+}
