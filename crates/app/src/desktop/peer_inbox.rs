@@ -13,6 +13,10 @@ use std::{
 
 const UNSUPPORTED: &str = "This Agent Backbone version doesn\u{2019}t offer Connections.";
 const NOT_ANSWERING: &str = "Agent Backbone isn\u{2019}t answering. Try again.";
+/// Quarter seconds between attempts to open the update stream, and the most
+/// they grow to while the service refuses it.
+const RETRY: u32 = 12;
+const RETRY_REFUSED_MAX: u32 = 240;
 
 /// What the person reads when a Connections request fails.
 pub(super) fn failure(error: Error) -> String {
@@ -57,6 +61,7 @@ pub(super) enum Opening {
     Connect,
 }
 
+#[derive(PartialEq)]
 pub(super) struct Summary {
     pub overview: api::Overview,
     counts: HashMap<String, usize>,
@@ -222,6 +227,9 @@ impl Inbox {
             .spawn(move || {
                 let mut cursor = None;
                 let live = || running.load(Ordering::Acquire);
+                // Quarter seconds before the next attempt: 3 s, doubling up
+                // to a minute while the service keeps refusing.
+                let mut wait = RETRY;
                 while live() {
                     let watched = c.watch_peers(&mut cursor, &live, &mut || {
                         // A refusal stands until the stream opens again.
@@ -232,12 +240,22 @@ impl Inbox {
                     if !live() {
                         break;
                     }
-                    if watched.is_err_and(|e| !lost(e)) {
+                    let refused = watched.is_err_and(|e| !lost(e));
+                    if refused {
                         ended.store(true, Ordering::Release);
                     }
-                    opened.store(false, Ordering::Release);
+                    // An opened stream, or one that ended unrefused, starts
+                    // the wait again.
+                    let was_open = opened.swap(false, Ordering::AcqRel);
+                    if !refused || was_open {
+                        wait = RETRY;
+                    }
                     let _ = tx.try_send(());
-                    for _ in 0..12 {
+                    let quarters = wait;
+                    if refused {
+                        wait = (wait * 2).min(RETRY_REFUSED_MAX);
+                    }
+                    for _ in 0..quarters {
                         if !live() {
                             return;
                         }
@@ -269,10 +287,14 @@ impl Inbox {
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         if !self.online.load(Ordering::Acquire) {
-            self.error =
-                Some("Agent Backbone isn\u{2019}t sending updates. Reconnecting\u{2026}".into());
-            self.lost = !self.refused.load(Ordering::Acquire);
-            cx.notify();
+            let error = "Agent Backbone isn\u{2019}t sending updates. Reconnecting\u{2026}";
+            let lost = !self.refused.load(Ordering::Acquire);
+            // Each failed attempt says the same; only a change redraws.
+            if self.error.as_deref() != Some(error) || self.lost != lost {
+                self.error = Some(error.into());
+                self.lost = lost;
+                cx.notify();
+            }
             return;
         }
         if self.reading {
@@ -288,27 +310,36 @@ impl Inbox {
             let result = read.await;
             let _ = this.update(cx, |inbox, cx| {
                 inbox.reading = false;
+                // An identical read redraws nothing.
+                let mut changed = false;
                 if inbox.online.load(Ordering::Acquire) {
                     match result {
                         Ok(summary) => {
+                            changed =
+                                inbox.summary.as_deref() != Some(&summary) || inbox.error.is_some();
                             inbox.summary = Some(Arc::new(summary));
                             inbox.error = None;
                             inbox.lost = false;
                             inbox.read_at = Some(chrono::Local::now().format("%H:%M").to_string());
                         }
                         Err(error) => {
-                            inbox.lost = lost(error);
-                            inbox.error = Some(overview_failure(error));
+                            let unreached = lost(error);
+                            let error = Some(overview_failure(error));
+                            changed = inbox.lost != unreached || inbox.error != error;
+                            inbox.lost = unreached;
+                            inbox.error = error;
                         }
                     }
                 }
-                if cx.has_global::<Sources>() {
+                if changed && cx.has_global::<Sources>() {
                     let _ = cx.global_mut::<Sources>();
                 }
                 if std::mem::take(&mut inbox.dirty) {
                     inbox.refresh(cx);
                 }
-                cx.notify();
+                if changed {
+                    cx.notify();
+                }
             });
         })
         .detach();
