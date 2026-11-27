@@ -371,8 +371,9 @@ machines shown but not choosable. On another machine the agent works in a
 repository (`owner/name`, sent as `repo`) or a folder there (sent as `dir`),
 checked as text only and never made on this machine; the start names the
 machine by its full ID, and its tools come from
-`GET /api/profile/machines/{id}/runtimes`. A service without that route
-starts the profile's default tool. No pane opens here for an agent on
+`GET /api/profile/machines/{id}/runtimes`. A service without that route,
+or a machine whose Backbone is too old to list its tools (a 503
+`unavailable` naming that machine), starts the profile's default tool. No pane opens here for an agent on
 another machine: it appears in the panel under that machine.
 
 The layer offers the same persistent interface-size setting as the workspace,

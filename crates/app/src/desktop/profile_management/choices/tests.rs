@@ -593,9 +593,15 @@ fn a_start_on_another_machine_waits_for_its_tools_and_a_free_name() {
         None
     );
     // Not listed: the profile's default tool, no tool or model sent.
-    let unlisted = Elsewhere::NotListed;
+    let unlisted = Elsewhere::NotListed(None);
     assert_eq!(
         id(elsewhere_tool(false, Some(&unlisted), None, None)),
+        Some(None)
+    );
+    // As where that machine's Backbone is too old to list them.
+    let older = Elsewhere::NotListed(Some("upgrade it to see them".into()));
+    assert_eq!(
+        id(elsewhere_tool(false, Some(&older), None, None)),
         Some(None)
     );
     // Being read, or unknown: no start.

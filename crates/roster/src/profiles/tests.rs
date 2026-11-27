@@ -1281,6 +1281,19 @@ fn the_profiles_machines_and_another_machines_tools_are_read() {
     newer["schema_version"] = json!(2);
     let mut elsewhere = listed.clone();
     elsewhere["machine"] = json!("1b2c3d4e");
+    // A tool with no sign-in at all still says `unavailable`; it is no
+    // sign-in problem, and the tool's own field stands.
+    let mut no_sign_in = listed.clone();
+    no_sign_in["items"].as_array_mut().unwrap().push(json!({
+        "authentication": "not_applicable", "available": true, "display_name": "OpenCode",
+        "efforts": [], "id": "opencode", "models": [], "reports_state": "hooks + terminal",
+        "setup_supported": true, "unattended": {"args": [], "sandboxed": false, "supported": true},
+        "sign_in": {"storage": "unavailable", "message": "opencode has no sign-in here"}}));
+    let older = fixture(include_str!(
+        "setup/fixtures/machine-runtimes-older-backbone.json"
+    ));
+    // Another unavailable reply, which names no machine, is still a refusal.
+    let busy = json!({"detail": {"code": "unavailable", "message": "the home is starting"}});
     let server = serve(
         listener,
         vec![
@@ -1309,6 +1322,10 @@ fn the_profiles_machines_and_another_machines_tools_are_read() {
             ),
             (200, newer),
             (200, elsewhere),
+            (503, older.clone()),
+            (503, older),
+            (503, busy),
+            (200, no_sign_in),
         ],
     );
     let connection = Profile::parse(&serde_json::to_vec(&entry).unwrap())
@@ -1354,7 +1371,7 @@ fn the_profiles_machines_and_another_machines_tools_are_read() {
     );
     assert!(matches!(
         connection.machine_tools(machine),
-        Ok(Tools::NotListed)
+        Ok(Tools::NotListed(None))
     ));
     assert_eq!(
         connection.machine_tools(machine).err(),
@@ -1377,6 +1394,31 @@ fn the_profiles_machines_and_another_machines_tools_are_read() {
     assert_eq!(
         connection.machine_tools(machine).err(),
         Some(AddError::Connection(Error::Invalid))
+    );
+    // A reachable machine on an older Backbone: not listed, with its reason.
+    let Ok(Tools::NotListed(Some(reason))) = connection.machine_tools(machine) else {
+        panic!("an older Backbone's machine was not told apart");
+    };
+    assert_eq!(
+        reason,
+        "machine 'build-box' runs an older Backbone that cannot list its runtimes; upgrade it to see them"
+    );
+    // Only for the machine it names.
+    assert_eq!(
+        connection.machine_tools("1b2c3d4e").err(),
+        Some(AddError::Refused(reason))
+    );
+    assert_eq!(
+        connection.machine_tools(machine).err(),
+        Some(AddError::Refused("the home is starting".into()))
+    );
+    let Ok(Tools::Listed { catalog, .. }) = connection.machine_tools(machine) else {
+        panic!("the machine's tools were not listed");
+    };
+    let opencode = catalog.items().iter().find(|r| r.id == "opencode").unwrap();
+    assert_eq!(
+        (opencode.available, opencode.authentication),
+        (true, Authentication::NotApplicable)
     );
     assert_eq!(
         connection.machine_tools("../agents").err(),

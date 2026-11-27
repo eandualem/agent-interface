@@ -64,8 +64,9 @@ enum Elsewhere {
         /// When that machine was checked, RFC 3339.
         checked_at: Option<String>,
     },
-    /// The service doesn't list them: the profile's default tool starts.
-    NotListed,
+    /// They aren't listed, with Backbone's reason when it gave one: the
+    /// profile's default tool starts.
+    NotListed(Option<String>),
     /// Why they can't be known now, as the service says.
     Refused(String),
 }
@@ -322,7 +323,7 @@ impl Form {
                             checked_at,
                         }
                     }
-                    Ok(Tools::NotListed) => Elsewhere::NotListed,
+                    Ok(Tools::NotListed(reason)) => Elsewhere::NotListed(reason),
                     Err(AddError::Refused(why)) => Elsewhere::Refused(why),
                     Err(AddError::Connection(_)) => {
                         Elsewhere::Refused(format!("{name}'s tools could not be read."))
@@ -1069,7 +1070,7 @@ fn elsewhere_tool<'a>(
             }
             Some(Some(runtime))
         }
-        Elsewhere::NotListed => Some(None),
+        Elsewhere::NotListed(_) => Some(None),
         Elsewhere::Reading | Elsewhere::Refused(_) => None,
     }
 }
@@ -1365,7 +1366,8 @@ impl Render for Form {
                     "Runs in",
                     match &self.elsewhere {
                         Some(Elsewhere::Reading) if elsewhere.is_some() => note(format!("Checking {there}'s tools…").into()).into_any_element(),
-                        Some(Elsewhere::NotListed) if elsewhere.is_some() => note(format!("Backbone doesn't list {there}'s tools yet, so it starts in the profile's default tool.").into()).into_any_element(),
+                        Some(Elsewhere::NotListed(None)) if elsewhere.is_some() => note(format!("Backbone doesn't list {there}'s tools yet, so it starts in the profile's default tool.").into()).into_any_element(),
+                        Some(Elsewhere::NotListed(Some(why))) if elsewhere.is_some() => note(format!("{why}. It starts in the profile's default tool.").into()).into_any_element(),
                         Some(Elsewhere::Refused(why)) if elsewhere.is_some() => attention(why.clone().into()).into_any_element(),
                         _ if shown.iter().any(|r| eligible(r, false)) => tools.into_any_element(),
                         _ if elsewhere.is_some() => note(format!("No tool on {there} can set up an agent yet.").into()).into_any_element(),

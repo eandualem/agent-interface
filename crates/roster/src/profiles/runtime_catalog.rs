@@ -70,7 +70,8 @@ impl Catalog {
             models: Vec<String>,
             efforts: Vec<String>,
             authentication: Authentication,
-            /// Whether a login is stored on another machine.
+            /// Whether a login is stored on another machine: `present`,
+            /// `missing`, or `unavailable` where it can't be said.
             #[serde(default)]
             sign_in: Option<SignIn>,
         }
@@ -104,12 +105,12 @@ impl Catalog {
                 setup_supported: item.setup_supported,
                 models: item.models,
                 efforts: item.efforts,
+                // `unavailable` is also what a tool with no sign-in at all
+                // says, such as a shell: the tool's own field stands then.
                 authentication: match item.sign_in.as_ref().map(|s| s.storage.as_str()) {
-                    None => item.authentication,
                     Some("present") => Authentication::Authenticated,
                     Some("missing") => Authentication::NotAuthenticated,
-                    Some("unavailable") => Authentication::Unavailable,
-                    Some(_) => Authentication::Unknown,
+                    _ => item.authentication,
                 },
             })
             .collect();

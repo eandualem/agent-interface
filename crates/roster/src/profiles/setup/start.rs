@@ -267,6 +267,22 @@ fn no_such_route(response: &crate::transport::local::Response) -> bool {
         })
 }
 
+/// Backbone's reason when `machine` is reachable but runs a Backbone too old
+/// to list its tools: a 503 `unavailable` that names that machine. Backbone
+/// answers other 503s `unavailable` too, without naming the machine asked
+/// about, so those stay refusals.
+fn older_backbone(response: &crate::transport::local::Response, machine: &str) -> Option<String> {
+    if response.status != 503 {
+        return None;
+    }
+    let refusal: serde_json::Value = serde_json::from_slice(&response.body).ok()?;
+    let detail = &refusal["detail"];
+    (detail["code"] == "unavailable" && detail["machine"] == machine)
+        .then(|| detail["message"].as_str().map(super::one_line))
+        .flatten()
+        .filter(|reason| !reason.is_empty())
+}
+
 /// What another machine's tools are, as its home lists them.
 #[derive(Clone, Debug)]
 pub enum Tools {
@@ -277,8 +293,9 @@ pub enum Tools {
         /// When the machine was checked, RFC 3339.
         checked_at: Option<String>,
     },
-    /// The service doesn't list another machine's tools.
-    NotListed,
+    /// Their list isn't served: by this service, or, with Backbone's reason,
+    /// by that machine's older Backbone.
+    NotListed(Option<String>),
 }
 
 impl Connection {
@@ -313,7 +330,10 @@ impl Connection {
         let path = format!("/api/profile/machines/{machine}/runtimes");
         let response = self.response(&path, None, crate::RESPONSE_LIMIT)?;
         if no_such_route(&response) {
-            return Ok(Tools::NotListed);
+            return Ok(Tools::NotListed(None));
+        }
+        if let Some(reason) = older_backbone(&response, machine) {
+            return Ok(Tools::NotListed(Some(reason)));
         }
         added(&response)?;
         // The catalog's own read tells a newer shape from a malformed one.
