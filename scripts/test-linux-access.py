@@ -174,8 +174,6 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
                 return self.reply(200, served)
             if path == "/api/agents":
                 with RECORDS.lock:
-                    # Recorded, so a step can wait for the read after a change.
-                    RECORDS.calls.append(("GET", path, None))
                     return self.reply(200, copy.deepcopy(RECORDS.agents))
             if path == "/api/swarms":
                 return self.reply(200, fixture("swarms"))
@@ -366,8 +364,10 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
                 lambda method, path, body: method == "POST" and path.endswith("/approve")
                 and body.get("note") == "for this check"),
                 "the approval sent with its note by the keys")
-            # Once the reply is applied the approved card leaves Waiting, its
-            # note with it; Escape before that would only close the note.
+            # The approved card leaves Waiting, its note with it, when the
+            # pane applies the reply or its next read no longer lists it.
+            # Escape while the note is open would only close the note, and
+            # the wait for the agent list below would then fail.
             wait_for(lambda: not containing("visit"), "the approved card gone from Waiting")
             command("xdotool", "key", "Escape")
             wait_for(lambda: find("ORCHESTRATORS"), "the agent list again after Escape")
