@@ -458,9 +458,14 @@ depend on Backbone. The `roster::views` adapter reads and decodes view data;
 `app::desktop::views` renders it in native panes. `roster::profiles::access`
 reads each agent's role, place, confinement, grants and GitHub reach from the
 agents endpoint, and the requests for access, and sends the Access pane's
-changes on the same binding: grants, revocations, confinement and placement,
-and decisions on requests. The pane applies each reply as Backbone returns it
-and reads again; it never changes anything ahead of Backbone's answer. Each Unix request owns a
+changes on the same binding: grants, revocations, ceilings, confinement and
+placement, and decisions on requests. `roster::profiles::browsers` reads and
+changes Backbone's named browsers (separate Chrome profiles the owner signs in
+to once and gives to agents through grants and ceilings naming them) on the
+`/api/browsers` routes, and follows their `browser.changed` events on the push
+stream on a worker of the pane's own while it lives. The pane applies each
+reply as Backbone returns it and reads again; it never changes anything ahead
+of Backbone's answer. Each Unix request owns a
 short-lived runtime and connection so timeouts cancel all associated work.
 Selection changes coalesce and cancel obsolete request chains. Views and
 empty-pane choosers hidden by an expanded pane pause their polling. Revealing a
@@ -1590,7 +1595,12 @@ restored. While the view is shown, `agent_browser::stream` runs a Chrome
 screencast of the agent's tab. It finds the Chrome whose parent is the
 session's daemon, reads the DevTools port from the `DevToolsActivePort` file
 in that Chrome's `--user-data-dir`, and opens a WebSocket to
-`127.0.0.1:<port>/devtools/page/<target>`. It sends six methods only:
+`127.0.0.1:<port>/devtools/page/<target>`. A named browser Backbone runs is
+watched from the Access pane through the DevTools endpoint Backbone gives the
+owner while its Chrome runs on this machine: the view takes the port from it,
+and the tab of the holder's agent-browser session, else the first page in
+Chrome's target list. Backbone sizes and shows that browser's window, so its
+view sets no viewport and has no Open in Chrome. It sends six methods only:
 `Page.startScreencast`, `Page.screencastFrameAck` and `Page.stopScreencast`
 for the picture, and `Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`
 and `Input.insertText` for what the person does in the view. No script,
