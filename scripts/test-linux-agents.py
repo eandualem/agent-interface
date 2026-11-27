@@ -63,7 +63,8 @@ def agent(name, state, machine=HERE):
 
 
 AGENTS = [
-    agent("lead", "busy"),
+    # The service lists runs only while some agent reports background work.
+    dict(agent("lead", "busy"), background=dict(running=2, queued=0, processes=0)),
     agent("detach-coordinator", "busy"),
     agent("detach-coder", "idle", STUDIO),
     agent("gate-coder", "idle"),
@@ -157,10 +158,27 @@ with tempfile.TemporaryDirectory(prefix="agents-smoke-", dir="/tmp") as director
     (root / ".profile").write_text(f'PATH={shlex.quote(str(commands))}:"$PATH"\nexport PATH\n')
     overview = json.loads((PEERS / "peer-overview.json").read_text())
 
+    stopping = threading.Event()
+
     class Provider(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             path = self.path.split("?", 1)[0]
             status = 200
+            if path == "/api/stream" and "peer.connections" in self.path:
+                # Connections reads its records only while this stream is
+                # open: say hello, then keep it alive until the check ends.
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                try:
+                    self.wfile.write(b'event: hello\ndata: {"cursor": "0"}\n\n')
+                    self.wfile.flush()
+                    while not stopping.wait(10):
+                        self.wfile.write(b": alive\n\n")
+                        self.wfile.flush()
+                except OSError:
+                    pass
+                return
             if path == "/health":
                 # The version check the app makes before each connection.
                 body = dict(status="ok", version="0.1.0")
@@ -320,6 +338,7 @@ with tempfile.TemporaryDirectory(prefix="agents-smoke-", dir="/tmp") as director
                         process.wait()
             subprocess.run(["tmux", "-S", str(root / "tmux/profile.sock"), "kill-server"],
                            env=env, capture_output=True, check=False)
+            stopping.set()
             server.shutdown()
             server.server_close()
 print(f"Agents captures are in {OUTPUT}")
