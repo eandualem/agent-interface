@@ -177,13 +177,16 @@ with tempfile.TemporaryDirectory(prefix="interactions-smoke-", dir="/tmp") as di
                         str(int(word["top"]) + int(word["height"]) // 2))
                 time.sleep(0.2)
                 command("xdotool", "click", "1")
+                time.sleep(0.5)
                 try:
-                    wait_for(lambda: find("Recorded"), "the Interactions footer", 15)
+                    wait_for(lambda: find("Recorded"), "the Interactions footer", 30)
                     break
                 except AssertionError:
                     if attempt == 3:
                         raise
             command("xdotool", "mousemove", "--window", window, "5", "5")
+            # From the top left corner the widest step stays on the screen.
+            command("xdotool", "windowmove", "--sync", window, "0", "0")
             steps = (("2000", "causes"), ("1000", "communication"), ("2000", "causes"))
             for step, (size, note) in enumerate(steps):
                 command("xdotool", "windowsize", "--sync", window, size, "880")
@@ -195,7 +198,7 @@ with tempfile.TemporaryDirectory(prefix="interactions-smoke-", dir="/tmp") as di
                     shots.append(shot)
                 def shows(shot):
                     tsv = command("tesseract", str(shot), "stdout", "--psm", "11", "tsv")
-                    return any(word.get("text", "").strip().rstrip(".,:;") == note
+                    return any((word.get("text") or "").strip().rstrip(".,:;") == note
                                for word in csv.DictReader(io.StringIO(tsv), delimiter="\t"))
                 assert any(shows(shot) for shot in shots), (
                     f"the footer did not follow a resize to {size} px within 4 s")

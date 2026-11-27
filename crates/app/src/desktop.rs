@@ -3386,7 +3386,7 @@ impl Render for Browser {
         });
         for (id, view) in shown.clone() {
             let connections = view.kind == agent_interface_core::ViewKind::Connections;
-            if view.kind == agent_interface_core::ViewKind::Connections
+            if connections
                 && self.views.get(&id).is_some_and(|(_, events)| {
                     !events.belongs_to(self.pane_navigation_origin(&id).as_ref())
                 })
