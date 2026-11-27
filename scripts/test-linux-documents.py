@@ -320,14 +320,17 @@ try { new WebSocket('TARGET/socket'.replace('http:', 'ws:')); } catch (_) {}
             wx, wy, _, _ = geometry(window)
             views = [geometry(xid) for xid in all_app_windows() - native_xids]
             vx, vy, vw, vh = max(views, key=lambda view: view[2] * view[3])
-            # The native interface is drawn at its own scale, which need not
-            # follow the display's DPI as WebKit does (under this X server it
-            # stays at the interface size). Read it from where the web view
-            # starts: the panel, the gap and the card's border in from the
-            # window's left edge, in interface units.
+            # The native interface is drawn at the interface size this run
+            # sets, whatever the display's DPI, which only WebKit follows.
+            # First check the native layout is at that scale: the web view
+            # starts the panel, the gap and the card's border in from the
+            # window's left edge. Only then measure the inset in its pixels.
+            interface_scale = SCALE / 100
             inset = TOKENS['size']['panel_width'] + TOKENS['size']['pane_gap'] + TOKENS['size']['hairline']
-            interface_scale = round((vx - wx) / inset * 4) / 4
-            assert interface_scale > 0, f'the web view starts at {vx - wx} px, left of the panel'
+            expected_left = inset * interface_scale
+            assert abs((vx - wx) - expected_left) <= 2, (
+                f'the web view starts {vx - wx} px from the window\'s left edge, '
+                f'not {expected_left:.0f} px as the interface at scale {interface_scale} places it')
             radius = round(TOKENS['radius']['pane'] * interface_scale)
             hairline = max(1, round(TOKENS['size']['hairline'] * interface_scale))
             # Down the middle of the view from its bottom edge: the strip
