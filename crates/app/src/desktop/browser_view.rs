@@ -639,7 +639,9 @@ impl Render for BrowserView {
                         }
                         window.handle_input(
                             &focus,
-                            super::zoom::input(ElementInputHandler::new(shown, entity)),
+                            // The page shows no text the accent menu could
+                            // edit, so a held key repeats, as in a browser.
+                            super::zoom::repeating_input(ElementInputHandler::new(shown, entity)),
                             cx,
                         );
                         listen(window, view, &focus, band, shown, shape, hitbox);
@@ -803,7 +805,13 @@ fn listen(
             }
             window.focus(&focus, cx);
             let at = point(event.position, false);
-            let _ = view.update(cx, |view, _| view.pressed(event, at));
+            let _ = view.update(cx, |view, _| {
+                // A click with no move before it is over the page too.
+                if let Some(stream) = &view.stream {
+                    stream.set_hovered(true);
+                }
+                view.pressed(event, at);
+            });
         }
     });
     window.on_mouse_event({

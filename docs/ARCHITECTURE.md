@@ -1666,13 +1666,13 @@ the person's home folder is unknown, or whose page has no web address.
 
 The person uses the page in the view as in a browser. Input goes on the
 view's own page connection, from the client's thread, and never through
-agent-browser, so it does not wait behind the agent's commands; Chrome
-takes both, and the agent's next snapshot shows what the person did. The
-view maps a point in the drawn frame to the page by the frame's own scale,
-the page's CSS width over the width drawn, which is right at any window
-scale, letterboxed or not, and one CSS pixel per point once the viewport
-follows the pane. Presses and releases of the left button with their click
-count, moves with the button held, and the wheel at the pointer go as
+agent-browser, so it does not wait behind the agent's commands; Chrome takes
+both, and the agent's next snapshot shows what the person did. The view maps
+a point in the drawn frame to the page by the frame's own scale, the page's
+CSS width over the width drawn, which is right at any window scale,
+letterboxed or not, and one CSS pixel per point once the viewport follows
+the pane. Presses and releases of the left button with their click count,
+moves with the button held, and the wheel at the pointer go as
 `Input.dispatchMouseEvent`, with Shift and Option but not Ctrl or Cmd. A
 right or middle press, a Ctrl-click, which is a right click on macOS, or a
 Cmd-click could open Chrome's own menu or a link in a new tab in a browser
@@ -1682,60 +1682,63 @@ trackpad deltas keep their smoothness, and a wheel's lines are 40 CSS pixels
 each. Nothing beside the frame reaches the page, except that a drag begun
 inside keeps sending its moves and its release at the frame's nearest edge.
 A button released while no frame was drawn, as during a reconnect, is
-released in the page at the next move, and a release while the page can't
-be reached waits for the next connection. A pointer that leaves the frame with no button
-held moves once just outside the page, so its hover ends.
+released in the page at the next move, and a release while the page can't be
+reached waits for the next connection. A pointer that leaves the frame with
+no button held moves once just outside the page, so its hover ends.
+
 Hover and the wheel reach the page whenever the pointer is over the frame in
 the active window. A press in the frame gives the view the keyboard and a
 1-point focus ring; a press anywhere else, or a shortcut that moves to
 another pane, takes it back; without a page shown, a press in the view does
 not take it. In an expanded pane, Escape first restores the layout, as for a
 terminal, unless the input method is composing. While the input method
-composes,
-keys are its own, and no key is sent while the view shows no page, as when
-the page can't be reached; a composition or typed key still pending is
-dropped when the view loses the keyboard or the page. The window's shortcuts run before the view and
-keep working. A key the app or its menu acts on is never sent as well: the
-view skips any key with a key binding, a workspace command or a numbered
-selection, which covers Cmd-Q, Cmd-N, Cmd-O, Cmd-comma and the configurable
-chords, and Cmd-C, Cmd-V and Cmd-X, Ctrl on Linux, are not sent either.
-Named keys and combinations with Ctrl or Cmd go as `Input.dispatchKeyEvent`
-key down and up from the view's key handler. On macOS, Chrome runs no
-editing command for its usual editing keys by itself, so the view adds them
-from its own small table: `selectAll`, `undo` and `redo` for Cmd-A, Cmd-Z
-and Cmd-Shift-Z; moving by word with Option-Left and Option-Right, to the
-line's ends with Cmd-Left and Cmd-Right and to the document's with Cmd-Up
-and Cmd-Down, each extending the selection with Shift; and deleting a word
-with Option-Backspace and Option-Delete, or to the line's start with
-Cmd-Backspace. A Cmd key also goes on to the system so
-that Cmd-` still switches windows. A printable key is left to the platform's
-input method, which the view registers while it has the keyboard: when its
-text is the key's own character it goes as that key, with its text, so the
-page sees keydown, keypress and input; text the input method composed, from
-a dead key, a CJK input method or the emoji picker, goes as
-`Input.insertText`. The view keeps the composing text only to tell the
-platform that a composition is under way; the page shows nothing until it is
-committed, and the input method's own window shows it meanwhile. The page's
-pointer shape is reported only through methods outside the six, so the frame
-shows a plain pointer.
+composes, keys are its own, and no key is sent while the view shows no page,
+as when the page can't be reached; a composition or typed key still pending
+is dropped when the view loses the keyboard or the page. The window's
+shortcuts run before the view and keep working. A key the app or its menu
+acts on is never sent as well: the view skips any key with a key binding, a
+workspace command or a numbered selection, which covers Cmd-Q, Cmd-N, Cmd-O,
+Cmd-comma and the configurable chords, and Cmd-C, Cmd-V and Cmd-X, Ctrl on
+Linux, are not sent either. Named keys and combinations with Ctrl or Cmd go
+as `Input.dispatchKeyEvent` key down and up from the view's key handler. On
+macOS, Chrome runs no editing command for its usual editing keys by itself,
+so the view adds them from its own small table: `selectAll`, `undo` and
+`redo` for Cmd-A, Cmd-Z and Cmd-Shift-Z; moving by word with Option-Left and
+Option-Right, to the line's ends with Cmd-Left and Cmd-Right and to the
+document's with Cmd-Up and Cmd-Down, each extending the selection with
+Shift; and deleting a word with Option-Backspace and Option-Delete, or to
+the line's start with Cmd-Backspace. A Cmd key also goes on to the system so
+that Cmd-` still switches windows.
+
+A printable key is left to the platform's input method, which the view
+registers while it has the keyboard: when its text is the key's own
+character it goes as that key, with its text, so the page sees keydown,
+keypress and input; text the input method composed, from a dead key, a CJK
+input method or the emoji picker, goes as `Input.insertText`. The view keeps
+the composing text only to tell the platform that a composition is under
+way; the page shows nothing until it is committed, and the input method's
+own window shows it meanwhile. The page's pointer shape is reported only
+through methods outside the six, so the frame shows a plain pointer. A held
+key repeats in the page, as in a browser, rather than opening macOS's accent
+menu, which needs text the view does not have; accents come from dead keys
+and input methods.
 
 The client keeps the input waiting in order. At most one mouse move and one
 wheel turn wait for Chrome's answer: while one waits, a newer move replaces
 the next one waiting and wheel turns add up, so a fast trackpad never builds
 a backlog in Chrome, and an answer not heard within a second counts as one.
 Presses, keys and text are never joined or reordered, so a move waiting is
-sent before a later press. The platform repeats a drag held still every
-16 ms; the view sends a repeated point once. The client's reads wait 5 ms
-while input came in the last second or waits for Chrome's answer, so input
-leaves within a few milliseconds; 20 ms while the view only has the
-keyboard or the pointer is over the page, so the first key or click after a
-pause leaves within 20 ms without the client waking 200 times a second; and
-100 ms otherwise. An error answer
-to an input request is logged once and leaves the screencast as it is; an
-error answer to the screencast's own requests still counts as a refusal.
-Input given while the client reconnects is dropped, not replayed on the new
-connection, except a mouse release: the page keeps a button pressed across
-the client's connections until it hears one.
+sent before a later press. The platform repeats a drag held still every 16
+ms; the view sends a repeated point once. The client's reads wait 5 ms while
+input came in the last second or waits for Chrome's answer, so input leaves
+within a few milliseconds; 20 ms while the view only has the keyboard or the
+pointer is over the page, so the first key or click after a pause leaves
+within 20 ms without the client waking 200 times a second; and 100 ms
+otherwise. An error answer to an input request is logged once and leaves the
+screencast as it is; an error answer to the screencast's own requests still
+counts as a refusal. Input given while the client reconnects is dropped, not
+replayed on the new connection, except a mouse release: the page keeps a
+button pressed across the client's connections until it hears one.
 
 ### Bound native Policies
 
