@@ -254,14 +254,16 @@ with tempfile.TemporaryDirectory(prefix="onboarding-", dir="/tmp") as directory:
             request = setups[1]
             # The whole body: the fixture's fields, with this run's choices.
             assert request.keys() == FIRST_AGENT.keys(), request
-            assert request["agent"].keys() == FIRST_AGENT["agent"].keys(), request
+            # The Orchestrator switch starts on for a profile's first agent.
+            assert request["agent"].keys() == FIRST_AGENT["agent"].keys() | {"orchestrator"}, request
             assert fresh_request_id(request["request_id"]), request
             assert request["request_id"] != setups[0]["request_id"], request
             assert same({**request, "request_id": None}, {
                 **FIRST_AGENT, "request_id": None, "profile_id": profile_id, "start_greeting": True,
                 "agent": {**FIRST_AGENT["agent"], "directory": str(root / "Agents/orchestrator"),
                           "runtime": "claude", "model": None, "create_directory": True,
-                          "name": "orchestrator", "brief": {"template": "orchestrator-v1"}}}), request
+                          "name": "orchestrator", "brief": {"template": "orchestrator-v1"},
+                          "orchestrator": True}}), request
             assert (root / "Agents/orchestrator").is_dir()
 
             saved = tomllib.loads((settings / "settings.toml").read_text())

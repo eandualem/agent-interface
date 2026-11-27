@@ -347,7 +347,8 @@ The orchestrator's screen (`profile_management/choices.rs` in guide mode) has it
 name, the tool it runs in and Start. Each tool card says whether that tool is
 signed in in the profile, will ask for sign-in when it starts, or needs installing.
 Install uses the tool's official installer and the login shell's PATH. The first choice is a signed-in tool, else an installed one.
-Folder, instructions, model, greeting and orchestrator sit under More options. The
+Folder, instructions, model, greeting and orchestrator sit under More options; the
+orchestrator switch starts on for a profile's first agent. The
 orchestrator starts as `orchestrator`, working in `~/Agents/orchestrator`, which setup creates
 (`create_directory`); a folder the person chooses must already exist. Its brief
 is the coordinating `orchestrator-v1` template or the person's own

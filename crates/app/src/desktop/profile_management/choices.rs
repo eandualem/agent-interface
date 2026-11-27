@@ -68,7 +68,8 @@ pub(super) struct Form {
     runtime: Option<String>,
     model: Option<String>,
     greeting: bool,
-    /// Make the guide the profile's orchestrator; off until the person chooses it.
+    /// Make the first agent the profile's orchestrator: on for a profile's first
+    /// agent, which the person may switch off, and off for any other agent.
     orchestrator: bool,
     /// What Submit asks the Rust service to start.
     served: Option<setup::Request>,
@@ -283,6 +284,7 @@ impl Form {
         cx: &mut Context<Self>,
     ) {
         self.guide = true;
+        self.orchestrator = true;
         self.first = first;
         self.connection = connection;
         // Read again as a guide's: its start is saved before it runs.
