@@ -661,12 +661,12 @@ impl Flow {
             Screen::Guide => Parts {
                 key: "guide",
                 title: if self.first {
-                    "Start your guide"
+                    "Start your orchestrator"
                 } else {
-                    "Start its guide"
+                    "Start its orchestrator"
                 }
                 .into(),
-                line: "Your guide learns what you\u{2019}re working on and proposes the agents for it. You approve each one.".into(),
+                line: "Your orchestrator learns what you\u{2019}re working on and proposes the agents for it. You approve each one.".into(),
                 body: match (&self.setup, &self.form) {
                     (Some((setup, _)), _) => div()
                         .w_full()

@@ -118,7 +118,7 @@ fn said(event: &Event) -> Option<String> {
         "invalid_request" if cancel => "Setup refused the cancellation as it was sent.".into(),
         // A Backbone from before the choice refuses the field it doesn't know.
         // This can go once the lowest supported Backbone (#349) includes agent-backbone-rs #747.
-        "invalid_request" if event.message.as_deref().is_some_and(|m| m.contains("unknown field `orchestrator`")) => "This Agent Backbone is too old to make an agent the orchestrator during setup: run backbone upgrade, or continue without that choice.".into(),
+        "invalid_request" if event.message.as_deref().is_some_and(|m| m.contains("unknown field `orchestrator`")) => "This Agent Backbone is too old to make an agent the orchestrator during setup: run backbone upgrade, or turn Orchestrator off under More options and start again.".into(),
         "invalid_request" => "Setup refused the request as it was sent: change the agent's name, folder, model or instructions.".into(),
         "service_unavailable" => "The profile's service, or the computer the agent runs on, did not answer. If the service isn't running, start it with backbone up --detach.".into(),
         _ => event
