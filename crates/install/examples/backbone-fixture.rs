@@ -5,8 +5,8 @@
 //!   line of the public key) and `DIRECTORY/secret`.
 //! - `sign DIRECTORY FILE` writes the signature of `FILE` to `FILE.minisig`.
 //! - `backbone-install ARGUMENTS` runs the app's command, trusting the key
-//!   in `BACKBONE_FIXTURE_KEY`. Without it, it runs exactly what a shipped
-//!   app runs.
+//!   in `BACKBONE_FIXTURE_KEY`. An empty value stands for a build with no
+//!   release key. Without it, it runs exactly what a shipped app runs.
 
 use std::{ffi::OsString, fs, path::PathBuf, process::ExitCode};
 

@@ -757,6 +757,16 @@ if '--write-out' in args:
         self.assertIn("again in 5 seconds", result.stderr)
         self.assertEqual(self.backbone_downloads()[:4], self.LATEST * 2)
 
+    def test_backbone_before_its_first_release_keeps_the_app(self):
+        # A key is trusted, but no Backbone release has been published yet.
+        self.backbone_releases()
+        result = self.install(None)
+        self.assert_app_installed(result)
+        self.assertEqual((self.root / "sleeps").read_text(), "5\n")
+        self.assertEqual(self.backbone_downloads(), self.LATEST * 2)
+        self.assertIn("Agent Backbone was not installed. Rerun the installer to try again.", result.stderr)
+        self.assertFalse(self.backbone.exists())
+
     def test_backbone_interrupt_keeps_the_app(self):
         self.backbone_releases()
         self.publish_backbone("0.2.0")
