@@ -1246,25 +1246,6 @@ impl Browser {
             } else {
                 self.layout = Some(WindowLayout::new(document));
             }
-            // Unit tests apply documents of their own: they must not prune
-            // the shared list or write the person's settings.
-            if !cfg!(test)
-                && let Some(layout) = &self.layout
-            {
-                let workspaces: Vec<&str> = layout
-                    .model()
-                    .workspaces
-                    .iter()
-                    .map(|space| space.id.as_str())
-                    .collect();
-                if settings::forget_peer_lists_outside(&workspaces) {
-                    settings::save_in_background(settings::Settings::current(), |result| {
-                        if let Err(error) = result {
-                            tracing::warn!(%error, "Deleted workspaces' peer lists not forgotten");
-                        }
-                    });
-                }
-            }
         }
     }
 
@@ -1440,6 +1421,15 @@ impl Browser {
             return;
         };
         self.pending_save = Some(proposal);
+        // Settings are shared by every library, so only this deletion says a
+        // saved peer list choice is no longer needed.
+        if settings::forget_peer_list_of(expected) {
+            settings::save_in_background(settings::Settings::current(), |result| {
+                if let Err(error) = result {
+                    tracing::warn!(%error, "A deleted workspace's peer list not forgotten");
+                }
+            });
+        }
         self.workspace_menu = false;
         self.editing = None;
         self.tab_menu = None;
@@ -3386,6 +3376,7 @@ impl Render for Browser {
                         .is_some_and(|layout| saved_view(layout.model(), id, &pane.view)))
         });
         for (id, view) in shown.clone() {
+            let connections = view.kind == agent_interface_core::ViewKind::Connections;
             if view.kind == agent_interface_core::ViewKind::Connections
                 && self.views.get(&id).is_some_and(|(_, events)| {
                     !events.belongs_to(self.pane_navigation_origin(&id).as_ref())
@@ -3429,7 +3420,8 @@ impl Render for Browser {
             }
             // Placed on every draw, so a profile name that loads after the
             // pane exists still reaches it.
-            if let Some((pane, _)) = self.views.get(&id)
+            if connections
+                && let Some((pane, _)) = self.views.get(&id)
                 && let Some(space) = self
                     .layout
                     .as_ref()

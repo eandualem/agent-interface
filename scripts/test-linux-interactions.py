@@ -163,14 +163,26 @@ with tempfile.TemporaryDirectory(prefix="interactions-smoke-", dir="/tmp") as di
 
             # The footer's note depends on the pane's width. A resize must
             # show the note for the new width with no further input: a redraw
-            # asked for while the window draws gets no frame of its own.
+            # asked for while the window draws gets no frame of its own. The
+            # window is captured at fixed times after each resize, well within
+            # the view's 20 s refresh, and read afterwards, so a slow reading
+            # cannot stretch the wait.
             wait_for(lambda: find("Recorded"), "the Interactions footer")
-            for size, note in (("2000", "causes"), ("1000", "communication"), ("2000", "causes")):
+            steps = (("2000", "causes"), ("1000", "communication"), ("2000", "causes"))
+            for step, (size, note) in enumerate(steps):
                 command("xdotool", "windowsize", "--sync", window, size, "880")
-                # Well within the view's 20 s refresh, which would redraw it
-                # anyway; one reading may misread the small footer.
-                wait_for(lambda: find(note), f"the footer to follow a resize to {size} px", 8)
-                command("import", "-window", window, str(OUTPUT / f"footer-{size}.png"))
+                shots = []
+                for n in range(4):
+                    time.sleep(1)
+                    shot = OUTPUT / f"footer-{step}-{size}-{n}.png"
+                    command("import", "-window", window, str(shot))
+                    shots.append(shot)
+                def shows(shot):
+                    tsv = command("tesseract", str(shot), "stdout", "--psm", "11", "tsv")
+                    return any(word.get("text", "").strip().rstrip(".,:;") == note
+                               for word in csv.DictReader(io.StringIO(tsv), delimiter="\t"))
+                assert any(shows(shot) for shot in shots), (
+                    f"the footer did not follow a resize to {size} px within 4 s")
         finally:
             for process in (app, wm):
                 if process and process.poll() is None:

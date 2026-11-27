@@ -396,18 +396,14 @@ pub fn set_peer_list_minimised(key: &str, minimised: bool) {
     }
 }
 
-/// Forget the minimised peer lists of workspaces not in `workspaces`, and
-/// say whether any went. A key is `profile/workspace`, or the workspace
-/// alone.
-pub fn forget_peer_lists_outside(workspaces: &[&str]) -> bool {
+/// Forget the minimised peer lists of the workspace `workspace`, and say
+/// whether any went. A key is `profile/workspace`, or the workspace alone.
+pub fn forget_peer_list_of(workspace: &str) -> bool {
     let mut keys = PEER_LISTS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let before = keys.len();
-    keys.retain(|key| {
-        let workspace = key.rsplit_once('/').map_or(key.as_str(), |(_, id)| id);
-        workspaces.contains(&workspace)
-    });
+    keys.retain(|key| key.rsplit_once('/').map_or(key.as_str(), |(_, id)| id) != workspace);
     keys.len() != before
 }
 
@@ -778,20 +774,16 @@ mod tests {
             Settings::current().minimised_peer_lists.len(),
             MAX_PEER_LISTS
         );
-        // The lists of deleted workspaces are forgotten.
-        assert!(forget_peer_lists_outside(&["000000000001", "000000000003"]));
+        // A deleted workspace's lists are forgotten, with or without a profile.
+        assert!(forget_peer_list_of("000000000003"));
+        assert!(!peer_list_minimised("000000000003"));
+        assert!(!peer_list_minimised("0123abcd/000000000003"));
+        assert!(peer_list_minimised("0123abcd/000000000004"));
         assert_eq!(
-            Settings::current().minimised_peer_lists,
-            [
-                "0123abcd/000000000001",
-                "0123abcd/000000000003",
-                "000000000003"
-            ]
+            Settings::current().minimised_peer_lists.len(),
+            MAX_PEER_LISTS - 2
         );
-        assert!(!forget_peer_lists_outside(&[
-            "000000000001",
-            "000000000003"
-        ]));
+        assert!(!forget_peer_list_of("000000000003"));
         Settings::default().apply();
         assert_eq!(Settings::current(), Settings::default());
         assert_eq!(Settings::parse("not toml ["), Settings::default());
