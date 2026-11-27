@@ -221,8 +221,8 @@ against the release key built into the app. The installer then downloads that
 version's archive, and the app checks its SHA-256 against the signed manifest
 before it puts Backbone in place. Until the first Agent Backbone release is
 published, the installer reports that the release manifest cannot be
-downloaded, tries once more five seconds later, then installs only the app and
-says Agent Backbone was not installed.
+downloaded, tries once more five seconds later, then finishes with only the app
+installed and says Agent Backbone was not installed.
 
 Running the installer again updates Backbone to its latest release. It never
 installs a version older than the one installed, also after `backbone
