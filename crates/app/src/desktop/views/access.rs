@@ -523,7 +523,7 @@ impl Pane {
         let cards = self.card_order();
         let at = self
             .card
-            .and_then(|card| cards.iter().position(|ids| ids.first() == Some(&card)));
+            .and_then(|card| cards.iter().position(|ids| ids.last() == Some(&card)));
         match key.key.as_str() {
             "down" | "up" => {
                 let next = match (at, key.key.as_str()) {
@@ -531,7 +531,7 @@ impl Pane {
                     (Some(at), "down") => (at + 1).min(cards.len().saturating_sub(1)),
                     (Some(at), _) => at.saturating_sub(1),
                 };
-                self.card = cards.get(next).and_then(|ids| ids.first().copied());
+                self.card = cards.get(next).and_then(|ids| ids.last().copied());
             }
             "a" | "r" => {
                 let Some(ids) = at.and_then(|at| cards.get(at)).cloned() else {
@@ -540,8 +540,7 @@ impl Pane {
                 self.decide(ids, key.key == "a", window, cx);
             }
             "n" => {
-                let Some(first) = at.and_then(|at| cards.get(at)).and_then(|ids| ids.first())
-                else {
+                let Some(first) = at.and_then(|at| cards.get(at)).and_then(|ids| ids.last()) else {
                     return false;
                 };
                 self.open_note(*first, window, cx);
@@ -578,7 +577,7 @@ impl Pane {
         cx: &mut Context<Self>,
     ) {
         self.leave_field(window, cx);
-        let first = ids.first().copied().unwrap_or_default();
+        let first = model::card_key(&ids);
         let note = if self.noting == Some(first) {
             self.note_field.read(cx).value().trim().to_owned()
         } else {
@@ -588,7 +587,7 @@ impl Pane {
     }
 
     fn decide_with(&mut self, ids: Vec<i64>, approve: bool, note: String, cx: &mut Context<Self>) {
-        let first = ids.first().copied().unwrap_or_default();
+        let first = model::card_key(&ids);
         self.card = Some(first);
         self.send(
             format!("access-decide-{first}"),

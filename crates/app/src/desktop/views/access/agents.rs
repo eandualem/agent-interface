@@ -792,6 +792,13 @@ impl Pane {
         Some(ui::machine_chip(label))
     }
 
+    /// The chip for a grant on another machine, under a section that says
+    /// "on this Mac": its name, or its ID once Backbone no longer names it.
+    fn other_machine(&self, id: Option<&String>, name: Option<&String>) -> Div {
+        self.machine_chip(id, name)
+            .unwrap_or_else(|| ui::machine_chip(id.cloned().unwrap_or_default()))
+    }
+
     /// Whether a grant is on this app's own machine, or names none.
     fn on_this_machine(&self, id: Option<&String>) -> bool {
         id.is_none_or(|id| id == &self.connection.identity().installation_id)
@@ -931,7 +938,7 @@ impl Pane {
                     ))
                     // The section says it is on this machine; others are named.
                     .when(!self.on_this_machine(id.as_ref()), |el| {
-                        el.children(self.machine_chip(id.as_ref(), name.as_ref()))
+                        el.child(self.other_machine(id.as_ref(), name.as_ref()))
                     })
                     .child(div().flex_1())
                     .child(self.busy(
@@ -982,7 +989,7 @@ impl Pane {
                     .child(ui::icon("package", t.size.icon, c.muted))
                     .child("Docker")
                     .when(!self.on_this_machine(id.as_ref()), |el| {
-                        el.children(self.machine_chip(id.as_ref(), name.as_ref()))
+                        el.child(self.other_machine(id.as_ref(), name.as_ref()))
                     })
                     .child(
                         ui::text(

@@ -214,7 +214,7 @@ impl Pane {
         // Requests come newest first; a card says how long its oldest waited.
         let oldest = card.last().copied().unwrap_or(first);
         let ids: Vec<i64> = card.iter().map(|r| r.id).collect();
-        let key = first.id;
+        let key = model::card_key(&ids);
         let focused = self.card == Some(key);
         let not_needed = model
             .agent(&first.agent)

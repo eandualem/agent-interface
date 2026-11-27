@@ -170,6 +170,8 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
                 return self.reply(200, served)
             if path == "/api/agents":
                 with RECORDS.lock:
+                    # Recorded, so a step can wait for the read after a change.
+                    RECORDS.calls.append(("GET", path, None))
                     return self.reply(200, copy.deepcopy(RECORDS.agents))
             if path == "/api/swarms":
                 return self.reply(200, fixture("swarms"))
@@ -316,12 +318,16 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
             command("xdotool", "type", "--delay", "20", "for this check")
             command("xdotool", "key", "Return")
             command("xdotool", "key", "a")
-            wait_for(lambda: any(method == "POST" and path.endswith("/approve")
-                                 and body.get("note") == "for this check"
-                                 for method, path, body in list(RECORDS.calls)),
-                     "the approval sent with its note by the keys")
-            # The reply closes the note; Escape before that would only close it.
-            wait_for(lambda: not find("check"), "the note closed by the approval")
+            def approved_then_read():
+                calls = list(RECORDS.calls)
+                sent = [at for at, (method, path, body) in enumerate(calls)
+                        if method == "POST" and path.endswith("/approve")
+                        and body.get("note") == "for this check"]
+                # The pane reads again only once the reply has closed the note.
+                return sent and any(method == "GET" and path == "/api/agents"
+                                    for method, path, _ in calls[sent[0] + 1:])
+            # Escape before the reply would only close the note.
+            wait_for(approved_then_read, "the approval sent with its note by the keys, then read back")
             command("xdotool", "key", "Escape")
             wait_for(lambda: find("ORCHESTRATORS"), "the agent list again after Escape")
         finally:

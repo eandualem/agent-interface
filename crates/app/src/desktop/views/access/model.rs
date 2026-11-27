@@ -517,6 +517,13 @@ pub(super) fn github_rows(agent: &Agent) -> Vec<GithubRow> {
     rows
 }
 
+/// A card's key: its oldest request's ID. Requests come newest first, so a
+/// newer request joining the card never changes it, and the card keeps its
+/// open note and the keys' place.
+pub(super) fn card_key(ids: &[i64]) -> i64 {
+    ids.last().copied().unwrap_or_default()
+}
+
 /// The waiting cards the requests view draws for the requests `agent`
 /// asked, or everyone's, in its order: those on the owner, then those on an
 /// agent; each by its requests' IDs.
@@ -1086,5 +1093,22 @@ mod tests {
         assert!(team.grant.is_some());
         // A line its role gives without a grant has nothing to take away.
         assert!(row(&rows, "example/app").grant.is_none());
+    }
+
+    #[test]
+    fn a_newer_request_joining_a_card_keeps_its_key() {
+        let mut pending = requests("pending");
+        let before = card_order(&pending, Some("lead"));
+        let mut newer = pending[2].clone();
+        newer.id = 40;
+        newer.grant = Grant::Repository {
+            repo: "example/site".into(),
+            access: Access::Read,
+        };
+        // The newest request comes first.
+        pending.insert(0, newer);
+        let after = card_order(&pending, Some("lead"));
+        assert_eq!(after, [vec![40, 19]]);
+        assert_eq!(card_key(&after[0]), card_key(&before[0]));
     }
 }
