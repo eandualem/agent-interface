@@ -439,10 +439,8 @@ impl BrowserView {
                 for key in keys {
                     self.send(Input::Key(key));
                 }
-                // On macOS a Cmd key also goes on to the system, so that its
-                // own key equivalents, as Cmd-` switching windows, still work.
                 // The app's own Cmd keys are never sent, so none acts twice.
-                if !(cfg!(target_os = "macos") && keystroke.modifiers.platform) {
+                if !goes_on(keystroke, cfg!(target_os = "macos")) {
                     cx.stop_propagation();
                 }
             }
@@ -842,6 +840,27 @@ fn listen(
             });
         }
     });
+    window.on_mouse_event({
+        let view = view.clone();
+        move |event: &gpui::MouseExitEvent, phase, _, cx| {
+            if phase != DispatchPhase::Bubble {
+                return;
+            }
+            // The pointer left the window, from over the page or not.
+            let _ = view.update(cx, |view, _| {
+                if let Some(stream) = &view.stream {
+                    stream.set_hovered(false);
+                }
+                let modifiers = mouse_modifiers(&event.modifiers);
+                let left = view
+                    .pointing
+                    .moved(None, event.pressed_button.is_some(), modifiers);
+                for input in left {
+                    view.send(input);
+                }
+            });
+        }
+    });
     window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
         if phase != DispatchPhase::Bubble
             || !hitbox.should_handle_scroll(window)
@@ -1129,6 +1148,14 @@ fn mac_editing(keystroke: &Keystroke) -> &'static [&'static str] {
         ("delete", true, false, false) => &["deleteWordForward"],
         _ => &[],
     }
+}
+
+/// Whether a key sent to the page also goes on to the system: on macOS, a
+/// Cmd key that types nothing, so its own key equivalents, as Cmd-`
+/// switching windows, still work. Cmd-Enter, Cmd-Space and Cmd-Tab carry a
+/// character, which a held key would also insert as text, so they stop here.
+fn goes_on(keystroke: &Keystroke, mac: bool) -> bool {
+    mac && keystroke.modifiers.platform && keystroke.key_char.is_none()
 }
 
 /// What text the input handler brings sends: the text of the printable key
@@ -2119,6 +2146,17 @@ mod tests {
         assert_eq!(pressable(MouseButton::Left, &with(true, false)), None);
         assert_eq!(pressable(MouseButton::Left, &with(false, true)), None);
         assert_eq!(pressable(MouseButton::Right, &with(false, false)), None);
+    }
+
+    #[test]
+    fn only_a_cmd_key_that_types_nothing_goes_on_to_macos() {
+        assert!(goes_on(&keystroke("cmd-`", None), true));
+        assert!(goes_on(&keystroke("cmd-z", None), true));
+        for (text, key_char) in [("cmd-enter", "\n"), ("cmd-space", " "), ("cmd-tab", "\t")] {
+            assert!(!goes_on(&keystroke(text, Some(key_char)), true), "{text}");
+        }
+        assert!(!goes_on(&keystroke("ctrl-a", None), true));
+        assert!(!goes_on(&keystroke("ctrl-z", None), false));
     }
 
     #[test]

@@ -1683,8 +1683,9 @@ each. Nothing beside the frame reaches the page, except that a drag begun
 inside keeps sending its moves and its release at the frame's nearest edge.
 A button released while no frame was drawn, as during a reconnect, is
 released in the page at the next move, and a release while the page can't be
-reached waits for the next connection. A pointer that leaves the frame with
-no button held moves once just outside the page, so its hover ends.
+reached waits for the next connection. A pointer that leaves the frame, or
+the window, with no button held moves once just outside the page, so its
+hover ends.
 
 Hover and the wheel reach the page whenever the pointer is over the frame in
 the active window. A press in the frame gives the view the keyboard and a
@@ -1707,8 +1708,10 @@ so the view adds them from its own small table: `selectAll`, `undo` and
 Option-Right, to the line's ends with Cmd-Left and Cmd-Right and to the
 document's with Cmd-Up and Cmd-Down, each extending the selection with
 Shift; and deleting a word with Option-Backspace and Option-Delete, or to
-the line's start with Cmd-Backspace. A Cmd key also goes on to the system so
-that Cmd-` still switches windows.
+the line's start with Cmd-Backspace. A Cmd key that types nothing also goes
+on to the system so that Cmd-` still switches windows; Cmd-Enter, Cmd-Space
+and Cmd-Tab carry a character, which a held key would also insert, so they
+stop at the view.
 
 A printable key is left to the platform's input method, which the view
 registers while it has the keyboard: when its text is the key's own
