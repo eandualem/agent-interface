@@ -321,7 +321,11 @@ with tempfile.TemporaryDirectory(prefix="agents-smoke-", dir="/tmp") as director
             wait_for(lambda: find("detach"), "the first swarm")
             capture("tree-open")
             press(*chevron("lead"))
-            wait_for(lambda: not find("coordinator"), "lead folded again")
+            # Only lead's own fold hides all of these at once; folding the
+            # detach swarm alone would hide only its members.
+            under_lead = {"coordinator", "github.com", "detach", "gemini-4-neon"}
+            wait_for(lambda: not under_lead & {word["text"].strip().rstrip(".,:;") for word in read()},
+                     "lead folded again")
             capture("tree-refolded")
 
             # A connection row opens Connections beside the Tags pane, in
