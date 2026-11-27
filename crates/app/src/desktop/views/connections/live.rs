@@ -2449,6 +2449,9 @@ mod tests {
             "event 6",
         ];
         assert_eq!(order(&history), expected);
+        // An unreadable time never holds back the events after it.
+        history.events[0].at = "not a time".into();
+        assert_eq!(order(&history), expected);
         history.events[1].kind = EventKind::Unknown;
         assert!(!order(&history).contains(&"event 2".to_owned()));
         // Without its event, the draft keeps its place.

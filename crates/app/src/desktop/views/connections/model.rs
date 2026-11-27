@@ -520,6 +520,48 @@ mod tests {
     }
 
     #[test]
+    fn the_preview_records_its_changes_as_events() {
+        let mut sample = Sample::new();
+        let peer = sample.overview.connections[0].clone();
+        let kinds = |sample: &Sample| -> Vec<EventKind> {
+            sample
+                .history(&peer.connection)
+                .events
+                .into_iter()
+                .map(|e| e.kind)
+                .collect()
+        };
+        let before = kinds(&sample).len();
+        let generation = &peer.connection.generation;
+        // Choosing the policy already set changes nothing.
+        sample.set_gate(generation, Direction::Incoming, peer.gates.incoming);
+        sample.set_gate(generation, Direction::Incoming, Policy::Auto);
+        sample.disconnect(generation);
+        assert_eq!(
+            kinds(&sample)[before..],
+            [
+                EventKind::GateChanged {
+                    direction: Direction::Incoming,
+                    from: Policy::Review,
+                    to: Policy::Auto
+                },
+                EventKind::DisconnectRequested
+            ]
+        );
+        let request = sample.overview.invitations[0].request_id.clone();
+        sample.answer(&request, true);
+        let new = sample
+            .overview
+            .connections
+            .last()
+            .unwrap()
+            .connection
+            .clone();
+        let events = sample.history(&new).events;
+        assert!(matches!(events.as_slice(), [e] if e.kind == EventKind::Connected));
+    }
+
+    #[test]
     fn a_sample_thread_has_messages_after_the_one_waiting() {
         let sample = Sample::new();
         let ops = &sample.overview.connections[1].connection;
