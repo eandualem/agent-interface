@@ -1,0 +1,20 @@
+{
+  "detail": {
+    "code": "start_refused",
+    "message": "alice cannot start on desktop: 2 checks failed",
+    "checks": [
+      {
+        "code": "linked_worktrees",
+        "message": "swarm worktrees must finish and be removed first: /Users/alice/code/app/.backbone/swarms/team",
+        "paths": [
+          "/Users/alice/code/app/.backbone/swarms/team"
+        ]
+      },
+      {
+        "code": "destination_outdated",
+        "message": "desktop runs a version of Backbone too old to check a start there: update it first"
+      }
+    ],
+    "not_checked": []
+  }
+}

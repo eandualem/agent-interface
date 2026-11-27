@@ -1,0 +1,24 @@
+{
+  "machines": [
+    {
+      "id": "8f4e2b1c9d3a7e6f5b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a",
+      "name": "laptop",
+      "home": true,
+      "addresses": ["192.168.1.20:7480", "100.64.0.7:7480"],
+      "state": "online",
+      "joined_at": "2026-11-01T09:00:00Z",
+      "last_seen": null,
+      "version": "0.1.0"
+    },
+    {
+      "id": "1b2c3d4e5f6a7b8c9d0e1f2a8f4e2b1c9d3a7e6f5b0c1d2e3f4a5b6c7d8e9f0a",
+      "name": "desktop",
+      "home": false,
+      "addresses": ["192.168.1.31:7480"],
+      "state": "offline",
+      "joined_at": "2026-11-10T12:01:30Z",
+      "last_seen": "2026-11-10T13:40:12Z",
+      "version": null
+    }
+  ]
+}

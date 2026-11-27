@@ -53,7 +53,9 @@ pub struct Catalog {
 impl Catalog {
     /// Decode the Rust service's `backbone runtimes --json` (schema 1) for the
     /// profile `expected`. It names no profile and runs no setup check: what
-    /// it lists is this machine's.
+    /// it lists is this machine's. Another machine's list, from
+    /// `GET /api/profile/machines/{machine}/runtimes`, has the same shape,
+    /// with each tool's sign-in on that machine.
     pub fn served(bytes: &[u8], expected: &Identity) -> Result<Self, Error> {
         #[derive(Deserialize)]
         struct Served {
@@ -68,6 +70,13 @@ impl Catalog {
             models: Vec<String>,
             efforts: Vec<String>,
             authentication: Authentication,
+            /// Whether a login is stored on another machine.
+            #[serde(default)]
+            sign_in: Option<SignIn>,
+        }
+        #[derive(Deserialize)]
+        struct SignIn {
+            storage: String,
         }
         #[derive(Deserialize)]
         struct Version {
@@ -95,7 +104,13 @@ impl Catalog {
                 setup_supported: item.setup_supported,
                 models: item.models,
                 efforts: item.efforts,
-                authentication: item.authentication,
+                authentication: match item.sign_in.as_ref().map(|s| s.storage.as_str()) {
+                    None => item.authentication,
+                    Some("present") => Authentication::Authenticated,
+                    Some("missing") => Authentication::NotAuthenticated,
+                    Some("unavailable") => Authentication::Unavailable,
+                    Some(_) => Authentication::Unknown,
+                },
             })
             .collect();
         Self::checked(expected.clone(), items)
