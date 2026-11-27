@@ -251,22 +251,6 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
                 words = found(text)
                 return words[0] if words else None
 
-            def has(fragment):
-                # OCR can misread an identifier's underscores, digits or
-                # slashes, so these waits look for a plain part of a word.
-                return any(fragment in word["text"] for word in read())
-
-            def click_word(word):
-                x = int(word["left"]) + int(word["width"]) // 2
-                y = int(word["top"]) + int(word["height"]) // 2
-                # The window has to see the pointer arrive before the press.
-                command("xdotool", "mousemove", "--window", window, str(x), str(y))
-                time.sleep(0.2)
-                command("xdotool", "click", "1")
-
-            def click(text):
-                click_word(wait_for(lambda: find(text), text))
-
             def capture(name):
                 # Move the pointer off the pane, so no row is drawn hovered.
                 command("xdotool", "mousemove", "--window", window, "5", "5")
@@ -301,40 +285,63 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
             assert any(method == "PUT" and path == "/api/agents/tester/mode"
                        for method, path, _ in RECORDS.calls), RECORDS.calls
 
+            def containing(fragment):
+                # Words holding `fragment`, top first: OCR joins or misreads
+                # letters around a word ("Adda repository"), not inside it.
+                words = [word for word in read() if fragment in word["text"]]
+                words.sort(key=lambda word: (int(word["top"]), int(word["left"])))
+                return words
+
+            def changed_then_read(sent):
+                # A change Backbone was sent, then the pane's read after it:
+                # the pane reads again only once it has applied the reply.
+                def check():
+                    calls = list(RECORDS.calls)
+                    at = [index for index, call in enumerate(calls) if sent(*call)]
+                    return at and any(method == "GET" and path == "/api/agents"
+                                      for method, path, _ in calls[at[0] + 1:])
+                return check
+
             # A repository granted from the detail is read back from Backbone.
-            click("Add")
-            wait_for(lambda: has("owner/"), "the add field")
+            # GitHub's "Add a repository" is the first line starting "Add".
+            add = wait_for(lambda: next((w for w in containing("Add")
+                                         if w["text"].startswith("Add")), None),
+                           "GitHub's Add a repository")
+            click_word(add)
+            # The open field's own Add button stands at the card's right end;
+            # closed, "Add" only begins the line at its left.
+            wait_for(lambda: any(word["text"] == "Add" and int(word["left"]) > int(add["left"]) + 300
+                                 for word in read()), "the add field")
             command("xdotool", "type", "--delay", "20", "example/extra")
             command("xdotool", "key", "Return")
-            wait_for(lambda: has("extra"), "the granted repository read back")
+            wait_for(changed_then_read(
+                lambda method, path, body: method == "POST" and path == "/api/agents/tester/grant"
+                and body["grant"] == dict(kind="repository", repo="example/extra", access="read")),
+                "the granted repository sent, then read back")
+            # The read is drawn on the next frame.
+            time.sleep(1)
             capture("granted")
-            assert any(method == "POST" and path == "/api/agents/tester/grant"
-                       and body["grant"] == dict(kind="repository", repo="example/extra", access="read")
-                       for method, path, body in RECORDS.calls), RECORDS.calls
 
             # The waiting requests, and Escape back to the agents.
-            click("requests")
-            wait_for(lambda: find("WAITING"), "the requests view")
-            wait_for(lambda: find("Approve"), "a request's Approve")
+            click_word(wait_for(lambda: next(iter(containing("request")), None),
+                                "the requests waiting button"))
+            wait_for(lambda: containing("WAIT"), "the requests view")
+            wait_for(lambda: containing("Appro"), "a request's Approve")
             capture("requests")
             # The keys alone: choose the first card, open its note, type and
             # keep it with Return, then approve with the note. No click comes
             # between, so the keys reach the pane only if focus came back.
             command("xdotool", "key", "Down")
+            # The footer says "note" already; the open field's hint adds one.
+            notes = len(containing("note"))
             command("xdotool", "key", "n")
-            # The footer says "note" too; the field's hint is the second.
-            wait_for(lambda: sum("note" in word["text"] for word in read()) >= 2, "the note field")
+            wait_for(lambda: len(containing("note")) > notes, "the note field")
             command("xdotool", "type", "--delay", "20", "for this check")
             command("xdotool", "key", "Return")
             command("xdotool", "key", "a")
-            def approved_then_read():
-                calls = list(RECORDS.calls)
-                sent = [at for at, (method, path, body) in enumerate(calls)
-                        if method == "POST" and path.endswith("/approve")
-                        and body.get("note") == "for this check"]
-                # The pane reads again only once the reply has closed the note.
-                return sent and any(method == "GET" and path == "/api/agents"
-                                    for method, path, _ in calls[sent[0] + 1:])
+            approved_then_read = changed_then_read(
+                lambda method, path, body: method == "POST" and path.endswith("/approve")
+                and body.get("note") == "for this check")
             # Escape before the reply would only close the note.
             wait_for(approved_then_read, "the approval sent with its note by the keys, then read back")
             command("xdotool", "key", "Escape")
