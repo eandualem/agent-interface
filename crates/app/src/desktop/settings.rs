@@ -442,7 +442,14 @@ pub fn font_size() -> f32 {
 }
 
 /// `$XDG_CONFIG_HOME/agent-interface/settings.toml`, else under `~/.config`.
+/// Unit tests use a folder of their own under the temporary directory, so a
+/// test that saves the current settings never replaces the person's file.
 pub fn path() -> Option<PathBuf> {
+    if cfg!(test) {
+        let tests =
+            std::env::temp_dir().join(format!("agent-interface-tests-{}", std::process::id()));
+        return Some(tests.join("agent-interface/settings.toml"));
+    }
     path_from(
         std::env::var_os("XDG_CONFIG_HOME"),
         std::env::var_os("HOME"),
@@ -598,6 +605,11 @@ fn save_to_temporary(settings: &Settings, path: &Path, temporary: &Path) -> io::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tests_never_save_over_the_persons_settings() {
+        assert!(path().unwrap().starts_with(std::env::temp_dir()));
+    }
 
     #[test]
     fn diagnostic_levels_are_explicit_and_survive_normal_settings_load() {
