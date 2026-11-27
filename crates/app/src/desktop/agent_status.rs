@@ -290,6 +290,7 @@ fn review(run: &Run) -> super::agent_groups::Review {
             .unwrap_or_else(|| run.label.clone()),
         effort: review.and_then(|review| review.effort.clone()),
         running: run.state == "running",
+        view: run.view().map(str::to_owned),
     }
 }
 
@@ -1183,6 +1184,8 @@ mod tests {
         let mut unnamed = runs[0].clone();
         unnamed.run_id = "0193a1b2c3d47e5f8a9b0c1d2e3f4a62".into();
         unnamed.review.as_mut().unwrap().model = None;
+        // A run whose view the service names can be watched from its row.
+        unnamed.session = Some(format!("run-{}", unnamed.run_id));
         let mut bare = runs[0].clone();
         bare.run_id = "0193a1b2c3d47e5f8a9b0c1d2e3f4a63".into();
         bare.review = None;
@@ -1210,12 +1213,16 @@ mod tests {
                 reviewer: reviewer.into(),
                 effort: effort.map(str::to_owned),
                 running,
+                view: None,
             };
         assert_eq!(
             builder.reviews,
             [
                 review("gpt-example", Some("high"), true),
-                review("codex", Some("high"), true),
+                super::super::agent_groups::Review {
+                    view: Some("run-0193a1b2c3d47e5f8a9b0c1d2e3f4a62".into()),
+                    ..review("codex", Some("high"), true)
+                },
                 review("Review round 2, gpt-example", None, false),
             ]
         );

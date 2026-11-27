@@ -19,6 +19,8 @@ pub(super) struct Review {
     pub effort: Option<String>,
     /// Running, rather than queued.
     pub running: bool,
+    /// The session showing its output, when the service named one.
+    pub view: Option<String>,
 }
 
 /// What an agent started besides swarms.
@@ -502,6 +504,7 @@ mod tests {
             reviewer: reviewer.into(),
             effort: Some("high".into()),
             running,
+            view: None,
         }
     }
 

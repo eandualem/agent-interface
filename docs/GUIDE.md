@@ -320,6 +320,19 @@ without optional agent metadata. In a profile's workspace it leaves out run view
 which open from their agent's card, and the shells the profile opened for panes,
 which belong to their panes.
 
+In a profile's workspace the empty pane lists the profile's agents first, with
+what each one started folded under it: its reviews, its browser and its swarms,
+whose members show by their short names. Right arrow opens the selected agent
+or swarm; Left arrow closes it, or from a row under another goes up to that
+row. Once the filter holds text, the arrows move its caret instead, and the
+list shows every matching row under its agent, so typing `coder` finds the
+swarm members named so. Enter attaches the selected agent or member in the
+pane, opens a browser's view, opens a swarm's members together as a tab, or
+shows a review's output, read-only, when the service names a view for it; a
+review without one cannot be chosen. **CONNECTIONS** follows, one row per
+connection of the profile and then **All connections**, each opening
+Connections in the pane. The number keys choose top-level rows only.
+
 Attached sessions reconnect automatically when the saved session returns on its
 source server. Attempts run at the two-second window-refresh interval and never
 start an agent or create a session on their own. A pane showing an agent on
@@ -384,8 +397,8 @@ sessions in agent-browser's usual folder: `AGENT_BROWSER_SOCKET_DIR`, else
 agent-browser namespace are not shown.
 
 Click the row to open the **Browser** view, in a visible empty pane or a new
-tab. An empty pane's chooser also lists each agent's browser under
-**BROWSERS**; choosing one opens the view in that pane. The view's header
+tab. An empty pane's chooser also lists each agent's browser under that
+agent; choosing one opens the view in that pane. The view's header
 names the agent and the page, by its title or else its site. Below it, the
 page fills the pane as a live picture: all of it, as large as the pane holds
 it, from the pane's top left corner. The agent's browser takes the pane's
