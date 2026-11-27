@@ -210,8 +210,9 @@ impl Browser {
                 }])
             })
             // A left click selects the pane. A right or middle click selects it
-            // only if the terminal took keyboard focus (a mouse-enabled program
-            // accepts those clicks), so pane commands follow the typing.
+            // only if the terminal or Browser view took keyboard focus (a
+            // mouse-enabled program or the page accepts those clicks), so pane
+            // commands follow the typing.
             .capture_any_mouse_down(cx.listener({
                 let id = id.clone();
                 let origin = cards.origin.clone();
@@ -262,8 +263,9 @@ impl Browser {
                         } else if in_header {
                             browser.begin_pane_drag(origin.as_ref(), &leaf, event.position);
                         }
-                        // A view takes no keys: stop a terminal beside it
-                        // from receiving them once the view is selected.
+                        // A view takes no keys, a Browser view only from a
+                        // press in its page: stop a terminal beside it from
+                        // receiving them once the view is selected.
                         if is_view && let Some(focus) = &browser.navigation {
                             window.focus(focus, cx);
                         }
@@ -273,6 +275,10 @@ impl Browser {
                                 .terminals
                                 .get(&leaf)
                                 .is_some_and(|terminal| terminal.read(cx).has_focus(window, cx))
+                                || browser
+                                    .browser_views
+                                    .get(&leaf)
+                                    .is_some_and(|view| view.read(cx).has_focus(window))
                             {
                                 select(browser, cx);
                             }

@@ -160,6 +160,9 @@ impl BrowserView {
             self.window = None;
             self.live = false;
             self.attached = false;
+            // Nothing the person did in the old page belongs to the new one.
+            self.pointing = Pointing::default();
+            (self.typed, self.marked, self.caret) = (None, None, None);
             if let Some(pid) = session.as_ref().map(|session| session.pid) {
                 self.check_window(pid, false, None, cx);
             }
@@ -334,13 +337,28 @@ impl BrowserView {
         }
     }
 
+    /// Whether the view draws the page, as its frame, now.
+    fn showing(&self) -> bool {
+        self.session.is_some()
+            && self.frame.is_some()
+            && self
+                .stream
+                .as_ref()
+                .is_some_and(|stream| stream.state() != State::Unreachable)
+    }
+
     /// Send `input` to the page shown, if one is.
     fn send(&self, input: Input) {
-        if self.frame.is_some()
+        if self.showing()
             && let Some(stream) = &self.stream
         {
             stream.send(input);
         }
+    }
+
+    /// Whether the view has the keyboard.
+    pub fn has_focus(&self, window: &Window) -> bool {
+        self.focus.is_focused(window)
     }
 
     /// A press at `at`, the page point under it, or beside the frame.
@@ -384,8 +402,9 @@ impl BrowserView {
     /// before this, and a printable key waits for its text.
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.typed = None;
-        // Without a page shown, keys stay the app's.
-        if !window.is_window_active() || self.frame.is_none() {
+        // Without a page shown, keys stay the app's; while an input method
+        // composes, they are its own.
+        if !window.is_window_active() || !self.showing() || self.marked.is_some() {
             return;
         }
         let keystroke = &event.keystroke;
@@ -427,7 +446,7 @@ impl BrowserView {
         };
         let keystroke = Keystroke::parse(shortcut).expect("select all");
         match key_press(&keystroke, false, cfg!(target_os = "macos")) {
-            Press::Send(keys) if window.is_window_active() && self.frame.is_some() => {
+            Press::Send(keys) if window.is_window_active() && self.showing() => {
                 for key in keys {
                     self.send(Input::Key(key));
                 }
@@ -569,9 +588,14 @@ impl Render for BrowserView {
                 canvas(
                     move |area, window, _| {
                         let shown = fit(shape, area);
-                        (shown, window.insert_hitbox(shown, HitboxBehavior::Normal))
+                        let band = window.insert_hitbox(area, HitboxBehavior::Normal);
+                        (
+                            shown,
+                            band,
+                            window.insert_hitbox(shown, HitboxBehavior::Normal),
+                        )
                     },
-                    move |area, (shown, hitbox), window, cx| {
+                    move |area, (shown, band, hitbox), window, cx| {
                         let size = (
                             f32::from(area.size.width),
                             f32::from(area.size.height),
@@ -593,7 +617,7 @@ impl Render for BrowserView {
                             super::zoom::input(ElementInputHandler::new(shown, entity)),
                             cx,
                         );
-                        listen(window, view, &focus, area, shown, shape, hitbox);
+                        listen(window, view, &focus, band, shown, shape, hitbox);
                     },
                 )
                 .size_full()
@@ -725,7 +749,7 @@ fn listen(
     window: &mut Window,
     view: gpui::WeakEntity<BrowserView>,
     focus: &FocusHandle,
-    area: Bounds<Pixels>,
+    band: gpui::Hitbox,
     shown: Bounds<Pixels>,
     page: (f32, f32),
     hitbox: gpui::Hitbox,
@@ -733,21 +757,28 @@ fn listen(
     let point = move |position, held| page_point(position, shown, page, held);
     window.on_mouse_event({
         let (view, focus, hitbox) = (view.clone(), focus.clone(), hitbox.clone());
-        move |event: &MouseDownEvent, phase, window, cx| match phase {
-            DispatchPhase::Capture => {
-                if area.contains(&event.position) && !shown.contains(&event.position) {
+        move |event: &MouseDownEvent, phase, window, cx| {
+            // This runs before the view's own focus on a press, which
+            // `prevent_default` stops.
+            if phase != DispatchPhase::Bubble {
+                return;
+            }
+            if !hitbox.is_hovered(window) {
+                // Beside the frame, in the pane's band, the view does not
+                // take the keyboard; anything drawn over the band does.
+                if band.is_hovered(window) {
                     window.prevent_default();
                 }
+                return;
             }
-            DispatchPhase::Bubble => {
-                if !hitbox.is_hovered(window) {
-                    return;
-                }
-                window.focus(&focus, cx);
-                window.prevent_default();
-                let at = point(event.position, false);
-                let _ = view.update(cx, |view, _| view.pressed(event, at));
+            window.prevent_default();
+            // Only a button the page is sent takes the keyboard.
+            if button(event.button).is_none() {
+                return;
             }
+            window.focus(&focus, cx);
+            let at = point(event.position, false);
+            let _ = view.update(cx, |view, _| view.pressed(event, at));
         }
     });
     window.on_mouse_event({

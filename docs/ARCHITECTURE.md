@@ -1683,7 +1683,11 @@ held moves once just outside the page, so its hover ends.
 Hover and the wheel reach the page whenever the pointer is over the frame in
 the active window. A press in the frame gives the view the keyboard and a
 1-point focus ring; a press anywhere else, or a shortcut that moves to
-another pane, takes it back. The window's shortcuts run before the view and
+another pane, takes it back. A right or middle press that gives the view the
+keyboard also selects its pane, as for a terminal; the back and forward
+buttons are not sent and change nothing. While the input method composes,
+keys are its own, and no key is sent while the view shows no page, as when
+the page can't be reached. The window's shortcuts run before the view and
 keep working. A key the app or its menu acts on is never sent as well: the
 view skips any key with a key binding, a workspace command or a numbered
 selection, which covers Cmd-Q, Cmd-N, Cmd-O, Cmd-comma and the configurable
