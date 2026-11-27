@@ -1732,8 +1732,10 @@ and input methods.
 
 The client keeps the input waiting in order. At most one mouse move and one
 wheel turn wait for Chrome's answer: while one waits, a newer move replaces
-the next one waiting and wheel turns add up, so a fast trackpad never builds
-a backlog in Chrome, and an answer not heard within a second counts as one.
+the next one waiting and wheel turns add up, also when moves and turns
+interleave, each turn keeping its own point, so moving while scrolling or a
+fast trackpad never builds a backlog in Chrome, and an answer not heard
+within a second counts as one.
 Presses, keys and text are never joined or reordered, so a move waiting is
 sent before a later press. The platform repeats a drag held still every 16
 ms; the view sends a repeated point once. The client's reads wait 5 ms while

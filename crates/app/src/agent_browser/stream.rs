@@ -17,12 +17,12 @@
 //! `Input.dispatchKeyEvent` and `Input.insertText`. No script or emulation
 //! reaches the page. Input goes on the same connection, so it never waits
 //! behind the agent's commands. At most one mouse move and one wheel turn
-//! wait for Chrome's answer: newer ones join the one waiting, so a fast
-//! trackpad never builds a backlog. The page's address and title are read from
-//! Chrome's target list. After some navigations Chrome sends no frame of the
-//! new page until it changes again, so when the address changes the client
-//! restarts the screencast once, which sends the page as it is. Dropping the
-//! [`Stream`] stops the screencast.
+//! wait for Chrome's answer: newer ones join the one waiting, also when moves
+//! and turns interleave, so a fast trackpad never builds a backlog. The
+//! page's address and title are read from Chrome's target list. After some
+//! navigations Chrome sends no frame of the new page until it changes again,
+//! so when the address changes the client restarts the screencast once, which
+//! sends the page as it is. Dropping the [`Stream`] stops the screencast.
 
 use std::{
     collections::{HashSet, VecDeque},
@@ -230,34 +230,48 @@ impl Input {
     }
 }
 
-/// Add `input` to the inputs waiting to be sent. A move joins a move waiting
-/// last, and a wheel turn adds to one waiting last; nothing else is joined or
-/// reordered.
+/// Add `input` to the inputs waiting to be sent. Behind the last press,
+/// release, key or text waiting, a move replaces the move waiting and a wheel
+/// turn adds to the turn waiting, also when the other kind came between them,
+/// so moving while scrolling leaves at most one of each; each turn keeps its
+/// own point. Presses, releases, keys and text are never joined or reordered.
 fn push(waiting: &mut VecDeque<Input>, input: Input) {
-    match (waiting.back_mut(), input) {
-        (Some(Input::Moved(last)), Input::Moved(newer)) => *last = newer,
-        (
-            Some(Input::Wheel {
-                x,
-                y,
-                dx,
-                dy,
-                modifiers,
-            }),
-            Input::Wheel {
-                x: newer_x,
-                y: newer_y,
-                dx: more_x,
-                dy: more_y,
-                modifiers: newer_modifiers,
-            },
-        ) => {
-            (*x, *y, *modifiers) = (newer_x, newer_y, newer_modifiers);
-            *dx += more_x;
-            *dy += more_y;
+    let joinable = |input: &Input| matches!(input, Input::Moved(_) | Input::Wheel { .. });
+    let tail = waiting
+        .iter()
+        .rposition(|waiting| !joinable(waiting))
+        .map_or(0, |last| last + 1);
+    for waiting in waiting.range_mut(tail..) {
+        match (waiting, &input) {
+            (Input::Moved(last), Input::Moved(newer)) => {
+                *last = *newer;
+                return;
+            }
+            (
+                Input::Wheel {
+                    x,
+                    y,
+                    dx,
+                    dy,
+                    modifiers,
+                },
+                Input::Wheel {
+                    x: newer_x,
+                    y: newer_y,
+                    dx: more_x,
+                    dy: more_y,
+                    modifiers: newer_modifiers,
+                },
+            ) => {
+                (*x, *y, *modifiers) = (*newer_x, *newer_y, *newer_modifiers);
+                *dx += more_x;
+                *dy += more_y;
+                return;
+            }
+            _ => {}
         }
-        (_, input) => waiting.push_back(input),
     }
+    waiting.push_back(input);
 }
 
 /// The next input to send: none while the first waiting is a move or wheel
@@ -1021,6 +1035,31 @@ mod tests {
         );
         assert_eq!(next(&mut waiting, false, true), None);
         assert_eq!(next(&mut waiting, false, false), Some(wheel(5., 42.5)));
+    }
+
+    #[test]
+    fn moving_while_scrolling_leaves_one_move_and_one_turn_waiting() {
+        let mut waiting = VecDeque::new();
+        for (x, dy) in [(1., 10.), (2., 20.), (3., 30.)] {
+            push(&mut waiting, Input::Moved(pointer(x)));
+            push(&mut waiting, wheel(x, dy));
+        }
+        assert_eq!(waiting, [Input::Moved(pointer(3.)), wheel(3., 60.)]);
+        // A release starts a new run: nothing behind it joins what came before.
+        push(&mut waiting, Input::Released(pointer(3.)));
+        push(&mut waiting, wheel(4., 5.));
+        push(&mut waiting, Input::Moved(pointer(4.)));
+        push(&mut waiting, wheel(5., 5.));
+        assert_eq!(
+            waiting,
+            [
+                Input::Moved(pointer(3.)),
+                wheel(3., 60.),
+                Input::Released(pointer(3.)),
+                wheel(5., 10.),
+                Input::Moved(pointer(4.)),
+            ]
+        );
     }
 
     #[test]
