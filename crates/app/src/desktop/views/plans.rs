@@ -167,20 +167,33 @@ impl Plans {
             return;
         }
         self.applied = number;
-        match read {
+        // An unchanged read must not redraw the window.
+        let changed = match read {
             Ok(read) if self.source.accepts(&read) => {
-                self.frame.page = Some(read.page);
+                let page = Some(read.page);
+                let changed = self.frame.page != page
+                    || self.frame.members != read.members
+                    || self.frame.error.is_some();
+                self.frame.page = page;
                 self.frame.members = read.members;
                 self.frame.error = None;
+                changed
             }
-            Ok(_) => {
-                self.frame.error = Some(Error::Connection(
-                    agent_interface_roster::profiles::Error::BindingMismatch,
-                ))
-            }
-            Err(error) => self.frame.error = Some(error),
+            Ok(_) => self.fail(Error::Connection(
+                agent_interface_roster::profiles::Error::BindingMismatch,
+            )),
+            Err(error) => self.fail(error),
+        };
+        if changed {
+            cx.notify();
         }
-        cx.notify();
+    }
+
+    /// Note why the latest read failed; whether that changed what is shown.
+    fn fail(&mut self, error: Error) -> bool {
+        let changed = self.frame.error != Some(error);
+        self.frame.error = Some(error);
+        changed
     }
 
     /// Read the plans now, as well as on the regular refresh.

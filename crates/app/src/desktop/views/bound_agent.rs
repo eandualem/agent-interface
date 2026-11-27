@@ -24,6 +24,7 @@ struct Reader {
     target: Option<Target>,
 }
 
+#[derive(PartialEq)]
 struct Snapshot {
     agent: Agent,
 }
@@ -340,25 +341,27 @@ impl Card {
                     card.refresh(cx);
                     return;
                 }
-                match result {
-                    Ok(snapshot) => {
-                        card.snapshot = Some(snapshot);
-                        card.error = None;
-                    }
-                    Err(error) => {
-                        // A refused/replaced registration must not leave a card
-                        // looking current under a different agent's live state.
-                        card.snapshot = None;
-                        card.error = Some(match error {
+                let (snapshot, error) = match result {
+                    Ok(snapshot) => (Some(snapshot), None),
+                    // A refused/replaced registration must not leave a card
+                    // looking current under a different agent's live state.
+                    Err(error) => (
+                        None,
+                        Some(match error {
                             runtime_context::Error::RegistrationChanged => REPLACED,
                             runtime_context::Error::Unsupported => {
                                 "This agent is no longer available."
                             }
                             _ => "The original agent's profile context is unavailable.",
-                        });
-                    }
+                        }),
+                    ),
+                };
+                // An unchanged read must not redraw the window.
+                if card.snapshot != snapshot || card.error != error {
+                    card.snapshot = snapshot;
+                    card.error = error;
+                    cx.notify();
                 }
-                cx.notify();
             });
         })
         .detach();
