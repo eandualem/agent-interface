@@ -81,7 +81,7 @@ The CI workflow defines the same checks with `--locked` for macOS
 software Mesa and Xvfb, with interface zoom, display DPI, keyboard input,
 window teardown and process-isolation checks. The first-run check
 (`scripts/test-linux-onboarding.py`) clicks a fresh install through its first
-profile and guide at 100 % and 150 % against a stand-in Agent Backbone
+profile and orchestrator at 100 % and 150 % against a stand-in Agent Backbone
 (`scripts/tests/fixtures/fake_backbone.py`), in a private home with its own
 tmux server. Record local verification in the
 pull request alongside hosted CI.
