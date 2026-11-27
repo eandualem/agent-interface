@@ -1676,6 +1676,10 @@ buttons held, and the wheel at the pointer go as `Input.dispatchMouseEvent`;
 trackpad deltas keep their smoothness, and a wheel's lines are 40 CSS pixels
 each. Nothing beside the frame reaches the page, except that a drag begun
 inside keeps sending its moves and its release at the frame's nearest edge.
+Each button pressed in the frame is released on its own release, and one
+released while no frame was drawn, as during a reconnect, is released in
+the page at the next move. A pointer that leaves the frame with no button
+held moves once just outside the page, so its hover ends.
 Hover and the wheel reach the page whenever the pointer is over the frame in
 the active window. A press in the frame gives the view the keyboard and a
 1-point focus ring; a press anywhere else, or a shortcut that moves to
@@ -1686,8 +1690,13 @@ selection, which covers Cmd-Q, Cmd-N, Cmd-O, Cmd-comma and the configurable
 chords, and Cmd-C, Cmd-V and Cmd-X, Ctrl on Linux, are not sent either.
 Named keys and combinations with Ctrl or Cmd go as `Input.dispatchKeyEvent`
 key down and up from the view's key handler. On macOS, Chrome runs no
-editing command for Cmd-A, Cmd-Z and Cmd-Shift-Z by itself, so those carry
-`selectAll`, `undo` and `redo`, and a Cmd key also goes on to the system so
+editing command for its usual editing keys by itself, so the view adds them
+from its own small table: `selectAll`, `undo` and `redo` for Cmd-A, Cmd-Z
+and Cmd-Shift-Z; moving by word with Option-Left and Option-Right, to the
+line's ends with Cmd-Left and Cmd-Right and to the document's with Cmd-Up
+and Cmd-Down, each extending the selection with Shift; and deleting a word
+with Option-Backspace and Option-Delete, or to the line's start with
+Cmd-Backspace. A Cmd key also goes on to the system so
 that Cmd-` still switches windows. A printable key is left to the platform's
 input method, which the view registers while it has the keyboard: when its
 text is the key's own character it goes as that key, with its text, so the
@@ -1705,13 +1714,16 @@ the next one waiting and wheel turns add up, so a fast trackpad never builds
 a backlog in Chrome, and an answer not heard within a second counts as one.
 Presses, keys and text are never joined or reordered, so a move waiting is
 sent before a later press. The platform repeats a drag held still every
-16 ms; the view sends a repeated point once. While the view has the
-keyboard, or gave input in the last second, the client's reads wait 5 ms
-instead of 100, so input leaves within a few milliseconds. An error answer
+16 ms; the view sends a repeated point once. The client's reads wait 5 ms
+while input came in the last second or waits for Chrome's answer, so input
+leaves within a few milliseconds; 20 ms while the view only has the
+keyboard, so the first key after a pause leaves within 20 ms without the
+client waking 200 times a second; and 100 ms otherwise. An error answer
 to an input request is logged once and leaves the screencast as it is; an
 error answer to the screencast's own requests still counts as a refusal.
 Input given while the client reconnects is dropped, not replayed on the new
-connection.
+connection, except a mouse release: the page keeps a button pressed across
+the client's connections until it hears one.
 
 ### Bound native Policies
 

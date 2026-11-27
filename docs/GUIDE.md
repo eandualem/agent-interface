@@ -398,8 +398,8 @@ that your keys go there. Typing, Enter, Tab, Backspace, the arrows, Escape
 and the page's own shortcuts reach the page, and so does text from accented
 keys and input methods. The app's shortcuts still work, as do Cmd-Q and
 Settings. Copy, paste and cut are not passed to the page yet. To give the
-keyboard back to the app, click anywhere outside the page, such as the
-sidebar or another pane, or use a shortcut that moves to another pane. The
+keyboard back to the app, click the sidebar or another pane, or the view's
+header, or use a shortcut that moves to another pane. The
 pointer stays a plain arrow over the page. The agent's next snapshot shows
 what you did.
 

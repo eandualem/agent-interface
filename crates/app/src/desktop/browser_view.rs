@@ -74,10 +74,8 @@ pub(super) struct BrowserView {
     id: u64,
     /// Holds the keyboard while the person uses the page.
     focus: FocusHandle,
-    /// The button pressed in the frame, until it is released anywhere.
-    held: Option<Button>,
-    /// The last move sent, so a pointer held still sends no repeats.
-    moved: Option<(f32, f32, u8)>,
+    /// The mouse as the page last heard of it.
+    pointing: Pointing,
     /// The printable keystroke just pressed, whose text the input handler
     /// brings next.
     typed: Option<(Keystroke, bool)>,
@@ -129,8 +127,7 @@ impl BrowserView {
                 VIEWS.fetch_add(1, Ordering::Relaxed)
             },
             focus: cx.focus_handle(),
-            held: None,
-            moved: None,
+            pointing: Pointing::default(),
             typed: None,
             marked: None,
             caret: None,
@@ -348,69 +345,39 @@ impl BrowserView {
 
     /// A press at `at`, the page point under it, or beside the frame.
     fn pressed(&mut self, event: &MouseDownEvent, at: Option<(f32, f32)>) {
-        let (Some((x, y)), Some(button)) = (at, button(event.button)) else {
+        let (Some(at), Some(button)) = (at, button(event.button)) else {
             return;
         };
-        let buttons = self.held.map_or(0, Button::bit) | button.bit();
-        self.held = Some(button);
-        self.moved = None;
         self.caret = Some(event.position);
-        self.send(Input::Pressed(Pointer {
-            x,
-            y,
-            button,
-            buttons,
-            clicks: event.click_count,
-            modifiers: modifiers(&event.modifiers),
-        }));
+        let pressed =
+            self.pointing
+                .press(at, button, event.click_count, modifiers(&event.modifiers));
+        self.send(pressed);
     }
 
-    /// The release of the button pressed in the frame, wherever it is.
+    /// A release, wherever it is, of a button pressed in the frame.
     fn released(&mut self, event: &MouseUpEvent, at: Option<(f32, f32)>) {
-        let (Some((x, y)), Some(released)) = (at, button(event.button)) else {
+        let (Some(at), Some(button)) = (at, button(event.button)) else {
             return;
         };
-        if self.held != Some(released) {
-            return;
+        let modifiers = modifiers(&event.modifiers);
+        if let Some(released) = self
+            .pointing
+            .release(at, button, event.click_count, modifiers)
+        {
+            self.send(released);
         }
-        self.held = None;
-        self.moved = None;
-        self.send(Input::Released(Pointer {
-            x,
-            y,
-            button: released,
-            buttons: 0,
-            clicks: event.click_count,
-            modifiers: modifiers(&event.modifiers),
-        }));
     }
 
-    /// A move over the frame, or anywhere while a button pressed in it is
-    /// held. A drag that began elsewhere is not the page's.
+    /// A move, at the page point `at` or beside the frame.
     fn moved(&mut self, event: &MouseMoveEvent, at: Option<(f32, f32)>) {
-        // A release missed while no frame was drawn ends the drag.
-        if event.pressed_button.is_none() {
-            self.held = None;
+        let pressed = event.pressed_button.is_some();
+        for input in self
+            .pointing
+            .moved(at, pressed, modifiers(&event.modifiers))
+        {
+            self.send(input);
         }
-        let Some((x, y)) = at else {
-            return;
-        };
-        let held = self.held.unwrap_or(Button::None);
-        if held == Button::None && event.pressed_button.is_some() {
-            return;
-        }
-        // The platform repeats a drag held still; the page needs it once.
-        if self.moved.replace((x, y, held.bit())) == Some((x, y, held.bit())) {
-            return;
-        }
-        self.send(Input::Moved(Pointer {
-            x,
-            y,
-            button: held,
-            buttons: held.bit(),
-            clicks: 0,
-            modifiers: modifiers(&event.modifiers),
-        }));
     }
 
     /// Keys for the page while the view has the keyboard. App shortcuts ran
@@ -460,7 +427,7 @@ impl BrowserView {
         };
         let keystroke = Keystroke::parse(shortcut).expect("select all");
         match key_press(&keystroke, false, cfg!(target_os = "macos")) {
-            Press::Send(keys) if window.is_window_active() => {
+            Press::Send(keys) if window.is_window_active() && self.frame.is_some() => {
                 for key in keys {
                     self.send(Input::Key(key));
                 }
@@ -800,7 +767,7 @@ fn listen(
             }
             let over = hitbox.is_hovered(window) && window.is_window_active();
             let _ = view.update(cx, |view, _| {
-                let held = view.held.is_some();
+                let held = view.pointing.held != 0;
                 let at = (held || over)
                     .then(|| point(event.position, held))
                     .flatten();
@@ -862,6 +829,95 @@ fn wheel(delta: ScrollDelta, shown: Bounds<Pixels>, page: (f32, f32)) -> (f32, f
             -f32::from(points.y) * page.1 / f32::from(shown.size.height),
         ),
         ScrollDelta::Lines(lines) => (-lines.x * 40., -lines.y * 40.),
+    }
+}
+
+/// The mouse as the page last heard of it: the buttons pressed in the frame,
+/// as bits, and the last point and buttons sent.
+#[derive(Default)]
+struct Pointing {
+    held: u8,
+    last: Option<(f32, f32, u8)>,
+}
+
+impl Pointing {
+    /// The press of `button` at `at`, a point of the page.
+    fn press(&mut self, at: (f32, f32), button: Button, clicks: usize, modifiers: u8) -> Input {
+        self.held |= button.bit();
+        self.last = Some((at.0, at.1, self.held));
+        Input::Pressed(Pointer {
+            x: at.0,
+            y: at.1,
+            button,
+            buttons: self.held,
+            clicks,
+            modifiers,
+        })
+    }
+
+    /// The release of `button` at `at`, if it was pressed in the frame;
+    /// the other buttons stay held.
+    fn release(
+        &mut self,
+        at: (f32, f32),
+        button: Button,
+        clicks: usize,
+        modifiers: u8,
+    ) -> Option<Input> {
+        if self.held & button.bit() == 0 {
+            return None;
+        }
+        self.held &= !button.bit();
+        self.last = Some((at.0, at.1, self.held));
+        Some(Input::Released(Pointer {
+            x: at.0,
+            y: at.1,
+            button,
+            buttons: self.held,
+            clicks,
+            modifiers,
+        }))
+    }
+
+    /// A move to `at`, a point of the page, or beside the frame, with
+    /// `pressed` when the platform reports a button down. Buttons released
+    /// while no frame was drawn are released in the page first. A pointer
+    /// that leaves the frame with no button held moves just outside the page,
+    /// so its hover ends; a drag that began elsewhere is not the page's, and
+    /// a point sent already is not sent again, as the platform repeats a
+    /// drag held still.
+    fn moved(&mut self, at: Option<(f32, f32)>, pressed: bool, modifiers: u8) -> Vec<Input> {
+        let mut sent = Vec::new();
+        if !pressed && self.held != 0 {
+            let point = at.or(self.last.map(|(x, y, _)| (x, y))).unwrap_or_default();
+            for button in [Button::Left, Button::Right, Button::Middle] {
+                sent.extend(self.release(point, button, 1, modifiers));
+            }
+        }
+        let (x, y) = match at {
+            Some(_) if self.held == 0 && pressed => return sent,
+            Some(at) => at,
+            None if self.held == 0 && self.last.is_some_and(|(x, y, _)| x >= 0. && y >= 0.) => {
+                (-1., -1.)
+            }
+            None => return sent,
+        };
+        if self.last.replace((x, y, self.held)) == Some((x, y, self.held)) {
+            return sent;
+        }
+        let button = [Button::Left, Button::Right, Button::Middle]
+            .into_iter()
+            .find(|button| self.held & button.bit() != 0)
+            .unwrap_or(Button::None);
+        sent.push(Input::Moved(Pointer {
+            x,
+            y,
+            button,
+            buttons: self.held,
+            clicks: 0,
+            modifiers,
+        }));
+        sent
     }
 }
 
@@ -936,7 +992,8 @@ fn key_press(keystroke: &Keystroke, held: bool, mac: bool) -> Press {
         } else {
             KeyKind::RawDown
         };
-        return pair(kind, key.to_owned(), code, virtual_key, text, &[]);
+        let commands = if mac { mac_editing(keystroke) } else { &[] };
+        return pair(kind, key.to_owned(), code, virtual_key, text, commands);
     }
     if !command {
         let printable = keystroke
@@ -961,14 +1018,41 @@ fn key_press(keystroke: &Keystroke, held: bool, mac: bool) -> Press {
         letter if held_down.shift && letter.len() == 1 => letter.to_ascii_uppercase(),
         key => key.to_owned(),
     };
-    let editing = mac && held_down.platform && !held_down.control && !held_down.alt;
-    let commands: &'static [&'static str] = match (keystroke.key.as_str(), held_down.shift) {
-        ("a", false) if editing => &["selectAll"],
-        ("z", false) if editing => &["undo"],
-        ("z", true) if editing => &["redo"],
-        _ => &[],
-    };
+    let commands = if mac { mac_editing(keystroke) } else { &[] };
     pair(KeyKind::RawDown, key, code, virtual_key, None, commands)
+}
+
+/// The editing command Chrome on macOS runs for `keystroke`, which it does
+/// not find itself there: select all, undo and redo, moving by word with
+/// Option and to the line's or document's ends with Cmd, Shift extending
+/// the selection, and deleting by word or to the line's start.
+fn mac_editing(keystroke: &Keystroke) -> &'static [&'static str] {
+    let held = &keystroke.modifiers;
+    if held.control || held.function {
+        return &[];
+    }
+    let (option, command, shift) = (held.alt, held.platform, held.shift);
+    match (keystroke.key.as_str(), option, command, shift) {
+        ("a", false, true, false) => &["selectAll"],
+        ("z", false, true, false) => &["undo"],
+        ("z", false, true, true) => &["redo"],
+        ("left", true, false, false) => &["moveWordLeft"],
+        ("left", true, false, true) => &["moveWordLeftAndModifySelection"],
+        ("right", true, false, false) => &["moveWordRight"],
+        ("right", true, false, true) => &["moveWordRightAndModifySelection"],
+        ("left", false, true, false) => &["moveToBeginningOfLine"],
+        ("left", false, true, true) => &["moveToBeginningOfLineAndModifySelection"],
+        ("right", false, true, false) => &["moveToEndOfLine"],
+        ("right", false, true, true) => &["moveToEndOfLineAndModifySelection"],
+        ("up", false, true, false) => &["moveToBeginningOfDocument"],
+        ("up", false, true, true) => &["moveToBeginningOfDocumentAndModifySelection"],
+        ("down", false, true, false) => &["moveToEndOfDocument"],
+        ("down", false, true, true) => &["moveToEndOfDocumentAndModifySelection"],
+        ("backspace", true, false, false) => &["deleteWordBackward"],
+        ("backspace", false, true, false) => &["deleteToBeginningOfLine"],
+        ("delete", true, false, false) => &["deleteWordForward"],
+        _ => &[],
+    }
 }
 
 /// What text the input handler brings sends: the text of the printable key
@@ -1859,6 +1943,101 @@ mod tests {
                 [Input::Text(text.into())]
             );
         }
+    }
+
+    /// The kind, point, button and buttons held of each mouse input.
+    fn mice(inputs: impl IntoIterator<Item = Input>) -> Vec<(&'static str, f32, f32, Button, u8)> {
+        inputs
+            .into_iter()
+            .map(|input| match input {
+                Input::Pressed(p) => ("pressed", p.x, p.y, p.button, p.buttons),
+                Input::Released(p) => ("released", p.x, p.y, p.button, p.buttons),
+                Input::Moved(p) => ("moved", p.x, p.y, p.button, p.buttons),
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn each_button_is_released_on_its_own_and_the_rest_stay_held() {
+        let mut pointing = Pointing::default();
+        let left = pointing.press((10., 10.), Button::Left, 1, 0);
+        let right = pointing.press((10., 10.), Button::Right, 1, 0);
+        assert_eq!(
+            mice([left, right]),
+            [
+                ("pressed", 10., 10., Button::Left, 1),
+                ("pressed", 10., 10., Button::Right, 3)
+            ]
+        );
+        // A drag with both: the move carries both, the first as its button.
+        let drag = pointing.moved(Some((20., 10.)), true, 0);
+        assert_eq!(mice(drag), [("moved", 20., 10., Button::Left, 3)]);
+        let right = pointing.release((20., 10.), Button::Right, 1, 0).unwrap();
+        assert_eq!(mice([right]), [("released", 20., 10., Button::Right, 1)]);
+        // A button not pressed in the frame is not released in the page.
+        assert!(pointing.release((20., 10.), Button::Middle, 1, 0).is_none());
+        let left = pointing.release((20., 10.), Button::Left, 1, 0).unwrap();
+        assert_eq!(mice([left]), [("released", 20., 10., Button::Left, 0)]);
+    }
+
+    #[test]
+    fn a_release_missed_while_no_frame_was_drawn_reaches_the_page() {
+        let mut pointing = Pointing::default();
+        pointing.press((10., 10.), Button::Left, 1, 0);
+        // The next move reports no button down.
+        let moved = pointing.moved(Some((30., 40.)), false, 0);
+        assert_eq!(
+            mice(moved),
+            // The release is at the new point, so no move follows it.
+            [("released", 30., 40., Button::Left, 0)]
+        );
+        assert!(pointing.moved(Some((30., 40.)), false, 0).is_empty());
+    }
+
+    #[test]
+    fn hover_ends_when_the_pointer_leaves_and_foreign_drags_are_ignored() {
+        let mut pointing = Pointing::default();
+        assert_eq!(
+            mice(pointing.moved(Some((5., 5.)), false, 0)),
+            [("moved", 5., 5., Button::None, 0)]
+        );
+        // Out of the frame: once, just outside the page.
+        let left = pointing.moved(None, false, 0);
+        assert_eq!(mice(left), [("moved", -1., -1., Button::None, 0)]);
+        assert!(pointing.moved(None, false, 0).is_empty());
+        // A drag that began beside the frame is not the page's.
+        assert!(pointing.moved(Some((5., 5.)), true, 0).is_empty());
+    }
+
+    #[test]
+    fn macos_editing_keys_carry_their_commands() {
+        let commands = |text: &str| down(text, None, true).unwrap().commands;
+        for (text, command) in [
+            ("alt-left", "moveWordLeft"),
+            ("alt-shift-right", "moveWordRightAndModifySelection"),
+            ("cmd-left", "moveToBeginningOfLine"),
+            ("cmd-shift-right", "moveToEndOfLineAndModifySelection"),
+            ("cmd-up", "moveToBeginningOfDocument"),
+            ("cmd-shift-down", "moveToEndOfDocumentAndModifySelection"),
+            ("alt-backspace", "deleteWordBackward"),
+            ("cmd-backspace", "deleteToBeginningOfLine"),
+            ("alt-delete", "deleteWordForward"),
+        ] {
+            assert_eq!(commands(text), [command], "{text}");
+        }
+        // Plain keys and other combinations: Chrome's own.
+        for text in [
+            "left",
+            "shift-left",
+            "ctrl-left",
+            "cmd-alt-left",
+            "backspace",
+        ] {
+            assert!(commands(text).is_empty(), "{text}");
+        }
+        // Off macOS, none.
+        assert!(down("alt-left", None, false).unwrap().commands.is_empty());
     }
 
     #[test]
