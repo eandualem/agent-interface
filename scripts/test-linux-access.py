@@ -387,9 +387,28 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
             wait_for(lambda: find("everything"), "docs-site's confinement line")
             # Parts of its rows OCR keeps: the arm runner read SITE_API_KEY as
             # SITE_APL_KEY, and the folder /home/user/media whole.
-            wait_for(lambda: containing("SITE_"), "docs-site's secret")
-            wait_for(lambda: containing("media"), "docs-site's folder")
+            folder = wait_for(lambda: next(iter(containing("media")), None), "docs-site's folder")
             capture("agent-detail")
+
+            def wheel(button, times):
+                # Turn the wheel over the detail, where the folder line was
+                # drawn: the detail scrolls under the pointer, not the list.
+                command("xdotool", "mousemove", "--window", window,
+                        str(int(folder["left"])), str(int(folder["top"])))
+                time.sleep(0.2)
+                command("xdotool", "click", "--repeat", str(times), "--delay", "50", button)
+                time.sleep(0.3)
+
+            # Its secrets and Docker are below the browser sign-ins, past the
+            # bottom of the detail at this window's height.
+            def secret_shown():
+                wheel("5", 3)
+                return containing("SITE_")
+            wait_for(secret_shown, "docs-site's secret, scrolled to")
+            # The detail keeps its scroll for the next agent, so it goes back
+            # to the top, where the confinement line and segment are.
+            wheel("4", 30)
+            wait_for(lambda: find("everything"), "docs-site's detail scrolled back to the top")
 
             # Backbone refuses the confinement change; its reason is shown.
             click_agent("tester")
