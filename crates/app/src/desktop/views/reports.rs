@@ -58,46 +58,42 @@ impl State {
         self.choosing_agent = false;
     }
 
-    /// [`Self::take`] `page`; whether that changed anything the reader shows.
+    /// Authored text is immutable; correction metadata can change after
+    /// opening. Whether `page` changed anything the reader shows; each part
+    /// is compared before it is copied, so an identical page copies nothing.
     pub fn observe(&mut self, page: &ReportPage) -> bool {
-        let before = (
-            self.agents.clone(),
-            self.opening,
-            self.open.clone(),
-            self.runtimes.clone(),
-            self.feed.clone(),
-        );
-        self.take(page);
-        before.0 != self.agents
-            || before.1 != self.opening
-            || before.2 != self.open
-            || before.3 != self.runtimes
-            || before.4 != self.feed
-    }
-
-    /// Authored text is immutable; correction metadata can change after opening.
-    fn take(&mut self, page: &ReportPage) {
-        if !page.agents.is_empty() {
+        let mut changed = false;
+        if !page.agents.is_empty() && self.agents != page.agents {
             self.agents = page.agents.clone();
+            changed = true;
         }
-        self.opening = self.pending_correction().map(|to| (self.open_id(), to));
+        let opening = self.pending_correction().map(|to| (self.open_id(), to));
+        changed |= std::mem::replace(&mut self.opening, opening) != opening;
         if let Some(to) = self.pending_correction()
             && let Some(item) = page.items.iter().find(|item| item.id == to)
         {
             self.opening = None;
             self.open = Some(item.clone());
-            return;
+            return true;
         }
         // The open record's registration and the runtimes come from the same
         // read, so a name re-registered meanwhile cannot lend its runtime; a
         // read without the roster clears them rather than keep older ones.
         if self.open.is_none() {
-            self.runtimes = page.runtimes.clone();
-            self.feed = Some(page.clone());
+            if self.runtimes != page.runtimes {
+                self.runtimes = page.runtimes.clone();
+                changed = true;
+            }
+            if self.feed.as_ref() != Some(page) {
+                self.feed = Some(page.clone());
+                changed = true;
+            }
         }
-        let Some(open) = &mut self.open else { return };
+        let Some(open) = &mut self.open else {
+            return changed;
+        };
         let Some(fresh) = page.items.iter().find(|item| item.id == open.id) else {
-            return;
+            return changed;
         };
         if let (
             ReportContent::Response { superseded_by, .. },
@@ -107,8 +103,9 @@ impl State {
             },
         ) = (&mut open.content, &fresh.content)
         {
-            *superseded_by = *updated;
+            changed |= std::mem::replace(superseded_by, *updated) != *updated;
         }
+        changed
     }
 }
 
