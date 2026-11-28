@@ -1,5 +1,5 @@
-//! A replay child: a process that replays one recording through one engine,
-//! so that each engine's timings and peak memory are its own.
+//! A replay child: a process that replays one recording through the engine,
+//! so that its timings and peak memory are its own.
 //!
 //! The child writes `engine <name>` and `revision <the revision it was built
 //! from>`, then one `run <nanoseconds>` line per
@@ -14,14 +14,15 @@ use agent_interface_tmux::control::PaneId;
 
 use crate::display::Screen;
 use crate::dump::dump;
-use crate::engine::{Engine, GRID};
+use crate::engine::GRID;
+use crate::engines::Ghostty;
 use crate::memory;
 use crate::options::Options;
 use crate::replay::{self, Schedule};
 
-/// Runs a replay child for engine `E` with the parent's `options`: `--wire`,
-/// `--pane`, `--chunk`, `--read-every`, `--warmup`, `--runs` and `--screen`.
-pub fn run<E: Engine>(options: &Options) -> Result<(), String> {
+/// Runs a replay child with the parent's `options`: `--wire`, `--pane`,
+/// `--chunk`, `--read-every`, `--warmup`, `--runs` and `--screen`.
+pub fn run(options: &Options) -> Result<(), String> {
     let wire_path = options.required("wire")?;
     let wire = fs::read(wire_path).map_err(|error| format!("{wire_path}: {error}"))?;
     let pane = PaneId(options.get("pane", 0)?);
@@ -38,12 +39,12 @@ pub fn run<E: Engine>(options: &Options) -> Result<(), String> {
         return Err("--runs must be above zero".to_owned());
     }
 
-    println!("engine {}", E::NAME);
+    println!("engine {}", Ghostty::NAME);
     println!("revision {}", env!("BENCH_REVISION"));
     let mut screen = Screen::default();
     let mut last = None;
     for run in 0..warmup + runs {
-        let replay = replay::replay::<E>(&wire, pane, GRID, schedule, &mut screen)
+        let replay = replay::replay(&wire, pane, GRID, schedule, &mut screen)
             .map_err(|error| error.to_string())?;
         if run >= warmup {
             println!("run {}", replay.elapsed.as_nanos());
