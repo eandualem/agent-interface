@@ -594,6 +594,8 @@ Native document readers share selection state across styled text blocks and sour
 text. GPUI text layouts map pointer positions to UTF-8 offsets, snapped to grapheme
 boundaries. Copy uses the displayed text; selection resets when that text changes.
 Native Copy and Select All menu actions follow the focused field or reader.
+On macOS, Cmd+C and Cmd+A go to an HTML Document's page whenever the page is
+the window's first responder, even while GPUI focus stays in its conversation.
 Native Markdown copying preserves authored link labels and restores abbreviated
 bare addresses to their full URLs. Native links open only HTTP and HTTPS destinations; other schemes and
 document anchors remain plain text.
@@ -1058,7 +1060,8 @@ build-time advisory exception are described below.
   pinned as one package family. Apache-2.0. The macOS 0.3.9 backend is
   [vendored with a narrow native focus correction](../native/gpui-macos/README.md):
   window focus queries reach the content-view accessibility adapter, and the
-  adapter starts with the window's current key status. Accessibility is primed
+  adapter starts with the window's current key status. A web page that is the
+  window's first responder keeps plain Cmd+C and Cmd+A. Accessibility is primed
   on window creation so the first external query sees the rendered text tree.
   This builds accessibility data during rendering even before a client connects;
   it trades some rendering work for reliable first-use dictation detection.

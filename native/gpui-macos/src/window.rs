@@ -2626,7 +2626,52 @@ extern "C" fn reset_cursor_rects(this: &Object, _: Sel) {
 }
 
 extern "C" fn handle_key_equivalent(this: &Object, _: Sel, native_event: id) -> BOOL {
+    // SAFETY: `this` is a GPUI view and `native_event` the key event AppKit is dispatching.
+    if unsafe { web_page_edit_key(this, native_event) } {
+        return NO;
+    }
     handle_key_event(this, native_event, true)
+}
+
+/// Whether `native_event` is plain Cmd+C or Cmd+A while an embedded web page
+/// is the window's first responder. The page then copies or selects through
+/// the Edit menu's native `copy:` and `selectAll:`, whichever GPUI element
+/// still has GPUI focus: a click in the page never reaches GPUI's own focus.
+unsafe fn web_page_edit_key(this: &Object, native_event: id) -> bool {
+    unsafe {
+        let modifiers = native_event.modifierFlags();
+        if !modifiers.contains(NSEventModifierFlags::NSCommandKeyMask)
+            || modifiers.contains(NSEventModifierFlags::NSControlKeyMask)
+            || modifiers.contains(NSEventModifierFlags::NSAlternateKeyMask)
+            || modifiers.contains(NSEventModifierFlags::NSShiftKeyMask)
+        {
+            return false;
+        }
+        let key = native_event.charactersIgnoringModifiers();
+        if key == nil || !matches!(key.to_str(), "c" | "a") {
+            return false;
+        }
+        let Some(web_view) = Class::get("WKWebView") else {
+            return false;
+        };
+        let window: id = msg_send![this, window];
+        if window == nil {
+            return false;
+        }
+        let mut responder: id = msg_send![window, firstResponder];
+        while responder != nil {
+            let is_view: BOOL = msg_send![responder, isKindOfClass: class!(NSView)];
+            if is_view != YES {
+                return false;
+            }
+            let is_web: BOOL = msg_send![responder, isKindOfClass: web_view];
+            if is_web == YES {
+                return true;
+            }
+            responder = msg_send![responder, superview];
+        }
+        false
+    }
 }
 
 extern "C" fn handle_key_down(this: &Object, _: Sel, native_event: id) {

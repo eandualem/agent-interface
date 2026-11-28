@@ -31,10 +31,14 @@ The local changes in `src/window.rs`, `src/pasteboard.rs` and `src/artifact.rs` 
 - Round chosen bottom corners of a document's web view through its backing
   layer, so the view stays inside the rounded pane it is laid over. It checks
   the view's selector and runs only on the main thread.
+- Leave plain Cmd+C and Cmd+A to an embedded web page that is the window's
+  first responder: the GPUI view declines that key equivalent, so the Edit
+  menu's native `copy:` and `selectAll:` reach the page whatever GPUI element
+  has GPUI focus. A click in the page never moves GPUI focus by itself.
 
 The workspace patches this existing dependency locally; it keeps the rest of
 the GPUI package family at 0.3.9. Remove this override when a pinned upstream
 version supplies equivalent native focus, image staging and artifact configuration
-behavior, including `gpui_macos::artifact_configuration` and
-`gpui_macos::round_bottom_corners`. Keep these sources
+behavior, including `gpui_macos::artifact_configuration`,
+`gpui_macos::round_bottom_corners` and web-page edit keys. Keep these sources
 separate from application code so an upstream update can be compared directly.
