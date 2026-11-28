@@ -1478,7 +1478,9 @@ impl ViewPane {
                     }
                     Some(Data::Team(data)) => team::body(self, data, cx),
                     Some(Data::Usage(data)) => usage::body(self, data, cx),
-                    Some(Data::Activity(data)) => activity::body(self, data, cx),
+                    Some(Data::Activity(data)) => {
+                        activity::body(self, data, f32::from(window.viewport_size().width), cx)
+                    }
                     Some(Data::Skills(data)) => skills::body(self, data, cx),
                     Some(Data::Agent(data)) => agent::body(self, data, cx),
                     Some(Data::Policies(data)) => policies::body(self, data, cx),

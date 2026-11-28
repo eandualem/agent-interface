@@ -40,6 +40,29 @@ struct Lane<'a> {
     spans: Vec<(f32, f32, &'a str)>,
 }
 
+/// Seconds until the lanes drawn at `end` look different: while a delivery
+/// or an observation lies in the hour shown, when it next moves by a
+/// `pixel` of seconds (at least a second, so a span that has just begun
+/// still draws on the next wake); when a later one enters the hour; never
+/// when all are older, as a state seen before the hour fills its lane
+/// unchanged.
+fn lanes_roll(activity: &Activity, end: f64, pixel: f64) -> Option<f64> {
+    let start = end - HOUR;
+    let changes: &[Change] = match &activity.history {
+        History::Observed { changes, .. } => changes,
+        _ => &[],
+    };
+    activity
+        .entries
+        .iter()
+        .filter(|entry| delivered(entry))
+        .filter_map(|entry| entry.at)
+        .chain(changes.iter().filter_map(|change| change.at))
+        .filter(|at| *at >= start)
+        .map(|at| if at <= end { pixel.max(1.0) } else { at - end })
+        .reduce(f64::min)
+}
+
 /// One lane per agent that received something in the last hour, was busy or
 /// waiting in it, or is now, most recently active first.
 fn lanes<'a>(
@@ -130,17 +153,20 @@ fn span_color(state: &str) -> Rgba {
     }
 }
 
-fn timeline(activity: &Activity, agents: &crate::desktop::agent_status::LiveAgents) -> gpui::Div {
+fn timeline(
+    activity: &Activity,
+    agents: &crate::desktop::agent_status::LiveAgents,
+    width: f32,
+) -> gpui::Div {
     let (t, c) = (tokens(), colors());
     let name_width = t.size.tag_card_label + t.space.s24;
     let end = now() as f64;
     let lanes = lanes(activity, end, agents);
-    // The lanes cover the last hour; what they hold moves along each minute.
-    if lanes
-        .iter()
-        .any(|lane| !lane.ticks.is_empty() || !lane.spans.is_empty())
-    {
-        super::rolls_in(60.0 - end % 60.0);
+    // A lane is no wider than the window, so a pixel of it is at least this
+    // many seconds of the hour.
+    let pixel = HOUR / f64::from(width.max(1.0));
+    if let Some(seconds) = lanes_roll(activity, end, pixel) {
+        super::rolls_in(seconds);
     }
     let mut axis = div().flex_1().flex().justify_between();
     for label in ["60 min ago", "45", "30", "15", "now"] {
@@ -269,7 +295,13 @@ fn held(entry: &Entry) -> bool {
     )
 }
 
-pub(super) fn body(pane: &ViewPane, activity: &Activity, cx: &mut Context<ViewPane>) -> AnyElement {
+/// `width` is the window's, in pixels: no lane is wider.
+pub(super) fn body(
+    pane: &ViewPane,
+    activity: &Activity,
+    width: f32,
+    cx: &mut Context<ViewPane>,
+) -> AnyElement {
     let (t, c) = (tokens(), colors());
     let header = ui::view_header("activity", "Activity")
         .child("states and deliveries, all agents")
@@ -310,7 +342,7 @@ pub(super) fn body(pane: &ViewPane, activity: &Activity, cx: &mut Context<ViewPa
     let mut rows = list("activity-rows")
         .px(px(0.0))
         .py(px(0.0))
-        .child(timeline(activity, &pane.agents))
+        .child(timeline(activity, &pane.agents, width))
         .child(filters);
     for entry in activity.entries.iter().filter(|entry| match pane.records {
         Records::All => true,
@@ -400,6 +432,33 @@ pub(super) fn body(pane: &ViewPane, activity: &Activity, cx: &mut Context<ViewPa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lanes_wake_only_when_they_can_look_different() {
+        let end = 10_000.0;
+        let observed = |at: f64| Activity {
+            history: History::Observed {
+                changes: vec![Change {
+                    agent: "worker".into(),
+                    state: "busy".into(),
+                    at: Some(at),
+                    ..Change::default()
+                }],
+                complete: true,
+            },
+            ..Activity::default()
+        };
+        let pixel = HOUR / 1_200.0;
+        assert_eq!(lanes_roll(&Activity::default(), end, pixel), None);
+        // Just begun, as wide as nothing yet: it grows by a pixel.
+        assert_eq!(lanes_roll(&observed(end), end, pixel), Some(3.0));
+        // Never sooner than a second, however wide the window.
+        assert_eq!(lanes_roll(&observed(end), end, 0.5), Some(1.0));
+        // About to enter the hour.
+        assert_eq!(lanes_roll(&observed(end + 2.0), end, pixel), Some(2.0));
+        // Begun before the hour: its lane stays full.
+        assert_eq!(lanes_roll(&observed(end - 2.0 * HOUR), end, pixel), None);
+    }
 
     #[test]
     fn lanes_hold_recent_deliveries_and_busy_agents_most_recent_first() {
