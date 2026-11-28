@@ -346,7 +346,7 @@ impl Interactions {
         cx.notify();
     }
 
-    fn refresh(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.reading {
             return;
         }

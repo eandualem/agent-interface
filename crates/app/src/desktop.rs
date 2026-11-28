@@ -3623,13 +3623,16 @@ impl Render for Browser {
             }
         }
         for (id, (view, _)) in &self.views {
-            view.read(cx).set_visible(
+            let appeared = view.read(cx).set_visible(
                 !self.window_hidden
                     && !self.profile_content_unavailable()
                     && shown.iter().any(|(shown, _)| shown == id)
                     && expanded.is_none_or(|focused| focused == id),
                 cx,
             );
+            if appeared {
+                view.update(cx, |view, cx| view.wake(cx));
+            }
             // Native child views are above GPUI drawing. Hide them while a
             // popover or geometry gesture needs that space or its pointer input.
             view.read(cx).occlude_web(self.web_content_occluded(), cx);

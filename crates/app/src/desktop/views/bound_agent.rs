@@ -315,7 +315,7 @@ impl Card {
         }
     }
 
-    fn refresh(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn refresh(&mut self, cx: &mut Context<Self>) {
         if !self.visible.get() || self.removal == Removal::Done {
             return;
         }

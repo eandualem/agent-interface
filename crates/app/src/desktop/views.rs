@@ -277,8 +277,10 @@ impl ViewPane {
         self.artifacts.is_some() || documents::selected(self).is_some()
     }
 
-    pub fn set_visible(&self, visible: bool, cx: &gpui::App) {
-        self.visible.set(visible);
+    /// Whether the pane can be seen; true when it just became visible, for
+    /// [`Self::wake`].
+    pub fn set_visible(&self, visible: bool, cx: &gpui::App) -> bool {
+        let appeared = visible && !self.visible.replace(visible);
         if !visible {
             self.documents.surface.borrow_mut().clear();
         }
@@ -287,6 +289,37 @@ impl ViewPane {
         }
         if let Some(artifacts) = &self.artifacts {
             artifacts.read(cx).set_visible(visible);
+        }
+        appeared
+    }
+
+    /// Read the shown section again now that the pane can be seen: plans,
+    /// interactions and an agent card otherwise wait for their next poll.
+    /// The view source reads at once by itself. Drawn again, the pane and
+    /// its children bring their ages up to date and wake for the next.
+    pub fn wake(&mut self, cx: &mut Context<Self>) {
+        cx.notify();
+        if let Some(artifacts) = &self.artifacts {
+            artifacts.update(cx, |_, cx| cx.notify());
+        }
+        match self.shown {
+            Shown::Plans => {
+                if let Some(plans) = &self.plans {
+                    plans.update(cx, |plans, cx| plans.refresh(cx));
+                }
+            }
+            Shown::Interactions => {
+                if let Some(view) = &self.interactions {
+                    view.update(cx, |view, cx| view.refresh(cx));
+                }
+            }
+            Shown::Records | Shown::Sheets => {}
+        }
+        if let Some(card) = &self.bound_agent {
+            card.update(cx, |card, cx| {
+                card.refresh(cx);
+                cx.notify();
+            });
         }
     }
 
