@@ -117,6 +117,10 @@ pub(super) struct Sheets {
     pending: Option<Prepared>,
     pending_uncertain: bool,
     feedback_receipt: Option<FeedbackReceipt>,
+    /// Whether the pane holding it can be seen.
+    visible: std::rc::Rc<std::cell::Cell<bool>>,
+    /// Redraws the shelf when an age it shows changes.
+    clock: super::Clock,
     busy: bool,
     error: Option<String>,
     notice: Option<String>,
@@ -124,7 +128,12 @@ pub(super) struct Sheets {
     _inputs: Vec<Subscription>,
 }
 impl Sheets {
-    pub fn new(source: Source, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        source: Source,
+        visible: std::rc::Rc<std::cell::Cell<bool>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let conversation =
             cx.new(|cx| Conversation::delivered_by_owner("about this sheet", window, cx));
         let input = Self::watch(&conversation, cx);
@@ -149,6 +158,8 @@ impl Sheets {
             pending: None,
             pending_uncertain: false,
             feedback_receipt: None,
+            visible,
+            clock: super::Clock::default(),
             busy: false,
             error: None,
             notice: None,
@@ -597,6 +608,15 @@ fn column_name(mut n: usize) -> String {
 
 impl Render for Sheets {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        super::Clock::begin();
+        let drawn = self.draw(window, cx).into_any_element();
+        self.clock.end(self.visible.clone(), cx);
+        drawn
+    }
+}
+
+impl Sheets {
+    fn draw(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(open) = &self.open {
             let sheet = seen_keys(&open.record, self.source.identity())[1].clone();
             if !self.conversations.contains_key(&sheet) {

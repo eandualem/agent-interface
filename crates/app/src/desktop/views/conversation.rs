@@ -780,6 +780,14 @@ impl Conversation {
         }
     }
 
+    /// Read at once if the person can see this conversation, as its pane
+    /// asks when it shows again.
+    pub fn read_now(&mut self, cx: &mut Context<Self>) {
+        if self.shown() {
+            self.refresh(cx);
+        }
+    }
+
     /// Read again if shown, and say when to look next; `None` stops polling
     /// while the conversation is inactive, until it is activated again, and
     /// once Backbone turns out to keep no conversations.

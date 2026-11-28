@@ -296,8 +296,8 @@ impl ViewPane {
     }
 
     /// Read the shown section again now that the pane can be seen: plans,
-    /// interactions, an agent card and artifacts otherwise wait for their
-    /// next poll.
+    /// interactions, an agent card, artifacts and the open record's
+    /// conversation otherwise wait for their next poll.
     /// The view source reads at once by itself. Drawn again, the pane and
     /// its children bring their ages up to date and wake for the next.
     pub fn wake(&mut self, cx: &mut Context<Self>) {
@@ -319,7 +319,16 @@ impl ViewPane {
                     view.update(cx, |view, cx| view.refresh(cx));
                 }
             }
-            Shown::Records | Shown::Sheets => {}
+            Shown::Sheets => {
+                if let Some(sheets) = &self.sheets {
+                    sheets.update(cx, |_, cx| cx.notify());
+                }
+            }
+            Shown::Records => {}
+        }
+        // The open record's conversation, which polls every few seconds.
+        if let Some(conversation) = &self.conversation {
+            conversation.update(cx, |conversation, cx| conversation.read_now(cx));
         }
         if let Some(card) = &self.bound_agent {
             card.update(cx, |card, cx| {
@@ -711,7 +720,8 @@ impl ViewPane {
         self.leave_reader(cx);
         self.plans_shown(false, cx);
         if self.sheets.is_none() {
-            let sheets = cx.new(|cx| sheets::Sheets::new(source, window, cx));
+            let visible = self.visible.clone();
+            let sheets = cx.new(|cx| sheets::Sheets::new(source, visible, window, cx));
             // An opened workbook trades the section bar for its own.
             self._search
                 .push(cx.observe(&sheets, |_, _, cx| cx.notify()));
