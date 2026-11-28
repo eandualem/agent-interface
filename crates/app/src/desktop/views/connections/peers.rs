@@ -2,7 +2,7 @@
 //! you choice, a filter, and this profile pinned at the bottom. Minimised, it
 //! is a strip of marks; at [`Width::Narrow`] a chooser in the thread header
 //! stands in for it.
-use super::live::{Form, Tip, peer_mark};
+use super::live::{self, Form, peer_mark};
 use super::rules;
 use super::*;
 use crate::desktop::peer_inbox::{Selection, Summary};
@@ -609,7 +609,7 @@ impl Pane {
                 tip = format!("{tip} · {label}");
             }
             let mark = mark_button(id, selected)
-                .tooltip(move |_, cx| cx.new(|_| Tip(tip.clone().into())).into())
+                .tooltip(move |_, cx| cx.new(|_| live::tip(tip.clone())).into())
                 .child(peer_mark(
                     entry.name.as_deref(),
                     t.size.view_tile - t.space.s4,
@@ -648,7 +648,7 @@ impl Pane {
         let tip: SharedString = format!("{name}: copy this profile's connection ID").into();
         strip.child(marks).child(
             mark_button("strip-local", false)
-                .tooltip(move |_, cx| cx.new(|_| Tip(tip.clone())).into())
+                .tooltip(move |_, cx| cx.new(|_| live::tip(tip.clone())).into())
                 .map(|el| {
                     if copied {
                         el.child(ui::icon("check", t.size.icon, c.ok))

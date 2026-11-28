@@ -1137,7 +1137,7 @@ impl Browser {
                                 .when_some(tip, |tag, tip| {
                                     tag.tooltip(move |_, cx| {
                                         let tip = tip.clone();
-                                        cx.new(|_| ui::Tip(tip)).into()
+                                        cx.new(|_| ui::Tip::new(tip)).into()
                                     })
                                 })
                         });
@@ -1205,7 +1205,7 @@ impl Browser {
                             .relative()
                             .group(group)
                             .when_some(held, |row, why| {
-                                row.tooltip(move |_, cx| cx.new(|_| ui::Tip(why.into())).into())
+                                row.tooltip(move |_, cx| cx.new(|_| ui::Tip::new(why)).into())
                             })
                             .when(stale || state == AgentState::Offline, |row| {
                                 row.opacity(0.75)

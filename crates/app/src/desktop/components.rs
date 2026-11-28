@@ -649,12 +649,34 @@ pub fn field_frame(focused: bool) -> Div {
 // they nest, the slot beside a row's text, and a one-line tooltip. Each view
 // keeps its own frames, handlers and selection.
 
-/// A one-line tooltip.
-pub struct Tip(pub SharedString);
+/// A tooltip: one line, or wrapped to its `max_width` when it has one.
+pub struct Tip {
+    text: SharedString,
+    max_width: Option<f32>,
+}
+
+impl Tip {
+    pub fn new(text: impl Into<SharedString>) -> Self {
+        Self {
+            text: text.into(),
+            max_width: None,
+        }
+    }
+
+    /// The same tip, wrapped to at most `width`.
+    pub fn max_width(self, width: f32) -> Self {
+        Self {
+            max_width: Some(width),
+            ..self
+        }
+    }
+}
 
 impl Render for Tip {
     fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
-        menu().child(self.0.clone())
+        menu()
+            .when_some(self.max_width, |el, width| el.max_w(px(width)))
+            .child(self.text.clone())
     }
 }
 
@@ -736,6 +758,43 @@ pub fn tree_line(line: &super::agent_groups::Row) -> Option<(Div, Div)> {
         Row::Swarm { name, .. } => Some((icon_slot("users"), label(name, c.text_2))),
         Row::Agent { .. } | Row::Member { .. } => None,
     }
+}
+
+// ---------------------------------------------------------------- live note and menu dismissal
+//
+// What the Access and Connections views share outside their own layouts:
+// the header note saying when their records were read, and the guard that
+// keeps a press outside a menu from opening it again on its own button.
+
+/// A "● live from Agent Backbone · read 10:31" note for the right of a
+/// view's header, for records read at `at`; [`live_note`] has no time.
+pub fn live_read_note(at: &str) -> Div {
+    let (t, c) = (tokens(), colors());
+    text(
+        div()
+            .flex()
+            .items_center()
+            .gap(px(t.space.s6))
+            .text_color(c.muted)
+            .child(dot(c.ok))
+            .child(format!("live from Agent Backbone · read {at}")),
+        &t.text.meta,
+    )
+}
+
+/// How long after a press outside closes a menu that press may still reach
+/// the menu's own button as a click.
+const MENU_DISMISS: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// Whether a press outside closed `menu` a moment ago, so the same press,
+/// reaching its button as a click, only closes it. The record is taken.
+pub fn just_dismissed<M: PartialEq>(
+    dismissed: &mut Option<(M, std::time::Instant)>,
+    menu: M,
+) -> bool {
+    dismissed
+        .take()
+        .is_some_and(|(closed, at)| closed == menu && at.elapsed() < MENU_DISMISS)
 }
 
 // ---------------------------------------------------------------- views

@@ -109,7 +109,8 @@ impl Browsing {
     }
 
     /// Keep a detail that was read, unless another browser is shown by now.
-    pub fn read(&mut self, detail: Option<Detail>) {
+    /// Says whether it changed what is shown.
+    pub fn read(&mut self, detail: Option<Detail>) -> bool {
         if let Some(detail) = detail
             && self.shown_id(true).as_deref() == Some(detail.browser.id.as_str())
         {
@@ -122,8 +123,11 @@ impl Browsing {
                 self.older.clear();
                 self.older_before = None;
             }
+            let changed = self.detail.as_ref() != Some(&detail);
             self.detail = Some(detail);
+            return changed;
         }
+        false
     }
 }
 
@@ -510,27 +514,15 @@ impl Pane {
     }
 
     fn browsers_header(&self, cx: &mut Context<Self>) -> Div {
-        let (t, c) = (tokens(), colors());
-        let profile = self.profile_name.as_deref().unwrap_or("this profile");
-        let note = if self.browsing.new.is_some() {
-            "new browser".to_owned()
-        } else {
-            format!("browsers you signed in to for {profile}, and which agents may use each")
-        };
-        ui::view_header("globe", "Browsers")
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .text_color(c.muted)
-                    .child(note),
-            )
-            .children(self.live_note().map(|note| ui::text(note, &t.text.meta)))
-            .when(self.browsing.new.is_none(), |el| {
-                el.child(self.browsers_switch(cx))
-            })
+        let new = self.browsing.new.is_some();
+        self.header("globe", "Browsers", |profile| {
+            if new {
+                "new browser".to_owned()
+            } else {
+                format!("browsers you signed in to for {profile}, and which agents may use each")
+            }
+        })
+        .when(!new, |el| el.child(self.browsers_switch(cx)))
     }
 
     fn browser_list(&self, model: &model::Model, cx: &mut Context<Self>) -> Div {
@@ -567,7 +559,7 @@ impl Pane {
                 )
                 .child(div().flex_1().child("BROWSERS"))
                 .child(
-                    self.machine_chip(Some(&machine), name.as_ref())
+                    self.machine_chip(Some(machine.as_str()), name.as_deref())
                         .mr(px(t.space.s4)),
                 )
                 .when(at == 0, |el| {
@@ -1477,7 +1469,10 @@ impl Pane {
         let named = new.id.is_some() && !new.renaming;
         // A browser made already is on its machine; a new one on this one.
         let machine = |pane: &Self| match detail {
-            Some(d) => pane.machine_chip(Some(&d.browser.machine), d.browser.machine_name.as_ref()),
+            Some(d) => pane.machine_chip(
+                Some(d.browser.machine.as_str()),
+                d.browser.machine_name.as_deref(),
+            ),
             None => ui::machine_chip(this_machine()),
         };
         let signed: Vec<&str> = detail
@@ -2032,7 +2027,7 @@ pub(super) fn row_note(
 
 /// When a browser was last used: "in use now" while its session is open,
 /// else "last used 12 min ago", "2 h ago", "yesterday" or its date.
-fn last_used(session: &Session, now: &DateTime<FixedOffset>) -> String {
+pub(super) fn last_used(session: &Session, now: &DateTime<FixedOffset>) -> String {
     let Some(ended) = session.ended_at.as_deref() else {
         return "in use now".into();
     };

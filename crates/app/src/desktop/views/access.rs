@@ -121,6 +121,9 @@ pub(super) struct Pane {
     model: Option<model::Model>,
     /// When they were read, as HH:MM.
     read_at: Option<String>,
+    /// A digest of the ages the pane last drew, so a read that changes no
+    /// record still draws one that has grown.
+    drawn_ages: Option<u64>,
     /// Why the last read failed, shown over the records still drawn.
     error: Option<String>,
     reading: bool,
@@ -292,6 +295,7 @@ impl Pane {
             visible,
             model: None,
             read_at: None,
+            drawn_ages: None,
             error: None,
             reading: false,
             again: false,
@@ -373,18 +377,32 @@ impl Pane {
             let result = read.await;
             let _ = this.update(cx, |pane, cx| {
                 pane.reading = false;
+                // The poll reads every few seconds and most reads change
+                // nothing drawn, so only a change draws again.
+                let small = |pane: &Self| {
+                    (
+                        pane.browsing.new.clone(),
+                        pane.browsing.chosen.clone(),
+                        pane.selected.clone(),
+                        pane.error.clone(),
+                        pane.read_at.clone(),
+                    )
+                };
+                let before = small(pane);
+                let mut changed = false;
                 match result {
                     // Read before a change's reply was applied: the read that
                     // follows the change shows the newer state.
                     Ok(_) if pane.writes != writes => pane.again = true,
                     Ok((overview, pending, browsers, detail)) => {
+                        changed |= pane.model.is_none();
                         let model = pane.model.get_or_insert_with(Default::default);
-                        model.overview = overview;
-                        model.pending = pending.items;
+                        changed |= replace(&mut model.overview, overview);
+                        changed |= replace(&mut model.pending, pending.items);
                         if let Some(browsers) = browsers {
-                            model.browsers = browsers;
+                            changed |= replace(&mut model.browsers, browsers);
                         }
-                        pane.browsing.read(detail);
+                        changed |= pane.browsing.read(detail);
                         pane.keep_new();
                         pane.keep_browser();
                         pane.read_at = Some(chrono::Local::now().format("%H:%M").to_string());
@@ -397,7 +415,14 @@ impl Pane {
                     pane.read(cx);
                 }
                 pane.read_newest(cx);
-                cx.notify();
+                let now = chrono::Local::now().fixed_offset();
+                if changed
+                    || small(pane) != before
+                    || pane.drawn_ages
+                        != Some(age_digest(pane.model.as_ref(), &pane.browsing, &now))
+                {
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -760,7 +785,7 @@ impl Pane {
         let cards = self.card_order();
         let at = self
             .card
-            .and_then(|card| cards.iter().position(|ids| ids.last() == Some(&card)));
+            .and_then(|card| cards.iter().position(|ids| model::card_key(ids) == card));
         match key.key.as_str() {
             "down" | "up" => {
                 let next = match (at, key.key.as_str()) {
@@ -768,7 +793,7 @@ impl Pane {
                     (Some(at), "down") => (at + 1).min(cards.len().saturating_sub(1)),
                     (Some(at), _) => at.saturating_sub(1),
                 };
-                self.card = cards.get(next).and_then(|ids| ids.last().copied());
+                self.card = cards.get(next).map(|ids| model::card_key(ids));
             }
             "a" | "r" => {
                 let Some(ids) = at.and_then(|at| cards.get(at)).cloned() else {
@@ -777,10 +802,13 @@ impl Pane {
                 self.decide(ids, key.key == "a", window, cx);
             }
             "n" => {
-                let Some(first) = at.and_then(|at| cards.get(at)).and_then(|ids| ids.last()) else {
+                let Some(first) = at
+                    .and_then(|at| cards.get(at))
+                    .map(|ids| model::card_key(ids))
+                else {
                     return false;
                 };
-                self.open_note(*first, window, cx);
+                self.open_note(first, window, cx);
             }
             _ => return false,
         }
@@ -846,18 +874,8 @@ impl Pane {
 
     /// "live from Agent Backbone · read 10:31", once something was read.
     fn live_note(&self) -> Option<Div> {
-        let (t, c) = (tokens(), colors());
-        let at = self.read_at.as_ref()?;
-        Some(
-            div()
-                .flex()
-                .flex_shrink_0()
-                .items_center()
-                .gap(px(t.space.s6))
-                .text_color(c.muted)
-                .child(ui::dot(c.ok))
-                .child(format!("live from Agent Backbone · read {at}")),
-        )
+        let at = self.read_at.as_deref()?;
+        Some(ui::live_read_note(at).flex_shrink_0())
     }
 
     /// The last change's notice, with the button that dismisses it: a served
@@ -904,6 +922,46 @@ impl Pane {
             ),
         )
     }
+}
+
+/// Put `value` in `slot`, saying whether it differs from what was there.
+fn replace<T: PartialEq>(slot: &mut T, value: T) -> bool {
+    let changed = *slot != value;
+    *slot = value;
+    changed
+}
+
+/// A digest of the labels the pane draws from the time now: a request's
+/// "asked 12 minutes ago" and the oldest wait, a browser's last use and
+/// what asks for it, and a session's "today" or "yesterday". A poll that
+/// changes no record still draws when one of them changed.
+fn age_digest(
+    model: Option<&model::Model>,
+    browsing: &browsers::Browsing,
+    now: &chrono::DateTime<chrono::FixedOffset>,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut digest = std::hash::DefaultHasher::new();
+    if let Some(model) = model {
+        for request in &model.pending {
+            model::asked(request, now, false).hash(&mut digest);
+        }
+        model::oldest_wait(&model.pending, now).hash(&mut digest);
+        for session in model.newest.values() {
+            browsers::last_used(session, now).hash(&mut digest);
+        }
+    }
+    if let Some(detail) = &browsing.detail {
+        for ask in &detail.requests {
+            model::time(&ask.requested_at, now)
+                .map(|at| model::age(&at, now))
+                .hash(&mut digest);
+        }
+        for session in detail.recent.iter().chain(&browsing.older) {
+            browsers::when(&session.started_at, now).hash(&mut digest);
+        }
+    }
+    digest.finish()
 }
 
 /// Apply a change's result to `model` as Backbone returned it, and say what
@@ -1051,6 +1109,8 @@ impl BrowserStream {
 impl Render for Pane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = colors();
+        let now = chrono::Local::now().fixed_offset();
+        self.drawn_ages = Some(age_digest(self.model.as_ref(), &self.browsing, &now));
         let body = match (&self.model, self.shown) {
             (None, _) => match &self.error {
                 Some(error) => ui::empty_state(
@@ -1097,6 +1157,59 @@ mod tests {
             },
             ..model::Model::default()
         }
+    }
+
+    #[test]
+    fn only_a_read_that_changes_what_is_drawn_draws_again() {
+        let text = include_str!("../../../../roster/src/profiles/browsers/fixtures/browser.json");
+        let detail: Detail = serde_json::from_str(text).unwrap();
+        let mut browsing = browsers::Browsing {
+            chosen: Some(detail.browser.id.clone()),
+            ..browsers::Browsing::default()
+        };
+        assert!(browsing.read(Some(detail.clone())));
+        // The poll's next read, the same records.
+        assert!(!browsing.read(Some(detail.clone())));
+        assert!(!browsing.read(None));
+        let mut renamed = detail.clone();
+        renamed.browser.name.push_str(" (work)");
+        assert!(browsing.read(Some(renamed)));
+        let mut model = model();
+        assert!(!replace(&mut model.pending, Vec::new()));
+        assert!(replace(&mut model.overview, Overview::default()));
+    }
+
+    #[test]
+    fn an_age_that_grows_draws_again_though_no_record_changed() {
+        let mut model = model();
+        model.pending = vec![Request {
+            id: 1,
+            agent: "tester".into(),
+            grant: Grant::Unknown,
+            reason: String::new(),
+            requested_at: "2026-11-27T10:30:24+00:00".into(),
+            state: RequestState::Pending,
+            waits_on: None,
+            decided_at: None,
+            decided_by: None,
+            note: String::new(),
+            warning: None,
+        }];
+        let browsing = browsers::Browsing::default();
+        let at = |time: &str| {
+            let now = chrono::DateTime::parse_from_rfc3339(time).unwrap();
+            age_digest(Some(&model), &browsing, &now)
+        };
+        // "asked 0 minutes ago" until 10:31:24, though the clock's minute
+        // changed at 10:31:00.
+        assert_eq!(
+            at("2026-11-27T10:30:30+00:00"),
+            at("2026-11-27T10:31:20+00:00")
+        );
+        assert_ne!(
+            at("2026-11-27T10:31:20+00:00"),
+            at("2026-11-27T10:31:25+00:00")
+        );
     }
 
     #[test]

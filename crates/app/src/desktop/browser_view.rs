@@ -569,7 +569,7 @@ impl Render for BrowserView {
             button
                 .opacity(0.5)
                 .cursor_default()
-                .tooltip(move |_, cx| cx.new(|_| Refused(why)).into())
+                .tooltip(move |_, cx| cx.new(|_| ui::Tip::new(why)).into())
         })
         .when_some(pid.filter(|_| refused.is_none()), |button, pid| {
             button.on_click(cx.listener(move |view, _, _, cx| {
@@ -946,7 +946,9 @@ fn wheel(delta: ScrollDelta, shown: Bounds<Pixels>, page: (f32, f32)) -> (f32, f
 }
 
 /// The mouse as the page last heard of it: the buttons pressed in the frame,
-/// as bits, and the last point and buttons sent.
+/// as bits, and the last point and buttons sent. The view sends only the
+/// left button (see [`button`]); the right and middle ones are tracked as
+/// groundwork for right-click.
 #[derive(Default)]
 struct Pointing {
     held: u8,
@@ -1095,13 +1097,7 @@ fn key_press(keystroke: &Keystroke, held: bool, mac: bool) -> Press {
             repeat: held,
             commands,
         };
-        let up = Key {
-            kind: KeyKind::Up,
-            text: None,
-            repeat: false,
-            commands: &[],
-            ..down.clone()
-        };
+        let up = down.up();
         Press::Send([down, up])
     };
     let command = held_down.control || held_down.platform;
@@ -1211,12 +1207,7 @@ fn text_input(text: &str, typed: Option<&(Keystroke, bool)>, composed: bool) -> 
                 repeat: *held,
                 commands: &[],
             };
-            let up = Key {
-                kind: KeyKind::Up,
-                text: None,
-                repeat: false,
-                ..down.clone()
-            };
+            let up = down.up();
             vec![Input::Key(down), Input::Key(up)]
         }
         _ => vec![Input::Text(text.to_owned())],
@@ -1437,15 +1428,6 @@ impl Settle {
             self.since = None;
         }
         due
-    }
-}
-
-/// Why Open in Chrome cannot be used, shown over the button.
-struct Refused(&'static str);
-
-impl Render for Refused {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        ui::menu().child(self.0)
     }
 }
 
