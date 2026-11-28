@@ -17,7 +17,7 @@ use chrono::{DateTime, FixedOffset};
 use gpui::{AnyElement, Context, Div, SharedString, Stateful, Window, div, prelude::*, px};
 
 /// The browsers view's own state.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Default)]
 pub(super) struct Browsing {
     /// The chosen browser, by ID.
     pub chosen: Option<String>,
@@ -109,7 +109,8 @@ impl Browsing {
     }
 
     /// Keep a detail that was read, unless another browser is shown by now.
-    pub fn read(&mut self, detail: Option<Detail>) {
+    /// Says whether it changed what is shown.
+    pub fn read(&mut self, detail: Option<Detail>) -> bool {
         if let Some(detail) = detail
             && self.shown_id(true).as_deref() == Some(detail.browser.id.as_str())
         {
@@ -122,8 +123,11 @@ impl Browsing {
                 self.older.clear();
                 self.older_before = None;
             }
+            let changed = self.detail.as_ref() != Some(&detail);
             self.detail = Some(detail);
+            return changed;
         }
+        false
     }
 }
 
@@ -2023,7 +2027,7 @@ pub(super) fn row_note(
 
 /// When a browser was last used: "in use now" while its session is open,
 /// else "last used 12 min ago", "2 h ago", "yesterday" or its date.
-fn last_used(session: &Session, now: &DateTime<FixedOffset>) -> String {
+pub(super) fn last_used(session: &Session, now: &DateTime<FixedOffset>) -> String {
     let Some(ended) = session.ended_at.as_deref() else {
         return "in use now".into();
     };

@@ -345,15 +345,15 @@ struct PendingRetry {
     error: Option<String>,
 }
 
-/// Inbox changes while the pane is hidden: none is read then, and the
-/// pane reads once when it is shown again.
+/// Reads asked for while the pane is hidden: none is made then, and the
+/// pane reads once when it is shown again, unless a read was made since.
 #[derive(Debug, Default)]
 struct HiddenChange(bool);
 
 impl HiddenChange {
-    /// Whether an inbox change is read now; while hidden it waits.
+    /// Whether a read is made now; while hidden it waits.
     fn read_now(&mut self, visible: bool) -> bool {
-        self.0 |= !visible;
+        self.0 = !visible;
         visible
     }
 
@@ -426,21 +426,18 @@ impl Pane {
         let inbox = self.live.inbox.read(cx);
         self.live.stream_ok = inbox.error.is_none() && inbox.summary.is_some();
         if self.live.stream_ok {
-            let visible = self.live.visible.get();
-            if self.live.hidden_change.read_now(visible) {
-                self.refresh_live(cx);
-            }
+            self.refresh_live(cx);
         } else {
             self.live.status = inbox.error.clone();
             cx.notify();
         }
     }
 
-    /// Read an inbox change that came while the pane was hidden, now that it
-    /// is drawn again; after this draw, as reading redraws it.
+    /// Make the read asked for while the pane was hidden, now that it is
+    /// drawn again; after this draw, as reading redraws it.
     pub(super) fn read_hidden_change(&mut self, window: &Window, cx: &mut Context<Self>) {
         if self.live.visible.get() && self.live.hidden_change.shown() {
-            cx.defer_in(window, |pane, _, cx| pane.inbox_updated(cx));
+            cx.defer_in(window, |pane, _, cx| pane.refresh_live(cx));
         }
     }
 
@@ -479,6 +476,11 @@ impl Pane {
     fn refresh_live(&mut self, cx: &mut Context<Self>) {
         // The preview's selection is not the service's to resolve.
         if !self.live.stream_ok || self.preview.is_some() {
+            return;
+        }
+        // Every history read starts here, a retry after one too.
+        let visible = self.live.visible.get();
+        if !self.live.hidden_change.read_now(visible) {
             return;
         }
         if self.live.reading {
@@ -2358,6 +2360,11 @@ mod tests {
         assert!(!hidden.read_now(false));
         // Shown: one read.
         assert!(hidden.shown());
+        assert!(!hidden.shown());
+        // A read made before the pane is drawn again, as a pick from the
+        // panel makes, leaves none to make when it is.
+        assert!(!hidden.read_now(false));
+        assert!(hidden.read_now(true));
         assert!(!hidden.shown());
     }
 
