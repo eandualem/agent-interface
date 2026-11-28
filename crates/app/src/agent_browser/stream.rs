@@ -79,7 +79,8 @@ pub const CTRL: u8 = 2;
 pub const META: u8 = 4;
 pub const SHIFT: u8 = 8;
 
-/// A mouse button, as the page names it.
+/// A mouse button, as the page names it. The view sends only `Left`;
+/// `Middle` and `Right` are groundwork for right-click.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Button {
     None,
@@ -146,6 +147,19 @@ pub struct Key {
     /// The editing commands Chrome runs for it, which Chrome on macOS does
     /// not find itself.
     pub commands: &'static [&'static str],
+}
+
+impl Key {
+    /// The up event of this key's down event.
+    pub fn up(&self) -> Self {
+        Self {
+            kind: KeyKind::Up,
+            text: None,
+            repeat: false,
+            commands: &[],
+            ..self.clone()
+        }
+    }
 }
 
 /// What the person did in the view, for the page.
@@ -329,6 +343,7 @@ struct Latest {
     input_at: Option<Instant>,
 }
 
+#[derive(Default)]
 struct Shared {
     latest: Mutex<Latest>,
     stop: AtomicBool,
@@ -406,12 +421,7 @@ impl Stream {
         target: impl Fn(u16) -> Option<String> + Send + 'static,
         wake: impl Fn() + Send + 'static,
     ) -> Self {
-        let shared = Arc::new(Shared {
-            latest: Mutex::default(),
-            stop: AtomicBool::new(false),
-            focused: AtomicBool::new(false),
-            hovered: AtomicBool::new(false),
-        });
+        let shared = Arc::new(Shared::default());
         let worker = shared.clone();
         let started = thread::Builder::new()
             .name("agent-browser-stream".into())
@@ -505,13 +515,7 @@ fn run(
         if shared.stop.load(Ordering::Relaxed) {
             return;
         }
-        {
-            let mut latest = lock(shared);
-            latest.state = State::Unreachable;
-            latest.acks.clear();
-            latest.replaced.clear();
-            forget_input(&mut latest.input);
-        }
+        reset(&mut lock(shared), State::Unreachable);
         wake();
         let mut waited = Duration::ZERO;
         while waited < RETRY && !shared.stop.load(Ordering::Relaxed) {
@@ -526,8 +530,14 @@ fn run(
 /// mouse release.
 fn restart(shared: &Shared) {
     let mut latest = lock(shared);
-    latest.state = State::Connecting;
     latest.frame = None;
+    reset(&mut latest, State::Connecting);
+}
+
+/// Leave a connection in `state`: nothing it left is acknowledged, and
+/// input given before is not sent, except a mouse release.
+fn reset(latest: &mut Latest, state: State) {
+    latest.state = state;
     latest.acks.clear();
     latest.replaced.clear();
     forget_input(&mut latest.input);
@@ -1022,15 +1032,6 @@ mod tests {
         .to_string()
     }
 
-    fn shared() -> Shared {
-        Shared {
-            latest: Mutex::default(),
-            stop: AtomicBool::new(false),
-            focused: AtomicBool::new(false),
-            hovered: AtomicBool::new(false),
-        }
-    }
-
     fn pointer(x: f32) -> Pointer {
         Pointer {
             x,
@@ -1128,7 +1129,7 @@ mod tests {
 
     #[test]
     fn a_refused_input_keeps_the_screencast() {
-        let (shared, mut inputs) = (shared(), Inputs::default());
+        let (shared, mut inputs) = (Shared::default(), Inputs::default());
         inputs.sent(5, None, Instant::now());
         let refusal = |id: u64| {
             serde_json::json!({"id": id, "error": {"code": -32602, "message": "Invalid parameters"}})
@@ -1147,7 +1148,7 @@ mod tests {
 
     #[test]
     fn frames_arriving_faster_than_drawn_leave_only_the_newest() {
-        let shared = shared();
+        let shared = Shared::default();
         let data = jpeg();
         for id in 1..=5 {
             assert_eq!(
@@ -1400,7 +1401,7 @@ mod tests {
 
     #[test]
     fn a_new_connection_forgets_the_last_frame() {
-        let shared = shared();
+        let shared = Shared::default();
         let data = jpeg();
         let mut inputs = Inputs::default();
         receive(&frame(1, &data), &shared, &mut inputs);

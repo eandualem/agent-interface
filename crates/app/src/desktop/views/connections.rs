@@ -9,7 +9,12 @@ use gpui::{
     ClipboardItem, Context, Div, Entity, Render, SharedString, Subscription, Window, canvas, div,
     prelude::*, px,
 };
-use std::{cell::RefCell, collections::HashSet, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashSet,
+    rc::Rc,
+    time::Duration,
+};
 mod card;
 mod live;
 mod model;
@@ -100,6 +105,7 @@ impl Selectable for Pane {
 impl Pane {
     pub(super) fn new(
         connection: super::Connection,
+        visible: Rc<Cell<bool>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -152,7 +158,7 @@ impl Pane {
             }
         });
         Self {
-            live: live::Live::new(connection, cx),
+            live: live::Live::new(connection, visible, cx),
             preview: None,
             entry: cx.focus_handle().tab_stop(true),
             thread_focus: cx.focus_handle(),
@@ -233,9 +239,7 @@ impl Pane {
     /// Whether a press outside `menu` closed it a moment ago, which the same
     /// press then reaches its button as a click.
     fn just_dismissed(&mut self, menu: Menu) -> bool {
-        self.dismissed
-            .take()
-            .is_some_and(|(closed, at)| closed == menu && at.elapsed() < Duration::from_millis(400))
+        ui::just_dismissed(&mut self.dismissed, menu)
     }
 
     /// The button that opened the menu now open.
@@ -474,6 +478,7 @@ pub(in crate::desktop) fn hinted(
 
 impl Render for Pane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.read_hidden_change(window, cx);
         let (t, c) = (tokens(), colors());
         let entity = cx.entity().downgrade();
         let root_focus = self.root_focus.clone();
@@ -564,14 +569,7 @@ impl Render for Pane {
             .child(
                 ui::view_header("link-2", "Connections")
                     .child(div().flex_1())
-                    .children(self.read_at().map(|read| {
-                        ui::text(
-                            div().flex().items_center().gap(px(t.space.s6)),
-                            &t.text.meta,
-                        )
-                        .child(ui::dot(c.ok))
-                        .child(read)
-                    })),
+                    .children(self.read_at().map(ui::live_read_note)),
             );
         let frame = frame.when(self.preview.is_some(), |el| {
             el.child(
