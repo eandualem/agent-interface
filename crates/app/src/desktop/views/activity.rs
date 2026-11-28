@@ -134,9 +134,14 @@ fn timeline(activity: &Activity, agents: &crate::desktop::agent_status::LiveAgen
     let (t, c) = (tokens(), colors());
     let name_width = t.size.tag_card_label + t.space.s24;
     let end = now() as f64;
-    // The lanes cover the last hour; they move along each minute.
-    super::rolls_in(60.0 - end % 60.0);
     let lanes = lanes(activity, end, agents);
+    // The lanes cover the last hour; what they hold moves along each minute.
+    if lanes
+        .iter()
+        .any(|lane| !lane.ticks.is_empty() || !lane.spans.is_empty())
+    {
+        super::rolls_in(60.0 - end % 60.0);
+    }
     let mut axis = div().flex_1().flex().justify_between();
     for label in ["60 min ago", "45", "30", "15", "now"] {
         axis = axis.child(label);
