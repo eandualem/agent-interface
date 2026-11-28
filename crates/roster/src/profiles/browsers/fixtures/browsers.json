@@ -1,0 +1,71 @@
+{
+  "items": [
+    {
+      "id": "instagram",
+      "name": "Instagram",
+      "machine": "5f2c9e0d1b7a4e38",
+      "machine_name": "laptop",
+      "opens_at": "https://instagram.com/",
+      "signed_in_to": [
+        "instagram.com"
+      ],
+      "state": "in_use",
+      "agents": 1,
+      "asks": 0,
+      "holder": {
+        "agent": "poster",
+        "since": "2026-11-27T10:12:00Z",
+        "tabs": 3
+      },
+      "signed_in_since": "2026-11-21T09:00:00Z",
+      "checked_at": "2026-11-27T10:30:00Z"
+    },
+    {
+      "id": "youtube",
+      "name": "YouTube",
+      "machine": "5f2c9e0d1b7a4e38",
+      "machine_name": "laptop",
+      "opens_at": "https://youtube.com/",
+      "signed_in_to": [
+        "youtube.com",
+        "google.com"
+      ],
+      "state": "asked",
+      "agents": 0,
+      "asks": 1,
+      "holder": null,
+      "signed_in_since": "2026-11-20T14:00:00Z",
+      "checked_at": "2026-11-27T10:30:00Z"
+    },
+    {
+      "id": "facebook",
+      "name": "Facebook",
+      "machine": "5f2c9e0d1b7a4e38",
+      "machine_name": "laptop",
+      "opens_at": "https://facebook.com/",
+      "signed_in_to": [],
+      "state": "signed_out",
+      "agents": 0,
+      "asks": 0,
+      "holder": null,
+      "signed_in_since": null,
+      "checked_at": "2026-11-27T10:30:00Z"
+    }
+  ],
+  "wanted": [
+    {
+      "browser": "telegram",
+      "machine": "5f2c9e0d1b7a4e38",
+      "machine_name": "laptop",
+      "requests": [
+        {
+          "id": 18,
+          "agent": "uploader",
+          "reason": "Post the launch note.",
+          "requested_at": "2026-11-27T10:19:00Z",
+          "waits_on": null
+        }
+      ]
+    }
+  ]
+}

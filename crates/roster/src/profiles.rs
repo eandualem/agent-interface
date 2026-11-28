@@ -9,6 +9,7 @@ use std::{
 };
 
 pub mod access;
+pub mod browsers;
 pub mod operations;
 
 use serde::Deserialize;

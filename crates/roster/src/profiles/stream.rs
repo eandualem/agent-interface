@@ -77,7 +77,13 @@ impl Connection {
             None,
             QUIET,
             live,
-            &mut |bytes| frames.push(bytes, changed),
+            &mut |bytes| {
+                frames.push(bytes, &mut |kind, data| {
+                    if let Some(change) = change(kind, data) {
+                        changed(change);
+                    }
+                })
+            },
         )
         .map_err(|status| match status {
             Some(404) => Error::Unsupported,
@@ -89,7 +95,7 @@ impl Connection {
 
 /// Server-Sent Events, read as far as each frame's kind and data.
 #[derive(Default)]
-struct Frames {
+pub(super) struct Frames {
     line: Vec<u8>,
     /// The kind of the frame being read.
     kind: Vec<u8>,
@@ -98,9 +104,9 @@ struct Frames {
 }
 
 impl Frames {
-    /// Read more of the stream. False when a line or a frame's data outgrows
-    /// the limit.
-    fn push(&mut self, bytes: &[u8], changed: &mut dyn FnMut(Change)) -> bool {
+    /// Read more of the stream, calling `frame` with each whole frame's kind
+    /// and data. False when a line or a frame's data outgrows the limit.
+    pub(super) fn push(&mut self, bytes: &[u8], frame: &mut dyn FnMut(&[u8], &[u8])) -> bool {
         for &byte in bytes {
             if byte != b'\n' {
                 self.line.push(byte);
@@ -112,9 +118,7 @@ impl Frames {
             let line = self.line.strip_suffix(b"\r").unwrap_or(&self.line);
             if line.is_empty() {
                 // A blank line ends the frame.
-                if let Some(change) = change(&self.kind, &self.data) {
-                    changed(change);
-                }
+                frame(&self.kind, &self.data);
                 self.kind.clear();
                 self.data.clear();
             } else if let Some(kind) = line.strip_prefix(b"event:") {
@@ -207,7 +211,7 @@ mod tests {
         let mut changes = Vec::new();
         let within = chunks
             .iter()
-            .all(|chunk| frames.push(chunk, &mut |change| changes.push(change)));
+            .all(|chunk| frames.push(chunk, &mut |kind, data| changes.extend(change(kind, data))));
         (changes, within)
     }
 
@@ -380,8 +384,8 @@ mod tests {
         for step in &steps {
             let kind = step["event"].as_str().unwrap();
             let frame = format!("event: {kind}\ndata: {}\n\n", step["data"]);
-            assert!(frames.push(frame.as_bytes(), &mut |change| {
-                assert_eq!(change, Change::Read);
+            assert!(frames.push(frame.as_bytes(), &mut |kind, data| {
+                assert_eq!(change(kind, data), Some(Change::Read));
                 count += 1;
             }));
         }

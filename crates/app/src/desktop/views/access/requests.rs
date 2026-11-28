@@ -6,7 +6,7 @@ use crate::desktop::{
     design::{colors, tokens},
     views::connections::hinted,
 };
-use agent_interface_roster::profiles::access::{Request, RequestState};
+use agent_interface_roster::profiles::access::{Grant, Request, RequestState};
 use chrono::{DateTime, FixedOffset};
 use gpui::{Context, Div, SharedString, Stateful, div, prelude::*, px};
 
@@ -199,6 +199,7 @@ impl Pane {
             .child(div().flex_1())
             .children(model::oldest_wait(&model.pending, now))
             .child(self.waiting_button(count, cx))
+            .child(self.browsers_switch(cx))
     }
 
     fn waiting_card(
@@ -322,6 +323,28 @@ impl Pane {
         let reach = not_needed
             .clone()
             .map(|note| note_line("info", c.muted, note).pl(px(indent)));
+        // A browser asked for on this machine that is not there yet is made
+        // from here, as new browsers are made on this machine.
+        let missing = match &first.grant {
+            Grant::Browser {
+                browser: Some(id),
+                machine,
+                ..
+            } if !model.browsers.items.iter().any(|b| &b.id == id)
+                && self.on_this_machine(machine.as_ref()) =>
+            {
+                Some(id.clone())
+            }
+            _ => None,
+        };
+        let absent = missing.as_ref().map(|id| {
+            note_line(
+                "info",
+                c.muted,
+                format!("There is no browser {id} yet. Saving one made here answers this request."),
+            )
+            .pl(px(indent))
+        });
         let note = (self.noting == Some(key)).then(|| {
             div()
                 .pl(px(indent))
@@ -364,7 +387,22 @@ impl Pane {
                 .whitespace_nowrap(),
             &t.text.row,
         );
-        if not_needed.is_some() {
+        if let Some(id) = missing {
+            let agents: Vec<String> = card.iter().map(|r| r.agent.clone()).collect();
+            actions = actions
+                .child(
+                    ui::button(
+                        SharedString::from(format!("access-make-{key}")),
+                        "Make it",
+                        Button::Primary,
+                    )
+                    .h(px(t.size.button - t.space.s2))
+                    .on_click(cx.listener(move |pane, _, window, cx| {
+                        pane.start_new(Some((id.clone(), agents.clone())), window, cx);
+                    })),
+                )
+                .child(refuse);
+        } else if not_needed.is_some() {
             let close = match card.len() {
                 1 => "Close as not needed".to_owned(),
                 2 => "Close both as not needed".to_owned(),
@@ -408,6 +446,7 @@ impl Pane {
             .child(reasons)
             .children(warnings)
             .children(reach)
+            .children(absent)
             .children(note)
             .child(actions)
     }
@@ -416,11 +455,7 @@ impl Pane {
 impl Pane {
     /// The chip for the machine a request's grant is on, as board A names
     /// it; none for a repository.
-    fn grant_machine(
-        &self,
-        grant: &agent_interface_roster::profiles::access::Grant,
-    ) -> Option<Div> {
-        use agent_interface_roster::profiles::access::Grant;
+    fn grant_machine(&self, grant: &Grant) -> Option<Div> {
         if matches!(grant, Grant::Repository { .. } | Grant::Unknown) {
             return None;
         }

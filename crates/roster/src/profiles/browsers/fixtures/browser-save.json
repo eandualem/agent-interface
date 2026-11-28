@@ -1,0 +1,15 @@
+{
+  "name": "YouTube",
+  "opens_at": "youtube.com",
+  "grants": [
+    "uploader"
+  ],
+  "policies": {
+    "keep_on_sites": true,
+    "sites": [
+      "youtube.com",
+      "studio.youtube.com"
+    ],
+    "stop_before_last_button": false
+  }
+}

@@ -815,6 +815,9 @@ struct Browser {
     /// The agent whose browser each empty pane shows. Kept only in memory:
     /// the pane is saved as an empty pane.
     browser_panes: HashMap<String, String>,
+    /// The browsers Agent Backbone runs that Browser panes watch, by the key
+    /// such a pane holds in place of an agent.
+    watched_browsers: HashMap<String, browser_view::Watched>,
     /// The view in each shown Browser pane.
     browser_views: HashMap<String, gpui::Entity<browser_view::BrowserView>>,
     /// The Browser pane last chosen: its view gives its agent's browser the
@@ -3534,6 +3537,9 @@ impl Render for Browser {
                                         .map(str::to_owned),
                                 };
                                 browser.open_beside(&leaf, Beside::Session(attachment), window, cx)
+                            }
+                            views::ViewEvent::WatchBrowser(watch) => {
+                                browser.watch_browser(watch, window, cx)
                             }
                             views::ViewEvent::Focus => {
                                 // Page IPC is asynchronous: a click notification can

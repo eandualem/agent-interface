@@ -4,9 +4,12 @@
 //! Replies to changes are applied here as Backbone returned them.
 use agent_interface_roster::{
     Swarm,
-    profiles::access::{
-        Access, Agent, AgentAccess, Grant, Mode, Overview, Placed, Reach, Request, RequestState,
-        Role, Source,
+    profiles::{
+        access::{
+            Access, Agent, AgentAccess, Grant, Mode, Overview, Placed, Reach, Request,
+            RequestState, Role, Source,
+        },
+        browsers::{Browser, Browsers, Session},
     },
 };
 use chrono::{DateTime, FixedOffset};
@@ -19,6 +22,11 @@ pub(super) struct Model {
     pub pending: Vec<Request>,
     /// Decided requests read so far, the newest first; none until read.
     pub decided: Option<Vec<Request>>,
+    /// The named browsers, as last read or changed.
+    pub browsers: Browsers,
+    /// Each browser's newest session, by its ID, read while an agent's
+    /// detail shows the browsers; a browser never used has none.
+    pub newest: std::collections::HashMap<String, Session>,
 }
 
 /// The agent list's groups, in the board's order.
@@ -243,14 +251,14 @@ pub(super) fn from_agents(requests: &[&Request]) -> String {
     )
 }
 
-fn time(at: &str, now: &DateTime<FixedOffset>) -> Option<DateTime<FixedOffset>> {
+pub(super) fn time(at: &str, now: &DateTime<FixedOffset>) -> Option<DateTime<FixedOffset>> {
     DateTime::parse_from_rfc3339(at)
         .ok()
         .map(|at| at.with_timezone(&now.timezone()))
 }
 
 /// A wait, in its largest whole unit.
-fn age(at: &DateTime<FixedOffset>, now: &DateTime<FixedOffset>) -> String {
+pub(super) fn age(at: &DateTime<FixedOffset>, now: &DateTime<FixedOffset>) -> String {
     let minutes = (*now - *at).num_minutes().max(0);
     let (n, unit) = match minutes {
         0..60 => (minutes, "minute"),
@@ -310,15 +318,30 @@ pub(super) fn decided_at(request: &Request, now: &DateTime<FixedOffset>) -> Opti
     Some(at.format("%-d %b %H:%M").to_string())
 }
 
-/// The kind of thing a grant is, with the access it asks for and the
-/// machine it is on, so one card holds an agent's requests of one kind and
-/// one access on one machine.
-fn kind(grant: &Grant) -> (std::mem::Discriminant<Grant>, Option<Access>, Option<&str>) {
-    let access = match grant {
-        Grant::Repository { access, .. } | Grant::Folder { access, .. } => Some(*access),
-        _ => None,
+/// What makes requests alike: their kind, access and machine, and for a
+/// browser which one.
+type Kind<'a> = (
+    std::mem::Discriminant<Grant>,
+    Option<Access>,
+    Option<&'a str>,
+    Option<&'a str>,
+);
+
+/// The kind of thing a grant is, with the access it asks for, the machine it
+/// is on and the browser it names, so one card holds an agent's requests of
+/// one kind and one access on one machine.
+fn kind(grant: &Grant) -> Kind<'_> {
+    let (access, browser) = match grant {
+        Grant::Repository { access, .. } | Grant::Folder { access, .. } => (Some(*access), None),
+        Grant::Browser { browser, .. } => (None, browser.as_deref()),
+        _ => (None, None),
     };
-    (std::mem::discriminant(grant), access, machine_id(grant))
+    (
+        std::mem::discriminant(grant),
+        access,
+        machine_id(grant),
+        browser,
+    )
 }
 
 /// What a grant's machine chip says: `this` for this app's own machine
@@ -379,7 +402,8 @@ pub(super) fn thing(grant: &Grant) -> Option<String> {
         Grant::Repository { repo, .. } => Some(repo.clone()),
         Grant::Folder { path, .. } | Grant::SecretFile { path, .. } => Some(path.clone()),
         Grant::SecretVariable { name, .. } => Some(name.clone()),
-        Grant::Browser { .. } | Grant::Docker { .. } | Grant::Unknown => None,
+        Grant::Browser { browser, .. } => browser.clone(),
+        Grant::Docker { .. } | Grant::Unknown => None,
     }
 }
 
@@ -419,7 +443,10 @@ pub(super) fn phrase(card: &[&Request]) -> (String, Option<String>) {
         Grant::Folder { access, .. } => (reads(access), plural("", "folders")),
         Grant::SecretVariable { .. } => ("asks for the secret", plural("", "secrets")),
         Grant::SecretFile { .. } => ("asks for the secret file", plural("", "secret files")),
-        Grant::Browser { .. } => return ("asks to use".into(), Some("browser".into())),
+        Grant::Browser { browser, .. } => {
+            let named = browser.clone().unwrap_or_else(|| "browser".into());
+            return ("asks to use".into(), Some(named));
+        }
         Grant::Docker { .. } => return ("asks to use".into(), Some("Docker".into())),
         Grant::Unknown => return ("asks for access this version cannot show".into(), None),
     };
@@ -581,6 +608,25 @@ impl Model {
         agent.ceiling = reply.ceiling;
         agent.reach = reply.reach;
         true
+    }
+
+    /// Show a browser as Backbone returned it, in its place or after the
+    /// others.
+    pub fn apply_browser(&mut self, browser: Browser) {
+        // A browser made for agents that asked for it is no longer wanted.
+        self.browsers
+            .wanted
+            .retain(|wanted| wanted.browser != browser.id);
+        let items = &mut self.browsers.items;
+        match items.iter_mut().find(|b| b.id == browser.id) {
+            Some(listed) => *listed = browser,
+            None => items.push(browser),
+        }
+    }
+
+    /// Leave out a browser that was deleted.
+    pub fn remove_browser(&mut self, id: &str) {
+        self.browsers.items.retain(|b| b.id != id);
     }
 
     /// Apply a placement's reply. False when no listed agent has its name.
@@ -824,7 +870,7 @@ mod tests {
         let mut model = Model {
             overview: overview(),
             pending: requests("pending"),
-            decided: None,
+            ..Model::default()
         };
         let reply: AgentAccess = serde_json::from_str(include_str!(
             "../../../../../roster/src/profiles/access/fixtures/agent-access.json"
@@ -916,20 +962,30 @@ mod tests {
             machine_name: None,
         };
         pending.push(docker);
+        // So does a request for another browser.
+        let mut browser = pending[0].clone();
+        browser.id = 24;
+        browser.grant = Grant::Browser {
+            machine: Some("5f2c9e0d1b7a4e38".into()),
+            machine_name: None,
+            browser: Some("telegram".into()),
+        };
+        pending.push(browser);
         let (on_you, _) = waiting(&pending);
         let cards = cards(&on_you);
         let ids: Vec<Vec<i64>> = cards
             .iter()
             .map(|card| card.iter().map(|r| r.id).collect())
             .collect();
-        assert_eq!(ids, [vec![21], vec![19, 22], vec![23]]);
+        assert_eq!(ids, [vec![21], vec![19, 22], vec![23], vec![24]]);
         assert_eq!(
             phrase(&cards[1]),
             ("asks to read 2 repositories".into(), None)
         );
+        // A browser request names the browser.
         assert_eq!(
             phrase(&cards[0]),
-            ("asks to use".into(), Some("browser".into()))
+            ("asks to use".into(), Some("youtube".into()))
         );
         assert_eq!(
             phrase(&[&pending[1]]),
