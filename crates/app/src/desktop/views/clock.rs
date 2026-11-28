@@ -1,6 +1,6 @@
 //! Local dates and times for grouping records by day and stamping messages.
 
-use chrono::{DateTime, Datelike, Local as Zone, NaiveDateTime, TimeZone, Timelike};
+use chrono::{DateTime, Datelike, Local as Zone, NaiveDateTime, NaiveTime, TimeZone, Timelike};
 
 /// A moment in the local calendar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,10 +58,26 @@ impl Local {
             .map(|date| date.timestamp() as f64)
     }
 
+    /// Seconds until the next local midnight, which is not always a day
+    /// away: a daylight saving change shortens or lengthens the day.
+    fn until_midnight(&self) -> f64 {
+        self.0
+            .date_naive()
+            .succ_opt()
+            .and_then(|tomorrow| {
+                Zone.from_local_datetime(&tomorrow.and_time(NaiveTime::MIN))
+                    .earliest()
+            })
+            .map_or(
+                f64::from(86_400 - self.0.num_seconds_from_midnight()),
+                |midnight| (midnight - self.0).num_milliseconds() as f64 / 1000.0,
+            )
+    }
+
     /// "Today", "Yesterday" or the date, seen from `now`; it reads otherwise
     /// from the next local midnight.
     pub fn day_name(&self, now: &Self) -> String {
-        super::rolls_in(f64::from(86_400 - now.0.num_seconds_from_midnight()));
+        super::rolls_in(now.until_midnight());
         let days = now.0.date_naive().num_days_from_ce() - self.0.date_naive().num_days_from_ce();
         match days {
             0 => "Today".into(),
