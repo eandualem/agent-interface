@@ -300,12 +300,9 @@ impl ViewPane {
     /// Whether the pane can be seen; true when it just became visible, for
     /// [`Self::wake`].
     pub fn set_visible(&self, visible: bool, cx: &gpui::App) -> bool {
-        let appeared = appears(&self.visible, visible);
+        let appeared = show_source(&self.visible, self.source.as_ref(), visible);
         if !visible {
             self.documents.surface.borrow_mut().clear();
-        }
-        if let Some(source) = &self.source {
-            source.set_active(visible);
         }
         if let Some(artifacts) = &self.artifacts {
             artifacts.read(cx).set_visible(visible);
@@ -1550,6 +1547,17 @@ fn appears(shown: &Cell<bool>, visible: bool) -> bool {
     !shown.replace(visible) && visible
 }
 
+/// Apply whether a pane can be seen to the cell its sections read and to its
+/// view source, which pauses while hidden and reads at once when shown;
+/// whether the pane just became visible.
+fn show_source(shown: &Cell<bool>, source: Option<&Source>, visible: bool) -> bool {
+    let appeared = appears(shown, visible);
+    if let Some(source) = source {
+        source.set_active(visible);
+    }
+    appeared
+}
+
 /// Show a view's read: new data, or why the read failed over the last data,
 /// which stays. Whether that changed what the pane shows, so an identical
 /// read does not redraw the window ([`Clock`] keeps the ages moving).
@@ -1779,6 +1787,42 @@ mod tests {
         assert!(appears(&shown, true));
         assert!(shown.get());
         assert!(!appears(&shown, true));
+    }
+
+    #[test]
+    fn a_hidden_pane_pauses_its_source_and_reads_at_once_when_shown() {
+        use crate::roster::content::tests::{Reply, provider};
+        let usage = || Reply {
+            prefix: true,
+            ..Reply::ok(
+                "/api/usage?refresh=false&limit=1000&since=",
+                serde_json::json!({"items": [], "totals": {"total_tokens": 1}}),
+            )
+        };
+        let (_directory, connection, server) = provider("pane", vec![usage(), usage()]);
+        let (wake, woken) = std::sync::mpsc::channel();
+        let wait = Duration::from_secs(5);
+        let source = Source::start(
+            &connection,
+            Request::Usage(Range::Day),
+            Duration::from_secs(3600),
+            move || {
+                let _ = wake.send(());
+            },
+        )
+        .unwrap();
+        woken.recv_timeout(wait).unwrap();
+        assert!(source.take_update().is_some());
+        let shown = Cell::new(true);
+        assert!(!show_source(&shown, Some(&source), false));
+        assert!(!shown.get());
+        assert!(source.take_update().is_none());
+        // Shown again, its source reads at once, not an hour later.
+        assert!(show_source(&shown, Some(&source), true));
+        woken.recv_timeout(wait).unwrap();
+        assert!(source.take_update().is_some());
+        drop(source);
+        server.join().unwrap();
     }
 
     #[test]
