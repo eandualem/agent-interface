@@ -31,40 +31,18 @@ pub(super) struct ArtifactPane {
     html: Option<Arc<str>>,
     visible: Rc<Cell<bool>>,
     surface: Rc<RefCell<Surface>>,
+    /// Redraws the list when an age it shows changes.
+    clock: super::Clock,
+    /// Whether a rescan is under way; another waits for it.
+    scanning: bool,
     _poll: Task<()>,
 }
 
 impl ArtifactPane {
     pub fn new(directory: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
         let visible = Rc::new(Cell::new(true));
-        let active = visible.clone();
-        let source = directory.clone();
         let poll = cx.spawn(async move |this, cx| {
-            loop {
-                if active.get() {
-                    let source = source.clone();
-                    let catalog = cx
-                        .background_executor()
-                        .spawn(async move { artifacts::catalog(source.as_deref()) })
-                        .await;
-                    if this
-                        .update(cx, |pane, cx| {
-                            match catalog {
-                                Ok(catalog) => {
-                                    pane.catalog = catalog;
-                                    pane.catalog_error = None;
-                                }
-                                Err(error) => pane.catalog_error = Some(error.to_string()),
-                            }
-                            if pane.selected.is_none() {
-                                cx.notify();
-                            }
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
+            while this.update(cx, |pane, cx| pane.rescan(cx)).is_ok() {
                 cx.background_executor().timer(Duration::from_secs(2)).await;
             }
         });
@@ -77,13 +55,55 @@ impl ArtifactPane {
             html: None,
             visible,
             surface: Rc::new(RefCell::new(Surface::default())),
+            clock: super::Clock::default(),
+            scanning: false,
             _poll: poll,
         }
     }
 
-    pub fn set_visible(&self, visible: bool) {
+    /// Read the artifacts folder again while the pane is visible, as its
+    /// poll does every two seconds and its pane does once it shows.
+    pub fn rescan(&mut self, cx: &mut Context<Self>) {
+        if !self.visible.get() || self.scanning {
+            return;
+        }
+        self.scanning = true;
+        let source = self.directory.clone();
+        let catalog = cx
+            .background_executor()
+            .spawn(async move { artifacts::catalog(source.as_deref()) });
+        cx.spawn(async move |this, cx| {
+            let catalog = catalog.await;
+            let _ = this.update(cx, |pane, cx| {
+                pane.scanning = false;
+                let changed = match catalog {
+                    Ok(catalog) => {
+                        let changed = pane.catalog != catalog || pane.catalog_error.is_some();
+                        pane.catalog = catalog;
+                        pane.catalog_error = None;
+                        changed
+                    }
+                    Err(error) => {
+                        let error = Some(error.to_string());
+                        let changed = pane.catalog_error != error;
+                        pane.catalog_error = error;
+                        changed
+                    }
+                };
+                // An unchanged rescan must not redraw the window.
+                // Kept while hidden; showing the pane draws it.
+                if changed && pane.selected.is_none() && pane.visible.get() {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Hidden with `dispose`, its native page goes too; otherwise it pauses.
+    pub fn set_visible(&self, visible: bool, dispose: bool) {
         self.visible.set(visible);
-        if !visible {
+        if !visible && dispose {
             self.surface.borrow_mut().clear();
         }
     }
@@ -115,7 +135,10 @@ impl ArtifactPane {
                         Ok(html) => pane.html = Some(Arc::from(html)),
                         Err(error) => pane.error = Some(error.to_string()),
                     }
-                    cx.notify();
+                    // Hidden, it is kept and drawn on show.
+                    if pane.visible.get() {
+                        cx.notify();
+                    }
                 }
             });
         })
@@ -134,6 +157,15 @@ impl ArtifactPane {
 
 impl Render for ArtifactPane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        super::Clock::begin();
+        let drawn = self.draw(cx).into_any_element();
+        self.clock.end(self.visible.clone(), cx);
+        drawn
+    }
+}
+
+impl ArtifactPane {
+    fn draw(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let (t, c) = (tokens(), colors());
         let mut header = ui::view_header("layout-grid", "Artifacts");
         if let Some(entry) = &self.selected {
@@ -231,7 +263,7 @@ impl Render for ArtifactPane {
                             ui::text(div().text_color(c.muted), &t.text.meta).child(format!(
                                 "{} · {} ago",
                                 entry.author,
-                                super::ago(
+                                super::ago_now(
                                     agent_interface_roster::views::now() as f64
                                         - entry.created_ms as f64 / 1000.
                                 )

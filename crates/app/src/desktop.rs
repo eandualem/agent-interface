@@ -805,6 +805,11 @@ struct Browser {
     pane_bounds: Rc<RefCell<HashMap<String, Bounds<gpui::Pixels>>>>,
     split_bounds: Rc<RefCell<HashMap<String, Bounds<gpui::Pixels>>>>,
     resize_activation: Option<gpui::Subscription>,
+    /// Whether the window is hidden, minimised or fully covered; its pane
+    /// sources then stop reading.
+    window_hidden: bool,
+    /// Following the window's visibility, and saying when it closes.
+    window_visibility: Option<(gpui::Subscription, gpui::Subscription)>,
     /// The view in each shown view pane, with its event subscription.
     views: HashMap<String, (gpui::Entity<views::ViewPane>, navigation_origin::ViewEvents)>,
     /// The chooser in each shown empty pane, with its event subscription.
@@ -1621,10 +1626,11 @@ impl Browser {
     /// Close the tabs of swarms that finished: once a list read in full no
     /// longer names a swarm seen running, a tab still showing only that swarm
     /// goes. What is running is noted on every update; closing waits until
-    /// nothing else is being saved or edited.
-    fn close_finished_swarm_tabs(&mut self, cx: &mut Context<Self>) {
+    /// nothing else is being saved or edited. Whether it changed what the
+    /// window shows: a library update taken, or a close saved.
+    fn close_finished_swarm_tabs(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(layout) = &self.layout else {
-            return;
+            return false;
         };
         let mut read: HashMap<&str, (String, Vec<agent_interface_roster::Swarm>)> = HashMap::new();
         for space in &layout.model().workspaces {
@@ -1670,13 +1676,17 @@ impl Browser {
             || self.resize.is_some()
             || self.pane_drag.is_some()
         {
-            return;
+            return false;
         }
-        if let Some(update) = self.library.as_ref().and_then(Library::take_update) {
-            self.apply(update);
-        }
+        let applied = match self.library.as_ref().and_then(Library::take_update) {
+            Some(update) => {
+                self.apply(update);
+                true
+            }
+            None => false,
+        };
         let Some(layout) = &self.layout else {
-            return;
+            return applied;
         };
         let (base, mut proposed) = layout.save_snapshot();
         let mut closed = false;
@@ -1694,6 +1704,36 @@ impl Browser {
         if closed {
             self.pending_save = Some((base, proposed));
             self.save(cx);
+        }
+        applied || closed
+    }
+
+    /// Pause the pane sources while the window is not visible; nothing is
+    /// drawn then, so they are told directly. Shown again, the next frame
+    /// sets them as the layout shows them, and each reads at once. The
+    /// roster reads slowly only while no navigation window is visible.
+    fn window_shown(
+        &mut self,
+        visibility: gpui::WindowVisibility,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.window_hidden = !visibility.is_visible();
+        let id = window.window_handle().window_id();
+        agent_status::window_shown(id, Some(visibility.is_visible()), cx);
+        if let Some(attaching) = &self.chooser {
+            attaching.view.read(cx).set_active(!self.window_hidden);
+        }
+        if self.window_hidden {
+            for (view, _) in self.views.values() {
+                // Paused, keeping its native page for when it shows again.
+                view.read(cx).set_visible(false, false, cx);
+            }
+            for (chooser, _) in self.new_panes.values() {
+                chooser.update(cx, |chooser, cx| chooser.set_visible(false, cx));
+            }
+        } else {
+            cx.notify();
         }
     }
 
@@ -3022,29 +3062,77 @@ impl Browser {
 }
 
 impl Browser {
+    /// Tell each terminal of its agent's restart from the roster, as a
+    /// render does: a roster read that changed nothing still says when it
+    /// was read, which a restart under way waits on. A terminal redraws
+    /// only when its restart moves on.
+    pub(super) fn follow_restarts(&mut self, cx: &mut Context<Self>) {
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        // Each workspace's connection and roster once, not once per pane.
+        for space in &layout.model().workspaces {
+            let workspace_profiles::Route::Bound(connection) = self.workspace_profiles.route(space)
+            else {
+                continue;
+            };
+            let Some(agents) = self.workspace_agents(space) else {
+                continue;
+            };
+            let current = connection.connection_key();
+            for leaf in space.tabs.iter().flat_map(|tab| tab.tree.leaves()) {
+                let Some(terminal) = self.terminals.get(&leaf.id) else {
+                    continue;
+                };
+                // Only while it still holds the connection that roster is from.
+                let held = terminal
+                    .read(cx)
+                    .target
+                    .connection
+                    .as_ref()
+                    .map(|connection| connection.connection_key());
+                if held.as_ref() != Some(&current) {
+                    continue;
+                }
+                if let Some(status) = attached_agent(leaf, connection, agents) {
+                    terminal.update(cx, |terminal, cx| terminal.set_restart(Some(status), cx));
+                }
+            }
+        }
+    }
+
     /// The Backbone agent a pane attaches and the roster it comes from: a
     /// local agent, or one on another machine of the bound profile. None for
     /// another profile's agent, a session on another tmux server, whatever
     /// its name, or a pane whose profile has no roster.
     fn pane_agent(&self, leaf: &Leaf) -> Option<(String, agent_status::LiveAgents)> {
-        let attachment = leaf.attachment.as_ref()?;
         let connection = self.pane_connection(&leaf.id).ok()??;
-        if attachment
-            .remote_profile
-            .as_deref()
-            .is_some_and(|profile| profile != connection.identity().profile_id)
-            || attachment.remote_profile.is_none()
-                && attachment
-                    .source_socket
-                    .as_deref()
-                    .is_some_and(|path| std::path::Path::new(path) != connection.tmux_socket())
-        {
-            return None;
-        }
         let space = self.layout.as_ref()?.model().workspace_for_pane(&leaf.id)?;
-        let agents = self.workspace_agents(space)?.clone();
-        Some((attachment.session.clone(), agents))
+        attached_agent(leaf, &connection, self.workspace_agents(space)?)
     }
+}
+
+/// [`Browser::pane_agent`] for a pane of a workspace bound to `connection`,
+/// whose roster is `agents`.
+fn attached_agent(
+    leaf: &Leaf,
+    connection: &agent_interface_roster::profiles::Connection,
+    agents: &agent_status::LiveAgents,
+) -> Option<(String, agent_status::LiveAgents)> {
+    let attachment = leaf.attachment.as_ref()?;
+    if attachment
+        .remote_profile
+        .as_deref()
+        .is_some_and(|profile| profile != connection.identity().profile_id)
+        || attachment.remote_profile.is_none()
+            && attachment
+                .source_socket
+                .as_deref()
+                .is_some_and(|path| std::path::Path::new(path) != connection.tmux_socket())
+    {
+        return None;
+    }
+    Some((attachment.session.clone(), agents.clone()))
 }
 
 impl Render for Browser {
@@ -3073,6 +3161,18 @@ impl Render for Browser {
                         }
                     }
                 }));
+        }
+        if self.window_visibility.is_none() {
+            // As it is now, since a window can first draw while covered.
+            let id = window.window_handle().window_id();
+            self.window_hidden = !window.is_visible();
+            agent_status::window_shown(id, Some(window.is_visible()), cx);
+            self.window_visibility = Some((
+                cx.observe_window_visibility(window, |browser, visibility, window, cx| {
+                    browser.window_shown(visibility, window, cx)
+                }),
+                cx.on_release(move |_, cx| agent_status::window_shown(id, None, cx)),
+            ));
         }
         if self.resize.as_ref().is_some_and(|drag| {
             !self
@@ -3581,12 +3681,22 @@ impl Render for Browser {
             }
         }
         for (id, (view, _)) in &self.views {
-            view.read(cx).set_visible(
-                !self.profile_content_unavailable()
-                    && shown.iter().any(|(shown, _)| shown == id)
-                    && expanded.is_none_or(|focused| focused == id),
-                cx,
-            );
+            // A pane the layout hides goes with its native page; one hidden
+            // only with the window pauses.
+            let in_layout = !self.profile_content_unavailable()
+                && shown.iter().any(|(shown, _)| shown == id)
+                && expanded.is_none_or(|focused| focused == id);
+            let appeared =
+                view.read(cx)
+                    .set_visible(!self.window_hidden && in_layout, !in_layout, cx);
+            // After this frame: a view told of a change while the window
+            // draws would not be drawn again.
+            if appeared {
+                let view = view.downgrade();
+                window.on_next_frame(move |_, cx| {
+                    let _ = view.update(cx, |view, cx| view.wake(cx));
+                });
+            }
             // Native child views are above GPUI drawing. Hide them while a
             // popover or geometry gesture needs that space or its pointer input.
             view.read(cx).occlude_web(self.web_content_occluded(), cx);
@@ -3762,7 +3872,10 @@ impl Render for Browser {
                 })
                 .unwrap_or_default();
             chooser.update(cx, |chooser, cx| {
-                chooser.set_visible(expanded.is_none_or(|focused| focused == id), cx);
+                chooser.set_visible(
+                    !self.window_hidden && expanded.is_none_or(|focused| focused == id),
+                    cx,
+                );
                 chooser.set_browsers(browsers.clone(), cx);
                 chooser.set_connections(connections, cx);
             });

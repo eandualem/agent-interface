@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 const ROOT: &str = "/api/peer-connections";
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 /// The local identity, invitations, generations and number of messages awaiting review.
 pub struct Overview {
     /// The full shareable identity of the local profile.
@@ -19,7 +19,7 @@ pub struct Overview {
     pub pending_reviews: usize,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 /// One invitation, retained by its stable request ID after the answer.
 pub struct Invitation {
     /// Stable service ID of this invitation.
@@ -56,7 +56,7 @@ pub struct Generation {
     pub generation: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 /// Current service state and per-direction delivery gates for a generation.
 pub struct Peer {
     /// The generation to which this record belongs.
@@ -72,7 +72,7 @@ pub struct Peer {
     pub revocation_failure: Option<RevocationFailure>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 /// Why the relay refused to carry a disconnect to the other profile.
 pub struct RevocationFailure {
     /// Verbatim relay refusal code.

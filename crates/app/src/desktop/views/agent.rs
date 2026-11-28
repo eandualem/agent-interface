@@ -15,7 +15,8 @@ use agent_interface_roster::{
 use gpui::{AnyElement, Context, Div, SharedString, div, prelude::*, px};
 
 use super::{
-    Target, ViewPane, ago, count, home, line, list, mono, policies, reader, since, skills, usage,
+    Target, ViewPane, ago, ago_now, count, home, line, list, mono, policies, reader, since, skills,
+    usage,
 };
 use crate::desktop::{
     agent_status::{counted, deliveries},
@@ -562,14 +563,17 @@ pub(super) fn overview<V: 'static>(
 ) -> AnyElement {
     let (t, c) = (tokens(), colors());
     let matching = state == AgentState::from_runtime(&agent.state);
-    let age = matching.then_some(agent.state_age_seconds).flatten();
+    // Since when, so the label clock ages it between reads.
+    let age = matching
+        .then_some(agent.state_began)
+        .flatten()
+        .map(|began| now() as f64 - began);
     let stale_evidence = (matching
-        && agent.state_source.as_deref() == Some("stale")
-        && state != AgentState::Offline)
-        .then(|| {
-            crate::desktop::agent_status::stale_note(&agent.evidence)
-                .unwrap_or_else(|| "State report is stale.".into())
-        });
+        && crate::desktop::agent_status::draws_evidence(agent.state_source.as_deref(), state))
+    .then(|| {
+        crate::desktop::agent_status::stale_note(&agent.evidence)
+            .unwrap_or_else(|| "State report is stale.".into())
+    });
     let mut body = list("agent-overview")
         .px(px(t.space.s18))
         .py(px(t.space.s16))
@@ -602,7 +606,7 @@ pub(super) fn overview<V: 'static>(
                         )
                         .child(div().text_color(c.muted).child(format!(
                             "{} ago · it does nothing more until someone answers in its terminal",
-                            age.map(ago).unwrap_or_default()
+                            age.map(ago_now).unwrap_or_default()
                         ))),
                 )
                 .children(agent.last_message.as_ref().map(|message| {
@@ -669,7 +673,7 @@ pub(super) fn overview<V: 'static>(
             .child(ui::fact(
                 "In this state",
                 div().child(
-                    age.map(ago)
+                    age.map(ago_now)
                         .map(|age| format!("for {age}"))
                         .unwrap_or_else(|| "unknown".into()),
                 ),
@@ -711,7 +715,7 @@ fn waits(waiting: &Waiting, now: f64) -> String {
 /// How long before `now` an RFC 3339 time was; empty when it doesn't parse.
 fn age(at: Option<&str>, now: f64) -> String {
     at.and_then(epoch_seconds)
-        .map(|at| ago(now - at))
+        .map(|at| ago_now(now - at))
         .unwrap_or_default()
 }
 

@@ -146,6 +146,12 @@ pub(super) struct Conversation {
     /// Text selected in the thread, and the focus that copies it.
     selection: RefCell<Selection>,
     thread_focus: FocusHandle,
+    /// Redraws a thread drawn on its own when its day labels change.
+    clock: super::Clock,
+    /// The newest entry a frame painted at the bottom of the open thread,
+    /// kept so a read marker that failed is asked again by the poll, which
+    /// no longer redraws when nothing changed.
+    painted: Option<u64>,
     _poll: Option<Task<()>>,
     _input: Subscription,
 }
@@ -667,13 +673,17 @@ impl Conversation {
         names
     }
 
-    /// A conversation whose owning view delivers each message.
+    /// A conversation whose owning view delivers each message, in a pane
+    /// that can be seen while `visible`.
     pub fn delivered_by_owner(
         about: &'static str,
+        visible: Rc<Cell<bool>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::create(about, window, cx)
+        let mut conversation = Self::create(about, window, cx);
+        conversation.visible = visible;
+        conversation
     }
 
     fn create(about: &'static str, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -715,6 +725,8 @@ impl Conversation {
             expanded: std::collections::HashSet::new(),
             selection: RefCell::default(),
             thread_focus: cx.focus_handle(),
+            clock: super::Clock::default(),
+            painted: None,
             _poll: None,
             _input: input,
         }
@@ -774,9 +786,26 @@ impl Conversation {
     pub fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
         let was = self.active;
         self.active = active;
+        if !active {
+            self.rest();
+        }
         if active && !was {
             self.refresh(cx);
             self.start_polling(cx);
+        }
+    }
+
+    /// Drop the wake its day labels asked for, for a thread no longer shown;
+    /// it asks again when it is drawn.
+    pub fn rest(&mut self) {
+        self.clock = super::Clock::default();
+    }
+
+    /// Read at once if the person can see this conversation, as its pane
+    /// asks when it shows again.
+    pub fn read_now(&mut self, cx: &mut Context<Self>) {
+        if self.shown() {
+            self.refresh(cx);
         }
     }
 
@@ -795,6 +824,9 @@ impl Conversation {
         let due = if self.open { OPEN_POLL } else { CLOSED_POLL };
         if self.shown() && stored.read_at.is_none_or(|at| at.elapsed() >= due) {
             self.refresh(cx);
+        }
+        if let Some(painted) = self.painted {
+            self.mark_read(painted, cx);
         }
         Some(OPEN_POLL)
     }
@@ -841,6 +873,7 @@ impl Conversation {
             let (result, older) = worker.await;
             let _ = this.update(cx, |conversation, cx| {
                 let seen = conversation.open && conversation.shown();
+                let before = conversation.drawn();
                 let Some(stored) = conversation.stored.as_mut() else {
                     return;
                 };
@@ -877,10 +910,34 @@ impl Conversation {
                     Err(error) => failure = Some(error),
                 }
                 conversation.route_waiting(failure, cx);
-                cx.notify();
+                // A poll that brings nothing new does not redraw, nor one
+                // landing while it cannot be seen, which showing draws.
+                if conversation.drawn() != before && conversation.shown() {
+                    cx.notify();
+                }
             });
         })
         .detach();
+    }
+
+    /// What the thread draws from its reads, to tell whether one changed it.
+    fn drawn(&self) -> impl PartialEq + use<> {
+        (
+            self.stored.as_ref().map(|stored| {
+                (
+                    stored.supported,
+                    stored.page.clone(),
+                    stored.earlier.clone(),
+                    stored.divider,
+                    stored.redelivery.clone(),
+                )
+            }),
+            self.read_error,
+            self.messages
+                .iter()
+                .map(|message| message.delivery.clone())
+                .collect::<Vec<_>>(),
+        )
     }
 
     /// Send the messages written before Backbone first answered, now that it
@@ -938,7 +995,9 @@ impl Conversation {
                     stored.earlier = entries;
                     stored.earlier_cursor = page.older;
                 }
-                cx.notify();
+                if conversation.shown() {
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -949,6 +1008,7 @@ impl Conversation {
         if !(self.open && self.shown()) {
             return;
         }
+        self.painted = self.painted.max(Some(painted_last));
         let target = self.target();
         let Some(stored) = self.stored.as_mut() else {
             return;
@@ -972,6 +1032,7 @@ impl Conversation {
         cx.spawn(async move |this, cx| {
             let counts = worker.await;
             let _ = this.update(cx, |conversation, cx| {
+                let before = conversation.drawn();
                 let Some(stored) = conversation.stored.as_mut() else {
                     return;
                 };
@@ -987,7 +1048,9 @@ impl Conversation {
                     page.unread = counts.unread;
                     page.total = counts.total;
                 }
-                cx.notify();
+                if conversation.drawn() != before && conversation.shown() {
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -2135,7 +2198,11 @@ fn epoch(text: &str) -> Option<f64> {
 
 impl Render for Conversation {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.panel(None, window, cx)
+        // Drawn after the view holding it, so it keeps its own day labels.
+        super::Clock::begin();
+        let drawn = self.panel(None, window, cx).into_any_element();
+        self.clock.end(self.visible.clone(), cx);
+        drawn
     }
 }
 

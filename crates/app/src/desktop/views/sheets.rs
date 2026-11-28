@@ -117,6 +117,12 @@ pub(super) struct Sheets {
     pending: Option<Prepared>,
     pending_uncertain: bool,
     feedback_receipt: Option<FeedbackReceipt>,
+    /// Whether the pane holding it can be seen.
+    visible: std::rc::Rc<std::cell::Cell<bool>>,
+    /// Redraws the shelf when an age it shows changes.
+    clock: super::Clock,
+    /// Whether its section is selected in its pane.
+    shown: bool,
     busy: bool,
     error: Option<String>,
     notice: Option<String>,
@@ -124,10 +130,23 @@ pub(super) struct Sheets {
     _inputs: Vec<Subscription>,
 }
 impl Sheets {
-    pub fn new(source: Source, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let conversation =
-            cx.new(|cx| Conversation::delivered_by_owner("about this sheet", window, cx));
+    pub fn new(
+        source: Source,
+        visible: std::rc::Rc<std::cell::Cell<bool>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let conversation = cx.new(|cx| {
+            Conversation::delivered_by_owner("about this sheet", visible.clone(), window, cx)
+        });
         let input = Self::watch(&conversation, cx);
+        // Its shelf marks which workbooks were opened; an open one does not,
+        // nor one in a section or pane not shown.
+        let opened = cx.observe_global::<super::seen::Opened>(|sheets: &mut Self, cx| {
+            if sheets.shown && sheets.visible.get() && sheets.open.is_none() {
+                cx.notify();
+            }
+        });
         let mut state = Self {
             focus: cx.focus_handle(),
             rows_scroll: UniformListScrollHandle::new(),
@@ -149,14 +168,27 @@ impl Sheets {
             pending: None,
             pending_uncertain: false,
             feedback_receipt: None,
+            visible,
+            clock: super::Clock::default(),
+            shown: true,
             busy: false,
             error: None,
             notice: None,
             _input: input,
-            _inputs: Vec::new(),
+            _inputs: vec![opened],
         };
         state.catalog(cx);
         state
+    }
+    /// Whether its section is selected; another section's drop its clock,
+    /// and selecting it again draws it afresh.
+    pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        self.shown = shown;
+        if !shown {
+            self.clock = super::Clock::default();
+            self.conversation
+                .update(cx, |conversation, _| conversation.rest());
+        }
     }
     fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = &event.keystroke;
@@ -212,7 +244,10 @@ impl Sheets {
     }
     fn fail(&mut self, message: impl Into<String>, cx: &mut Context<Self>) {
         self.error = Some(message.into());
-        cx.notify();
+        // Kept while not shown; showing it draws it.
+        if self.shown && self.visible.get() {
+            cx.notify();
+        }
     }
     fn begin(&mut self, cx: &mut Context<Self>) {
         // Block native input before yielding; waiting for render leaves an input gap.
@@ -220,7 +255,9 @@ impl Sheets {
         self.busy = true;
         self.error = None;
         self.notice = None;
-        cx.notify();
+        if self.shown && self.visible.get() {
+            cx.notify();
+        }
     }
     fn catalog(&mut self, cx: &mut Context<Self>) {
         if !self.clean(cx) {
@@ -248,7 +285,9 @@ impl Sheets {
                     }
                     Err(e) => s.error = Some(e.message().into()),
                 }
-                cx.notify();
+                if s.shown && s.visible.get() {
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -264,7 +303,7 @@ impl Sheets {
         if !self.clean(cx) {
             return;
         }
-        super::seen::mark_keys(&seen_keys(&record, self.source.identity()));
+        super::seen::mark_keys(&seen_keys(&record, self.source.identity()), cx);
         self.read_grid(record, tab, row, column, cx);
     }
     fn read_grid(
@@ -343,7 +382,9 @@ impl Sheets {
                     }
                     Err(e) => s.error = Some(e.message().into()),
                 }
-                cx.notify();
+                if s.shown && s.visible.get() {
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -597,15 +638,44 @@ fn column_name(mut n: usize) -> String {
 
 impl Render for Sheets {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        super::Clock::begin();
+        let drawn = self.draw(window, cx).into_any_element();
+        self.clock.end(self.visible.clone(), cx);
+        drawn
+    }
+}
+
+impl Sheets {
+    fn draw(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(open) = &self.open {
             let sheet = seen_keys(&open.record, self.source.identity())[1].clone();
             if !self.conversations.contains_key(&sheet) {
-                let conversation =
-                    cx.new(|cx| Conversation::delivered_by_owner("about this sheet", window, cx));
+                let conversation = cx.new(|cx| {
+                    Conversation::delivered_by_owner(
+                        "about this sheet",
+                        self.visible.clone(),
+                        window,
+                        cx,
+                    )
+                });
                 self._inputs.push(Self::watch(&conversation, cx));
                 self.conversations.insert(sheet.clone(), conversation);
             }
-            self.conversation = self.conversations[&sheet].clone();
+            let shown = self.conversations[&sheet].clone();
+            if shown != self.conversation {
+                // The workbook left keeps its thread, but not its clock.
+                std::mem::replace(&mut self.conversation, shown)
+                    .update(cx, |conversation, _| conversation.rest());
+            }
+            // Its revision history covers the thread.
+            if self.history.is_some() {
+                self.conversation
+                    .update(cx, |conversation, _| conversation.rest());
+            }
+        } else {
+            // The shelf shows no thread.
+            self.conversation
+                .update(cx, |conversation, _| conversation.rest());
         }
         let frozen = self.busy || self.pending.is_some();
         let (agent, anchor) = self

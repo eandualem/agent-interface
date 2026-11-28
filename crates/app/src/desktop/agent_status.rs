@@ -111,7 +111,7 @@ impl Status {
 
     pub fn from_stale(state: AgentState, state_source: Option<&str>, evidence: &[String]) -> Self {
         let mut status = Self::new(state);
-        if state_source == Some("stale") && state != AgentState::Offline {
+        if draws_evidence(state_source, state) {
             status.stale = true;
             status.stale_reason = stale_note(evidence);
             status.label = if state == AgentState::Unknown {
@@ -173,11 +173,13 @@ struct Current {
     activity: HashMap<String, Rc<Activity>>,
     /// The profile's running and queued runs together, when it has any.
     background: Option<gpui::SharedString>,
-    /// Minute bucket for ticking relative `last_seen` labels while a machine is offline.
-    offline_tick: Option<u64>,
+    /// The offline machines' labels as last drawn, with their last-seen ages.
+    offline_tick: Vec<String>,
     /// Whether the newest failure was a read that could not be made, not a
     /// refusal.
     not_answering: bool,
+    /// What the roster last said about not answering, with the age it gave.
+    said: Option<String>,
 }
 
 impl Current {
@@ -201,8 +203,9 @@ impl Default for Current {
             runs: Runs::default(),
             activity: HashMap::new(),
             background: None,
-            offline_tick: None,
+            offline_tick: Vec::new(),
             not_answering: false,
+            said: None,
         }
     }
 }
@@ -326,7 +329,7 @@ pub(super) fn not_answering(read: Option<std::time::Instant>) -> String {
     match read {
         Some(read) => format!(
             "Backbone is not answering · last read {} ago",
-            super::views::ago(read.elapsed().as_secs_f64())
+            super::views::ago_now(read.elapsed().as_secs_f64())
         ),
         None => "Backbone is not answering".into(),
     }
@@ -620,19 +623,31 @@ impl LiveAgents {
                 details.state_since = None;
             }
         }
-        let offline_tick = (snapshot.error.is_none()
-            && snapshot.machines.iter().any(|machine| {
-                machine.state == agent_interface_roster::MachineState::Offline
+        // Each offline machine's label as drawn, whose last-seen age moves
+        // on while the roster stays: compared on each read, it changes only
+        // when one of them reads otherwise.
+        let offline_tick: Vec<String> = snapshot
+            .machines
+            .iter()
+            .filter(|machine| {
+                snapshot.error.is_none()
+                    && machine.state == agent_interface_roster::MachineState::Offline
                     && machine.last_seen.is_some()
-            }))
-        .then(|| agent_interface_roster::views::now() / 60);
+            })
+            .map(|machine| {
+                super::agent_groups::MachinePresence::Offline {
+                    last_seen: machine.last_seen.clone(),
+                }
+                .label()
+            })
+            .collect();
         let mut current = self.0.current.borrow_mut();
         let tick_changed = current.offline_tick != offline_tick;
+        // The newest observation is kept, but compared as drawn.
         let changed = current.snapshot.as_ref().is_none_or(|old| {
             old.states != snapshot.states
-                || old.details != snapshot.details
+                || !drawn_alike(old, &snapshot)
                 || old.swarms != snapshot.swarms
-                || old.machines != snapshot.machines
                 || old.machines_read != snapshot.machines_read
                 || old.error != snapshot.error
         });
@@ -659,9 +674,7 @@ impl LiveAgents {
                         if let Some(suffix) = suffix.filter(|s| !s.is_empty()) {
                             status.label = format!("{} · {suffix}", status.state.word());
                         }
-                        if details.state_source.as_deref() == Some("stale")
-                            && status.state != AgentState::Offline
-                        {
+                        if draws_evidence(details.state_source.as_deref(), status.state) {
                             status.stale = true;
                             status.stale_reason = stale_note(&details.evidence);
                             status.label = if status.state == AgentState::Unknown {
@@ -712,6 +725,82 @@ impl LiveAgents {
     }
 }
 
+/// Whether an agent's evidence is drawn: as the note of a stale state,
+/// which an offline agent does not show.
+pub(super) fn draws_evidence(state_source: Option<&str>, state: AgentState) -> bool {
+    state_source == Some("stale") && state != AgentState::Offline
+}
+
+/// Where a state came from and its evidence, as drawn: "stale" with the
+/// one note [`stale_note`] shows when [`draws_evidence`], else nothing,
+/// since neither push nor pull nor the evidence's ticking hook age shows.
+pub(super) fn drawn_evidence(
+    state_source: Option<&str>,
+    state: AgentState,
+    evidence: &[String],
+) -> (Option<String>, Vec<String>) {
+    if draws_evidence(state_source, state) {
+        (
+            Some("stale".into()),
+            stale_note(evidence).into_iter().collect(),
+        )
+    } else {
+        (None, Vec::new())
+    }
+}
+
+/// An agent's details, in `state`, as the views draw them, for telling
+/// whether a read changed anything shown.
+fn drawn_details<'a>(
+    details: &'a agent_interface_roster::AgentDetails,
+    state: Option<&String>,
+) -> std::borrow::Cow<'a, agent_interface_roster::AgentDetails> {
+    let state = state.map_or(AgentState::Unknown, |state| AgentState::from_runtime(state));
+    let (state_source, evidence) =
+        drawn_evidence(details.state_source.as_deref(), state, &details.evidence);
+    if details.state_source == state_source && details.evidence == evidence {
+        return std::borrow::Cow::Borrowed(details);
+    }
+    let mut drawn = details.clone();
+    drawn.state_source = state_source;
+    drawn.evidence = evidence;
+    std::borrow::Cow::Owned(drawn)
+}
+
+/// A machine as the views draw it: when it was last seen shows only while
+/// it is offline, so a heartbeat while it is anything else changes nothing.
+fn drawn_machine(
+    machine: &agent_interface_roster::ProfileMachine,
+) -> std::borrow::Cow<'_, agent_interface_roster::ProfileMachine> {
+    if machine.last_seen.is_none() || machine.state == agent_interface_roster::MachineState::Offline
+    {
+        return std::borrow::Cow::Borrowed(machine);
+    }
+    let mut drawn = machine.clone();
+    drawn.last_seen = None;
+    std::borrow::Cow::Owned(drawn)
+}
+
+/// Whether two roster reads draw the same agents and machines.
+fn drawn_alike(old: &Snapshot, new: &Snapshot) -> bool {
+    old.details.len() == new.details.len()
+        && old
+            .details
+            .iter()
+            .zip(&new.details)
+            .all(|((a_name, a), (b_name, b))| {
+                a_name == b_name
+                    && drawn_details(a, old.states.get(a_name))
+                        == drawn_details(b, new.states.get(b_name))
+            })
+        && old.machines.len() == new.machines.len()
+        && old
+            .machines
+            .iter()
+            .zip(&new.machines)
+            .all(|(a, b)| drawn_machine(a) == drawn_machine(b))
+}
+
 /// Windows and their child views own sources. The registry only deduplicates
 /// live owners, so closing the last view releases its poller and cached state.
 /// Keys are the provider's identity and the connection, never the selected view
@@ -733,6 +822,48 @@ impl Sources {
         if let (Some(origin), Some(key)) = (&agents.0.origin, &agents.0.connection_key) {
             self.0
                 .insert((origin.clone(), key.clone()), Rc::downgrade(&agents.0));
+        }
+    }
+}
+
+/// Whether each open navigation window is visible. Only those windows show
+/// the roster; the settings window does not.
+#[derive(Default)]
+struct Windows(HashMap<gpui::WindowId, bool>);
+impl Global for Windows {}
+
+/// Whether the rosters are shown: while any navigation window is visible,
+/// or before one has said otherwise.
+fn shown<K>(windows: &HashMap<K, bool>) -> bool {
+    windows.is_empty() || windows.values().any(|visible| *visible)
+}
+
+fn rosters_shown(cx: &App) -> bool {
+    cx.try_global::<Windows>()
+        .is_none_or(|windows| shown(&windows.0))
+}
+
+/// Note whether a navigation window is visible, or `None` once it closed,
+/// and pace every profile's roster to match: slowed while none is visible,
+/// read at once when one is. Redraws no window.
+pub(super) fn window_shown(window: gpui::WindowId, visible: Option<bool>, cx: &mut App) {
+    let windows = &mut cx.default_global::<Windows>().0;
+    match visible {
+        Some(visible) => windows.insert(window, visible),
+        None => windows.remove(&window),
+    };
+    // The last window closing leaves the pace as it was; the rosters go
+    // with it, and a new first window sets it again.
+    if windows.is_empty() {
+        return;
+    }
+    let shown = rosters_shown(cx);
+    let Some(sources) = cx.try_global::<Sources>() else {
+        return;
+    };
+    for source in sources.0.values().filter_map(Weak::upgrade) {
+        if let Some(roster) = &source.roster.0 {
+            roster.set_shown(shown);
         }
     }
 }
@@ -777,8 +908,6 @@ impl LiveAgents {
             }
             changed
         };
-        // The wording, and the age it gives, change while the roster stays.
-        let said = self.not_answering_text();
         self.0.current.borrow_mut().not_answering =
             update.error == Some(agent_interface_roster::profiles::Error::Unavailable);
         let roster = match update.error {
@@ -794,7 +923,11 @@ impl LiveAgents {
                 }
             }
         };
-        runs || roster || said != self.not_answering_text()
+        // The wording, and the age it gives, change while the roster stays.
+        let said = self.not_answering_text();
+        let reworded =
+            std::mem::replace(&mut self.0.current.borrow_mut().said, said.clone()) != said;
+        runs || roster || reworded
     }
 
     /// What the agents row says while Backbone is not answering.
@@ -827,6 +960,8 @@ pub(super) fn start_bound(connection: Connection, cx: &mut App) -> Option<LiveAg
         let _ = wake.unbounded_send(());
     })
     .ok()?;
+    // A roster started while every window is hidden reads slowly too.
+    roster.set_shown(rosters_shown(cx));
     let agents = LiveAgents(Rc::new(Source {
         origin: Some(origin),
         connection_key: Some(connection_key),
@@ -862,6 +997,18 @@ pub(super) fn start_bound(connection: Connection, cx: &mut App) -> Option<LiveAg
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rosters_are_shown_while_any_navigation_window_is_visible() {
+        let mut windows = HashMap::new();
+        assert!(shown(&windows));
+        windows.insert(1, false);
+        assert!(!shown(&windows));
+        windows.insert(2, true);
+        assert!(shown(&windows));
+        windows.remove(&2);
+        assert!(!shown(&windows));
+    }
 
     #[test]
     fn consumers_share_observations_through_stop_failure_and_recovery() {
@@ -1405,6 +1552,29 @@ mod tests {
         snapshot.update_machines(Some(
             br#"{"machines":[{"id":"a","name":"laptop","home":true,"state":"offline","last_seen":"2026-11-22T12:00:00Z"}]}"#,
         ));
+        assert!(agents.update(snapshot.clone()));
+        // An online machine's heartbeat and a fresh agent's ticking evidence
+        // are not drawn, so they change nothing; a stale agent's are.
+        snapshot.update_machines(Some(
+            br#"{"machines":[{"id":"a","name":"laptop","home":true,"state":"online","last_seen":"2026-11-22T12:00:00Z"}]}"#,
+        ));
+        assert!(agents.update(snapshot.clone()));
+        snapshot.update_machines(Some(
+            br#"{"machines":[{"id":"a","name":"laptop","home":true,"state":"online","last_seen":"2026-11-22T12:00:05Z"}]}"#,
+        ));
+        assert!(!agents.update(snapshot.clone()));
+        let fresh = |age: u8| {
+            format!(
+                r#"{{"items":[{{"name":"worker","state":"busy","state_source":"push","evidence":["hook {age}s ago"]}}]}}"#
+            )
+        };
+        snapshot.update(fresh(3).as_bytes());
+        agents.update(snapshot.clone());
+        snapshot.update(fresh(5).as_bytes());
+        assert!(!agents.update(snapshot.clone()));
+        snapshot.update(
+            br#"{"items":[{"name":"worker","state":"busy","state_source":"stale","evidence":["hook 9s ago"]}]}"#,
+        );
         assert!(agents.update(snapshot));
     }
 }

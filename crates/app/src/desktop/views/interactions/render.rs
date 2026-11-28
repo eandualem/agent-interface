@@ -10,20 +10,27 @@ use gpui::{AnyElement, SharedString, div, point, px, relative};
 use ledger::Row;
 
 pub(super) fn ordered(view: &Interactions) -> Vec<&api::AgentSummary> {
-    let mut agents: Vec<_> = view
+    // Each time is parsed once, not on every comparison.
+    let mut agents: Vec<(Option<f64>, &api::AgentSummary)> = view
         .snapshot
         .as_ref()
-        .map(|s| s.summary.items.iter().collect())
+        .map(|s| {
+            s.summary
+                .items
+                .iter()
+                .map(|a| (a.latest.as_ref().map(|l| epoch(&l.time)), a))
+                .collect()
+        })
         .unwrap_or_default();
-    agents.sort_by(|a, b| {
-        b.latest
-            .as_ref()
-            .map(|l| epoch(&l.time))
-            .unwrap_or(0.)
-            .total_cmp(&a.latest.as_ref().map(|l| epoch(&l.time)).unwrap_or(0.))
-            .then(a.agent.name.cmp(&b.agent.name))
+    agents.sort_by(|(at, a), (bt, b)| {
+        let newest = match (at, bt) {
+            (Some(at), Some(bt)) => bt.total_cmp(at),
+            // An agent without a latest interaction goes last.
+            _ => bt.is_some().cmp(&at.is_some()),
+        };
+        newest.then(a.agent.name.cmp(&b.agent.name))
     });
-    agents
+    agents.into_iter().map(|(_, agent)| agent).collect()
 }
 pub(super) fn time(at: f64) -> String {
     Local::at(at)
@@ -1287,6 +1294,16 @@ fn ledger(view: &mut Interactions, cx: &mut Context<Interactions>) -> AnyElement
 
 impl Render for Interactions {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Drawn after its pane, so it keeps its own time and day labels.
+        crate::desktop::views::Clock::begin();
+        let drawn = self.draw(window, cx).into_any_element();
+        self.clock.end(self.visible.clone(), cx);
+        drawn
+    }
+}
+
+impl Interactions {
+    fn draw(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (t, c) = (tokens(), colors());
         if self
             .ask_after_read

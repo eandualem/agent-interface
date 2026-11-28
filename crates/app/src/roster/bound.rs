@@ -19,6 +19,9 @@ const POLL: Duration = Duration::from_secs(2);
 /// longer current. The stream carries states, waits and runs, but not an agent
 /// leaving, a new issue without a new state, or swarms and machines.
 const STREAMED: Duration = Duration::from_secs(15);
+/// Between reads while no window shows the roster: the same, so it is never
+/// stale when a window shows again, and that window reads at once.
+const HIDDEN: Duration = STREAMED;
 
 use agent_interface_roster::Snapshot;
 use agent_interface_roster::profiles::{
@@ -47,6 +50,8 @@ pub struct BoundRosterSource {
     stop: mpsc::Sender<bool>,
     /// Cleared before a stop, so the worker starts no further runs read.
     polling: Arc<AtomicBool>,
+    /// Whether a window shows the roster; reads are slowed while none does.
+    shown: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
     /// Follows the Rust service's push stream, when the connection has one.
     stream: Option<(Arc<AtomicBool>, JoinHandle<()>)>,
@@ -55,7 +60,8 @@ pub struct BoundRosterSource {
 impl BoundRosterSource {
     /// Read immediately, then two seconds after each completed attempt, or 15
     /// seconds after the start of a good read while the Rust service's push
-    /// stream is open. The stream, when the connection has one, changes an
+    /// stream is open, and 15 seconds after each while no window shows the
+    /// roster ([`Self::set_shown`]). The stream, when the connection has one, changes an
     /// agent's state or wait at once, and asks for a read at once for anything
     /// else and when it ends. Runs are read after each roster is published, so
     /// states never wait on them. The connection retains its verified identity and
@@ -80,6 +86,8 @@ impl BoundRosterSource {
         let wanted = Arc::clone(&polling);
         let streaming = Arc::new(AtomicBool::new(false));
         let open = Arc::clone(&streaming);
+        let visible = Arc::new(AtomicBool::new(true));
+        let in_view = Arc::clone(&visible);
         let worker = thread::Builder::new()
             .name("bound roster polling".into())
             .spawn(move || {
@@ -145,7 +153,9 @@ impl BoundRosterSource {
                     // A failed read is tried again soon: the stream's states
                     // wait for a good roster, and runs go stale 30 seconds
                     // after the last good list.
-                    let wait = if good && streaming.load(Ordering::Relaxed) {
+                    let wait = if !in_view.load(Ordering::Relaxed) {
+                        HIDDEN
+                    } else if good && streaming.load(Ordering::Relaxed) {
                         STREAMED.saturating_sub(started.elapsed()).max(POLL)
                     } else {
                         POLL
@@ -167,6 +177,7 @@ impl BoundRosterSource {
             updates,
             stop,
             polling,
+            shown: visible,
             worker: Some(worker),
             stream: None,
         };
@@ -178,6 +189,13 @@ impl BoundRosterSource {
                 None
             });
         Ok(source)
+    }
+
+    /// Slow the reads while no window shows the roster; shown again, read at once.
+    pub fn set_shown(&self, shown: bool) {
+        if self.shown.swap(shown, Ordering::Relaxed) != shown && shown {
+            let _ = self.stop.send(false);
+        }
     }
 
     /// Take the newest complete update. Failures replace unread successes and

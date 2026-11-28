@@ -133,7 +133,8 @@ pub(super) fn serve(pane: &mut ViewPane, document: &DocumentRevision, cx: &mut C
             _ => html,
         };
         let _ = pane.update(cx, |pane, cx| {
-            if pane.documents.finish(made, served) {
+            // Hidden, the page is kept and drawn on show.
+            if pane.documents.finish(made, served) && pane.visible.get() {
                 cx.notify();
             }
         });
@@ -163,7 +164,7 @@ fn open(pane: &mut ViewPane, metadata: DocumentMetadata, cx: &mut Context<ViewPa
         content: ReportContent::Document(metadata),
     };
     if let Some(connection) = &pane.connection {
-        super::seen::mark(&item, connection.identity());
+        super::seen::mark(&item, connection.identity(), cx);
     }
     pane.documents.clear();
     pane.reports.open = Some(item);

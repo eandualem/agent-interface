@@ -236,6 +236,8 @@ pub(super) struct ViewPane {
     data: Option<Data>,
     /// When `data` was read.
     read_at: Option<std::time::Instant>,
+    /// Redraws the pane when an age it shows changes.
+    clock: Clock,
     error: Option<&'static str>,
     range: Range,
     grouping: Grouping,
@@ -293,16 +295,67 @@ impl ViewPane {
         self.artifacts.is_some() || documents::selected(self).is_some()
     }
 
-    pub fn set_visible(&self, visible: bool, cx: &gpui::App) {
-        self.visible.set(visible);
-        if !visible {
+    /// Whether the pane can be seen; true when it just became visible, for
+    /// [`Self::wake`]. Hidden with `dispose`, as when the layout no longer
+    /// shows it, its native pages go too; hidden with the window, it only
+    /// pauses and keeps them, with their scroll and controls.
+    pub fn set_visible(&self, visible: bool, dispose: bool, cx: &gpui::App) -> bool {
+        let appeared = show_source(&self.visible, self.source.as_ref(), visible);
+        if !visible && dispose {
             self.documents.surface.borrow_mut().clear();
         }
-        if let Some(source) = &self.source {
-            source.set_active(visible);
-        }
         if let Some(artifacts) = &self.artifacts {
-            artifacts.read(cx).set_visible(visible);
+            artifacts.read(cx).set_visible(visible, dispose);
+        }
+        appeared
+    }
+
+    /// Read the shown section again now that the pane can be seen: plans,
+    /// interactions, an agent card, artifacts and the open record's
+    /// conversation otherwise wait for their next poll.
+    /// The view source reads at once by itself. Drawn again, the pane and
+    /// its children bring their ages up to date and wake for the next.
+    pub fn wake(&mut self, cx: &mut Context<Self>) {
+        // Hidden again before this frame came: nothing to read for.
+        if !self.visible.get() {
+            return;
+        }
+        cx.notify();
+        if let Some(artifacts) = &self.artifacts {
+            artifacts.update(cx, |artifacts, cx| {
+                artifacts.rescan(cx);
+                cx.notify();
+            });
+        }
+        match self.shown {
+            Shown::Plans => {
+                if let Some(plans) = &self.plans {
+                    plans.update(cx, |plans, cx| plans.refresh(cx));
+                }
+            }
+            Shown::Interactions => {
+                if let Some(view) = &self.interactions {
+                    view.update(cx, |view, cx| view.wake(cx));
+                }
+            }
+            Shown::Sheets => {
+                if let Some(sheets) = &self.sheets {
+                    sheets.update(cx, |_, cx| cx.notify());
+                }
+            }
+            Shown::Records => {}
+        }
+        // The open record's conversation, which polls every few seconds.
+        if let Some(conversation) = &self.conversation {
+            conversation.update(cx, |conversation, cx| conversation.read_now(cx));
+        }
+        if let Some(card) = &self.bound_agent {
+            card.update(cx, |card, cx| {
+                card.refresh(cx);
+                if card.shown {
+                    cx.notify();
+                }
+            });
         }
     }
 
@@ -432,6 +485,7 @@ impl ViewPane {
             connection,
             data: None,
             read_at: None,
+            clock: Clock::default(),
             error: None,
             range: Range::Day,
             grouping: Grouping::Folder,
@@ -465,6 +519,18 @@ impl ViewPane {
             _search: Vec::new(),
             view,
         };
+        // Another pane opened a record: a record list marks which were
+        // opened, an open record does not.
+        pane._search
+            .push(cx.observe_global::<seen::Opened>(|pane: &mut Self, cx| {
+                if pane.visible.get()
+                    && pane.view.kind == ViewKind::Reports
+                    && pane.shown == Shown::Records
+                    && pane.reports.open.is_none()
+                {
+                    cx.notify();
+                }
+            }));
         if pane.connection.is_none() && pane.view.registration_id.is_some() {
             pane.error = Some("This saved agent view requires its original profile.");
             return pane;
@@ -570,23 +636,29 @@ impl ViewPane {
                         if request != pane.request() {
                             return;
                         }
-                        match update {
-                            Ok(data) => {
-                                if let Data::Document(document) = &data {
-                                    pane.documents.error = None;
-                                    documents::serve(pane, document, cx);
-                                }
-                                if let Data::Reports(page) = &data {
-                                    pane.reports.observe(page);
-                                }
-                                pane.error = None;
-                                pane.data = Some(data);
-                                pane.read_at = Some(std::time::Instant::now());
-                            }
-                            // Keep the last data and say it is stale.
-                            Err(error) => pane.error = Some(error),
+                        let mut served = false;
+                        if let Ok(Data::Document(document)) = &update {
+                            served = pane.documents.error.take().is_some()
+                                || pane.documents.loaded.as_ref() != Some(document);
+                            documents::serve(pane, document, cx);
                         }
-                        cx.notify();
+                        let authors = pane.reports.agents.clone();
+                        let changed = apply_read(
+                            &mut pane.data,
+                            &mut pane.error,
+                            &mut pane.read_at,
+                            &mut pane.reports,
+                            update,
+                        );
+                        // Plans, interactions and sheets draw over a Reports
+                        // pane's feed, which is kept and drawn on return; only
+                        // its agent filter, in the section bar, shows over them.
+                        let feed = pane.view.kind != ViewKind::Reports
+                            || pane.shown == Shown::Records
+                            || pane.reports.agents != authors;
+                        if (served || changed) && feed {
+                            cx.notify();
+                        }
                     }
                 });
                 if updated.is_err() {
@@ -638,6 +710,7 @@ impl ViewPane {
     fn show_records(&mut self, query: views::ReportQuery, cx: &mut Context<Self>) {
         self.plans_shown(false, cx);
         self.interactions_shown(false, cx);
+        self.sheets_shown(false, cx);
         self.shown = Shown::Records;
         self.reports.query = query;
         self.reports.previous.clear();
@@ -658,8 +731,17 @@ impl ViewPane {
         }
     }
 
+    /// Whether the Sheets section is selected; only then does its shelf
+    /// redraw by itself.
+    fn sheets_shown(&self, shown: bool, cx: &mut Context<Self>) {
+        if let Some(sheets) = &self.sheets {
+            sheets.update(cx, |sheets, cx| sheets.set_shown(shown, cx));
+        }
+    }
+
     fn show_plans(&mut self, cx: &mut Context<Self>) {
         self.interactions_shown(false, cx);
+        self.sheets_shown(false, cx);
         let Some(connection) = &self.connection else {
             return;
         };
@@ -695,12 +777,14 @@ impl ViewPane {
         self.leave_reader(cx);
         self.plans_shown(false, cx);
         if self.sheets.is_none() {
-            let sheets = cx.new(|cx| sheets::Sheets::new(source, window, cx));
+            let visible = self.visible.clone();
+            let sheets = cx.new(|cx| sheets::Sheets::new(source, visible, window, cx));
             // An opened workbook trades the section bar for its own.
             self._search
                 .push(cx.observe(&sheets, |_, _, cx| cx.notify()));
             self.sheets = Some(sheets);
         }
+        self.sheets_shown(true, cx);
         self.shown = Shown::Sheets;
         cx.notify();
     }
@@ -721,6 +805,7 @@ impl ViewPane {
         }
         self.leave_reader(cx);
         self.plans_shown(false, cx);
+        self.sheets_shown(false, cx);
         if self.interactions.is_none() {
             let visible = self.visible.clone();
             // A linked report is read through the same connection as the history.
@@ -805,7 +890,10 @@ impl ViewPane {
         if let Some(source) = &self.source {
             source.set_request(self.request());
         }
-        cx.notify();
+        // A hidden pane is drawn afresh when shown.
+        if self.visible.get() {
+            cx.notify();
+        }
     }
 
     fn set_range(&mut self, range: Range, cx: &mut Context<Self>) {
@@ -904,7 +992,9 @@ impl ViewPane {
                         }
                         Err(error) => Err(error),
                     });
-                    cx.notify();
+                    if pane.visible.get() {
+                        cx.notify();
+                    }
                 }
             });
         })
@@ -989,7 +1079,9 @@ impl ViewPane {
                         }
                         Err(error) => Err(error),
                     });
-                    cx.notify();
+                    if pane.visible.get() {
+                        cx.notify();
+                    }
                 }
             });
         })
@@ -1169,6 +1261,20 @@ impl Drop for ViewPane {
 
 impl Render for ViewPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        Clock::begin();
+        let drawn = self.draw(window, cx).into_any_element();
+        self.clock.end(self.visible.clone(), cx);
+        drawn
+    }
+}
+
+impl ViewPane {
+    fn draw(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A reader opened over the agent card pauses its reads.
+        if let Some(card) = &self.bound_agent {
+            let shown = self.open.is_none();
+            card.update(cx, |card, cx| card.set_shown(shown, cx));
+        }
         if let Some(card) = self.bound_agent.clone().filter(|_| self.open.is_none()) {
             // Back from the reader: its conversation stops reading, kept with
             // its draft, and its text can no longer be selected or copied.
@@ -1409,7 +1515,9 @@ impl Render for ViewPane {
                     }
                     Some(Data::Team(data)) => team::body(self, data, cx),
                     Some(Data::Usage(data)) => usage::body(self, data, cx),
-                    Some(Data::Activity(data)) => activity::body(self, data, cx),
+                    Some(Data::Activity(data)) => {
+                        activity::body(self, data, f32::from(window.viewport_size().width), cx)
+                    }
                     Some(Data::Skills(data)) => skills::body(self, data, cx),
                     Some(Data::Agent(data)) => agent::body(self, data, cx),
                     Some(Data::Policies(data)) => policies::body(self, data, cx),
@@ -1478,6 +1586,191 @@ fn count(tokens: u64) -> String {
     }
 }
 
+/// Set whether a pane can be seen; whether it just became visible, which a
+/// pane already shown does not.
+fn appears(shown: &Cell<bool>, visible: bool) -> bool {
+    !shown.replace(visible) && visible
+}
+
+/// Apply whether a pane can be seen to the cell its sections read and to its
+/// view source, which pauses while hidden and reads at once when shown;
+/// whether the pane just became visible.
+fn show_source(shown: &Cell<bool>, source: Option<&Source>, visible: bool) -> bool {
+    let appeared = appears(shown, visible);
+    if let Some(source) = source {
+        source.set_active(visible);
+    }
+    appeared
+}
+
+/// Show a view's read: new data, or why the read failed over the last data,
+/// which stays. Whether that changed what the pane shows, so an identical
+/// read does not redraw the window ([`Clock`] keeps the ages moving).
+/// `read_at` is kept current on every good read.
+fn apply_read(
+    data: &mut Option<Data>,
+    error: &mut Option<&'static str>,
+    read_at: &mut Option<std::time::Instant>,
+    reports: &mut reports::State,
+    update: Result<Data, &'static str>,
+) -> bool {
+    match update {
+        Ok(mut new) => {
+            settle(&mut new, data.as_ref());
+            let observed = match &new {
+                Data::Reports(page) => reports.observe(page),
+                _ => false,
+            };
+            let changed = observed || error.is_some() || data.as_ref() != Some(&new);
+            *data = Some(new);
+            *error = None;
+            *read_at = Some(std::time::Instant::now());
+            changed
+        }
+        Err(failed) => error.replace(failed) != Some(failed),
+    }
+}
+
+thread_local! {
+    /// Seconds until the soonest age or day label drawn since
+    /// [`Clock::begin`] reads otherwise.
+    static ROLLS: Cell<Option<f64>> = const { Cell::new(None) };
+}
+
+/// Note that a label just drawn reads otherwise in `seconds`.
+pub(super) fn rolls_in(seconds: f64) {
+    ROLLS.with(|rolls| {
+        rolls.set(Some(
+            rolls.get().map_or(seconds, |soonest| soonest.min(seconds)),
+        ))
+    });
+}
+
+/// [`ago`] for an age that grows with the clock, noting when its text
+/// changes: each second under a minute, then each minute, hour or day.
+pub(super) fn ago_now(seconds: f64) -> String {
+    let age = seconds.max(0.0);
+    // A time still ahead reads 0s until it is a second past.
+    if seconds < 0.0 {
+        rolls_in(1.0 - seconds);
+        return ago(seconds);
+    }
+    let unit = if age < 60.0 {
+        1.0
+    } else if age < 3_600.0 {
+        60.0
+    } else if age < 86_400.0 {
+        3_600.0
+    } else {
+        86_400.0
+    };
+    rolls_in(unit - age % unit);
+    ago(seconds)
+}
+
+/// When something Backbone reports only as `age` seconds old began, by
+/// this machine's clock to the second: stored in place of the age, which
+/// grows with every read, so the label clock ages it. `previous` is what an
+/// earlier read gave; within two seconds of it the start is taken as the
+/// same, since a read's latency and the rounding move it a little, so an
+/// unchanged state compares equal and its label never steps back.
+pub(super) fn began(previous: Option<f64>, age: f64) -> f64 {
+    began_at(previous, views::now() as f64, age)
+}
+
+fn began_at(previous: Option<f64>, now: f64, age: f64) -> f64 {
+    let began = (now - age).round();
+    previous
+        .filter(|previous| (previous - began).abs() <= 2.0)
+        .unwrap_or(began)
+}
+
+/// An agent card as it arrives, after `previous`: since when it is in its
+/// state, not for how long, and its evidence only while the card draws it.
+pub(super) fn settle_agent(agent: &mut views::Agent, previous: Option<&views::Agent>) {
+    // Only the same state keeps its start; a new one starts afresh.
+    let previous = previous
+        .filter(|previous| previous.state == agent.state)
+        .and_then(|previous| previous.state_began);
+    agent.state_began = agent
+        .state_age_seconds
+        .take()
+        .map(|age| began(previous, age));
+    // Its evidence as drawn: the stale note alone, or nothing.
+    let state = crate::desktop::components::AgentState::from_runtime(&agent.state);
+    (agent.state_source, agent.evidence) =
+        super::agent_status::drawn_evidence(agent.state_source.as_deref(), state, &agent.evidence);
+}
+
+/// Members as a view shows them. Backbone sends the read time as an online
+/// agent's `state_since`, and its evidence, on every read; neither is drawn
+/// from a view's members (the roster's own copy is).
+pub(super) fn quiet_members<'a>(members: impl IntoIterator<Item = &'a mut views::Member>) {
+    for member in members {
+        member.state_since = None;
+        member.evidence.clear();
+    }
+}
+
+/// A read as it arrives, after `previous`, keeping only what the pane
+/// draws, so a read that changes nothing drawn compares equal.
+fn settle(data: &mut Data, previous: Option<&Data>) {
+    match data {
+        Data::Team(team) => quiet_members(&mut team.members),
+        Data::Activity(activity) => quiet_members(&mut activity.members),
+        Data::Skills(library) => quiet_members(&mut library.agents),
+        Data::Tags(library) => quiet_members(&mut library.agents),
+        Data::Agent(agent) => settle_agent(
+            agent,
+            match previous {
+                Some(Data::Agent(previous)) => Some(previous),
+                _ => None,
+            },
+        ),
+        _ => {}
+    }
+}
+
+/// Redraws a view once, when the soonest age or day label it drew would
+/// read otherwise, so unchanged reads need not redraw it to keep time.
+#[derive(Default)]
+pub(super) struct Clock(Option<Task<()>>);
+
+impl Clock {
+    /// Before a view draws: forget labels drawn elsewhere.
+    pub(super) fn begin() {
+        ROLLS.with(|rolls| rolls.set(None));
+    }
+
+    /// After it drew: wake it when its soonest label changes, unless it is
+    /// no longer visible then; it is drawn again once shown. Labels read
+    /// the clock in whole seconds, so the wake falls just after the whole
+    /// second at which the label turns, never sooner than a tick away.
+    pub(super) fn end<V: 'static>(&mut self, visible: Rc<Cell<bool>>, cx: &mut Context<V>) {
+        self.0 = ROLLS.with(Cell::take).map(|seconds| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0.0, |now| now.as_secs_f64());
+            let wait = wake_after(now, seconds);
+            cx.spawn(async move |view, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_secs_f64(wait))
+                    .await;
+                if visible.get() {
+                    let _ = view.update(cx, |_, cx| cx.notify());
+                }
+            })
+        });
+    }
+}
+
+/// Seconds from `now` until a label `rolls` seconds away turns: just after
+/// the whole second it turns at, since labels read the clock in whole
+/// seconds, and never less than a tick.
+fn wake_after(now: f64, rolls: f64) -> f64 {
+    ((now.floor() + rolls).ceil() - now + 0.02).max(0.05)
+}
+
 /// A view's read that could not be made, unlike a refusal, which keeps
 /// [`views::UNAVAILABLE`].
 const NOT_ANSWERING: &str = "Backbone is not answering.";
@@ -1504,7 +1797,7 @@ pub(super) fn ago(seconds: f64) -> String {
 
 /// How long ago an epoch time was.
 fn since(at: Option<f64>) -> String {
-    at.map(|at| ago(views::now() as f64 - at))
+    at.map(|at| ago_now(views::now() as f64 - at))
         .unwrap_or_default()
 }
 
@@ -1535,6 +1828,88 @@ mod tests {
             stale_banner(views::UNAVAILABLE, read),
             "Backbone could not provide this view. Showing the last data read."
         );
+    }
+
+    #[test]
+    fn a_hidden_pane_stops_reading_and_wakes_once_when_shown() {
+        let shown = Cell::new(true);
+        assert!(!appears(&shown, true));
+        assert!(!appears(&shown, false));
+        assert!(!shown.get());
+        assert!(!appears(&shown, false));
+        assert!(appears(&shown, true));
+        assert!(shown.get());
+        assert!(!appears(&shown, true));
+    }
+
+    #[test]
+    fn a_hidden_pane_pauses_its_source_and_reads_at_once_when_shown() {
+        use crate::roster::content::tests::{Reply, provider};
+        let usage = || Reply {
+            prefix: true,
+            ..Reply::ok(
+                "/api/usage?refresh=false&limit=1000&since=",
+                serde_json::json!({"items": [], "totals": {"total_tokens": 1}}),
+            )
+        };
+        let (_directory, connection, server) = provider("pane", vec![usage(), usage()]);
+        let (wake, woken) = std::sync::mpsc::channel();
+        let wait = Duration::from_secs(5);
+        let source = Source::start(
+            &connection,
+            Request::Usage(Range::Day),
+            Duration::from_secs(3600),
+            move || {
+                let _ = wake.send(());
+            },
+        )
+        .unwrap();
+        woken.recv_timeout(wait).unwrap();
+        assert!(source.take_update().is_some());
+        let shown = Cell::new(true);
+        assert!(!show_source(&shown, Some(&source), false));
+        assert!(!shown.get());
+        // A request asked for while hidden waits for the pane to show.
+        source.set_request(Request::Usage(Range::Week));
+        assert!(woken.recv_timeout(Duration::from_millis(500)).is_err());
+        assert!(source.take_update().is_none());
+        // Shown again, its source reads at once, not an hour later.
+        assert!(show_source(&shown, Some(&source), true));
+        woken.recv_timeout(wait).unwrap();
+        let (request, _) = source.take_update().unwrap();
+        assert_eq!(request, Request::Usage(Range::Week));
+        drop(source);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn an_identical_read_does_not_notify() {
+        let (mut data, mut error, mut read_at) = (None, None, None);
+        let mut reports = reports::State::default();
+        let card = |name: &str| {
+            Data::Agent(Box::new(views::Agent {
+                name: name.into(),
+                ..Default::default()
+            }))
+        };
+        let mut read =
+            |update| apply_read(&mut data, &mut error, &mut read_at, &mut reports, update);
+        assert!(read(Ok(card("worker"))));
+        assert!(!read(Ok(card("worker"))));
+        assert!(read(Ok(card("reviewer"))));
+        assert!(read(Err(views::UNAVAILABLE)));
+        assert!(!read(Err(views::UNAVAILABLE)));
+        assert!(read(Ok(card("reviewer"))));
+        assert!(read_at.is_some());
+        // An age Backbone reports is kept as when it began, which a later
+        // read of an unchanged agent gives too.
+        let first = began_at(None, 1_000.0, 130.4);
+        assert_eq!(first, 870.0);
+        // A later read whose rounding falls on 869 keeps 870.
+        assert_eq!(began_at(None, 1_003.0, 133.6), 869.0);
+        assert_eq!(began_at(Some(first), 1_003.0, 133.6), first);
+        // A new state is a new start.
+        assert_eq!(began_at(Some(first), 1_003.0, 73.4), 930.0);
     }
 
     #[test]
@@ -1587,6 +1962,17 @@ mod tests {
         assert_eq!(ago(400.0), "6m");
         assert_eq!(ago(7_300.0), "2h");
         assert_eq!(ago(-5.0), "0s");
+        // A growing age notes when its text next changes.
+        Clock::begin();
+        assert_eq!(ago_now(400.0), "6m");
+        assert_eq!(ago_now(40.5), "40s");
+        assert_eq!(ROLLS.with(Cell::take), Some(0.5));
+        assert_eq!(ago_now(-5.0), "0s");
+        assert_eq!(ROLLS.with(Cell::take), Some(6.0));
+        // A label a moment from turning wakes just past the next whole
+        // second, not at once and again and again.
+        assert_eq!(wake_after(1_000.999, 0.001), 0.05);
+        assert!((wake_after(1_000.25, 0.5) - 0.77).abs() < 1e-9);
         assert_eq!(line("a\nb"), "a b");
     }
 

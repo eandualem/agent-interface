@@ -24,6 +24,7 @@ struct Reader {
     target: Option<Target>,
 }
 
+#[derive(PartialEq)]
 struct Snapshot {
     agent: Agent,
 }
@@ -146,6 +147,8 @@ pub(super) struct Card {
     /// The registration this card shows; removal checks it first.
     registration: String,
     removal: Removal,
+    /// False while its pane shows a reader over it.
+    pub(super) shown: bool,
     removal_error: Option<&'static str>,
     action_in_flight: bool,
     action_notice: Option<String>,
@@ -157,6 +160,8 @@ pub(super) struct Card {
     visible: Rc<Cell<bool>>,
     /// Seconds since the last read began; `u64::MAX` before the first.
     waited: u64,
+    /// Redraws the card when an age it shows changes.
+    clock: super::Clock,
     _poll: Task<()>,
 }
 
@@ -198,6 +203,7 @@ impl Card {
             agents,
             registration: registration.clone(),
             removal: Removal::None,
+            shown: true,
             removal_error: None,
             action_in_flight: false,
             action_notice: None,
@@ -213,6 +219,7 @@ impl Card {
             error: None,
             visible,
             waited: u64::MAX,
+            clock: super::Clock::default(),
             _poll: poll,
         }
     }
@@ -314,8 +321,22 @@ impl Card {
         }
     }
 
-    fn refresh(&mut self, cx: &mut Context<Self>) {
-        if !self.visible.get() || self.removal == Removal::Done {
+    /// Whether the card is drawn rather than covered by a reader; back in
+    /// view, it reads at once.
+    pub(super) fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        if self.shown != shown {
+            self.shown = shown;
+            if shown {
+                self.refresh(cx);
+            } else {
+                // Shown again, it is drawn afresh and asks again.
+                self.clock = super::Clock::default();
+            }
+        }
+    }
+
+    pub(super) fn refresh(&mut self, cx: &mut Context<Self>) {
+        if !self.visible.get() || !self.shown || self.removal == Removal::Done {
             return;
         }
         let Some(mut reader) = self.reader.take() else {
@@ -340,25 +361,34 @@ impl Card {
                     card.refresh(cx);
                     return;
                 }
-                match result {
-                    Ok(snapshot) => {
-                        card.snapshot = Some(snapshot);
-                        card.error = None;
+                let (snapshot, error) = match result {
+                    Ok(mut snapshot) => {
+                        let previous = card.snapshot.as_ref().map(|previous| &previous.agent);
+                        super::settle_agent(&mut snapshot.agent, previous);
+                        (Some(snapshot), None)
                     }
-                    Err(error) => {
-                        // A refused/replaced registration must not leave a card
-                        // looking current under a different agent's live state.
-                        card.snapshot = None;
-                        card.error = Some(match error {
+                    // A refused/replaced registration must not leave a card
+                    // looking current under a different agent's live state.
+                    Err(error) => (
+                        None,
+                        Some(match error {
                             runtime_context::Error::RegistrationChanged => REPLACED,
                             runtime_context::Error::Unsupported => {
                                 "This agent is no longer available."
                             }
                             _ => "The original agent's profile context is unavailable.",
-                        });
+                        }),
+                    ),
+                };
+                // An unchanged read must not redraw the window.
+                // Kept while hidden; showing the pane draws it.
+                if card.snapshot != snapshot || card.error != error {
+                    card.snapshot = snapshot;
+                    card.error = error;
+                    if card.visible.get() && card.shown {
+                        cx.notify();
                     }
                 }
-                cx.notify();
             });
         })
         .detach();
@@ -370,6 +400,15 @@ impl gpui::EventEmitter<RunView> for Card {}
 
 impl Render for Card {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        super::Clock::begin();
+        let drawn = self.draw(cx).into_any_element();
+        self.clock.end(self.visible.clone(), cx);
+        drawn
+    }
+}
+
+impl Card {
+    fn draw(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let (t, c) = (tokens(), colors());
         let mut body = list("bound-agent-card").gap(px(t.space.s8));
         if let Some(message) = &self.action_notice {

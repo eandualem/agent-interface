@@ -119,6 +119,9 @@ pub(super) struct Interactions {
     detail_generation: u64,
     detail_reading: bool,
     detail_dirty: Option<String>,
+    /// The selected interaction whose detail a read found updated while
+    /// the view was hidden, read again once it shows.
+    detail_owed: Option<String>,
     direction: Direction,
     peer: Option<String>,
     peer_menu: bool,
@@ -139,6 +142,8 @@ pub(super) struct Interactions {
     selection: RefCell<Selection>,
     conversations: HashMap<String, Entity<Conversation>>,
     conversation: Option<Entity<Conversation>>,
+    /// Redraws the view when a time or day label it shows changes.
+    clock: super::Clock,
     _poll: Task<()>,
     subscriptions: Vec<Subscription>,
 }
@@ -267,6 +272,7 @@ impl Interactions {
             detail_generation: 0,
             detail_reading: false,
             detail_dirty: None,
+            detail_owed: None,
             direction: Direction::Both,
             peer: None,
             peer_menu: false,
@@ -287,6 +293,7 @@ impl Interactions {
             selection: RefCell::default(),
             conversations: HashMap::new(),
             conversation: None,
+            clock: super::Clock::default(),
             _poll: poll,
             subscriptions: vec![],
         }
@@ -295,11 +302,30 @@ impl Interactions {
     pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
         let returning = shown && !self.shown;
         self.shown = shown;
+        if !shown {
+            // Selected again, it is drawn afresh and asks again.
+            self.clock = super::Clock::default();
+        }
         if let Some(conversation) = &self.conversation {
             conversation.update(cx, |c, cx| c.set_active(shown, cx));
         }
         if returning {
             self.refresh(cx);
+            self.pay_detail(cx);
+        }
+    }
+
+    /// Read the detail a hidden read found updated, if it is still the
+    /// one selected.
+    fn pay_detail(&mut self, cx: &mut Context<Self>) {
+        if let Some(id) = self.detail_owed.take()
+            && self.visible.get()
+            && self
+                .selected
+                .as_ref()
+                .is_some_and(|selected| selected.id == id)
+        {
+            self.load_detail(id, cx);
         }
     }
 
@@ -319,7 +345,9 @@ impl Interactions {
 
     pub fn link_failed(&mut self, error: &'static str, cx: &mut Context<Self>) {
         self.link_error = Some(error);
-        cx.notify();
+        if self.shown && self.visible.get() {
+            cx.notify();
+        }
     }
 
     pub fn is_selected(&self, id: &str, request: u64) -> bool {
@@ -344,6 +372,15 @@ impl Interactions {
         self.dirty = true;
         self.refresh(cx);
         cx.notify();
+    }
+
+    /// Read again now that its pane shows, with the open conversation.
+    pub(super) fn wake(&mut self, cx: &mut Context<Self>) {
+        self.refresh(cx);
+        self.pay_detail(cx);
+        if let Some(conversation) = &self.conversation {
+            conversation.update(cx, |conversation, cx| conversation.read_now(cx));
+        }
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
@@ -383,6 +420,7 @@ impl Interactions {
             let result = worker.await;
             let _ = this.update(cx, |this, cx| {
                 this.reading = false;
+                let before = this.drawn();
                 if generation != this.generation {
                     if this.shown && this.visible.get() {
                         this.refresh(cx);
@@ -393,7 +431,9 @@ impl Interactions {
                     Ok((mut fresh, requested)) => {
                         if !this.source.accepts(&fresh) {
                             this.error = Some(Error::Unavailable);
-                            cx.notify();
+                            if this.shown && this.visible.get() {
+                                cx.notify();
+                            }
                             return;
                         }
                         if fresh.state_error.is_some() {
@@ -418,8 +458,13 @@ impl Interactions {
                                 })
                                 .map(|item| item.id.clone());
                             this.snapshot = Some(fresh);
+                            // Hidden, the detail is owed until it shows.
                             if let Some(id) = updated {
-                                this.load_detail(id, cx);
+                                if this.shown && this.visible.get() {
+                                    this.load_detail(id, cx);
+                                } else {
+                                    this.detail_owed = Some(id);
+                                }
                             }
                             if this.selected.is_none() {
                                 this.window = requested;
@@ -432,10 +477,45 @@ impl Interactions {
                 if this.dirty && this.shown && this.visible.get() {
                     this.refresh(cx);
                 }
-                cx.notify();
+                // A read that brings nothing new does not redraw, nor one
+                // landing while hidden, which showing draws.
+                if this.drawn() != before && this.shown && this.visible.get() {
+                    cx.notify();
+                }
             });
         })
         .detach();
+    }
+
+    /// What the view draws from its reads, to tell whether one changed it:
+    /// not the server's snapshot tokens, when it computed coverage, or each
+    /// state span's observation bookkeeping, which change on every read;
+    /// of newer messages waiting, only how many.
+    fn drawn(&self) -> impl PartialEq + use<> {
+        (
+            self.snapshot.as_ref().map(|snapshot| {
+                let mut summary = snapshot.summary.clone();
+                summary.snapshot.clear();
+                summary.coverage.as_of.clear();
+                let history = snapshot.history.clone().map(|mut page| {
+                    page.snapshot.clear();
+                    page.coverage.as_of.clear();
+                    page
+                });
+                let states = snapshot.states.clone().map(|mut page| {
+                    page.snapshot.clear();
+                    for span in &mut page.items {
+                        span.last_observed_at.clear();
+                        span.observation_ids.clear();
+                    }
+                    page
+                });
+                (summary, history, states, snapshot.state_error)
+            }),
+            self.pending.as_ref().map(|(_, _, count)| *count),
+            self.error,
+            self.window,
+        )
     }
 
     fn new_count(&self, fresh: &Snapshot) -> usize {
@@ -684,7 +764,9 @@ impl Interactions {
                     Ok(item) => this.selected = Some(item),
                     Err(error) => this.detail_error = Some(error),
                 }
-                cx.notify();
+                if this.shown && this.visible.get() {
+                    cx.notify();
+                }
             });
         })
         .detach();

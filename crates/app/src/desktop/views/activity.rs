@@ -38,6 +38,34 @@ struct Lane<'a> {
     ticks: Vec<f32>,
     /// Each observed state: where it starts, where it ends, the state.
     spans: Vec<(f32, f32, &'a str)>,
+    /// When its deliveries and observations in or before the hour happened,
+    /// for when it next looks different.
+    times: Vec<f64>,
+}
+
+/// The lanes drawn at a moment, and the soonest delivery or observation
+/// still ahead that will change them as it enters the hour.
+struct Lanes<'a> {
+    drawn: Vec<Lane<'a>>,
+    ahead: Option<f64>,
+}
+
+/// Seconds until the `lanes` drawn at `end` look different: while a delivery
+/// or an observation lies in the hour shown, when it next moves by a
+/// `pixel` of seconds (at least a second, so a span that has just begun
+/// still draws on the next wake); when a later one enters the hour; never
+/// when all are older, as a state seen before the hour fills its lane
+/// unchanged.
+fn lanes_roll(lanes: &Lanes<'_>, end: f64, pixel: f64) -> Option<f64> {
+    let start = end - HOUR;
+    lanes
+        .drawn
+        .iter()
+        .flat_map(|lane| &lane.times)
+        .filter(|at| **at >= start && **at <= end)
+        .map(|_| pixel.max(1.0))
+        .chain(lanes.ahead.map(|at| at - end))
+        .reduce(f64::min)
 }
 
 /// One lane per agent that received something in the last hour, was busy or
@@ -46,10 +74,17 @@ fn lanes<'a>(
     activity: &'a Activity,
     end: f64,
     agents: &crate::desktop::agent_status::LiveAgents,
-) -> Vec<Lane<'a>> {
+) -> Lanes<'a> {
     let start = end - HOUR;
     let share = |at: f64| ((at.clamp(start, end) - start) / HOUR) as f32;
+    let worked_state = |state: &str| {
+        matches!(
+            AgentState::from_runtime(state),
+            AgentState::Working | AgentState::Starting | AgentState::NeedsYou | AgentState::Blocked
+        )
+    };
     let mut lanes: Vec<(Lane<'_>, f64)> = Vec::new();
+    let mut ahead: Option<f64> = None;
     for member in &activity.members {
         let ticks: Vec<f64> = activity
             .entries
@@ -69,29 +104,48 @@ fn lanes<'a>(
             .filter_map(|change| change.at.map(|at| (at, change.state.as_str())))
             .filter(|(at, _)| *at <= end)
             .collect();
-        let spans: Vec<(f32, f32, &str)> = observed
+        let mut spans: Vec<(f32, f32, &str)> = observed
             .iter()
             .enumerate()
             .map(|(at, (from, state))| {
                 let to = observed.get(at + 1).map_or(end, |(next, _)| *next);
                 (share(*from), share(to), *state)
             })
-            .filter(|(from, to, _)| to > from)
             .collect();
         let state = agents.get(&member.name).state;
         let active = state.working() || state.needs_you();
         // Observations of an idle or offline agent are not activity: Backbone
         // records one for every agent when it starts keeping history.
-        let worked = spans.iter().any(|(_, _, state)| {
-            matches!(
-                AgentState::from_runtime(state),
-                AgentState::Working
-                    | AgentState::Starting
-                    | AgentState::NeedsYou
-                    | AgentState::Blocked
-            )
+        // The newest state, begun this very moment at the hour's end, counts
+        // though it has no width yet; one replaced at the same moment does not.
+        let last = spans.len().checked_sub(1);
+        let worked = spans.iter().enumerate().any(|(index, (from, to, state))| {
+            (to > from || (Some(index) == last && *to >= 1.0)) && worked_state(state)
         });
-        if ticks.is_empty() && !active && !worked {
+        spans.retain(|(from, to, _)| to > from);
+        let drawn = !ticks.is_empty() || active || worked;
+        // What is still ahead and will change the lanes as it enters the
+        // hour: a delivery, a state that brings a lane, or any state of an
+        // agent whose lane is drawn.
+        let soonest = activity
+            .entries
+            .iter()
+            .filter(|entry| entry.agent == member.name && delivered(entry))
+            .filter_map(|entry| entry.at)
+            .chain(
+                changes
+                    .iter()
+                    .filter(|change| {
+                        change.agent == member.name && (drawn || worked_state(&change.state))
+                    })
+                    .filter_map(|change| change.at),
+            )
+            .filter(|at| *at > end)
+            .reduce(f64::min);
+        if let Some(soonest) = soonest {
+            ahead = Some(ahead.map_or(soonest, |ahead| ahead.min(soonest)));
+        }
+        if !drawn {
             continue;
         }
         let latest = ticks
@@ -99,11 +153,36 @@ fn lanes<'a>(
             .chain(observed.iter().map(|(at, _)| at))
             .copied()
             .fold(if active { end } else { start }, f64::max);
+        // What moves visibly along the lane: deliveries, and the boundaries
+        // where its drawn colour changes (the first state's start among
+        // them). A state replaced at the same moment is not drawn; the
+        // newest is, though it has no width yet.
+        let kept: Vec<&(f64, &str)> = observed
+            .iter()
+            .enumerate()
+            .filter(|(index, (at, _))| observed.get(index + 1).is_none_or(|(next, _)| next > at))
+            .map(|(_, observation)| observation)
+            .collect();
+        let times = ticks
+            .iter()
+            .copied()
+            .chain(
+                kept.iter()
+                    .enumerate()
+                    .filter(|(index, (_, state))| {
+                        index.checked_sub(1).is_none_or(|previous| {
+                            span_color(kept[previous].1) != span_color(state)
+                        })
+                    })
+                    .map(|(_, (at, _))| *at),
+            )
+            .collect();
         lanes.push((
             Lane {
                 member,
                 ticks: ticks.into_iter().map(share).collect(),
                 spans,
+                times,
             },
             latest,
         ));
@@ -112,11 +191,14 @@ fn lanes<'a>(
         b.1.total_cmp(&a.1)
             .then(a.0.member.name.cmp(&b.0.member.name))
     });
-    lanes
-        .into_iter()
-        .take(LANES)
-        .map(|(lane, _)| lane)
-        .collect()
+    Lanes {
+        drawn: lanes
+            .into_iter()
+            .take(LANES)
+            .map(|(lane, _)| lane)
+            .collect(),
+        ahead,
+    }
 }
 
 /// The colour a state is drawn in on the timeline.
@@ -130,10 +212,21 @@ fn span_color(state: &str) -> Rgba {
     }
 }
 
-fn timeline(activity: &Activity, agents: &crate::desktop::agent_status::LiveAgents) -> gpui::Div {
+fn timeline(
+    activity: &Activity,
+    agents: &crate::desktop::agent_status::LiveAgents,
+    width: f32,
+) -> gpui::Div {
     let (t, c) = (tokens(), colors());
     let name_width = t.size.tag_card_label + t.space.s24;
-    let lanes = lanes(activity, now() as f64, agents);
+    let end = now() as f64;
+    let lanes = lanes(activity, end, agents);
+    // A lane is no wider than the window, so a pixel of it is at least this
+    // many seconds of the hour.
+    let pixel = HOUR / f64::from(width.max(1.0));
+    if let Some(seconds) = lanes_roll(&lanes, end, pixel) {
+        super::rolls_in(seconds);
+    }
     let mut axis = div().flex_1().flex().justify_between();
     for label in ["60 min ago", "45", "30", "15", "now"] {
         axis = axis.child(label);
@@ -162,7 +255,7 @@ fn timeline(activity: &Activity, agents: &crate::desktop::agent_status::LiveAgen
             .child(axis)
             .child(div().flex_shrink_0().w(px(t.size.fact_label))),
     );
-    if lanes.is_empty() {
+    if lanes.drawn.is_empty() {
         section = section.child("No recent activity to show.");
     }
     if agents.observed() && agents.active().is_none() {
@@ -172,7 +265,8 @@ fn timeline(activity: &Activity, agents: &crate::desktop::agent_status::LiveAgen
         member,
         ticks,
         spans,
-    } in lanes
+        ..
+    } in lanes.drawn
     {
         let mut track = div()
             .relative()
@@ -261,7 +355,13 @@ fn held(entry: &Entry) -> bool {
     )
 }
 
-pub(super) fn body(pane: &ViewPane, activity: &Activity, cx: &mut Context<ViewPane>) -> AnyElement {
+/// `width` is the window's, in pixels: no lane is wider.
+pub(super) fn body(
+    pane: &ViewPane,
+    activity: &Activity,
+    width: f32,
+    cx: &mut Context<ViewPane>,
+) -> AnyElement {
     let (t, c) = (tokens(), colors());
     let header = ui::view_header("activity", "Activity")
         .child("states and deliveries, all agents")
@@ -302,7 +402,7 @@ pub(super) fn body(pane: &ViewPane, activity: &Activity, cx: &mut Context<ViewPa
     let mut rows = list("activity-rows")
         .px(px(0.0))
         .py(px(0.0))
-        .child(timeline(activity, &pane.agents))
+        .child(timeline(activity, &pane.agents, width))
         .child(filters);
     for entry in activity.entries.iter().filter(|entry| match pane.records {
         Records::All => true,
@@ -394,6 +494,84 @@ mod tests {
     use super::*;
 
     #[test]
+    fn lanes_wake_only_when_they_can_look_different() {
+        let end = 10_000.0;
+        let pixel = HOUR / 1_200.0;
+        let member = |name: &str| Member {
+            name: name.into(),
+            state: "idle".into(),
+            ..Member::default()
+        };
+        let change = |agent: &str, state: &str, at: f64| Change {
+            agent: agent.into(),
+            state: state.into(),
+            at: Some(at),
+            ..Change::default()
+        };
+        let delivery = |at: f64| Entry {
+            agent: "worker".into(),
+            at: Some(at),
+            outcome: "delivered".into(),
+            ..Entry::default()
+        };
+        let roll = |entries: Vec<Entry>, changes: Vec<Change>| {
+            let activity = Activity {
+                entries,
+                members: vec![member("worker")],
+                history: History::Observed {
+                    changes,
+                    complete: true,
+                },
+            };
+            let agents = crate::desktop::agent_status::LiveAgents::default();
+            lanes_roll(&lanes(&activity, end, &agents), end, pixel)
+        };
+        // An idle agent's observation draws no lane and wakes nothing.
+        assert_eq!(
+            roll(vec![], vec![change("worker", "idle", end - 60.0)]),
+            None
+        );
+        // Just begun, as wide as nothing yet: it grows by a pixel.
+        assert_eq!(roll(vec![], vec![change("worker", "busy", end)]), Some(3.0));
+        // A delivery about to arrive brings a lane as it does.
+        assert_eq!(roll(vec![delivery(end + 2.0)], vec![]), Some(2.0));
+        // A state ahead that brings no lane wakes nothing.
+        assert_eq!(
+            roll(vec![], vec![change("worker", "idle", end + 2.0)]),
+            None
+        );
+        // A boundary between two states drawn alike does not move visibly.
+        assert_eq!(
+            roll(
+                vec![],
+                vec![
+                    change("worker", "starting", end - 2.0 * HOUR),
+                    change("worker", "busy", end - 60.0),
+                ]
+            ),
+            None
+        );
+        // A state replaced at the same moment is not drawn, so it is no
+        // colour change either.
+        assert_eq!(
+            roll(
+                vec![],
+                vec![
+                    change("worker", "busy", end - 2.0 * HOUR),
+                    change("worker", "idle", end - 60.0),
+                    change("worker", "busy", end - 60.0),
+                ]
+            ),
+            None
+        );
+        // Begun before the hour: its lane stays full.
+        assert_eq!(
+            roll(vec![], vec![change("worker", "busy", end - 2.0 * HOUR)]),
+            None
+        );
+    }
+
+    #[test]
     fn lanes_hold_recent_deliveries_and_busy_agents_most_recent_first() {
         let member = |name: &str, state: &str| Member {
             name: name.into(),
@@ -431,7 +609,7 @@ mod tests {
             br#"{"items":[{"name":"builder","state":"busy"},{"name":"worker","state":"idle"}]}"#,
         );
         agents.update(snapshot);
-        let lanes = lanes(&activity, end, &agents);
+        let lanes = lanes(&activity, end, &agents).drawn;
         let names: Vec<&str> = lanes.iter().map(|lane| lane.member.name.as_str()).collect();
         assert_eq!(names, ["builder", "worker"]);
         assert_eq!(lanes[1].ticks, [0.75]);
@@ -471,7 +649,7 @@ mod tests {
             br#"{"items":[{"name":"builder","state":"busy"},{"name":"worker","state":"idle"}]}"#,
         );
         agents.update(snapshot);
-        let lanes = lanes(&activity, end, &agents);
+        let lanes = lanes(&activity, end, &agents).drawn;
         let spans: Vec<(f32, f32, &str)> = lanes[0].spans.clone();
         assert_eq!(spans[0], (0.0, 0.5, "busy"));
         assert_eq!(spans[1], (0.5, 0.75, "idle"));

@@ -80,6 +80,9 @@ struct Frame {
     agents: crate::desktop::agent_status::LiveAgents,
     /// The plans last read, kept when a later read fails.
     page: Option<PlansPage>,
+    /// When Backbone made `page`, or else when it was read, in seconds
+    /// since the Unix epoch: what its ages count back from.
+    read: f64,
     connection: Connection,
     /// Drafts and unresolved deliveries keep their observed plans accessible.
     held: bool,
@@ -167,20 +170,40 @@ impl Plans {
             return;
         }
         self.applied = number;
-        match read {
-            Ok(read) if self.source.accepts(&read) => {
+        // An unchanged read must not redraw the window.
+        let changed = match read {
+            Ok(mut read) if self.source.accepts(&read) => {
+                // Ages were measured when Backbone made the page, by its clock.
+                let made = rfc3339(&read.page.generated_at)
+                    .unwrap_or(agent_interface_roster::views::now() as f64);
+                settle(&mut read);
+                let changed = self.frame.page.as_ref().map(drawn_page)
+                    != Some(drawn_page(&read.page))
+                    || !runtimes_alike(&self.frame.members, &read.members)
+                    || self.frame.error.is_some();
                 self.frame.page = Some(read.page);
+                self.frame.read = made;
                 self.frame.members = read.members;
                 self.frame.error = None;
+                changed
             }
-            Ok(_) => {
-                self.frame.error = Some(Error::Connection(
-                    agent_interface_roster::profiles::Error::BindingMismatch,
-                ))
-            }
-            Err(error) => self.frame.error = Some(error),
+            Ok(_) => self.fail(Error::Connection(
+                agent_interface_roster::profiles::Error::BindingMismatch,
+            )),
+            Err(error) => self.fail(error),
+        };
+        // A read landing while the plans are not shown is kept; showing
+        // them draws it.
+        if changed && self.shown && self.visible.get() {
+            cx.notify();
         }
-        cx.notify();
+    }
+
+    /// Note why the latest read failed; whether that changed what is shown.
+    fn fail(&mut self, error: Error) -> bool {
+        let changed = self.frame.error != Some(error);
+        self.frame.error = Some(error);
+        changed
     }
 
     /// Read the plans now, as well as on the regular refresh.
@@ -306,6 +329,7 @@ impl Frame {
         Self {
             agents,
             page: None,
+            read: 0.0,
             connection,
             held: false,
             members: BTreeMap::new(),
@@ -379,12 +403,17 @@ impl Frame {
                     .collect()
             })
             .unwrap_or_default();
-        entries.sort_by_key(|entry| match &entry.record {
+        let key = |entry: &Entry| match &entry.record {
             Some(record) => {
                 let waiting = record.plan.blocked() || self.state(&entry.agent_name).needs_you();
-                (u8::from(!waiting), record.age_seconds)
+                (u8::from(!waiting), published(record, self.read))
             }
-            None => (2, u64::MAX),
+            None => (2, f64::NEG_INFINITY),
+        };
+        // Waiting first, then newest first, to the fraction of a second.
+        entries.sort_by(|a, b| {
+            let (a, b) = (key(a), key(b));
+            a.0.cmp(&b.0).then(b.1.total_cmp(&a.1))
         });
         entries
     }
@@ -524,8 +553,82 @@ fn short(target: &str) -> String {
     }
 }
 
-fn updated(age_seconds: u64) -> String {
-    format!("updated {} ago", super::ago(age_seconds as f64))
+/// Whether two plan reads give the same members' runtime badges, all the
+/// section draws of them.
+fn runtimes_alike(old: &BTreeMap<String, Member>, new: &BTreeMap<String, Member>) -> bool {
+    old.len() == new.len()
+        && old
+            .iter()
+            .zip(new)
+            .all(|((a, old), (b, new))| a == b && old.runtime == new.runtime)
+}
+
+/// A read as it arrives, keeping only what the section draws, so a later
+/// read of unchanged plans compares equal: not when the page was made, and
+/// a plan's publication time rather than its growing age.
+fn settle(read: &mut Read) {
+    read.page.generated_at.clear();
+    for record in read
+        .page
+        .items
+        .iter_mut()
+        .filter_map(|entry| entry.record.as_mut())
+    {
+        // With its own time, the age is not needed; without, it is kept
+        // whole for the order, and compared only as its label shows it.
+        if published_at(record).is_some() {
+            record.age_seconds = 0;
+        }
+    }
+}
+
+/// A page as the section draws it: an age kept for want of a time only to
+/// the unit its label shows, so reads that show the same compare the same.
+fn drawn_page(page: &PlansPage) -> PlansPage {
+    let mut page = page.clone();
+    for record in page
+        .items
+        .iter_mut()
+        .filter_map(|entry| entry.record.as_mut())
+    {
+        let age = record.age_seconds;
+        let unit = match age {
+            0..60 => 1,
+            60..3_600 => 60,
+            3_600..86_400 => 3_600,
+            _ => 86_400,
+        };
+        record.age_seconds = age - age % unit;
+    }
+    page
+}
+
+/// When a plan was published, from its RFC 3339 time with any offset.
+fn published_at(record: &plans::Record) -> Option<f64> {
+    rfc3339(&record.updated_at)
+}
+
+/// Seconds since the Unix epoch of an RFC 3339 time with any offset.
+fn rfc3339(text: &str) -> Option<f64> {
+    chrono::DateTime::parse_from_rfc3339(text)
+        .ok()
+        .map(|at| at.timestamp_millis() as f64 / 1000.0)
+}
+
+/// When a plan was published: its own time, or else as long before the
+/// page was `read` as Backbone said then, so the order stays put.
+fn published(record: &plans::Record, read: f64) -> f64 {
+    published_at(record).unwrap_or(read - record.age_seconds as f64)
+}
+
+/// A time that grows with the clock, or else the age Backbone gave with
+/// the read, which changes only with the next read.
+fn updated(record: &plans::Record) -> String {
+    let age = match published_at(record) {
+        Some(at) => super::ago_now(agent_interface_roster::views::now() as f64 - at),
+        None => super::ago(record.age_seconds as f64),
+    };
+    format!("updated {age} ago")
 }
 
 /// One agent's card: its mark, name and runtime, the plan's title, the steps
@@ -609,10 +712,7 @@ fn card(pane: &ViewPane, plans: &Frame, entry: &Entry, cx: &mut Context<ViewPane
                 .when(record.stale, |el| {
                     el.child(ui::tag("stale", ui::Tone::Quiet))
                 })
-                .child(
-                    ui::text(div().text_color(c.muted), &t.text.meta)
-                        .child(updated(record.age_seconds)),
-                )
+                .child(ui::text(div().text_color(c.muted), &t.text.meta).child(updated(record)))
                 .child(ui::icon("chevron-right", t.size.icon, c.faint)),
         )
         .child(
@@ -1076,7 +1176,7 @@ fn opened(
         &t.text.body,
     ))
     .children(runtime(plans, &entry.agent_name))
-    .child(format!("· current plan · {}", updated(record.age_seconds)));
+    .child(format!("· current plan · {}", updated(record)));
     let main = div()
         .flex_1()
         .min_w_0()

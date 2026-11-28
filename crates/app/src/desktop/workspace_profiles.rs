@@ -645,7 +645,25 @@ impl Browser {
         for (id, connection) in ready {
             self.peer_inboxes.entry(id.clone()).or_insert_with(|| {
                 let inbox = super::peer_inbox::Inbox::shared(&connection, cx);
-                let watch = cx.observe(&inbox, |_, _, cx| cx.notify());
+                // The window draws the summary and whether it failed; a
+                // read that changes neither, such as a connection's
+                // history, is for the Connections pane alone.
+                let mut drawn = None;
+                let watch = cx.observe(&inbox, move |browser, inbox, cx| {
+                    let inbox = inbox.read(cx);
+                    let now = (
+                        inbox.summary.clone(),
+                        inbox.error.is_some(),
+                        inbox.not_answering(),
+                    );
+                    // A hidden window draws it when shown.
+                    if drawn.as_ref() != Some(&now) {
+                        drawn = Some(now);
+                        if !browser.window_hidden {
+                            cx.notify();
+                        }
+                    }
+                });
                 (connection.connection_key(), inbox, watch)
             });
             if !self.workspace_rosters.contains_key(&id)
@@ -658,8 +676,11 @@ impl Browser {
         if self.roster_updates.is_none() && cx.has_global::<agent_status::Sources>() {
             self.roster_updates =
                 Some(cx.observe_global::<agent_status::Sources>(|browser, cx| {
-                    browser.close_finished_swarm_tabs(cx);
-                    cx.notify();
+                    browser.follow_restarts(cx);
+                    // A changed roster already redraws every window.
+                    if browser.close_finished_swarm_tabs(cx) {
+                        cx.notify();
+                    }
                 }));
         }
     }
