@@ -429,7 +429,9 @@ impl Pane {
             self.refresh_live(cx);
         } else {
             self.live.status = inbox.error.clone();
-            cx.notify();
+            if self.live.visible.get() {
+                cx.notify();
+            }
         }
     }
 
@@ -540,7 +542,10 @@ impl Pane {
                 if std::mem::take(&mut live.dirty) {
                     pane.refresh_live(cx);
                 }
-                cx.notify();
+                // Hidden, the result is kept and drawn on show.
+                if pane.live.visible.get() {
+                    cx.notify();
+                }
             });
         })
         .detach();
