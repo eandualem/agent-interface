@@ -220,6 +220,8 @@ pub(super) struct ViewPane {
     data: Option<Data>,
     /// When `data` was read.
     read_at: Option<std::time::Instant>,
+    /// Redraws the pane when an age it shows changes.
+    clock: Clock,
     error: Option<&'static str>,
     range: Range,
     grouping: Grouping,
@@ -449,6 +451,7 @@ impl ViewPane {
             connection,
             data: None,
             read_at: None,
+            clock: Clock::default(),
             error: None,
             range: Range::Day,
             grouping: Grouping::Folder,
@@ -1178,6 +1181,15 @@ impl Drop for ViewPane {
 
 impl Render for ViewPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        Clock::begin();
+        let drawn = self.draw(window, cx).into_any_element();
+        self.clock.end(self.visible.clone(), cx);
+        drawn
+    }
+}
+
+impl ViewPane {
+    fn draw(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(card) = self.bound_agent.clone().filter(|_| self.open.is_none()) {
             // Back from the reader: its conversation stops reading, kept with
             // its draft, and its text can no longer be selected or copied.
@@ -1489,7 +1501,8 @@ fn count(tokens: u64) -> String {
 
 /// Show a view's read: new data, or why the read failed over the last data,
 /// which stays. Whether that changed what the pane shows, so an identical
-/// read does not redraw the window. `read_at` is kept current either way.
+/// read does not redraw the window ([`Clock`] keeps the ages moving).
+/// `read_at` is kept current on every good read.
 fn apply_read(
     data: &mut Option<Data>,
     error: &mut Option<&'static str>,
@@ -1497,26 +1510,79 @@ fn apply_read(
     reports: &mut reports::State,
     update: Result<Data, &'static str>,
 ) -> bool {
-    // The banner's age changes while the error stays.
-    let said = error.map(|error| stale_banner(error, *read_at));
-    let changed = match update {
+    match update {
         Ok(new) => {
             let observed = match &new {
                 Data::Reports(page) => reports.observe(page),
                 _ => false,
             };
-            let changed = observed || data.as_ref() != Some(&new);
+            let changed = observed || error.is_some() || data.as_ref() != Some(&new);
             *data = Some(new);
             *error = None;
             *read_at = Some(std::time::Instant::now());
             changed
         }
-        Err(failed) => {
-            *error = Some(failed);
-            false
-        }
+        Err(failed) => error.replace(failed) != Some(failed),
+    }
+}
+
+thread_local! {
+    /// Seconds until the soonest age or day label drawn since
+    /// [`Clock::begin`] reads otherwise.
+    static ROLLS: Cell<Option<f64>> = const { Cell::new(None) };
+}
+
+/// Note that a label just drawn reads otherwise in `seconds`.
+pub(super) fn rolls_in(seconds: f64) {
+    ROLLS.with(|rolls| {
+        rolls.set(Some(
+            rolls.get().map_or(seconds, |soonest| soonest.min(seconds)),
+        ))
+    });
+}
+
+/// [`ago`] for an age that grows with the clock, noting when its text
+/// changes: each second under a minute, then each minute, hour or day.
+pub(super) fn ago_now(seconds: f64) -> String {
+    let age = seconds.max(0.0);
+    let unit = if age < 60.0 {
+        1.0
+    } else if age < 3_600.0 {
+        60.0
+    } else if age < 86_400.0 {
+        3_600.0
+    } else {
+        86_400.0
     };
-    changed || said != error.map(|error| stale_banner(error, *read_at))
+    rolls_in(unit - age % unit);
+    ago(seconds)
+}
+
+/// Redraws a view once, when the soonest age or day label it drew would
+/// read otherwise, so unchanged reads need not redraw it to keep time.
+#[derive(Default)]
+pub(super) struct Clock(Option<Task<()>>);
+
+impl Clock {
+    /// Before a view draws: forget labels drawn elsewhere.
+    pub(super) fn begin() {
+        ROLLS.with(|rolls| rolls.set(None));
+    }
+
+    /// After it drew: wake it when its soonest label changes, unless it is
+    /// no longer visible then; it is drawn again once shown.
+    pub(super) fn end<V: 'static>(&mut self, visible: Rc<Cell<bool>>, cx: &mut Context<V>) {
+        self.0 = ROLLS.with(Cell::take).map(|seconds| {
+            cx.spawn(async move |view, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_secs_f64(seconds))
+                    .await;
+                if visible.get() {
+                    let _ = view.update(cx, |_, cx| cx.notify());
+                }
+            })
+        });
+    }
 }
 
 /// A view's read that could not be made, unlike a refusal, which keeps
@@ -1545,7 +1611,7 @@ pub(super) fn ago(seconds: f64) -> String {
 
 /// How long ago an epoch time was.
 fn since(at: Option<f64>) -> String {
-    at.map(|at| ago(views::now() as f64 - at))
+    at.map(|at| ago_now(views::now() as f64 - at))
         .unwrap_or_default()
 }
 
@@ -1649,6 +1715,11 @@ mod tests {
         assert_eq!(ago(400.0), "6m");
         assert_eq!(ago(7_300.0), "2h");
         assert_eq!(ago(-5.0), "0s");
+        // A growing age notes when its text next changes.
+        Clock::begin();
+        assert_eq!(ago_now(400.0), "6m");
+        assert_eq!(ago_now(40.5), "40s");
+        assert_eq!(ROLLS.with(Cell::take), Some(0.5));
         assert_eq!(line("a\nb"), "a b");
     }
 

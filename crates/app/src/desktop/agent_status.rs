@@ -178,6 +178,8 @@ struct Current {
     /// Whether the newest failure was a read that could not be made, not a
     /// refusal.
     not_answering: bool,
+    /// What the roster last said about not answering, with the age it gave.
+    said: Option<String>,
 }
 
 impl Current {
@@ -203,6 +205,7 @@ impl Default for Current {
             background: None,
             offline_tick: None,
             not_answering: false,
+            said: None,
         }
     }
 }
@@ -326,7 +329,7 @@ pub(super) fn not_answering(read: Option<std::time::Instant>) -> String {
     match read {
         Some(read) => format!(
             "Backbone is not answering · last read {} ago",
-            super::views::ago(read.elapsed().as_secs_f64())
+            super::views::ago_now(read.elapsed().as_secs_f64())
         ),
         None => "Backbone is not answering".into(),
     }
@@ -814,8 +817,6 @@ impl LiveAgents {
             }
             changed
         };
-        // The wording, and the age it gives, change while the roster stays.
-        let said = self.not_answering_text();
         self.0.current.borrow_mut().not_answering =
             update.error == Some(agent_interface_roster::profiles::Error::Unavailable);
         let roster = match update.error {
@@ -831,7 +832,11 @@ impl LiveAgents {
                 }
             }
         };
-        runs || roster || said != self.not_answering_text()
+        // The wording, and the age it gives, change while the roster stays.
+        let said = self.not_answering_text();
+        let reworded =
+            std::mem::replace(&mut self.0.current.borrow_mut().said, said.clone()) != said;
+        runs || roster || reworded
     }
 
     /// What the agents row says while Backbone is not answering.

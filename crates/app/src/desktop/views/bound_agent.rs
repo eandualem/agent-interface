@@ -158,6 +158,8 @@ pub(super) struct Card {
     visible: Rc<Cell<bool>>,
     /// Seconds since the last read began; `u64::MAX` before the first.
     waited: u64,
+    /// Redraws the card when an age it shows changes.
+    clock: super::Clock,
     _poll: Task<()>,
 }
 
@@ -214,6 +216,7 @@ impl Card {
             error: None,
             visible,
             waited: u64::MAX,
+            clock: super::Clock::default(),
             _poll: poll,
         }
     }
@@ -373,6 +376,15 @@ impl gpui::EventEmitter<RunView> for Card {}
 
 impl Render for Card {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        super::Clock::begin();
+        let drawn = self.draw(cx).into_any_element();
+        self.clock.end(self.visible.clone(), cx);
+        drawn
+    }
+}
+
+impl Card {
+    fn draw(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let (t, c) = (tokens(), colors());
         let mut body = list("bound-agent-card").gap(px(t.space.s8));
         if let Some(message) = &self.action_notice {

@@ -15,7 +15,8 @@ use agent_interface_roster::{
 use gpui::{AnyElement, Context, Div, SharedString, div, prelude::*, px};
 
 use super::{
-    Target, ViewPane, ago, count, home, line, list, mono, policies, reader, since, skills, usage,
+    Target, ViewPane, ago, ago_now, count, home, line, list, mono, policies, reader, since, skills,
+    usage,
 };
 use crate::desktop::{
     agent_status::{counted, deliveries},
@@ -711,7 +712,7 @@ fn waits(waiting: &Waiting, now: f64) -> String {
 /// How long before `now` an RFC 3339 time was; empty when it doesn't parse.
 fn age(at: Option<&str>, now: f64) -> String {
     at.and_then(epoch_seconds)
-        .map(|at| ago(now - at))
+        .map(|at| ago_now(now - at))
         .unwrap_or_default()
 }
 

@@ -31,6 +31,8 @@ pub(super) struct ArtifactPane {
     html: Option<Arc<str>>,
     visible: Rc<Cell<bool>>,
     surface: Rc<RefCell<Surface>>,
+    /// Redraws the list when an age it shows changes.
+    clock: super::Clock,
     _poll: Task<()>,
 }
 
@@ -86,6 +88,7 @@ impl ArtifactPane {
             html: None,
             visible,
             surface: Rc::new(RefCell::new(Surface::default())),
+            clock: super::Clock::default(),
             _poll: poll,
         }
     }
@@ -143,6 +146,15 @@ impl ArtifactPane {
 
 impl Render for ArtifactPane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        super::Clock::begin();
+        let drawn = self.draw(cx).into_any_element();
+        self.clock.end(self.visible.clone(), cx);
+        drawn
+    }
+}
+
+impl ArtifactPane {
+    fn draw(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let (t, c) = (tokens(), colors());
         let mut header = ui::view_header("layout-grid", "Artifacts");
         if let Some(entry) = &self.selected {
@@ -240,7 +252,7 @@ impl Render for ArtifactPane {
                             ui::text(div().text_color(c.muted), &t.text.meta).child(format!(
                                 "{} · {} ago",
                                 entry.author,
-                                super::ago(
+                                super::ago_now(
                                     agent_interface_roster::views::now() as f64
                                         - entry.created_ms as f64 / 1000.
                                 )

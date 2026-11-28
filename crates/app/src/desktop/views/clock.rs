@@ -58,8 +58,10 @@ impl Local {
             .map(|date| date.timestamp() as f64)
     }
 
-    /// "Today", "Yesterday" or the date, seen from `now`.
+    /// "Today", "Yesterday" or the date, seen from `now`; it reads otherwise
+    /// from the next local midnight.
     pub fn day_name(&self, now: &Self) -> String {
+        super::rolls_in(f64::from(86_400 - now.0.num_seconds_from_midnight()));
         let days = now.0.date_naive().num_days_from_ce() - self.0.date_naive().num_days_from_ce();
         match days {
             0 => "Today".into(),

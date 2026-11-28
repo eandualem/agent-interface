@@ -133,7 +133,10 @@ fn span_color(state: &str) -> Rgba {
 fn timeline(activity: &Activity, agents: &crate::desktop::agent_status::LiveAgents) -> gpui::Div {
     let (t, c) = (tokens(), colors());
     let name_width = t.size.tag_card_label + t.space.s24;
-    let lanes = lanes(activity, now() as f64, agents);
+    let end = now() as f64;
+    // The lanes cover the last hour; they move along each minute.
+    super::rolls_in(60.0 - end % 60.0);
+    let lanes = lanes(activity, end, agents);
     let mut axis = div().flex_1().flex().justify_between();
     for label in ["60 min ago", "45", "30", "15", "now"] {
         axis = axis.child(label);
