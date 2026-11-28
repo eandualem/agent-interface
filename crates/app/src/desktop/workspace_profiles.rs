@@ -649,16 +649,19 @@ impl Browser {
                 // read that changes neither, such as a connection's
                 // history, is for the Connections pane alone.
                 let mut drawn = None;
-                let watch = cx.observe(&inbox, move |_, inbox, cx| {
+                let watch = cx.observe(&inbox, move |browser, inbox, cx| {
                     let inbox = inbox.read(cx);
                     let now = (
                         inbox.summary.clone(),
                         inbox.error.is_some(),
                         inbox.not_answering(),
                     );
+                    // A hidden window draws it when shown.
                     if drawn.as_ref() != Some(&now) {
                         drawn = Some(now);
-                        cx.notify();
+                        if !browser.window_hidden {
+                            cx.notify();
+                        }
                     }
                 });
                 (connection.connection_key(), inbox, watch)
