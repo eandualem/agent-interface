@@ -519,7 +519,8 @@ impl ViewPane {
         // opened, an open record does not.
         pane._search
             .push(cx.observe_global::<seen::Opened>(|pane: &mut Self, cx| {
-                if pane.view.kind == ViewKind::Reports
+                if pane.visible.get()
+                    && pane.view.kind == ViewKind::Reports
                     && pane.shown == Shown::Records
                     && pane.reports.open.is_none()
                 {
