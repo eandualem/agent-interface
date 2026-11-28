@@ -99,6 +99,10 @@ class Records:
         detail["signed_in_to"] = [dict(domain=d, account=d, note=None) for d in browser["signed_in_to"]]
         if id != "youtube":
             detail["requests"] = self.asking.get(id, [])
+            # The fixture's policies are YouTube's; another browser keeps to
+            # its own sites.
+            detail["policies"] = dict(keep_on_sites=True, sites=list(browser["signed_in_to"]),
+                                      stop_before_last_button=False)
         return 200, detail
 
     def change_browser(self, method, parts, body):
@@ -519,7 +523,14 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
             wait_for(lambda: find("Choose"), "who may use it")
             wait_for(lambda: containing("uploader"), "the agent that asked, offered")
             capture("new-browser")
-            click("Save")
+            # Save browser's dark label on its accent fill is not read by OCR;
+            # the button sits just left of Cancel on the same line, and the
+            # request sent below is the proof it was pressed.
+            cancel = wait_for(lambda: find("Cancel"), "the sheet's Cancel")
+            command("xdotool", "mousemove", "--window", window,
+                    str(int(cancel["left"]) - 40), str(int(cancel["top"]) + int(cancel["height"]) // 2))
+            time.sleep(0.2)
+            command("xdotool", "click", "1")
             wait_for(sent(lambda method, path, body: method == "POST"
                           and path == "/api/browsers/telegram/save"
                           and body["grants"] == ["uploader"] and body["name"] == "Telegram"),
