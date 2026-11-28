@@ -228,6 +228,7 @@ group!(
         browser_list: f32 = number, browser_heading: f32 = number, browser_row: f32 = number,
         browser_mark: f32 = number, browser_header: f32 = number, browser_band: f32 = number,
         browser_line: f32 = number, browser_when: f32 = number, browser_sheet: f32 = number,
+        browser_name: f32 = number,
         glance_icon: f32 = number,
         titlebar: f32 = number, window_controls_x: f32 = number,
         window_controls_y: f32 = number, panel_width: f32 = number, panel_min: f32 = number,

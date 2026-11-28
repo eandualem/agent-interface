@@ -252,6 +252,7 @@ browser_band = 44.0         # its holder's band and its policy rows
 browser_line = 40.0         # an agent's line on a browser's cards
 browser_when = 92.0         # the time column of its recent use
 browser_sheet = 500.0       # the new browser sheet
+browser_name = 112.0        # the least its name field takes
 glance_icon = 12.0          # icons in an agent's glance counts
 titlebar = 44.0             # top of the panel, beside the window controls
 window_controls_x = 16.0    # where macOS draws the window controls

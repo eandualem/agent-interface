@@ -1513,22 +1513,19 @@ impl Pane {
                         }),
                     ))
             } else {
-                div()
+                // While it is named, two lines, so the address has the whole
+                // width: the name, its machine and Open it, then where it
+                // opens.
+                let name_line = div()
                     .flex()
                     .items_center()
                     .gap(px(t.space.s8))
                     .child(
                         ui::field_frame(false)
-                            .w(px(t.size.access_label + t.space.s24))
+                            .flex_1()
+                            .min_w(px(t.size.browser_name))
                             .h(px(t.size.chip + t.space.s4))
                             .child(hinted(&self.name_field, "Name", cx)),
-                    )
-                    .child(meta("opens at".into()))
-                    .child(
-                        ui::field_frame(false)
-                            .flex_1()
-                            .h(px(t.size.chip + t.space.s4))
-                            .child(hinted(&self.opens_field, "site.com", cx)),
                     )
                     .child(machine(self))
                     .when(new.id.is_none(), |el| {
@@ -1542,7 +1539,24 @@ impl Pane {
                                     pane.create_browser(cx);
                                 }))
                         })
-                    })
+                    });
+                let address_line = div()
+                    .flex()
+                    .items_center()
+                    .gap(px(t.space.s8))
+                    .child(meta("opens at".into()))
+                    .child(
+                        ui::field_frame(false)
+                            .flex_1()
+                            .h(px(t.size.chip + t.space.s4))
+                            .child(hinted(&self.opens_field, "site.com", cx)),
+                    );
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(t.space.s8))
+                    .child(name_line)
+                    .child(address_line)
             };
         let mut steps = div().flex().flex_col().child(step(
             Step::Done.or(new.id.is_none() || new.renaming),
