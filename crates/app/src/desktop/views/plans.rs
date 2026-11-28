@@ -174,7 +174,7 @@ impl Plans {
             Ok(mut read) if self.source.accepts(&read) => {
                 settle(&mut read);
                 let changed = self.frame.page.as_ref() != Some(&read.page)
-                    || self.frame.members != read.members
+                    || !runtimes_alike(&self.frame.members, &read.members)
                     || self.frame.error.is_some();
                 self.frame.page = Some(read.page);
                 self.frame.read = agent_interface_roster::views::now() as f64;
@@ -545,10 +545,19 @@ fn short(target: &str) -> String {
     }
 }
 
+/// Whether two plan reads give the same members' runtime badges, all the
+/// section draws of them.
+fn runtimes_alike(old: &BTreeMap<String, Member>, new: &BTreeMap<String, Member>) -> bool {
+    old.len() == new.len()
+        && old
+            .iter()
+            .zip(new)
+            .all(|((a, old), (b, new))| a == b && old.runtime == new.runtime)
+}
+
 /// A read as it arrives, keeping only what the section draws, so a later
-/// read of unchanged plans compares equal: not when the page was made, a
-/// plan's publication time rather than its growing age, and only the
-/// members' runtimes.
+/// read of unchanged plans compares equal: not when the page was made, and
+/// a plan's publication time rather than its growing age.
 fn settle(read: &mut Read) {
     read.page.generated_at.clear();
     for record in read
@@ -560,7 +569,6 @@ fn settle(read: &mut Read) {
     {
         record.age_seconds = 0;
     }
-    super::quiet_members(read.members.values_mut());
 }
 
 /// When a plan was published, from its RFC 3339 time with any offset.
