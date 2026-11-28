@@ -282,7 +282,7 @@ impl ViewPane {
     /// Whether the pane can be seen; true when it just became visible, for
     /// [`Self::wake`].
     pub fn set_visible(&self, visible: bool, cx: &gpui::App) -> bool {
-        let appeared = visible && !self.visible.replace(visible);
+        let appeared = appears(&self.visible, visible);
         if !visible {
             self.documents.surface.borrow_mut().clear();
         }
@@ -1503,6 +1503,12 @@ fn count(tokens: u64) -> String {
     }
 }
 
+/// Set whether a pane can be seen; whether it just became visible, which a
+/// pane already shown does not.
+fn appears(shown: &Cell<bool>, visible: bool) -> bool {
+    !shown.replace(visible) && visible
+}
+
 /// Show a view's read: new data, or why the read failed over the last data,
 /// which stays. Whether that changed what the pane shows, so an identical
 /// read does not redraw the window ([`Clock`] keeps the ages moving).
@@ -1713,6 +1719,18 @@ mod tests {
             stale_banner(views::UNAVAILABLE, read),
             "Backbone could not provide this view. Showing the last data read."
         );
+    }
+
+    #[test]
+    fn a_hidden_pane_stops_reading_and_wakes_once_when_shown() {
+        let shown = Cell::new(true);
+        assert!(!appears(&shown, true));
+        assert!(!appears(&shown, false));
+        assert!(!shown.get());
+        assert!(!appears(&shown, false));
+        assert!(appears(&shown, true));
+        assert!(shown.get());
+        assert!(!appears(&shown, true));
     }
 
     #[test]
