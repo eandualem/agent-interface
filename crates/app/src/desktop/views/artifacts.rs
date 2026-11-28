@@ -33,49 +33,16 @@ pub(super) struct ArtifactPane {
     surface: Rc<RefCell<Surface>>,
     /// Redraws the list when an age it shows changes.
     clock: super::Clock,
+    /// Whether a rescan is under way; another waits for it.
+    scanning: bool,
     _poll: Task<()>,
 }
 
 impl ArtifactPane {
     pub fn new(directory: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
         let visible = Rc::new(Cell::new(true));
-        let active = visible.clone();
-        let source = directory.clone();
         let poll = cx.spawn(async move |this, cx| {
-            loop {
-                if active.get() {
-                    let source = source.clone();
-                    let catalog = cx
-                        .background_executor()
-                        .spawn(async move { artifacts::catalog(source.as_deref()) })
-                        .await;
-                    if this
-                        .update(cx, |pane, cx| {
-                            let changed = match catalog {
-                                Ok(catalog) => {
-                                    let changed =
-                                        pane.catalog != catalog || pane.catalog_error.is_some();
-                                    pane.catalog = catalog;
-                                    pane.catalog_error = None;
-                                    changed
-                                }
-                                Err(error) => {
-                                    let error = Some(error.to_string());
-                                    let changed = pane.catalog_error != error;
-                                    pane.catalog_error = error;
-                                    changed
-                                }
-                            };
-                            // An unchanged rescan must not redraw the window.
-                            if changed && pane.selected.is_none() {
-                                cx.notify();
-                            }
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
+            while this.update(cx, |pane, cx| pane.rescan(cx)).is_ok() {
                 cx.background_executor().timer(Duration::from_secs(2)).await;
             }
         });
@@ -89,8 +56,47 @@ impl ArtifactPane {
             visible,
             surface: Rc::new(RefCell::new(Surface::default())),
             clock: super::Clock::default(),
+            scanning: false,
             _poll: poll,
         }
+    }
+
+    /// Read the artifacts folder again while the pane is visible, as its
+    /// poll does every two seconds and its pane does once it shows.
+    pub fn rescan(&mut self, cx: &mut Context<Self>) {
+        if !self.visible.get() || self.scanning {
+            return;
+        }
+        self.scanning = true;
+        let source = self.directory.clone();
+        let catalog = cx
+            .background_executor()
+            .spawn(async move { artifacts::catalog(source.as_deref()) });
+        cx.spawn(async move |this, cx| {
+            let catalog = catalog.await;
+            let _ = this.update(cx, |pane, cx| {
+                pane.scanning = false;
+                let changed = match catalog {
+                    Ok(catalog) => {
+                        let changed = pane.catalog != catalog || pane.catalog_error.is_some();
+                        pane.catalog = catalog;
+                        pane.catalog_error = None;
+                        changed
+                    }
+                    Err(error) => {
+                        let error = Some(error.to_string());
+                        let changed = pane.catalog_error != error;
+                        pane.catalog_error = error;
+                        changed
+                    }
+                };
+                // An unchanged rescan must not redraw the window.
+                if changed && pane.selected.is_none() {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     pub fn set_visible(&self, visible: bool) {

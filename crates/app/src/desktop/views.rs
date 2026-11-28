@@ -296,13 +296,17 @@ impl ViewPane {
     }
 
     /// Read the shown section again now that the pane can be seen: plans,
-    /// interactions and an agent card otherwise wait for their next poll.
+    /// interactions, an agent card and artifacts otherwise wait for their
+    /// next poll.
     /// The view source reads at once by itself. Drawn again, the pane and
     /// its children bring their ages up to date and wake for the next.
     pub fn wake(&mut self, cx: &mut Context<Self>) {
         cx.notify();
         if let Some(artifacts) = &self.artifacts {
-            artifacts.update(cx, |_, cx| cx.notify());
+            artifacts.update(cx, |artifacts, cx| {
+                artifacts.rescan(cx);
+                cx.notify();
+            });
         }
         match self.shown {
             Shown::Plans => {
