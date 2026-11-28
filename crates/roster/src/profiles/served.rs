@@ -183,7 +183,6 @@ pub(super) fn show(bytes: &[u8]) -> Result<Profile, Error> {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct LocalMachine {
     pub name: Option<String>,
-    pub home: Option<bool>,
 }
 
 /// The reply must come from the expected profile and machine and, when
@@ -200,8 +199,6 @@ pub(super) fn verify(
         profile_id: String,
         instance_id: String,
         machine: VerifiedMachine,
-        #[serde(default, deserialize_with = "crate::lenient")]
-        home: Option<bool>,
     }
     let reply: Reply = object(bytes)?;
     if reply.protocol_version != 1 {
@@ -218,10 +215,7 @@ pub(super) fn verify(
         .name
         .map(|name| crate::profiles::setup::one_line(&name))
         .filter(|name| !name.is_empty());
-    Ok(LocalMachine {
-        name,
-        home: reply.home,
-    })
+    Ok(LocalMachine { name })
 }
 
 /// Decode the JSON object `bytes`. Derived structs also accept a

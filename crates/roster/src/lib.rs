@@ -128,11 +128,6 @@ pub struct Machine {
 }
 
 impl Machine {
-    /// Whether this machine matches the connected local machine by full ID.
-    pub fn is_local(&self, local: &profiles::Identity) -> bool {
-        self.valid() && self.id == local.installation_id
-    }
-
     /// Whether this machine is another machine in the profile by full ID.
     pub fn is_remote(&self, local: &profiles::Identity) -> bool {
         self.valid() && self.id != local.installation_id
@@ -1064,7 +1059,6 @@ mod tests {
             id: local_id,
             name: "renamed-host".into(),
         };
-        assert!(same_id_different_name.is_local(&local));
         assert!(!same_id_different_name.is_remote(&local));
         assert_eq!(same_id_different_name.remote_profile(&local), None);
 
@@ -1072,7 +1066,6 @@ mod tests {
             id: prefix_match,
             name: "renamed-host".into(),
         };
-        assert!(!near_match_same_name.is_local(&local));
         assert!(near_match_same_name.is_remote(&local));
         assert_eq!(
             near_match_same_name.remote_profile(&local).as_deref(),
