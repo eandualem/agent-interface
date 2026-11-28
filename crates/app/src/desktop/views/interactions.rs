@@ -346,7 +346,15 @@ impl Interactions {
         cx.notify();
     }
 
-    pub(super) fn refresh(&mut self, cx: &mut Context<Self>) {
+    /// Read again now that its pane shows, with the open conversation.
+    pub(super) fn wake(&mut self, cx: &mut Context<Self>) {
+        self.refresh(cx);
+        if let Some(conversation) = &self.conversation {
+            conversation.update(cx, |conversation, cx| conversation.read_now(cx));
+        }
+    }
+
+    fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.reading {
             return;
         }

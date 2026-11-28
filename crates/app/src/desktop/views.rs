@@ -334,7 +334,7 @@ impl ViewPane {
             }
             Shown::Interactions => {
                 if let Some(view) = &self.interactions {
-                    view.update(cx, |view, cx| view.refresh(cx));
+                    view.update(cx, |view, cx| view.wake(cx));
                 }
             }
             Shown::Sheets => {
