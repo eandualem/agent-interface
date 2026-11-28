@@ -989,7 +989,9 @@ impl ViewPane {
                         }
                         Err(error) => Err(error),
                     });
-                    cx.notify();
+                    if pane.visible.get() {
+                        cx.notify();
+                    }
                 }
             });
         })
@@ -1074,7 +1076,9 @@ impl ViewPane {
                         }
                         Err(error) => Err(error),
                     });
-                    cx.notify();
+                    if pane.visible.get() {
+                        cx.notify();
+                    }
                 }
             });
         })
