@@ -719,20 +719,39 @@ pub(super) fn draws_evidence(state_source: Option<&str>, state: AgentState) -> b
     state_source == Some("stale") && state != AgentState::Offline
 }
 
+/// Where a state came from and its evidence, as drawn: "stale" with the
+/// one note [`stale_note`] shows when [`draws_evidence`], else nothing,
+/// since neither push nor pull nor the evidence's ticking hook age shows.
+pub(super) fn drawn_evidence(
+    state_source: Option<&str>,
+    state: AgentState,
+    evidence: &[String],
+) -> (Option<String>, Vec<String>) {
+    if draws_evidence(state_source, state) {
+        (
+            Some("stale".into()),
+            stale_note(evidence).into_iter().collect(),
+        )
+    } else {
+        (None, Vec::new())
+    }
+}
+
 /// An agent's details, in `state`, as the views draw them, for telling
-/// whether a read changed anything shown. Backbone refreshes some with
-/// every read that nothing draws: an agent's evidence, with its ticking
-/// hook age, shows only per [`draws_evidence`].
+/// whether a read changed anything shown.
 fn drawn_details<'a>(
     details: &'a agent_interface_roster::AgentDetails,
     state: Option<&String>,
 ) -> std::borrow::Cow<'a, agent_interface_roster::AgentDetails> {
     let state = state.map_or(AgentState::Unknown, |state| AgentState::from_runtime(state));
-    if details.evidence.is_empty() || draws_evidence(details.state_source.as_deref(), state) {
+    let (state_source, evidence) =
+        drawn_evidence(details.state_source.as_deref(), state, &details.evidence);
+    if details.state_source == state_source && details.evidence == evidence {
         return std::borrow::Cow::Borrowed(details);
     }
     let mut drawn = details.clone();
-    drawn.evidence.clear();
+    drawn.state_source = state_source;
+    drawn.evidence = evidence;
     std::borrow::Cow::Owned(drawn)
 }
 

@@ -1660,10 +1660,10 @@ pub(super) fn settle_agent(agent: &mut views::Agent, previous: Option<&views::Ag
         .state_age_seconds
         .take()
         .map(|age| began(previous, age));
+    // Its evidence as drawn: the stale note alone, or nothing.
     let state = crate::desktop::components::AgentState::from_runtime(&agent.state);
-    if !super::agent_status::draws_evidence(agent.state_source.as_deref(), state) {
-        agent.evidence.clear();
-    }
+    (agent.state_source, agent.evidence) =
+        super::agent_status::drawn_evidence(agent.state_source.as_deref(), state, &agent.evidence);
 }
 
 /// Members as a view shows them. Backbone sends the read time as an online
