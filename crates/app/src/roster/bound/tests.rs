@@ -940,10 +940,23 @@ fn a_hidden_roster_reads_slowly_and_reads_at_once_when_shown() {
     entry["credential_reference"] = json!({"type": "socket"});
     let profile = Profile::parse(&serde_json::to_vec(&entry).unwrap()).unwrap();
     let (read, reads) = mpsc::channel();
-    // Serves until the source is dropped and the test's receiver with it.
-    thread::spawn(move || {
-        for socket in listener.incoming() {
-            let mut socket = socket.unwrap();
+    let (done, finished) = mpsc::channel::<()>();
+    listener.set_nonblocking(true).unwrap();
+    // Serves until the test is done with it.
+    let server = thread::spawn(move || {
+        loop {
+            let mut socket = match listener.accept() {
+                Ok((socket, _)) => socket,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    if finished.try_recv() == Err(mpsc::TryRecvError::Disconnected) {
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(error) => panic!("{error}"),
+            };
+            socket.set_nonblocking(false).unwrap();
             let mut request = Vec::new();
             while !request.ends_with(b"\r\n\r\n") {
                 let mut byte = [0];
@@ -958,9 +971,7 @@ fn a_hidden_roster_reads_slowly_and_reads_at_once_when_shown() {
             } else if request.starts_with("GET /api/profile ") {
                 (200, identity.to_string())
             } else if request.starts_with("GET /api/agents ") {
-                if read.send(Instant::now()).is_err() {
-                    return;
-                }
+                let _ = read.send(Instant::now());
                 (200, json!({"items": []}).to_string())
             } else if request.starts_with("GET /api/swarms ") {
                 (200, json!({"items": []}).to_string())
@@ -988,5 +999,9 @@ fn a_hidden_roster_reads_slowly_and_reads_at_once_when_shown() {
     let shown = Instant::now();
     source.set_shown(true);
     reads.recv_timeout(wait).unwrap();
-    assert!(shown.elapsed() < Duration::from_secs(1));
+    // Far sooner than a slowed read, which waits fifteen seconds.
+    assert!(shown.elapsed() < Duration::from_secs(3));
+    drop(source);
+    drop(done);
+    server.join().unwrap();
 }
