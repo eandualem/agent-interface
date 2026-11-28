@@ -480,7 +480,9 @@ short-lived runtime and connection so timeouts cancel all associated work.
 Selection changes coalesce and cancel obsolete request chains. Views and
 empty-pane choosers hidden by an expanded pane pause their polling. So do they,
 and the chooser for attaching a session, while their window is hidden,
-minimised or fully covered; shown again, each reads at once. A window hidden
+minimised or fully covered. Shown again, polling sources and choosers read at
+once and an open Document rereads its revision; Sheets draws what it already
+has until refreshed. A window hidden
 that way keeps its panes' Document and artifact pages, which a pane the layout
 hides lets go. Revealing a
 chooser refreshes session availability and Team data, preserving its filter and
@@ -569,9 +571,10 @@ and visibility changes invalidate pending results and in-flight generations;
 Documents wait for explicit refresh. Its wake callback belongs to the original
 owner. Dropping the source waits for its bounded in-flight request, so UI owners
 must drop it off the UI thread. A view redraws when a read changes what it
-draws, not after every read, and a read that lands while it is hidden is kept
-for when it shows. Ages and day names it shows ask for a single redraw when
-their text next changes.
+draws, not after every read. Hiding its source drops a read still pending and
+discards one that lands, keeping the last data shown; showing it again starts
+a fresh read. Ages and day names it shows ask for a single redraw when their
+text next changes.
 They do not start services or configure runtime accounts.
 
 `roster::library_snapshots` reads shared Skill and Policy catalogs using one
@@ -633,7 +636,8 @@ changes invalidate them. Visible working and starting indicators animate using G
 static. State labels retain the distinction between starting and busy, and
 between blocked and waiting for a person. Each connection-owned roster worker reads
 immediately and then two seconds after each completed request, or 15 seconds
-after the start of a good one while the push stream is open. After a good
+after the start of a good one while the push stream is open, or 15 seconds
+after each while no navigation window is visible. After a good
 roster it also reads the running swarms and the profile's machines (`GET /api/status/services`), which only arrange agents in the
 navigation panel and Team view (swarms fold under their initiator; machines are a tag in the panel and groups in Team): a failed swarm read clears swarm folding and a failed machine-status read clears machine reachability (`status unknown`) without marking agent
 states stale; remote agents still carrying `machine` from `/api/agents` keep their machine tag. Machine IDs are compared in full against the connected profile's local machine ID; names are display-only. The panel lists every agent in one tree (`agent_groups::tree`, a pure function of the roster, swarms and runs): an agent on another machine carries a tag with that machine's name, which reads `name · offline` when the machine is offline or not in the profile, with its last-seen age on hover; offline agents on another machine are dimmed rows sorted last unless something under them lifts them, and an agent's active review runs, its browser and its swarms with their members fold under it. The panel and Team view surface stale `state_source` observations with their evidence, and offer Start, Stop and Restart directly through the profile service, reporting the service's refusal reason when a machine cannot be reached. Each window remembers the swarms it has seen running; when a
@@ -692,7 +696,8 @@ the authored content: a pill at the end of the reader's toolbar while
 closed, a card with a thread and a message box while open.
 No authored HTML can reach it. It retains its thread and draft by provider,
 author and record identity while its saved pane exists, including hidden tabs.
-Hidden readers pause polling and release their web surface; delivery workers
+Hidden readers pause polling; one the layout hides, as on switching tabs, also
+releases its web surface, which a minimised or covered window keeps. Delivery workers
 can still finish and retain their result. On explicit send,
 `roster::feedback` re-reads the exact record, checks the original stable author ID
 and current registered name, then uses the existing authenticated `/api/messages`

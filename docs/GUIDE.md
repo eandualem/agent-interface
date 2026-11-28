@@ -196,14 +196,15 @@ is still running in one.
 
 The agent roster refreshes immediately, and at once when Agent Backbone reports
 a changed state. It is also read again two seconds after each completed request,
-or every 15 seconds while Agent Backbone's push stream is connected or no window
-of the app can be seen. Team, Activity
+or every 15 seconds while Agent Backbone's push stream is connected or no
+workspace window can be seen (a Settings window does not count). Team, Activity
 and the report, answer and document lists are read again three seconds after
 each read, Usage after 15 seconds, and Skills, Policies and Tags after 30; an
 open Document is read again only when you refresh it. Current plans and
 Interactions are read every 20 seconds while shown, and Sheets when opened or refreshed.
-While a window is hidden, minimised or fully covered, its views stop reading and
-read again at once when it shows.
+While a window is hidden, minimised or fully covered, its views stop reading.
+When it shows, they read again at once, and an open Document rereads its
+revision; Sheets keeps what it shows until you refresh it.
 An agent's card rereads its overview and connections every three
 seconds, its usage every 15 and its skills and policies every 30. Its
 Background section lists the agent's runs, such as reviews and builds. A run
