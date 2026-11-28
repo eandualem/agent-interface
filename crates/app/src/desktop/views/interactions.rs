@@ -119,6 +119,9 @@ pub(super) struct Interactions {
     detail_generation: u64,
     detail_reading: bool,
     detail_dirty: Option<String>,
+    /// The selected interaction whose detail a read found updated while
+    /// the view was hidden, read again once it shows.
+    detail_owed: Option<String>,
     direction: Direction,
     peer: Option<String>,
     peer_menu: bool,
@@ -269,6 +272,7 @@ impl Interactions {
             detail_generation: 0,
             detail_reading: false,
             detail_dirty: None,
+            detail_owed: None,
             direction: Direction::Both,
             peer: None,
             peer_menu: false,
@@ -307,6 +311,21 @@ impl Interactions {
         }
         if returning {
             self.refresh(cx);
+            self.pay_detail(cx);
+        }
+    }
+
+    /// Read the detail a hidden read found updated, if it is still the
+    /// one selected.
+    fn pay_detail(&mut self, cx: &mut Context<Self>) {
+        if let Some(id) = self.detail_owed.take()
+            && self.visible.get()
+            && self
+                .selected
+                .as_ref()
+                .is_some_and(|selected| selected.id == id)
+        {
+            self.load_detail(id, cx);
         }
     }
 
@@ -358,6 +377,7 @@ impl Interactions {
     /// Read again now that its pane shows, with the open conversation.
     pub(super) fn wake(&mut self, cx: &mut Context<Self>) {
         self.refresh(cx);
+        self.pay_detail(cx);
         if let Some(conversation) = &self.conversation {
             conversation.update(cx, |conversation, cx| conversation.read_now(cx));
         }
@@ -438,12 +458,13 @@ impl Interactions {
                                 })
                                 .map(|item| item.id.clone());
                             this.snapshot = Some(fresh);
-                            // Hidden, the detail waits: showing reads again.
-                            if let Some(id) = updated
-                                && this.shown
-                                && this.visible.get()
-                            {
-                                this.load_detail(id, cx);
+                            // Hidden, the detail is owed until it shows.
+                            if let Some(id) = updated {
+                                if this.shown && this.visible.get() {
+                                    this.load_detail(id, cx);
+                                } else {
+                                    this.detail_owed = Some(id);
+                                }
                             }
                             if this.selected.is_none() {
                                 this.window = requested;
