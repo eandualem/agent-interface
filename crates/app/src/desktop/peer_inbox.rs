@@ -310,7 +310,7 @@ impl Inbox {
             let result = read.await;
             let _ = this.update(cx, |inbox, cx| {
                 inbox.reading = false;
-                // An identical read redraws nothing.
+                // Whether the panel's counts may differ, for the global.
                 let mut changed = false;
                 if inbox.online.load(Ordering::Acquire) {
                     match result {
@@ -337,9 +337,11 @@ impl Inbox {
                 if std::mem::take(&mut inbox.dirty) {
                     inbox.refresh(cx);
                 }
-                if changed {
-                    cx.notify();
-                }
+                // Each read follows the stream's word of a change, its
+                // opening or an explicit refresh, never a timer: a change
+                // the overview does not show, such as a connection's
+                // history, is read again by whoever observes this.
+                cx.notify();
             });
         })
         .detach();
