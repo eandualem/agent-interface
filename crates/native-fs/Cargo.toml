@@ -1,6 +1,6 @@
 [package]
 name = "agent-interface-native-fs"
-description = "Safe descriptor-based native filesystem checks"
+description = "Safe descriptor-based native filesystem checks and child signal-mask reset"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
