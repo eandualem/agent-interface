@@ -637,7 +637,10 @@ impl NewPane {
         self.team = None;
         self.loading = self.session_source.is_some();
         self.team_loading = self.team_source.is_some();
-        cx.notify();
+        // Hidden, it is not drawn; shown again, it draws afresh.
+        if visible {
+            cx.notify();
+        }
     }
 
     /// The running agent-browser sessions, by name with their pages' hosts.
