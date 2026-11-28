@@ -328,6 +328,9 @@ impl Card {
             self.shown = shown;
             if shown {
                 self.refresh(cx);
+            } else {
+                // Shown again, it is drawn afresh and asks again.
+                self.clock = super::Clock::default();
             }
         }
     }
