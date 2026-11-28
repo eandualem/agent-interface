@@ -1125,7 +1125,9 @@ impl Pane {
                         _ => pane.live.status = Some("Could not read older history".into()),
                     }
                 }
-                cx.notify();
+                if pane.live.visible.get() {
+                    cx.notify();
+                }
             });
         })
         .detach();
