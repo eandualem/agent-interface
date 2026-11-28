@@ -399,16 +399,17 @@ impl Frame {
                     .collect()
             })
             .unwrap_or_default();
-        entries.sort_by_key(|entry| match &entry.record {
+        let key = |entry: &Entry| match &entry.record {
             Some(record) => {
                 let waiting = record.plan.blocked() || self.state(&entry.agent_name).needs_you();
-                // Newest first.
-                (
-                    u8::from(!waiting),
-                    std::cmp::Reverse(published(record, self.read) as i64),
-                )
+                (u8::from(!waiting), published(record, self.read))
             }
-            None => (2, std::cmp::Reverse(i64::MIN)),
+            None => (2, f64::NEG_INFINITY),
+        };
+        // Waiting first, then newest first, to the fraction of a second.
+        entries.sort_by(|a, b| {
+            let (a, b) = (key(a), key(b));
+            a.0.cmp(&b.0).then(b.1.total_cmp(&a.1))
         });
         entries
     }
