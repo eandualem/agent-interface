@@ -631,11 +631,11 @@ impl LiveAgents {
         .then(|| agent_interface_roster::views::now() / 60);
         let mut current = self.0.current.borrow_mut();
         let tick_changed = current.offline_tick != offline_tick;
+        // The newest observation is kept, but compared as drawn.
         let changed = current.snapshot.as_ref().is_none_or(|old| {
             old.states != snapshot.states
-                || old.details != snapshot.details
+                || !drawn_alike(old, &snapshot)
                 || old.swarms != snapshot.swarms
-                || old.machines != snapshot.machines
                 || old.machines_read != snapshot.machines_read
                 || old.error != snapshot.error
         });
@@ -713,6 +713,53 @@ impl LiveAgents {
         current.snapshot = Some(snapshot);
         changed || tick_changed
     }
+}
+
+/// An agent's details as the views draw them, for telling whether a read
+/// changed anything shown. Backbone refreshes some with every read that
+/// nothing draws: an agent's evidence, with its ticking hook age, shows
+/// only while it is stale.
+fn drawn_details(
+    details: &agent_interface_roster::AgentDetails,
+) -> std::borrow::Cow<'_, agent_interface_roster::AgentDetails> {
+    if details.evidence.is_empty() || details.state_source.as_deref() == Some("stale") {
+        return std::borrow::Cow::Borrowed(details);
+    }
+    let mut drawn = details.clone();
+    drawn.evidence.clear();
+    std::borrow::Cow::Owned(drawn)
+}
+
+/// A machine as the views draw it: when it was last seen shows only while
+/// it is offline, so an online machine's heartbeat changes nothing.
+fn drawn_machine(
+    machine: &agent_interface_roster::ProfileMachine,
+) -> std::borrow::Cow<'_, agent_interface_roster::ProfileMachine> {
+    if machine.last_seen.is_none() || machine.state != agent_interface_roster::MachineState::Online
+    {
+        return std::borrow::Cow::Borrowed(machine);
+    }
+    let mut drawn = machine.clone();
+    drawn.last_seen = None;
+    std::borrow::Cow::Owned(drawn)
+}
+
+/// Whether two roster reads draw the same agents and machines.
+fn drawn_alike(old: &Snapshot, new: &Snapshot) -> bool {
+    old.details.len() == new.details.len()
+        && old
+            .details
+            .iter()
+            .zip(&new.details)
+            .all(|((a_name, a), (b_name, b))| {
+                a_name == b_name && drawn_details(a) == drawn_details(b)
+            })
+        && old.machines.len() == new.machines.len()
+        && old
+            .machines
+            .iter()
+            .zip(&new.machines)
+            .all(|(a, b)| drawn_machine(a) == drawn_machine(b))
 }
 
 /// Windows and their child views own sources. The registry only deduplicates
@@ -1466,6 +1513,29 @@ mod tests {
         snapshot.update_machines(Some(
             br#"{"machines":[{"id":"a","name":"laptop","home":true,"state":"offline","last_seen":"2026-11-22T12:00:00Z"}]}"#,
         ));
+        assert!(agents.update(snapshot.clone()));
+        // An online machine's heartbeat and a fresh agent's ticking evidence
+        // are not drawn, so they change nothing; a stale agent's are.
+        snapshot.update_machines(Some(
+            br#"{"machines":[{"id":"a","name":"laptop","home":true,"state":"online","last_seen":"2026-11-22T12:00:00Z"}]}"#,
+        ));
+        assert!(agents.update(snapshot.clone()));
+        snapshot.update_machines(Some(
+            br#"{"machines":[{"id":"a","name":"laptop","home":true,"state":"online","last_seen":"2026-11-22T12:00:05Z"}]}"#,
+        ));
+        assert!(!agents.update(snapshot.clone()));
+        let fresh = |age: u8| {
+            format!(
+                r#"{{"items":[{{"name":"worker","state":"busy","state_source":"push","evidence":["hook {age}s ago"]}}]}}"#
+            )
+        };
+        snapshot.update(fresh(3).as_bytes());
+        agents.update(snapshot.clone());
+        snapshot.update(fresh(5).as_bytes());
+        assert!(!agents.update(snapshot.clone()));
+        snapshot.update(
+            br#"{"items":[{"name":"worker","state":"busy","state_source":"stale","evidence":["hook 9s ago"]}]}"#,
+        );
         assert!(agents.update(snapshot));
     }
 }
