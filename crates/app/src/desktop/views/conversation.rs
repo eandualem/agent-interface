@@ -146,6 +146,8 @@ pub(super) struct Conversation {
     /// Text selected in the thread, and the focus that copies it.
     selection: RefCell<Selection>,
     thread_focus: FocusHandle,
+    /// Redraws a thread drawn on its own when its day labels change.
+    clock: super::Clock,
     _poll: Option<Task<()>>,
     _input: Subscription,
 }
@@ -715,6 +717,7 @@ impl Conversation {
             expanded: std::collections::HashSet::new(),
             selection: RefCell::default(),
             thread_focus: cx.focus_handle(),
+            clock: super::Clock::default(),
             _poll: None,
             _input: input,
         }
@@ -2143,7 +2146,11 @@ fn epoch(text: &str) -> Option<f64> {
 
 impl Render for Conversation {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.panel(None, window, cx)
+        // Drawn after the view holding it, so it keeps its own day labels.
+        super::Clock::begin();
+        let drawn = self.panel(None, window, cx).into_any_element();
+        self.clock.end(self.visible.clone(), cx);
+        drawn
     }
 }
 
