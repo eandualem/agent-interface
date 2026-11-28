@@ -1441,4 +1441,5 @@ fn the_profiles_machines_and_another_machines_tools_are_read() {
         requests[3]
     );
 }
+mod browsers;
 mod peers;

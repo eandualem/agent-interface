@@ -152,7 +152,7 @@ fn each_change_uses_its_method_route_and_body() {
     );
     let c = profile.connect().unwrap();
     let browser: Grant = serde_json::from_value(
-        json!({"kind":"browser","machine":"5f2c9e0d1b7a4e38","machine_name":"laptop"}),
+        json!({"kind":"browser","machine":"5f2c9e0d1b7a4e38","machine_name":"laptop","browser":"youtube"}),
     )
     .unwrap();
     let granted = c.grant("tester", &browser).unwrap();
@@ -173,11 +173,11 @@ fn each_change_uses_its_method_route_and_body() {
     let expected = [
         (
             "post /api/agents/tester/grant ",
-            r#"{"grant":{"kind":"browser","machine":"5f2c9e0d1b7a4e38","machine_name":"laptop"}}"#,
+            r#"{"grant":{"kind":"browser","machine":"5f2c9e0d1b7a4e38","machine_name":"laptop","browser":"youtube"}}"#,
         ),
         (
             "post /api/agents/tester/revoke ",
-            r#"{"grant":{"kind":"browser","machine":"5f2c9e0d1b7a4e38","machine_name":"laptop"}}"#,
+            r#"{"grant":{"kind":"browser","machine":"5f2c9e0d1b7a4e38","machine_name":"laptop","browser":"youtube"}}"#,
         ),
         ("put /api/agents/tester/mode ", r#"{"mode":"unsandboxed"}"#),
         (
@@ -283,6 +283,12 @@ fn a_change_that_cannot_be_named_is_never_sent() {
     let c = profile.connect().unwrap();
     let invalid = Err(Failure::Connection(Error::Invalid));
     assert_eq!(c.revoke("tester", &Grant::Unknown).map(drop), invalid);
+    let unnamed = Grant::Browser {
+        machine: None,
+        machine_name: None,
+        browser: None,
+    };
+    assert_eq!(c.revoke("tester", &unnamed).map(drop), invalid);
     assert_eq!(c.set_mode("tester", Mode::Unknown).map(drop), invalid);
     assert_eq!(c.place("tester", Role::Unknown, None).map(drop), invalid);
     assert_eq!(

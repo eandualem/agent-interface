@@ -124,6 +124,7 @@ impl Pane {
             .when(waiting > 0, |bar| {
                 bar.child(self.waiting_button(waiting, cx))
             })
+            .child(self.browsers_switch(cx))
     }
 
     fn list(&self, model: &model::Model, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -288,6 +289,7 @@ impl Pane {
         let selected = self.selected.as_deref() == Some(agent.name.as_str());
         let asks = model::asks(&model.pending, &agent.name);
         let secrets = model::secrets(agent);
+        let browsers = model::browsers(agent);
         let name = agent.name.clone();
         let count = |icon: &'static str, n: usize| {
             div()
@@ -321,9 +323,18 @@ impl Pane {
             )
         })
         .when(agent.mode == Mode::Unsandboxed, |row| {
-            row.child(ui::tag("unsandboxed", Tone::Quiet))
+            // Board A's chip on a row: smaller than a tag elsewhere, so the
+            // name keeps its room beside the counts.
+            row.child(
+                ui::tag("unsandboxed", Tone::Quiet)
+                    .flex()
+                    .items_center()
+                    .h(px(t.size.keycap))
+                    .px(px(t.space.s6))
+                    .text_size(t.text.key.size()),
+            )
         })
-        .when(secrets > 0, |row| {
+        .when(browsers + secrets > 0, |row| {
             row.child(
                 ui::text(
                     div()
@@ -334,12 +345,15 @@ impl Pane {
                         .text_color(c.muted),
                     &t.text.meta,
                 )
-                .child(count("lock", secrets)),
+                .when(browsers > 0, |el| el.child(count("globe", browsers)))
+                .when(secrets > 0, |el| el.child(count("lock", secrets))),
             )
         })
         .on_click(cx.listener(move |pane, _, window, cx| {
             if pane.selected.as_deref() != Some(name.as_str()) {
                 pane.selected = Some(name.clone());
+                pane.newest_due = true;
+                pane.read_newest(cx);
                 pane.menu = None;
                 pane.adding = None;
                 pane.notice = None;
@@ -412,6 +426,7 @@ impl Pane {
                     .child(self.role_and_place(agent, model, cx))
                     .child(self.confinement(agent, cx))
                     .child(self.github(agent, cx))
+                    .children(self.browser_sign_ins(agent, model, cx))
                     .child(self.folders(agent, cx))
                     .child(self.secrets_and_docker(agent, cx)),
             )
@@ -439,6 +454,13 @@ impl Pane {
         cx: &mut Context<Self>,
     ) -> Div {
         let t = tokens();
+        // A menu with nothing to choose is not opened.
+        if items.is_empty() {
+            return div()
+                .relative()
+                .flex_shrink_0()
+                .child(button.opacity(colors().pane_dim).cursor_default());
+        }
         let open = self.menu == Some(menu);
         div()
             .relative()
@@ -462,7 +484,9 @@ impl Pane {
                             .id(SharedString::from(format!("access-menu-{menu:?}")))
                             .absolute()
                             .top(px(t.size.icon_button + t.space.s4))
-                            .left_0()
+                            // The More menu's button is at the right edge.
+                            .when(menu == Menu::BrowserMore, |el| el.right_0())
+                            .when(menu != Menu::BrowserMore, |el| el.left_0())
                             .max_h(px(t.size.access_menu))
                             .overflow_y_scroll()
                             .on_mouse_down_out(cx.listener(move |pane, _, _, cx| {
@@ -792,7 +816,7 @@ impl Pane {
     }
 
     /// Whether a grant is on this app's own machine, or names none.
-    fn on_this_machine(&self, id: Option<&String>) -> bool {
+    pub(super) fn on_this_machine(&self, id: Option<&String>) -> bool {
         id.is_none_or(|id| id == &self.connection.identity().installation_id)
     }
 
@@ -851,6 +875,95 @@ impl Pane {
             Some(note),
             card.child(self.add_line(rows.is_empty(), true, cx)),
         )
+    }
+
+    /// One row per named browser, its switch giving it to the agent or
+    /// taking it away; none while there are no browsers.
+    fn browser_sign_ins(
+        &self,
+        agent: &Agent,
+        model: &model::Model,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
+        let (t, c) = (tokens(), colors());
+        let items = &model.browsers.items;
+        if items.is_empty() {
+            return None;
+        }
+        let now = chrono::Local::now().fixed_offset();
+        let mut card = ui::group_card();
+        let mut given = 0;
+        for (at, browser) in items.iter().enumerate() {
+            let granted = agent
+                .grants
+                .iter()
+                .find(|grant| super::browsers::names(grant, &browser.id))
+                .cloned();
+            given += usize::from(granted.is_some());
+            let note = super::browsers::row_note(
+                model.newest.get(&browser.id),
+                &agent.name,
+                browser,
+                &now,
+            );
+            let key = format!("access-browser-switch-{}", browser.id);
+            let change = match granted.clone() {
+                Some(grant) => Change::Revoke(agent.name.clone(), grant),
+                None => Change::Grant(
+                    agent.name.clone(),
+                    super::browsers::browser_grant(None, browser),
+                ),
+            };
+            let switch_key = key.clone();
+            card = card.child(
+                line(at == 0)
+                    .pr(px(t.space.s12))
+                    .child(super::browsers::letter_mark(
+                        &browser.name,
+                        t.space.s20,
+                        true,
+                    ))
+                    .child(div().text_color(c.text).child(browser.name.clone()))
+                    .child(ui::text(
+                        ui::mono(super::browsers::sites(browser)).text_color(c.muted),
+                        &t.text.key,
+                    ))
+                    .when(!self.on_this_machine(Some(&browser.machine)), |el| {
+                        el.child(
+                            self.machine_chip(
+                                Some(&browser.machine),
+                                browser.machine_name.as_ref(),
+                            ),
+                        )
+                    })
+                    .child(div().flex_1())
+                    .child(ui::text(div().text_color(c.muted), &t.text.meta).child(note))
+                    .child(self.busy(
+                        &key,
+                        ui::switch(SharedString::from(key.clone()), granted.is_some()).on_click(
+                            cx.listener(move |pane, _, _, cx| {
+                                pane.send(switch_key.clone(), change.clone(), cx);
+                            }),
+                        ),
+                    )),
+            );
+        }
+        let local = items.iter().all(|b| self.on_this_machine(Some(&b.machine)));
+        let note = if local {
+            format!(
+                "{given} of {} sites you signed in to on {}",
+                items.len(),
+                this_machine()
+            )
+        } else {
+            format!("{given} of {} sites you signed in to", items.len())
+        };
+        Some(section("BROWSER SIGN-INS", Some(note), card).child(
+            ui::text(div().px(px(t.space.s2)).text_color(c.muted), &t.text.meta).child(
+                "It opens these sites already signed in, in tabs of its own. It never sees \
+                     a password, or another agent's tabs.",
+            ),
+        ))
     }
 
     fn folders(&self, agent: &Agent, cx: &mut Context<Self>) -> Div {

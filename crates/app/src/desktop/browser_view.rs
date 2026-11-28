@@ -43,6 +43,10 @@ pub(super) struct BrowserView {
     pub agent: String,
     /// The agent's session, or none once it has ended.
     session: Option<Session>,
+    /// The name of the browser Agent Backbone runs that this view watches,
+    /// through the DevTools endpoint Backbone gives the owner; none for an
+    /// agent's session.
+    watched: Option<String>,
     stream: Option<Stream>,
     /// The frame on screen.
     frame: Option<Frame>,
@@ -107,6 +111,7 @@ impl BrowserView {
         let mut view = Self {
             agent,
             session: None,
+            watched: None,
             stream: None,
             frame: None,
             retired: Vec::new(),
@@ -136,9 +141,32 @@ impl BrowserView {
         view
     }
 
+    /// A view, under `key`, of the browser `name` Agent Backbone runs,
+    /// through the DevTools endpoint at `port` it gives the owner: its page
+    /// `target` when the holder's session names one, else its first page.
+    /// Backbone sizes and shows its window, so this view does neither.
+    pub fn watching(
+        key: String,
+        name: String,
+        port: u16,
+        target: Option<String>,
+        shapes: Shapes,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut view = Self::new(key, None, shapes, cx);
+        view.watched = Some(name);
+        let (wake, woken) = (view.wake.clone(), view.woken.clone());
+        view.stream = Some(Stream::open_port(port, target, move || {
+            if !woken.swap(true, Ordering::Relaxed) {
+                let _ = wake.unbounded_send(());
+            }
+        }));
+        view
+    }
+
     /// Follow the session as discovery last found it.
     pub fn set_session(&mut self, session: Option<Session>, cx: &mut Context<Self>) {
-        if self.session == session {
+        if self.session == session || self.watched.is_some() {
             return;
         }
         let page = |session: &Option<Session>| session.as_ref().map(|s| (s.pid, s.target.clone()));
@@ -339,7 +367,7 @@ impl BrowserView {
 
     /// Whether the view draws the page, as its frame, now.
     fn showing(&self) -> bool {
-        self.session.is_some()
+        (self.session.is_some() || self.watched.is_some())
             && self.frame.is_some()
             && self
                 .stream
@@ -568,9 +596,14 @@ impl Render for BrowserView {
             .items_center()
             .gap(px(t.space.s8))
             .child("·")
-            .child(named(self.agent.clone()).flex_shrink_0())
+            .child(
+                named(self.watched.clone().unwrap_or_else(|| self.agent.clone())).flex_shrink_0(),
+            )
             .when_some(site, |names, site| names.child("·").child(named(site)));
-        let header = ui::view_header("globe", "Browser").child(names).child(open);
+        let header = ui::view_header("globe", "Browser")
+            .child(names)
+            // Backbone's own browser is shown to the person from the Access pane.
+            .when(self.watched.is_none(), |header| header.child(open));
         let quiet = |text: &'static str| {
             ui::text(
                 div()
@@ -588,7 +621,9 @@ impl Render for BrowserView {
         };
         let state = self.stream.as_ref().map(Stream::state);
         let body = match (&self.session, &self.frame, state) {
-            (None, _, _) => quiet("The browser ended.").into_any_element(),
+            (None, _, _) if self.watched.is_none() => {
+                quiet("The browser ended.").into_any_element()
+            }
             (_, _, None) => quiet("This browser has no page yet.").into_any_element(),
             (_, _, Some(State::Unreachable)) => {
                 quiet("Can't reach the browser's page. Trying again…").into_any_element()
@@ -1450,6 +1485,18 @@ fn host(address: &str) -> Option<&str> {
 /// How often discovery looks for sessions.
 const DISCOVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// A browser Agent Backbone runs, as a Browser pane watches it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Watched {
+    /// Its name for people.
+    pub name: String,
+    /// The port of the DevTools endpoint Backbone gives the owner.
+    pub port: u16,
+    /// The agent-browser session its holder drives it with, whose tab the
+    /// view shows.
+    pub session: Option<String>,
+}
+
 /// Whether `leaf` is an empty pane, the only kind a Browser view takes.
 fn holds_nothing(leaf: &agent_interface_core::Leaf) -> bool {
     leaf.empty && leaf.attachment.is_none() && leaf.view.is_none()
@@ -1599,9 +1646,21 @@ impl super::Browser {
         let mut created = Vec::new();
         for (id, agent) in shown {
             if !self.browser_views.contains_key(&id) {
-                let session = self.agent_browser(&agent).cloned();
                 let shapes = self.browser_shapes.clone();
-                let view = cx.new(|cx| BrowserView::new(agent, session, shapes, cx));
+                let view = match self.watched_browsers.get(&agent) {
+                    Some(watched) => {
+                        let target = watched
+                            .session
+                            .as_deref()
+                            .and_then(|session| self.agent_browser(session)?.target.clone());
+                        let (name, port) = (watched.name.clone(), watched.port);
+                        cx.new(|cx| BrowserView::watching(agent, name, port, target, shapes, cx))
+                    }
+                    None => {
+                        let session = self.agent_browser(&agent).cloned();
+                        cx.new(|cx| BrowserView::new(agent, session, shapes, cx))
+                    }
+                };
                 self.browser_views.insert(id.clone(), view);
                 created.push(id);
             }
@@ -1620,6 +1679,39 @@ impl super::Browser {
             }
             self.browser_chosen = chosen;
         }
+    }
+
+    /// Show a browser Agent Backbone runs, through the DevTools endpoint it
+    /// gives the owner, as an agent's browser is shown. A view of it at an
+    /// earlier endpoint is made anew.
+    pub(super) fn watch_browser(
+        &mut self,
+        watch: &super::views::WatchBrowser,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = format!("browser:{}", watch.id);
+        let watched = Watched {
+            name: watch.name.clone(),
+            port: watch.port,
+            session: watch.session.clone(),
+        };
+        if self.watched_browsers.insert(key.clone(), watched.clone()) != Some(watched) {
+            let stale: Vec<String> = self
+                .browser_views
+                .iter()
+                .filter(|(_, view)| view.read(cx).agent == key)
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in stale {
+                if let Some(view) = self.browser_views.remove(&id) {
+                    for frame in view.update(cx, |view, _| view.take_shown()) {
+                        let _ = window.drop_image(frame.image);
+                    }
+                }
+            }
+        }
+        self.open_agent_browser(&key, window, cx);
     }
 
     /// Show `agent`'s browser: in its open Browser pane, else in a visible

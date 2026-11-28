@@ -23,7 +23,8 @@
     {
      "kind": "browser",
      "machine": "5f2c9e0d1b7a4e38",
-     "machine_name": "laptop"
+     "machine_name": "laptop",
+     "browser": "youtube"
     }
    ],
    "ceiling": [
@@ -144,7 +145,8 @@
     {
      "kind": "browser",
      "machine": "5f2c9e0d1b7a4e38",
-     "machine_name": "laptop"
+     "machine_name": "laptop",
+     "browser": "youtube"
     }
    ],
    "ceiling": [],
@@ -233,7 +235,8 @@
     {
      "kind": "browser",
      "machine": "5f2c9e0d1b7a4e38",
-     "machine_name": "laptop"
+     "machine_name": "laptop",
+     "browser": "youtube"
     },
     {
      "kind": "docker",

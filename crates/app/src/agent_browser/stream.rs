@@ -2,8 +2,9 @@
 //! input to it.
 //!
 //! The client connects to the page's DevTools endpoint on `127.0.0.1`, at the
-//! port the agent's Chrome wrote in its own `DevToolsActivePort` file, and
-//! asks it to screencast. Chrome keeps a few frames in flight and sends more
+//! port the agent's Chrome wrote in its own `DevToolsActivePort` file, or for
+//! a browser Agent Backbone runs, the port of the endpoint Backbone gives the
+//! owner, and asks it to screencast. Chrome keeps a few frames in flight and sends more
 //! only after the client acknowledges them. The client acknowledges frames
 //! only when the view takes one to draw, then also those a newer frame
 //! replaced, so a view that is not painting pauses Chrome after a few frames
@@ -374,14 +375,35 @@ impl Stream {
     /// `daemon` started. `wake` is called from the client's thread whenever
     /// something new can be taken.
     pub fn open(daemon: u32, target: String, wake: impl Fn() + Send + 'static) -> Self {
-        Self::open_on(move || super::devtools_port(daemon), target, wake)
+        Self::open_on(
+            move || super::devtools_port(daemon),
+            move |_| Some(target.clone()),
+            wake,
+        )
     }
 
-    /// Watch `target` on the DevTools port `port` finds, asked again before
-    /// each connection.
+    /// Watch the page `target` of the Chrome whose DevTools port is `port`,
+    /// or its first page when there is no target or Chrome no longer lists
+    /// it, found again before each connection.
+    pub fn open_port(port: u16, target: Option<String>, wake: impl Fn() + Send + 'static) -> Self {
+        Self::open_on(
+            move || Some(port),
+            move |port| {
+                let listed = targets(port)?;
+                target
+                    .clone()
+                    .filter(|target| found(&listed, target).is_some())
+                    .or_else(|| first_page(&listed))
+            },
+            wake,
+        )
+    }
+
+    /// Watch the page `target` finds on the DevTools port `port` finds, both
+    /// asked again before each connection.
     fn open_on(
         port: impl Fn() -> Option<u16> + Send + 'static,
-        target: String,
+        target: impl Fn(u16) -> Option<String> + Send + 'static,
         wake: impl Fn() + Send + 'static,
     ) -> Self {
         let shared = Arc::new(Shared {
@@ -458,14 +480,20 @@ fn lock(shared: &Shared) -> std::sync::MutexGuard<'_, Latest> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn run(port: &dyn Fn() -> Option<u16>, target: &str, shared: &Shared, wake: &dyn Fn()) {
+fn run(
+    port: &dyn Fn() -> Option<u16>,
+    target: &dyn Fn(u16) -> Option<String>,
+    shared: &Shared,
+    wake: &dyn Fn(),
+) {
     while !shared.stop.load(Ordering::Relaxed) {
         if let Some(port) = port()
-            && let Some(mut socket) = connect(port, target)
+            && let Some(target) = target(port)
+            && let Some(mut socket) = connect(port, &target)
         {
             restart(shared);
             wake();
-            let ended = watch(&mut socket, port, target, shared, wake);
+            let ended = watch(&mut socket, port, &target, shared, wake);
             let _ = socket.close(None);
             let _ = socket.flush();
             // The page is there: connect again at once, and the view keeps
@@ -879,8 +907,21 @@ fn decode(id: i64, data: &str, metadata: &Value) -> Option<Frame> {
     })
 }
 
+/// The first page in Chrome's target list.
+fn first_page(targets: &[Value]) -> Option<String> {
+    targets
+        .iter()
+        .find(|listed| listed.get("type").and_then(Value::as_str) == Some("page"))
+        .and_then(|listed| Some(listed.get("id")?.as_str()?.to_owned()))
+}
+
 /// The address and title of the page `target`, from Chrome's target list.
 fn page(port: u16, target: &str) -> Option<(Option<String>, Option<String>)> {
+    found(&targets(port)?, target)
+}
+
+/// Chrome's target list.
+fn targets(port: u16) -> Option<Vec<Value>> {
     let mut stream = local(port)?;
     // Frames wait while this reads, so it gives up soon.
     stream.set_read_timeout(Some(LISTING)).ok()?;
@@ -898,8 +939,8 @@ fn page(port: u16, target: &str) -> Option<(Option<String>, Option<String>)> {
         if response.len() > 2 * LISTING_BYTES {
             return None;
         }
-        if let Some(listing) = listing(&response, target) {
-            return listing;
+        if let Some(listed) = listed(&response) {
+            return listed;
         }
     }
 }
@@ -908,7 +949,15 @@ fn page(port: u16, target: &str) -> Option<(Option<String>, Option<String>)> {
 /// while the response is still incomplete. A page Chrome does not list, or a
 /// response that is not a target list or is larger than `LISTING_BYTES`,
 /// gives `Some(None)`.
+#[cfg(test)]
 fn listing(response: &[u8], target: &str) -> Option<Option<(Option<String>, Option<String>)>> {
+    Some(listed(response)?.and_then(|targets| found(&targets, target)))
+}
+
+/// The targets in a response to `GET /json/list`, or `None` while the
+/// response is still incomplete; `Some(None)` for one that is not a target
+/// list or is larger than `LISTING_BYTES`.
+fn listed(response: &[u8]) -> Option<Option<Vec<Value>>> {
     let end = response.windows(4).position(|bytes| bytes == b"\r\n\r\n")?;
     let head = String::from_utf8_lossy(&response[..end]);
     let Some(length) = head.lines().find_map(|line| {
@@ -925,24 +974,24 @@ fn listing(response: &[u8], target: &str) -> Option<Option<(Option<String>, Opti
         return Some(None);
     };
     let body = response.get(end + 4..stop)?;
-    let Ok(targets) = serde_json::from_slice::<Vec<Value>>(body) else {
-        return Some(None);
-    };
-    Some(
-        targets
-            .iter()
-            .find(|listed| listed.get("id").and_then(Value::as_str) == Some(target))
-            .map(|listed| {
-                let text = |key: &str| {
-                    listed
-                        .get(key)
-                        .and_then(Value::as_str)
-                        .filter(|text| !text.is_empty())
-                        .map(str::to_owned)
-                };
-                (text("url"), text("title"))
-            }),
-    )
+    Some(serde_json::from_slice::<Vec<Value>>(body).ok())
+}
+
+/// The address and title of the page `target` in `targets`.
+fn found(targets: &[Value], target: &str) -> Option<(Option<String>, Option<String>)> {
+    targets
+        .iter()
+        .find(|listed| listed.get("id").and_then(Value::as_str) == Some(target))
+        .map(|listed| {
+            let text = |key: &str| {
+                listed
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_owned)
+            };
+            (text("url"), text("title"))
+        })
 }
 
 #[cfg(test)]
@@ -1149,6 +1198,17 @@ mod tests {
     }
 
     #[test]
+    fn without_a_listed_target_the_first_page_is_watched() {
+        let targets: Vec<Value> = serde_json::from_str(
+            r#"[{"id":"W","type":"service_worker"},{"id":"A","type":"page"},{"id":"B","type":"page"}]"#,
+        )
+        .unwrap();
+        assert_eq!(first_page(&targets).as_deref(), Some("A"));
+        assert!(found(&targets, "B").is_some() && found(&targets, "GONE").is_none());
+        assert_eq!(first_page(&[]), None);
+    }
+
+    #[test]
     fn taking_a_frame_keeps_reads_short_while_newer_frames_wait() {
         let start = Instant::now();
         let mut since = None;
@@ -1284,7 +1344,7 @@ mod tests {
             }
         });
 
-        let stream = Stream::open_on(move || Some(port), "PAGE".into(), || {});
+        let stream = Stream::open_on(move || Some(port), |_| Some("PAGE".into()), || {});
         let deadline = Instant::now() + Duration::from_secs(15);
         let (mut taken, mut states) = (Vec::new(), Vec::new());
         while !done(&taken, stream.state()) {
@@ -1460,7 +1520,7 @@ mod tests {
             sent.send((path, messages)).unwrap();
         });
 
-        let stream = Stream::open_on(move || Some(port), "PAGE".into(), || {});
+        let stream = Stream::open_on(move || Some(port), |_| Some("PAGE".into()), || {});
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut drawn = false;
         while !drawn || stream.page().0.is_none() {

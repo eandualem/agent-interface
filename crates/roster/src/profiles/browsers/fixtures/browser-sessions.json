@@ -1,0 +1,26 @@
+{
+  "items": [
+    {
+      "id": 39,
+      "agent": null,
+      "started_at": "2026-11-26T17:00:00Z",
+      "ended_at": "2026-11-26T17:02:00Z",
+      "ended_by": "closed",
+      "tabs": 1,
+      "waited": 0,
+      "summary": ""
+    },
+    {
+      "id": 38,
+      "agent": "poster",
+      "started_at": "2026-11-26T09:00:00Z",
+      "ended_at": "2026-11-26T09:20:00Z",
+      "ended_by": "taken_back",
+      "tabs": 4,
+      "waited": 2,
+      "summary": ""
+    }
+  ],
+  "has_more": false,
+  "next_before": null
+}

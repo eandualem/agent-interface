@@ -2,8 +2,9 @@
 """Capture the Access pane against fixture data in a disposable Xvfb desktop.
 
 It opens the agent list, an agent's detail, a refused change with
-Backbone's reason, a granted repository read back from the stand-in, and the
-requests view, and saves one capture of each.
+Backbone's reason, a granted repository read back from the stand-in, the
+requests view, the browsers with a browser's detail, and a new browser made,
+signed in to and saved, and saves one capture of each.
 
 Run under xvfb-run + dbus-run-session as a normal user. Uses no live provider,
 real home, credentials or tmux server: the one profile it serves answers from
@@ -28,6 +29,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "crates/roster/src/profiles/access/fixtures"
+BROWSER_FIXTURES = ROOT / "crates/roster/src/profiles/browsers/fixtures"
 OUTPUT = ROOT / "target/linux-desktop-smoke/access"
 OUTPUT.mkdir(parents=True, exist_ok=True)
 # An earlier run's captures must not pass for this one's.
@@ -38,6 +40,10 @@ PROFILE = "0a1b2c3d4e5f"
 
 def fixture(name):
     return json.loads((FIXTURES / f"{name}.json").read_text())
+
+
+def browser_fixture(name):
+    return json.loads((BROWSER_FIXTURES / f"{name}.json").read_text())
 
 
 def wait_for(check, label, seconds=120):
@@ -59,6 +65,11 @@ class Records:
         self.agents = fixture("agents")
         # Waiting requests; a decided one leaves them, as in Backbone.
         self.pending = fixture("requests-pending")
+        self.browsers = browser_fixture("browsers")
+        # The requests that wait for each browser made here, until it is saved.
+        self.asking = {}
+        # The site each browser made here is signed in to once it is checked.
+        self.signing = {}
         self.calls = []
 
     def agent(self, name):
@@ -69,11 +80,78 @@ class Records:
         reply["warning"] = None
         return reply
 
+    def browser(self, id):
+        return next((b for b in self.browsers["items"] if b["id"] == id), None)
+
+    def detail(self, id):
+        """A browser's detail: the fixture's, around the listed browser."""
+        browser = self.browser(id)
+        if browser is None:
+            return 404, {"detail": {"code": "not_found", "message": f"No browser named '{id}'."}}
+        detail = browser_fixture("browser")
+        detail["browser"] = copy.deepcopy(browser)
+        holder = browser.get("holder")
+        detail["holder"] = holder and dict(holder, session=41, agent_browser_session=holder["agent"])
+        # No Chrome runs in this check. A browser waiting for its sign-in is
+        # served an endpoint, as Backbone serves one while its window is open,
+        # so the app checks it; nothing connects to it.
+        detail["devtools"] = "ws://127.0.0.1:9/devtools/browser/fixture" if id in self.signing else None
+        detail["signed_in_to"] = [dict(domain=d, account=d, note=None) for d in browser["signed_in_to"]]
+        if id != "youtube":
+            detail["requests"] = self.asking.get(id, [])
+            # The fixture's policies are YouTube's; another browser keeps to
+            # its own sites.
+            detail["policies"] = dict(keep_on_sites=True, sites=list(browser["signed_in_to"]),
+                                      stop_before_last_button=False)
+        return 200, detail
+
+    def change_browser(self, method, parts, body):
+        """A change of a browser, as Backbone would answer it."""
+        if method == "POST" and len(parts) == 2:
+            id = body["name"].lower()
+            wanted = [w for w in self.browsers["wanted"] if w["browser"] == id]
+            self.browsers["wanted"] = [w for w in self.browsers["wanted"] if w["browser"] != id]
+            host = body["opens_at"].removeprefix("https://").strip("/")
+            # As in Backbone, its sign-in is found only when it is checked; the
+            # person's sign-in itself is not part of this check.
+            self.signing[id] = host
+            self.browsers["items"].append(dict(
+                id=id, name=body["name"], machine="5f2c9e0d1b7a4e38", machine_name="laptop",
+                opens_at=f"https://{host}/", signed_in_to=[], state="signing_in", agents=0,
+                asks=sum(len(w["requests"]) for w in wanted), holder=None,
+                signed_in_since="2026-11-27T10:40:00Z", checked_at="2026-11-27T10:40:00Z"))
+            self.asking[id] = [r for w in wanted for r in w["requests"]]
+            status, detail = self.detail(id)
+            return (201 if status == 200 else status), detail
+        browser = self.browser(parts[2])
+        if browser is None:
+            return self.detail(parts[2])
+        action = parts[3] if len(parts) > 3 else None
+        if method == "DELETE" and action == "hold":
+            browser.update(holder=None, state="given" if browser["agents"] else "nobody")
+            return 204, None
+        if method == "DELETE" and action is None:
+            self.browsers["items"].remove(browser)
+            return 204, None
+        if method == "POST" and action == "save":
+            grants = body.get("grants", [])
+            browser.update(name=body.get("name") or browser["name"], agents=len(grants), asks=0,
+                           state="given" if grants else "nobody")
+            self.asking.pop(browser["id"], None)
+            return self.detail(browser["id"])
+        if action == "check" and browser["id"] in self.signing:
+            browser["signed_in_to"] = [self.signing.pop(browser["id"])]
+        if action in ("window", "check", "policies"):
+            return self.detail(browser["id"])
+        return 404, {"detail": {"code": "not_found", "message": "No such route in this check."}}
+
     def change(self, method, path, body):
         """The status and body for a change, as Backbone would answer it."""
         with self.lock:
             self.calls.append((method, path, body))
             parts = path.strip("/").split("/")
+            if parts[:2] == ["api", "browsers"]:
+                return self.change_browser(method, parts, body)
             if parts[:2] == ["api", "agents"] and len(parts) == 4:
                 name, action = parts[2], parts[3]
                 if action == "mode":
@@ -106,7 +184,7 @@ class Records:
 
 def same(a, b):
     """Whether two grants name the same thing, whatever their access."""
-    keep = ("kind", "repo", "path", "name", "machine")
+    keep = ("kind", "repo", "path", "name", "machine", "browser")
     return {k: a.get(k) for k in keep} == {k: b.get(k) for k in keep}
 
 
@@ -158,6 +236,10 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
 
     class Provider(http.server.BaseHTTPRequestHandler):
         def reply(self, status, body):
+            if status == 204:
+                self.send_response(status)
+                self.end_headers()
+                return
             encoded = json.dumps(body).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
@@ -177,6 +259,12 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
                     return self.reply(200, copy.deepcopy(RECORDS.agents))
             if path == "/api/swarms":
                 return self.reply(200, fixture("swarms"))
+            if path == "/api/browsers":
+                with RECORDS.lock:
+                    return self.reply(200, copy.deepcopy(RECORDS.browsers))
+            if path.startswith("/api/browsers/") and path.count("/") == 3:
+                with RECORDS.lock:
+                    return self.reply(*copy.deepcopy(RECORDS.detail(path.rsplit("/", 1)[1])))
             if path == "/api/access/requests":
                 if "state=pending" in query:
                     with RECORDS.lock:
@@ -191,6 +279,7 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
 
         do_POST = change
         do_PUT = change
+        do_DELETE = change
 
         def log_message(self, *_):
             pass
@@ -285,18 +374,48 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
             wait_for(lambda: find("CONFINEMENT"), "the first agent's detail")
             capture("agents")
 
+            def click_agent(name):
+                # An agent's row in the Access list, never the panel's agent
+                # list beside it, which names the same agents: only words
+                # right of the list's first heading count. The whole name must
+                # show, so a row that cuts it short fails here.
+                heading = wait_for(lambda: find("ORCHESTRATORS"), "the agent list")
+                edge = int(heading["left"]) - 20
+                click_word(wait_for(lambda: next(
+                    (word for word in found(name) if int(word["left"]) >= edge), None),
+                    f"{name}'s whole name in the Access list"))
+
             # An unsandboxed main agent with folders, secrets and Docker.
-            click("docs-site")
+            click_agent("docs-site")
             # Only an unsandboxed agent's line says "everything".
             wait_for(lambda: find("everything"), "docs-site's confinement line")
             # Parts of its rows OCR keeps: the arm runner read SITE_API_KEY as
             # SITE_APL_KEY, and the folder /home/user/media whole.
-            wait_for(lambda: containing("SITE_"), "docs-site's secret")
-            wait_for(lambda: containing("media"), "docs-site's folder")
+            folder = wait_for(lambda: next(iter(containing("media")), None), "docs-site's folder")
             capture("agent-detail")
 
+            def wheel(button, times):
+                # Turn the wheel over the detail, where the folder line was
+                # drawn: the detail scrolls under the pointer, not the list.
+                command("xdotool", "mousemove", "--window", window,
+                        str(int(folder["left"])), str(int(folder["top"])))
+                time.sleep(0.2)
+                command("xdotool", "click", "--repeat", str(times), "--delay", "50", button)
+                time.sleep(0.3)
+
+            # Its secrets and Docker are below the browser sign-ins, past the
+            # bottom of the detail at this window's height.
+            def secret_shown():
+                wheel("5", 3)
+                return containing("SITE_")
+            wait_for(secret_shown, "docs-site's secret, scrolled to")
+            # The detail keeps its scroll for the next agent, so it goes back
+            # to the top, where the confinement line and segment are.
+            wheel("4", 30)
+            wait_for(lambda: find("everything"), "docs-site's detail scrolled back to the top")
+
             # Backbone refuses the confinement change; its reason is shown.
-            click("tester")
+            click_agent("tester")
             # A sandboxed agent's line, "Reaches only what is listed below.";
             # docs-site's line also starts with "Reaches".
             wait_for(lambda: find("listed"), "tester's confinement line")
@@ -371,6 +490,53 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
             wait_for(lambda: not containing("visit"), "the approved card gone from Waiting")
             command("xdotool", "key", "Escape")
             wait_for(lambda: find("ORCHESTRATORS"), "the agent list again after Escape")
+
+            # The browsers, the first chosen: its holder, who may use it and
+            # give it out, what it is signed in to and its recent use.
+            click("Browsers")
+            wait_for(lambda: find("BROWSERS"), "the browser list")
+            wait_for(lambda: containing("WHO"), "the first browser's detail")
+            wait_for(lambda: find("Take"), "its holder's Take it back")
+            capture("browsers")
+            click("Take")
+            wait_for(sent(lambda method, path, _: method == "DELETE"
+                          and path == "/api/browsers/instagram/hold"), "the browser taken back")
+            wait_for(lambda: not find("Take"), "the holder gone after taking it back")
+            capture("browser-detail")
+
+            # A new browser for the one an agent asked for: named, opened,
+            # signed in, the asking agent chosen, and saved.
+            click("New")
+            wait_for(lambda: find("Name"), "the new browser sheet")
+            command("xdotool", "type", "--delay", "20", "Telegram")
+            click_word(wait_for(lambda: next(iter(containing("site.com")), None), "the address field"))
+            command("xdotool", "type", "--delay", "20", "web.telegram.org")
+            command("xdotool", "key", "Return")
+            wait_for(sent(lambda method, path, body: method == "POST" and path == "/api/browsers"
+                          and body == dict(name="Telegram", opens_at="web.telegram.org")),
+                     "the new browser created")
+            # The pane checks the sign-in while the sheet waits for one.
+            wait_for(sent(lambda method, path, _: method == "POST"
+                          and path == "/api/browsers/telegram/check"), "the sign-in checked")
+            # "Signed in to", which only a found sign-in shows.
+            wait_for(lambda: find("Signed"), "the site found signed in")
+            wait_for(lambda: find("Choose"), "who may use it")
+            wait_for(lambda: containing("uploader"), "the agent that asked, offered")
+            capture("new-browser")
+            # Save browser's dark label on its accent fill is not read by OCR;
+            # the button sits just left of Cancel on the same line, and the
+            # request sent below is the proof it was pressed.
+            cancel = wait_for(lambda: find("Cancel"), "the sheet's Cancel")
+            command("xdotool", "mousemove", "--window", window,
+                    str(int(cancel["left"]) - 40), str(int(cancel["top"]) + int(cancel["height"]) // 2))
+            time.sleep(0.2)
+            command("xdotool", "click", "1")
+            wait_for(sent(lambda method, path, body: method == "POST"
+                          and path == "/api/browsers/telegram/save"
+                          and body["grants"] == ["uploader"] and body["name"] == "Telegram"),
+                     "the new browser saved for the agent that asked")
+            wait_for(lambda: containing("WHO"), "the saved browser's detail")
+            capture("browser-saved")
         finally:
             for process in (app, wm):
                 if process and process.poll() is None:

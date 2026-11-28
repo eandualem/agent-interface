@@ -4,7 +4,8 @@
  "grant": {
   "kind": "browser",
   "machine": "5f2c9e0d1b7a4e38",
-  "machine_name": "laptop"
+  "machine_name": "laptop",
+  "browser": "youtube"
  },
  "reason": "Check the sign-up page as a visitor sees it.",
  "requested_at": "2026-11-26T10:19:00Z",
