@@ -429,8 +429,11 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
 
             # Backbone refuses the confinement change; its reason is shown.
             click_agent("tester")
-            # A sandboxed agent's line, "Reaches only what is listed below.";
-            # docs-site's line also starts with "Reaches".
+            # Planner is sandboxed too, so its confinement line and segment
+            # match below until tester's detail replaces it: at its top, and
+            # without planner's Coordinator role.
+            wait_for(lambda: find("ROLE") and not find("Coordinator"), "tester's detail in place of planner's")
+            # A sandboxed agent's line, "Reaches only what is listed below.".
             wait_for(lambda: find("listed"), "tester's confinement line")
             # The detail's Unsandboxed segment is the lowest, below the
             # toolbar's filter chip of the same word.
