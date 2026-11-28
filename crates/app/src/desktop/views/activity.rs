@@ -38,28 +38,24 @@ struct Lane<'a> {
     ticks: Vec<f32>,
     /// Each observed state: where it starts, where it ends, the state.
     spans: Vec<(f32, f32, &'a str)>,
+    /// When its deliveries and observations happened, those still ahead
+    /// included, for when it next looks different.
+    times: Vec<f64>,
 }
 
-/// Seconds until the lanes drawn at `end` look different: while a delivery
+/// Seconds until the `lanes` drawn at `end` look different: while a delivery
 /// or an observation lies in the hour shown, when it next moves by a
 /// `pixel` of seconds (at least a second, so a span that has just begun
 /// still draws on the next wake); when a later one enters the hour; never
 /// when all are older, as a state seen before the hour fills its lane
 /// unchanged.
-fn lanes_roll(activity: &Activity, end: f64, pixel: f64) -> Option<f64> {
+fn lanes_roll(lanes: &[Lane<'_>], end: f64, pixel: f64) -> Option<f64> {
     let start = end - HOUR;
-    let changes: &[Change] = match &activity.history {
-        History::Observed { changes, .. } => changes,
-        _ => &[],
-    };
-    activity
-        .entries
+    lanes
         .iter()
-        .filter(|entry| delivered(entry))
-        .filter_map(|entry| entry.at)
-        .chain(changes.iter().filter_map(|change| change.at))
-        .filter(|at| *at >= start)
-        .map(|at| if at <= end { pixel.max(1.0) } else { at - end })
+        .flat_map(|lane| &lane.times)
+        .filter(|at| **at >= start)
+        .map(|at| if *at <= end { pixel.max(1.0) } else { at - end })
         .reduce(f64::min)
 }
 
@@ -92,28 +88,31 @@ fn lanes<'a>(
             .filter_map(|change| change.at.map(|at| (at, change.state.as_str())))
             .filter(|(at, _)| *at <= end)
             .collect();
-        let spans: Vec<(f32, f32, &str)> = observed
+        let mut spans: Vec<(f32, f32, &str)> = observed
             .iter()
             .enumerate()
             .map(|(at, (from, state))| {
                 let to = observed.get(at + 1).map_or(end, |(next, _)| *next);
                 (share(*from), share(to), *state)
             })
-            .filter(|(from, to, _)| to > from)
             .collect();
         let state = agents.get(&member.name).state;
         let active = state.working() || state.needs_you();
         // Observations of an idle or offline agent are not activity: Backbone
         // records one for every agent when it starts keeping history.
-        let worked = spans.iter().any(|(_, _, state)| {
-            matches!(
-                AgentState::from_runtime(state),
-                AgentState::Working
-                    | AgentState::Starting
-                    | AgentState::NeedsYou
-                    | AgentState::Blocked
-            )
+        // A state begun this very moment counts, though it has no width yet.
+        let worked = spans.iter().any(|(from, to, state)| {
+            to >= from
+                && *to > 0.0
+                && matches!(
+                    AgentState::from_runtime(state),
+                    AgentState::Working
+                        | AgentState::Starting
+                        | AgentState::NeedsYou
+                        | AgentState::Blocked
+                )
         });
+        spans.retain(|(from, to, _)| to > from);
         if ticks.is_empty() && !active && !worked {
             continue;
         }
@@ -122,11 +121,22 @@ fn lanes<'a>(
             .chain(observed.iter().map(|(at, _)| at))
             .copied()
             .fold(if active { end } else { start }, f64::max);
+        let times = ticks
+            .iter()
+            .copied()
+            .chain(
+                changes
+                    .iter()
+                    .filter(|change| change.agent == member.name)
+                    .filter_map(|change| change.at),
+            )
+            .collect();
         lanes.push((
             Lane {
                 member,
                 ticks: ticks.into_iter().map(share).collect(),
                 spans,
+                times,
             },
             latest,
         ));
@@ -165,7 +175,7 @@ fn timeline(
     // A lane is no wider than the window, so a pixel of it is at least this
     // many seconds of the hour.
     let pixel = HOUR / f64::from(width.max(1.0));
-    if let Some(seconds) = lanes_roll(activity, end, pixel) {
+    if let Some(seconds) = lanes_roll(&lanes, end, pixel) {
         super::rolls_in(seconds);
     }
     let mut axis = div().flex_1().flex().justify_between();
@@ -206,6 +216,7 @@ fn timeline(
         member,
         ticks,
         spans,
+        ..
     } in lanes
     {
         let mut track = div()
@@ -436,28 +447,27 @@ mod tests {
     #[test]
     fn lanes_wake_only_when_they_can_look_different() {
         let end = 10_000.0;
-        let observed = |at: f64| Activity {
-            history: History::Observed {
-                changes: vec![Change {
-                    agent: "worker".into(),
-                    state: "busy".into(),
-                    at: Some(at),
-                    ..Change::default()
-                }],
-                complete: true,
-            },
-            ..Activity::default()
+        let worker = Member::default();
+        let lane = |times: Vec<f64>| Lane {
+            member: &worker,
+            ticks: Vec::new(),
+            spans: Vec::new(),
+            times,
         };
         let pixel = HOUR / 1_200.0;
-        assert_eq!(lanes_roll(&Activity::default(), end, pixel), None);
+        // No lane drawn, however much an idle team has observed.
+        assert_eq!(lanes_roll(&[], end, pixel), None);
         // Just begun, as wide as nothing yet: it grows by a pixel.
-        assert_eq!(lanes_roll(&observed(end), end, pixel), Some(3.0));
+        assert_eq!(lanes_roll(&[lane(vec![end])], end, pixel), Some(3.0));
         // Never sooner than a second, however wide the window.
-        assert_eq!(lanes_roll(&observed(end), end, 0.5), Some(1.0));
+        assert_eq!(lanes_roll(&[lane(vec![end])], end, 0.5), Some(1.0));
         // About to enter the hour.
-        assert_eq!(lanes_roll(&observed(end + 2.0), end, pixel), Some(2.0));
+        assert_eq!(lanes_roll(&[lane(vec![end + 2.0])], end, pixel), Some(2.0));
         // Begun before the hour: its lane stays full.
-        assert_eq!(lanes_roll(&observed(end - 2.0 * HOUR), end, pixel), None);
+        assert_eq!(
+            lanes_roll(&[lane(vec![end - 2.0 * HOUR])], end, pixel),
+            None
+        );
     }
 
     #[test]
