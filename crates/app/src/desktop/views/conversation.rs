@@ -1030,6 +1030,7 @@ impl Conversation {
         cx.spawn(async move |this, cx| {
             let counts = worker.await;
             let _ = this.update(cx, |conversation, cx| {
+                let before = conversation.drawn();
                 let Some(stored) = conversation.stored.as_mut() else {
                     return;
                 };
@@ -1045,7 +1046,9 @@ impl Conversation {
                     page.unread = counts.unread;
                     page.total = counts.total;
                 }
-                cx.notify();
+                if conversation.drawn() != before && conversation.shown() {
+                    cx.notify();
+                }
             });
         })
         .detach();
