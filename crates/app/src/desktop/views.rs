@@ -1833,11 +1833,15 @@ mod tests {
         let shown = Cell::new(true);
         assert!(!show_source(&shown, Some(&source), false));
         assert!(!shown.get());
+        // A request asked for while hidden waits for the pane to show.
+        source.set_request(Request::Usage(Range::Week));
+        assert!(woken.recv_timeout(Duration::from_millis(500)).is_err());
         assert!(source.take_update().is_none());
         // Shown again, its source reads at once, not an hour later.
         assert!(show_source(&shown, Some(&source), true));
         woken.recv_timeout(wait).unwrap();
-        assert!(source.take_update().is_some());
+        let (request, _) = source.take_update().unwrap();
+        assert_eq!(request, Request::Usage(Range::Week));
         drop(source);
         server.join().unwrap();
     }
