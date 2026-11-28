@@ -259,11 +259,20 @@ fn an_overview_change_the_detail_page_does_not_draw_keeps_its_connection_id() {
         invitations: Vec::new(),
         connections: Vec::new(),
     };
-    let before = Summary::from_overview(overview("peer_local", 0));
-    let after = Summary::from_overview(overview("peer_local", 2));
-    assert!(before != after);
-    assert_eq!(drawn_peer_id(Some(&before)), drawn_peer_id(Some(&after)));
-    let other = Summary::from_overview(overview("peer_other", 0));
-    assert_ne!(drawn_peer_id(Some(&before)), drawn_peer_id(Some(&other)));
-    assert_eq!(drawn_peer_id(None), None);
+    let mut shown = None;
+    assert!(show_peer_id(
+        &mut shown,
+        Some(&Summary::from_overview(overview("peer_local", 0)))
+    ));
+    // Another pending review changes the overview but not the ID drawn.
+    let changed = Summary::from_overview(overview("peer_local", 2));
+    assert!(!show_peer_id(&mut shown, Some(&changed)));
+    assert_eq!(shown.as_deref(), Some("peer_local"));
+    assert!(show_peer_id(
+        &mut shown,
+        Some(&Summary::from_overview(overview("peer_other", 0)))
+    ));
+    assert_eq!(shown.as_deref(), Some("peer_other"));
+    assert!(show_peer_id(&mut shown, None));
+    assert!(!show_peer_id(&mut shown, None));
 }

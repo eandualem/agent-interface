@@ -102,7 +102,7 @@ enum Page {
 
 pub(super) struct ShowConnections(pub String, pub String);
 pub(super) struct Management {
-    peer_identity: Option<(gpui::Entity<super::peer_inbox::Inbox>, gpui::Subscription)>,
+    peer_identity: Option<PeerIdentity>,
     copied_peer_id: bool,
     client: Option<Client>,
     /// The one profile this page is for; unfinished creates can lack a profile ID.
@@ -216,17 +216,21 @@ impl Management {
                 }
                 if let Ok(connection) = result {
                     let inbox = super::peer_inbox::Inbox::shared(&connection, cx);
-                    // Only the connection ID is drawn from the inbox.
-                    let mut shown =
-                        drawn_peer_id(inbox.read(cx).summary.as_deref()).map(str::to_owned);
-                    let sub = cx.observe(&inbox, move |_, inbox, cx| {
-                        let id = drawn_peer_id(inbox.read(cx).summary.as_deref());
-                        if shown.as_deref() != id {
-                            shown = id.map(str::to_owned);
+                    let mut id = None;
+                    show_peer_id(&mut id, inbox.read(cx).summary.as_deref());
+                    let observing = cx.observe(&inbox, |pane, inbox, cx| {
+                        if let Some(identity) = &mut pane.peer_identity
+                            && show_peer_id(&mut identity.id, inbox.read(cx).summary.as_deref())
+                        {
                             cx.notify();
                         }
                     });
-                    pane.peer_identity = Some((inbox, sub));
+                    pane.peer_identity = Some(PeerIdentity {
+                        profile_id: inbox.read(cx).profile_id().to_owned(),
+                        id,
+                        _inbox: inbox,
+                        _observing: observing,
+                    });
                     cx.notify();
                 }
             });
@@ -832,11 +836,9 @@ impl Render for Management {
                     if let Some(shareable) = self
                         .peer_identity
                         .as_ref()
-                        .map(|(i, _)| i.read(cx))
-                        .filter(|i| i.profile_id() == item.profile_id)
-                        .and_then(|i| drawn_peer_id(i.summary.as_deref()))
+                        .filter(|identity| identity.profile_id == item.profile_id)
+                        .and_then(|identity| identity.id.clone())
                     {
-                        let shareable = shareable.to_owned();
                         section=section.child(ui::mono(shareable.clone())).child(ui::button("copy-profile-peer-id",if self.copied_peer_id{"Copied"}else{"Copy ID"},ui::Button::Secondary).on_click(cx.listener(move|p,_,_,cx|{
                             cx.write_to_clipboard(gpui::ClipboardItem::new_string(shareable.clone()));p.copied_peer_id=true;cx.notify();
                         }))).child("Share outside the app so another profile can send a connection request. Agent Backbone owns keys, encryption and relay delivery.");
@@ -1023,9 +1025,25 @@ impl Render for Management {
     }
 }
 
-/// The connection ID a profile's detail page shows from its inbox summary.
-fn drawn_peer_id(summary: Option<&super::peer_inbox::Summary>) -> Option<&str> {
-    summary.map(|s| s.overview.local_id.as_str())
+/// A detail page's shared peer inbox and the connection ID it shows from
+/// it, copied so that drawing never reads the inbox: a read while drawing
+/// would redraw the window on each of the inbox's changes.
+struct PeerIdentity {
+    profile_id: String,
+    id: Option<String>,
+    _inbox: gpui::Entity<super::peer_inbox::Inbox>,
+    _observing: gpui::Subscription,
+}
+
+/// Copy the connection ID `summary` shows into `shown`, and say whether it
+/// changed.
+fn show_peer_id(shown: &mut Option<String>, summary: Option<&super::peer_inbox::Summary>) -> bool {
+    let id = summary.map(|s| s.overview.local_id.as_str());
+    if shown.as_deref() == id {
+        return false;
+    }
+    *shown = id.map(str::to_owned);
+    true
 }
 
 #[cfg(test)]
