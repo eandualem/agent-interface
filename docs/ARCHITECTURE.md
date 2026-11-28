@@ -478,7 +478,11 @@ reply as Backbone returns it and reads again; it never changes anything ahead
 of Backbone's answer. Each Unix request owns a
 short-lived runtime and connection so timeouts cancel all associated work.
 Selection changes coalesce and cancel obsolete request chains. Views and
-empty-pane choosers hidden by an expanded pane pause their polling. Revealing a
+empty-pane choosers hidden by an expanded pane pause their polling. So do they,
+and the chooser for attaching a session, while their window is hidden,
+minimised or fully covered; shown again, each reads at once. A window hidden
+that way keeps its panes' Document and artifact pages, which a pane the layout
+hides lets go. Revealing a
 chooser refreshes session availability and Team data, preserving its filter and
 selection while those reads finish. Agent Usage refreshes every 15 seconds, like
 the team-wide Usage view. Skill previews keep their 256 KiB limit.
@@ -510,7 +514,8 @@ without a change of state, `state_source` and its evidence, swarms and machines
 are not pushed. Fifteen seconds is the service's heartbeat and half the 30
 seconds after which a roster or runs list stops counting as current. When the
 stream ends, the worker reads at once and polls every two seconds until it is
-open again.
+open again. While no navigation window of the app is visible, it reads every 15
+seconds instead, and at once when one shows; the stream is followed as before.
 
 Each agent in the service's list may say what it waits on outside itself and
 how many runs (reviews, builds, tests) and processes it has in the
@@ -563,7 +568,10 @@ Bound reads use the socket captured by their connection.
 and visibility changes invalidate pending results and in-flight generations;
 Documents wait for explicit refresh. Its wake callback belongs to the original
 owner. Dropping the source waits for its bounded in-flight request, so UI owners
-must drop it off the UI thread.
+must drop it off the UI thread. A view redraws when a read changes what it
+draws, not after every read, and a read that lands while it is hidden is kept
+for when it shows. Ages and day names it shows ask for a single redraw when
+their text next changes.
 They do not start services or configure runtime accounts.
 
 `roster::library_snapshots` reads shared Skill and Policy catalogs using one
