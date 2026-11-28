@@ -1089,9 +1089,15 @@ fn still_listed(chosen: Option<&str>, machines: &[ProfileMachine]) -> bool {
     chosen.is_none_or(|id| {
         machines
             .iter()
+            .enumerate()
             .skip(1)
-            .any(|machine| machine.id == id && machine.state == MachineState::Online)
+            .any(|(at, machine)| machine.id == id && choosable(at, machine))
     })
+}
+/// Whether `machine`, at `at` in the machine choices, can be chosen: this
+/// one, the first, always; another only while it is online.
+fn choosable(at: usize, machine: &ProfileMachine) -> bool {
+    at == 0 || machine.state == MachineState::Online
 }
 /// Choose the machine `clicked`, `None` for this one, the first of
 /// `machines`. Another must be online. Returns whether the choice changed.
@@ -1519,7 +1525,7 @@ impl Form {
             let mut offline = Vec::new();
             for (at, machine) in self.machines.iter().enumerate() {
                 let this = at == 0;
-                let open = still_listed((!this).then_some(machine.id.as_str()), &self.machines);
+                let open = choosable(at, machine);
                 let chosen = if this {
                     self.machine.is_none()
                 } else {
