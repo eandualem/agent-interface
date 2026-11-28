@@ -91,7 +91,8 @@ impl ArtifactPane {
                     }
                 };
                 // An unchanged rescan must not redraw the window.
-                if changed && pane.selected.is_none() {
+                // Kept while hidden; showing the pane draws it.
+                if changed && pane.selected.is_none() && pane.visible.get() {
                     cx.notify();
                 }
             });

@@ -187,7 +187,9 @@ impl Plans {
             )),
             Err(error) => self.fail(error),
         };
-        if changed {
+        // A read landing while the plans are not shown is kept; showing
+        // them draws it.
+        if changed && self.shown && self.visible.get() {
             cx.notify();
         }
     }

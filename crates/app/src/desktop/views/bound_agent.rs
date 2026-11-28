@@ -364,10 +364,13 @@ impl Card {
                     ),
                 };
                 // An unchanged read must not redraw the window.
+                // Kept while hidden; showing the pane draws it.
                 if card.snapshot != snapshot || card.error != error {
                     card.snapshot = snapshot;
                     card.error = error;
-                    cx.notify();
+                    if card.visible.get() {
+                        cx.notify();
+                    }
                 }
             });
         })
