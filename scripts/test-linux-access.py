@@ -413,11 +413,12 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
             wait_for(lambda: not find("ROLE"), "docs-site's first heading scrolled out of view")
 
             # Another agent's detail opens at its top, not at docs-site's
-            # scroll. Planner is not in docs-site's "answers to" line, so its
-            # name is read only from its row.
+            # scroll. Planner is not in docs-site's "answers to" line.
             click_agent("planner")
-            # Only planner's detail names example/library among its repositories.
-            wait_for(lambda: containing("library"), "planner's detail")
+            # The header's role pill: planner is a coordinator, while builder,
+            # whose row names planner, and docs-site are main agents. A row
+            # shows no role.
+            wait_for(lambda: find("Coordinator"), "planner's detail")
             wait_for(lambda: find("ROLE"), "planner's detail shown from its top")
             # Planner's own detail scrolls far enough to hide that heading, so
             # an offset carried over from docs-site would have hidden it too.
