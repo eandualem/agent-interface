@@ -662,6 +662,11 @@ impl Sheets {
                 std::mem::replace(&mut self.conversation, shown)
                     .update(cx, |conversation, _| conversation.rest());
             }
+            // Its revision history covers the thread.
+            if self.history.is_some() {
+                self.conversation
+                    .update(cx, |conversation, _| conversation.rest());
+            }
         } else {
             // The shelf shows no thread.
             self.conversation
