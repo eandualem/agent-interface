@@ -1570,12 +1570,18 @@ impl Clock {
     }
 
     /// After it drew: wake it when its soonest label changes, unless it is
-    /// no longer visible then; it is drawn again once shown.
+    /// no longer visible then; it is drawn again once shown. Labels read
+    /// the clock in whole seconds, so the wake falls just after the whole
+    /// second at which the label turns, never sooner than a tick away.
     pub(super) fn end<V: 'static>(&mut self, visible: Rc<Cell<bool>>, cx: &mut Context<V>) {
         self.0 = ROLLS.with(Cell::take).map(|seconds| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0.0, |now| now.as_secs_f64());
+            let wait = wake_after(now, seconds);
             cx.spawn(async move |view, cx| {
                 cx.background_executor()
-                    .timer(Duration::from_secs_f64(seconds))
+                    .timer(Duration::from_secs_f64(wait))
                     .await;
                 if visible.get() {
                     let _ = view.update(cx, |_, cx| cx.notify());
@@ -1583,6 +1589,13 @@ impl Clock {
             })
         });
     }
+}
+
+/// Seconds from `now` until a label `rolls` seconds away turns: just after
+/// the whole second it turns at, since labels read the clock in whole
+/// seconds, and never less than a tick.
+fn wake_after(now: f64, rolls: f64) -> f64 {
+    ((now.floor() + rolls).ceil() - now + 0.02).max(0.05)
 }
 
 /// A view's read that could not be made, unlike a refusal, which keeps
@@ -1720,6 +1733,10 @@ mod tests {
         assert_eq!(ago_now(400.0), "6m");
         assert_eq!(ago_now(40.5), "40s");
         assert_eq!(ROLLS.with(Cell::take), Some(0.5));
+        // A label a moment from turning wakes just past the next whole
+        // second, not at once and again and again.
+        assert_eq!(wake_after(1_000.999, 0.001), 0.05);
+        assert!((wake_after(1_000.25, 0.5) - 0.77).abs() < 1e-9);
         assert_eq!(line("a\nb"), "a b");
     }
 
