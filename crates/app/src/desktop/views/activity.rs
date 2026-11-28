@@ -116,10 +116,12 @@ fn lanes<'a>(
         let active = state.working() || state.needs_you();
         // Observations of an idle or offline agent are not activity: Backbone
         // records one for every agent when it starts keeping history.
-        // A state begun this very moment counts, though it has no width yet.
-        let worked = spans
-            .iter()
-            .any(|(from, to, state)| to >= from && *to > 0.0 && worked_state(state));
+        // The newest state, begun this very moment at the hour's end, counts
+        // though it has no width yet; one replaced at the same moment does not.
+        let last = spans.len().checked_sub(1);
+        let worked = spans.iter().enumerate().any(|(index, (from, to, state))| {
+            (to > from || (Some(index) == last && *to >= 1.0)) && worked_state(state)
+        });
         spans.retain(|(from, to, _)| to > from);
         let drawn = !ticks.is_empty() || active || worked;
         // What is still ahead and will change the lanes as it enters the
