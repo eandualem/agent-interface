@@ -382,7 +382,7 @@ impl NameField {
                 Some(Enter::Newline) => {
                     self.text.replace(None, "\n", false);
                 }
-                None => {}
+                None => return,
             },
             "u" if mods.control && !mods.alt && !mods.platform => {
                 self.text.anchor = 0;

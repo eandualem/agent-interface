@@ -2639,16 +2639,19 @@ extern "C" fn handle_key_equivalent(this: &Object, _: Sel, native_event: id) -> 
 /// still has GPUI focus: a click in the page never reaches GPUI's own focus.
 unsafe fn web_page_edit_key(this: &Object, native_event: id) -> bool {
     unsafe {
-        let modifiers = native_event.modifierFlags();
-        if !modifiers.contains(NSEventModifierFlags::NSCommandKeyMask)
-            || modifiers.contains(NSEventModifierFlags::NSControlKeyMask)
-            || modifiers.contains(NSEventModifierFlags::NSAlternateKeyMask)
-            || modifiers.contains(NSEventModifierFlags::NSShiftKeyMask)
-        {
+        // Read the key as GPUI's own bindings do, so every keyboard layout agrees.
+        let Some(PlatformInput::KeyDown(event)) = platform_input_from_native(native_event, None)
+        else {
             return false;
-        }
-        let key = native_event.charactersIgnoringModifiers();
-        if key == nil || !matches!(key.to_str(), "c" | "a") {
+        };
+        let (key, modifiers) = (event.keystroke.key.as_str(), event.keystroke.modifiers);
+        if !matches!(key, "c" | "a")
+            || !modifiers.platform
+            || modifiers.control
+            || modifiers.alt
+            || modifiers.shift
+            || modifiers.function
+        {
             return false;
         }
         let Some(web_view) = Class::get("WKWebView") else {
