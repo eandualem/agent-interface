@@ -91,7 +91,7 @@ pub fn record(payload: &Path, grid: Grid, work: &Path) -> io::Result<Recording> 
     }
 
     let server = TmuxServer::start()?;
-    // The pane keeps as much history as the engines, so tmux does the same
+    // The pane keeps as much history as the engine, so tmux does the same
     // work. The option applies to panes created after it.
     server.run(&[
         "set-option",
@@ -353,7 +353,6 @@ mod tests {
     use crate::compare::{compare, screen_from_capture};
     use crate::display::Screen;
     use crate::dump::dump;
-    use crate::engines::Ghostty;
     use crate::replay::{Schedule, replay};
 
     #[test]
@@ -385,7 +384,7 @@ mod tests {
             read_every: 5,
         };
         let mut screen = Screen::default();
-        replay::<Ghostty>(&recording.wire, recording.pane, grid, schedule, &mut screen).unwrap();
+        replay(&recording.wire, recording.pane, grid, schedule, &mut screen).unwrap();
         let tmux = dump(&screen_from_capture(&recording.capture, grid));
         let difference = compare(&tmux, &dump(&screen));
         assert!(difference.is_none(), "{difference:?}");

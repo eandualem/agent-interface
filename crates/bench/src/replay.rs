@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 use agent_interface_tmux::control::{self, Decoder, Message, PaneId};
 
 use crate::display::Screen;
-use crate::engine::{Engine, Grid};
+use crate::engine::Grid;
+use crate::engines::Ghostty;
 
 /// How a replay feeds the recording and reads display data out.
 #[derive(Clone, Copy, Debug)]
@@ -33,17 +34,17 @@ pub struct Replay {
     pub history: usize,
 }
 
-/// Replays `wire` into a new `E` engine, reading the screen out on
+/// Replays `wire` into a new engine, reading the screen out on
 /// `schedule` and once more after the last chunk, so the final output is
 /// always read out. `screen` holds the final read-out.
-pub fn replay<E: Engine>(
+pub fn replay(
     wire: &[u8],
     pane: PaneId,
     grid: Grid,
     schedule: Schedule,
     screen: &mut Screen,
 ) -> Result<Replay, control::Error> {
-    let mut engine = E::new(grid.cols, grid.rows, grid.scrollback);
+    let mut engine = Ghostty::new(grid.cols, grid.rows, grid.scrollback);
     let mut decoder = Decoder::new();
     let mut since_read = 0;
     let mut reads = 0;

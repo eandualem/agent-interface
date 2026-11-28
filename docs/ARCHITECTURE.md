@@ -79,7 +79,7 @@ refusal or ended stream leaves the reason and an explicit reopen action in the p
 | `tmux` | Server discovery and validation, control-mode protocol, pane capture, recovery and input commands |
 | `term` | Terminal engine ownership, input encoding and owned display snapshots |
 | `roster` | Agent Backbone roster and pane-view reads, plus explicit user feedback and access changes through bounded local requests |
-| `native-fs` | Safe descriptor-based native filesystem checks; narrowly scoped Darwin ACL FFI, no paths or application state |
+| `native-fs` | Safe descriptor-based native filesystem checks and child signal-mask reset; narrowly scoped Darwin ACL and signal-mask FFI, no paths or application state |
 | `webview-host` | Borrowed XCB-to-Xlib window-handle adaptation for Linux document embedding; no application state or process ownership |
 | `app` | Native windows, input routing, storage and terminal workers, and integration between the other crates |
 | `install` | The installer's `backbone-install` commands: verify an Agent Backbone release and put Backbone in place; no app state |
@@ -1041,7 +1041,7 @@ build-time advisory exception are described below.
 - **`async-executor` 1.14.1:** MIT OR Apache-2.0, locked for the Linux
   accessibility and asynchronous service stack. This replaces yanked 1.14.0
   and fixes its executor-teardown use-after-free regression.
-- **GPUI (`gpui-pre` and platform packages):** native windowing and GPU drawing,
+- **GPUI (`gpui-pre`, `gpui-pre-platform` and `gpui-pre-macos`):** native windowing and GPU drawing,
   pinned as one package family. Apache-2.0. The macOS 0.3.9 backend is
   [vendored with a narrow native focus correction](../native/gpui-macos/README.md):
   window focus queries reach the content-view accessibility adapter, and the
@@ -1072,23 +1072,27 @@ build-time advisory exception are described below.
   [`packaging/extra-notices.txt`](../packaging/extra-notices.txt). No code is
   taken from them, and no crate is added.
 - **`libghostty-vt`:** terminal emulation behind the `term` boundary, pinned with
-  its native binding. MIT OR Apache-2.0; Ghostty's core is MIT-licensed.
+  its native binding, `libghostty-vt-sys`, which `term` lists only to hold that
+  pin. Both MIT OR Apache-2.0; Ghostty's core is MIT-licensed. The benchmark's
+  tests also use `libghostty-vt` to encode input for a protocol probe.
 - **`rusqlite`:** transactional access to the existing SQLite library format.
   MIT. Its bundled SQLite uses SQLite's public-domain dedication. Runtime limits
   bound values; serialization writes the initial database through an open file handle.
 - **`libc`:** Unix constants for nonblocking configuration reads in the app,
   the existing process integration, and resident-memory readings in
-  the terminal tests. MIT OR Apache-2.0.
+  the terminal tests and the benchmark; `native-fs` uses its system types.
+  MIT OR Apache-2.0.
 - **`wry` 0.57.1:** system WebKit child views for HTML Documents and legacy
   artifacts on macOS and Linux, pinned exactly. MIT OR Apache-2.0.
   The local `native/wry` patch enables the Linux process sandbox before view
   construction. It does not render terminals or supply a bundled browser engine.
 - **`gtk` 0.18.2, `gdkx11` 0.18.2 and `webkit2gtk` 2.0.2:** MIT-licensed Rust bindings, pinned
   exactly, for the Linux system WebKitGTK 4.1 runtime, native security settings
-  and GTK event dispatch. Their MIT GLib 0.18.5 dependency uses the local
+  and GTK event dispatch. Their MIT `glib` 0.18.5 dependency uses the local
   `native/glib` backport of upstream gtk-rs-core#1343, fixing the mutable
   output-pointer bug in `VariantStrIter` (RUSTSEC-2024-0429); an optimized Linux
-  regression test exercises both iteration directions. GTK and WebKitGTK remain dynamically linked system
+  regression test in `webview-host`, its one direct user, exercises both
+  iteration directions. GTK and WebKitGTK remain dynamically linked system
   libraries, installed and updated through the distribution's package manager.
 - **`target-lexicon` 0.12.16:** Apache-2.0 WITH LLVM-exception; build-time
   target detection through GTK's `system-deps`. GTK's build-time
@@ -1097,7 +1101,7 @@ build-time advisory exception are described below.
   GTK3 binding graph can be replaced.
 - **`gpui-pre-linux` 0.3.9:** existing Apache-2.0 platform implementation,
   now selected explicitly for the X11 host needed by embedded WebKitGTK.
-- **Hyper 1.12.0, hyper-util 0.1.21, http-body-util 0.1.5 and Tokio 1.53.3:**
+- **`hyper` 1.12.0, `hyper-util` 0.1.21, `http-body-util` 0.1.5 and `tokio` 1.53.3:**
   MIT HTTP/runtime dependencies, pinned exactly, for HTTP over a connected
   Unix socket after the peer identity check.
 - **`rustix` 1.1.6:** effective-UID access for that check. MIT OR Apache-2.0
@@ -1108,7 +1112,11 @@ build-time advisory exception are described below.
   ephemeral data store before document execution. The app calls a safe bridge
   function through the existing GPUI macOS package, pinned to 0.3.9.
 - **`sha2`:** existing MIT OR Apache-2.0 workspace dependency, also used by
-  the document adapter to verify the server-provided HTML digest.
+  the document adapter to verify the server-provided HTML digest and by the
+  roster to check library snapshots' digests. With `serde_json`, it is also a
+  build dependency of `term`, whose build script checks the native patch
+  against `native/ghostty.json`. The `install` crate's tests use `sha2`
+  0.11.1 to write the digests of fixture releases.
 - **`html5ever` 0.39.0:** MIT OR Apache-2.0, pinned exactly. Its tokenizer
   finds Git pointers in Documents. `Cargo.lock` already listed it through
   Wry's Android target, so no version is added; macOS and Linux builds now
@@ -1128,7 +1136,8 @@ build-time advisory exception are described below.
   Apache-2.0), beside the workspace's `sha2` 0.10.9.
 - **`semver` 1.0.28:** MIT OR Apache-2.0, pinned exactly as above. The
   `roster` crate also uses it to compare the version a service reports with
-  the lowest Backbone the app supports.
+  the lowest Backbone the app supports, and the `install` crate to read the
+  installed Backbone's version, the lowest a release may have.
 - **`tar` 0.4.46:** MIT OR Apache-2.0, pinned exactly with default features
   off, as Agent Backbone pins it; reads Backbone's release archive in the
   `install` crate. It adds `filetime` 0.2.30 (MIT OR Apache-2.0). The existing
@@ -1140,12 +1149,15 @@ build-time advisory exception are described below.
   (MIT), `rpassword` 7.5.5 and `rtoolbox` 0.0.6 (Apache-2.0) are in test
   builds only.
 - **`base64` 0.23.1:** MIT OR Apache-2.0, pinned exactly. The roster sends a
-  skill folder's files to the Rust Backbone service in Base64, and the app
-  reads the screencast frames of agents' browsers from Base64.
+  skill folder's files to the Rust Backbone service in Base64 and carries a
+  remote terminal's data in Base64 frames, and the app reads the screencast
+  frames of agents' browsers from Base64.
 - **`serde`, `serde_json`, `uuid` and `tempfile`:** existing workspace
   dependencies also used by artifact metadata, publication IDs and atomic
-  staging. The macOS adapter also uses `tempfile` 3.27.0 (exact pin) for private
-  screenshot-drop staging. Each is MIT OR Apache-2.0.
+  staging. `tempfile` 3.27.0 is a caret requirement, used in production by the
+  app, `store` and `install` for atomic writes and staging, and by
+  `test-support` and the benchmark for private tmux and work directories.
+  Each is MIT OR Apache-2.0.
 - **`pulldown-cmark` 0.13.6:** MIT-licensed CommonMark parser, pinned exactly
   with default features off, behind the one Markdown reader that skills,
   policies, reports, answers, conversation messages, interaction messages and
@@ -1180,6 +1192,50 @@ build-time advisory exception are described below.
   feature. It names local days and times for records and messages without
   `unsafe` code in the app. GPUI already builds the same version and feature,
   so it adds no package to the graph.
+- **`futures` 0.3.34:** MIT OR Apache-2.0. Channels, streams and futures that
+  carry results from the app's background work to its windows.
+- **`toml` 0.8.23:** MIT OR Apache-2.0, pinned exactly. Reads the design tokens
+  and the app's `settings.toml`.
+- **`uzers` 0.12.2:** MIT, pinned exactly with default features off. Looks up
+  the current user's ID and home folder for the library location, the shell
+  servers and the diagnostics' ownership checks in the app, and the home folder
+  of `tmux`'s shells when `HOME` is unset.
+- **`unicode-segmentation` 1.13.3:** MIT OR Apache-2.0, pinned exactly.
+  Grapheme boundaries for the app's text fields, theme editor and selection.
+- **`unicode-properties` 0.1.4:** MIT/Apache-2.0, pinned exactly with only its
+  general categories, with which `core`, `store`, `tmux` and the app's name
+  field classify the characters of names and queries, such as keeping out
+  control, format and separator characters.
+- **`caseless` 0.2.2:** MIT, pinned exactly. Full Unicode case folding for
+  attachment filters in `core`.
+- **`memchr` 2.8.3:** Unlicense OR MIT. Fast byte searches in the `tmux`
+  control-mode decoder and `term`'s escape-sequence scanning.
+- **`thiserror` 2.0.21:** MIT OR Apache-2.0. The error types of `store`,
+  `term` and `tmux`.
+- **`signal-hook` 0.4.5:** MIT OR Apache-2.0. Lets `test-support` stop the
+  private tmux servers of tests and benchmarks on an interrupt.
+- **`x11rb` 0.13.2:** MIT OR Apache-2.0, pinned exactly, Linux only. Sets
+  decoration hints on the app's own X11 windows.
+- **The benchmark's macOS display stack:** `block2` 0.6.2 (MIT),
+  `objc2-foundation` 0.3.2 (MIT), and `dispatch2` 0.3.1,
+  `objc2-core-foundation`, `objc2-core-graphics`, `objc2-core-media`,
+  `objc2-core-video` and `objc2-screen-capture-kit` 0.3.2 (each Zlib OR
+  Apache-2.0 OR MIT), with the workspace's `objc2`. Gates 2 to 4 capture
+  windows with ScreenCaptureKit and list windows and post key events through
+  Core Graphics. They are the versions GPUI's macOS backend uses, so they add
+  no second copies.
+
+`deny.toml` ignores eight advisories, each for an unmaintained crate with no
+known vulnerability: `proc-macro-error` (RUSTSEC-2024-0370, through GTK, above),
+`paste` (RUSTSEC-2024-0436, through GPUI's `metal` and `image`), `rustybuzz`
+(RUSTSEC-2026-0206, through GPUI's `usvg`), `ttf-parser` (RUSTSEC-2026-0192,
+in `gpui-pre` and `usvg`), `zvariant`, `zbus_names` and `zvariant_derive`
+(RUSTSEC-2026-0370, RUSTSEC-2026-0371 and RUSTSEC-2026-0372, through GPUI's
+Linux backend, `accesskit_unix` and `zbus` 5) and `chrono` (RUSTSEC-2026-0543,
+with no safe upgrade). Beside the allowed licences, it makes three narrow
+exceptions: Apache-2.0 WITH LLVM-exception for `target-lexicon` (above), and
+MPL-2.0 for `cbindgen`, a build dependency of GPUI's Apple backend, and
+`option-ext`, through `dirs-sys`, each unmodified.
 
 The native terminal source is prepared from a pinned Ghostty commit plus
 [`native/ghostty.patch`](../native/ghostty.patch). Among its changes, the patch
@@ -2077,8 +2133,9 @@ mode bits alone cannot establish privacy there. This deliberately includes
 otherwise restrictive ACLs. Opening an existing journal syncs its parent too,
 so an interrupted directory initialization cannot bypass that durability step.
 
-The MIT `native-fs` workspace crate keeps Darwin ACL FFI outside the safe app
-crate. It uses the existing MIT/Apache-2.0 `libc` dependency for system types; no
+The MIT `native-fs` workspace crate keeps Darwin ACL FFI, and the
+signal-mask reset for processes the app starts, outside the safe app crate. It
+uses the existing MIT/Apache-2.0 `libc` dependency for system types; no
 additional third-party dependency or service is introduced.
 
 The app's lifecycle controller stores exact request intent before submission and

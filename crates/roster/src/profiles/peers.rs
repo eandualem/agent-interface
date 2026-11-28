@@ -327,16 +327,6 @@ impl Connection {
         self.read_peer(ROOT.into())
     }
 
-    /// Look up an invitation by its original request ID.
-    pub fn peer_invitation(&self, id: &str) -> Result<Invitation, Error> {
-        self.read_peer(format!("{ROOT}/requests/{}", segment(id)?))
-    }
-
-    /// Read the current state and gates of a generation.
-    pub fn peer_connection(&self, generation: &str) -> Result<Peer, Error> {
-        self.read_peer(format!("{ROOT}/{}", segment(generation)?))
-    }
-
     /// Read one history page and verify that every message belongs to the selected generation.
     pub fn peer_history(
         &self,

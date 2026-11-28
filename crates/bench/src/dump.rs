@@ -1,5 +1,5 @@
-//! The comparison format for final screens: one line per cell, so screens
-//! from different engines and processes compare as text.
+//! The comparison format for final screens: one line per cell, so the replay
+//! child's screen and tmux's capture compare as text.
 
 use std::fmt::Write as _;
 
