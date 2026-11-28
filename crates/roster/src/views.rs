@@ -943,6 +943,11 @@ pub struct Agent {
     pub current_repo: Option<String>,
     /// How long it has been in its state.
     pub state_age_seconds: Option<f64>,
+    /// When it entered its state, in seconds since the Unix epoch by this
+    /// machine's clock: left for a reader to work out from
+    /// `state_age_seconds` and the time of its read.
+    #[serde(skip)]
+    pub state_began: Option<f64>,
     /// Its last reply, clipped by Backbone.
     pub last_message: Option<String>,
     /// Sources it is subscribed to.

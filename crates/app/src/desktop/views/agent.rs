@@ -563,7 +563,11 @@ pub(super) fn overview<V: 'static>(
 ) -> AnyElement {
     let (t, c) = (tokens(), colors());
     let matching = state == AgentState::from_runtime(&agent.state);
-    let age = matching.then_some(agent.state_age_seconds).flatten();
+    // Since when, so the label clock ages it between reads.
+    let age = matching
+        .then_some(agent.state_began)
+        .flatten()
+        .map(|began| now() as f64 - began);
     let stale_evidence = (matching
         && agent.state_source.as_deref() == Some("stale")
         && state != AgentState::Offline)
@@ -603,7 +607,7 @@ pub(super) fn overview<V: 'static>(
                         )
                         .child(div().text_color(c.muted).child(format!(
                             "{} ago · it does nothing more until someone answers in its terminal",
-                            age.map(ago).unwrap_or_default()
+                            age.map(ago_now).unwrap_or_default()
                         ))),
                 )
                 .children(agent.last_message.as_ref().map(|message| {
@@ -670,7 +674,7 @@ pub(super) fn overview<V: 'static>(
             .child(ui::fact(
                 "In this state",
                 div().child(
-                    age.map(ago)
+                    age.map(ago_now)
                         .map(|age| format!("for {age}"))
                         .unwrap_or_else(|| "unknown".into()),
                 ),

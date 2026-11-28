@@ -345,7 +345,10 @@ impl Card {
                     return;
                 }
                 let (snapshot, error) = match result {
-                    Ok(snapshot) => (Some(snapshot), None),
+                    Ok(mut snapshot) => {
+                        super::settle_agent(&mut snapshot.agent);
+                        (Some(snapshot), None)
+                    }
                     // A refused/replaced registration must not leave a card
                     // looking current under a different agent's live state.
                     Err(error) => (

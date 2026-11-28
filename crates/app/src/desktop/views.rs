@@ -1511,12 +1511,19 @@ fn apply_read(
     update: Result<Data, &'static str>,
 ) -> bool {
     match update {
-        Ok(new) => {
+        Ok(mut new) => {
+            if let Data::Agent(agent) = &mut new {
+                settle_agent(agent);
+            }
             let observed = match &new {
                 Data::Reports(page) => reports.observe(page),
                 _ => false,
             };
-            let changed = observed || error.is_some() || data.as_ref() != Some(&new);
+            let changed = observed
+                || error.is_some()
+                || data
+                    .as_ref()
+                    .is_none_or(|old| presented(old) != presented(&new));
             *data = Some(new);
             *error = None;
             *read_at = Some(std::time::Instant::now());
@@ -1556,6 +1563,53 @@ pub(super) fn ago_now(seconds: f64) -> String {
     };
     rolls_in(unit - age % unit);
     ago(seconds)
+}
+
+/// When something Backbone reports `age` seconds old began, by this
+/// machine's clock to the second: stored in place of the age, which grows
+/// with every read, so an unchanged read compares equal and the label
+/// clock ages it.
+pub(super) fn began(age: f64) -> f64 {
+    began_at(views::now() as f64, age)
+}
+
+fn began_at(now: f64, age: f64) -> f64 {
+    (now - age).round()
+}
+
+/// An agent card as it arrives: since when it is in its state, not for how
+/// long.
+pub(super) fn settle_agent(agent: &mut views::Agent) {
+    agent.state_began = agent.state_age_seconds.take().map(began);
+}
+
+/// Members as a view shows them. Backbone sends the read time as an online
+/// agent's `state_since`, and its evidence, on every read; neither is drawn
+/// from a view's members (the roster's own copy is).
+pub(super) fn quiet_members<'a>(members: impl IntoIterator<Item = &'a mut views::Member>) {
+    for member in members {
+        member.state_since = None;
+        member.evidence.clear();
+    }
+}
+
+/// `data` as the pane presents it, so a read that changes only what is
+/// not drawn does not redraw the window.
+fn presented(data: &Data) -> std::borrow::Cow<'_, Data> {
+    use std::borrow::Cow;
+    match data {
+        Data::Team(team) => {
+            let mut team = team.clone();
+            quiet_members(&mut team.members);
+            Cow::Owned(Data::Team(team))
+        }
+        Data::Activity(activity) => {
+            let mut activity = activity.clone();
+            quiet_members(&mut activity.members);
+            Cow::Owned(Data::Activity(activity))
+        }
+        _ => Cow::Borrowed(data),
+    }
 }
 
 /// Redraws a view once, when the soonest age or day label it drew would
@@ -1676,6 +1730,10 @@ mod tests {
         assert!(!read(Err(views::UNAVAILABLE)));
         assert!(read(Ok(card("reviewer"))));
         assert!(read_at.is_some());
+        // An age Backbone reports is kept as when it began, which a later
+        // read of an unchanged agent gives too.
+        assert_eq!(began_at(1_000.0, 130.4), began_at(1_003.0, 133.4));
+        assert_ne!(began_at(1_000.0, 130.4), began_at(1_003.0, 73.4));
     }
 
     #[test]

@@ -169,12 +169,13 @@ impl Plans {
         self.applied = number;
         // An unchanged read must not redraw the window.
         let changed = match read {
-            Ok(read) if self.source.accepts(&read) => {
-                let page = Some(read.page);
-                let changed = self.frame.page != page
-                    || self.frame.members != read.members
+            Ok(mut read) if self.source.accepts(&read) => {
+                settle(&mut read.page);
+                let changed = self.frame.page.as_ref().map(page_as_shown)
+                    != Some(page_as_shown(&read.page))
+                    || members_as_shown(&self.frame.members) != members_as_shown(&read.members)
                     || self.frame.error.is_some();
-                self.frame.page = page;
+                self.frame.page = Some(read.page);
                 self.frame.members = read.members;
                 self.frame.error = None;
                 changed
@@ -395,9 +396,13 @@ impl Frame {
         entries.sort_by_key(|entry| match &entry.record {
             Some(record) => {
                 let waiting = record.plan.blocked() || self.state(&entry.agent_name).needs_you();
-                (u8::from(!waiting), record.age_seconds)
+                // Newest first.
+                (
+                    u8::from(!waiting),
+                    std::cmp::Reverse(published(record) as i64),
+                )
             }
-            None => (2, u64::MAX),
+            None => (2, std::cmp::Reverse(i64::MIN)),
         });
         entries
     }
@@ -537,8 +542,43 @@ fn short(target: &str) -> String {
     }
 }
 
-fn updated(age_seconds: u64) -> String {
-    format!("updated {} ago", super::ago(age_seconds as f64))
+/// A page as it arrives: each plan's age as when it was published, which
+/// a later read of an unchanged plan gives too.
+fn settle(page: &mut PlansPage) {
+    for record in page
+        .items
+        .iter_mut()
+        .filter_map(|entry| entry.record.as_mut())
+    {
+        record.published = Some(super::began(std::mem::take(&mut record.age_seconds) as f64));
+    }
+}
+
+/// When a plan was published, by this machine's clock.
+fn published(record: &plans::Record) -> f64 {
+    record
+        .published
+        .unwrap_or_else(|| super::began(record.age_seconds as f64))
+}
+
+/// A page as the section draws it, so a read that changes nothing drawn
+/// does not redraw: when the page was made is not shown.
+fn page_as_shown(page: &PlansPage) -> PlansPage {
+    let mut page = page.clone();
+    page.generated_at.clear();
+    page
+}
+
+/// The plan read's members as the section draws them: only their runtimes.
+fn members_as_shown(members: &BTreeMap<String, Member>) -> BTreeMap<String, Member> {
+    let mut members = members.clone();
+    super::quiet_members(members.values_mut());
+    members
+}
+
+fn updated(record: &plans::Record) -> String {
+    let age = agent_interface_roster::views::now() as f64 - published(record);
+    format!("updated {} ago", super::ago_now(age))
 }
 
 /// One agent's card: its mark, name and runtime, the plan's title, the steps
@@ -622,10 +662,7 @@ fn card(pane: &ViewPane, plans: &Frame, entry: &Entry, cx: &mut Context<ViewPane
                 .when(record.stale, |el| {
                     el.child(ui::tag("stale", ui::Tone::Quiet))
                 })
-                .child(
-                    ui::text(div().text_color(c.muted), &t.text.meta)
-                        .child(updated(record.age_seconds)),
-                )
+                .child(ui::text(div().text_color(c.muted), &t.text.meta).child(updated(record)))
                 .child(ui::icon("chevron-right", t.size.icon, c.faint)),
         )
         .child(
@@ -1089,7 +1126,7 @@ fn opened(
         &t.text.body,
     ))
     .children(runtime(plans, &entry.agent_name))
-    .child(format!("· current plan · {}", updated(record.age_seconds)));
+    .child(format!("· current plan · {}", updated(record)));
     let main = div()
         .flex_1()
         .min_w_0()
