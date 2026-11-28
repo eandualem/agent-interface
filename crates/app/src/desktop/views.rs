@@ -890,7 +890,10 @@ impl ViewPane {
         if let Some(source) = &self.source {
             source.set_request(self.request());
         }
-        cx.notify();
+        // A hidden pane is drawn afresh when shown.
+        if self.visible.get() {
+            cx.notify();
+        }
     }
 
     fn set_range(&mut self, range: Range, cx: &mut Context<Self>) {

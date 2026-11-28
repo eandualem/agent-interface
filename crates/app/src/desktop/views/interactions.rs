@@ -326,7 +326,9 @@ impl Interactions {
 
     pub fn link_failed(&mut self, error: &'static str, cx: &mut Context<Self>) {
         self.link_error = Some(error);
-        cx.notify();
+        if self.shown && self.visible.get() {
+            cx.notify();
+        }
     }
 
     pub fn is_selected(&self, id: &str, request: u64) -> bool {
