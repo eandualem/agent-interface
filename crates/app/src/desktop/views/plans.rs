@@ -173,7 +173,8 @@ impl Plans {
         let changed = match read {
             Ok(mut read) if self.source.accepts(&read) => {
                 settle(&mut read);
-                let changed = self.frame.page.as_ref() != Some(&read.page)
+                let changed = self.frame.page.as_ref().map(drawn_page)
+                    != Some(drawn_page(&read.page))
                     || !runtimes_alike(&self.frame.members, &read.members)
                     || self.frame.error.is_some();
                 self.frame.page = Some(read.page);
@@ -569,22 +570,32 @@ fn settle(read: &mut Read) {
         .filter_map(|entry| entry.record.as_mut())
     {
         // With its own time, the age is not needed; without, it is kept
-        // only to the unit its label shows, so reads showing the same
-        // compare the same.
-        record.age_seconds = match published_at(record) {
-            Some(_) => 0,
-            None => {
-                let age = record.age_seconds;
-                let unit = match age {
-                    0..60 => 1,
-                    60..3_600 => 60,
-                    3_600..86_400 => 3_600,
-                    _ => 86_400,
-                };
-                age - age % unit
-            }
-        };
+        // whole for the order, and compared only as its label shows it.
+        if published_at(record).is_some() {
+            record.age_seconds = 0;
+        }
     }
+}
+
+/// A page as the section draws it: an age kept for want of a time only to
+/// the unit its label shows, so reads that show the same compare the same.
+fn drawn_page(page: &PlansPage) -> PlansPage {
+    let mut page = page.clone();
+    for record in page
+        .items
+        .iter_mut()
+        .filter_map(|entry| entry.record.as_mut())
+    {
+        let age = record.age_seconds;
+        let unit = match age {
+            0..60 => 1,
+            60..3_600 => 60,
+            3_600..86_400 => 3_600,
+            _ => 86_400,
+        };
+        record.age_seconds = age - age % unit;
+    }
+    page
 }
 
 /// When a plan was published, from its RFC 3339 time with any offset.
