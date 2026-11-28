@@ -3062,6 +3062,45 @@ impl Browser {
     /// local agent, or one on another machine of the bound profile. None for
     /// another profile's agent, a session on another tmux server, whatever
     /// its name, or a pane whose profile has no roster.
+    /// Tell each terminal of its agent's restart from the roster, as a
+    /// render does: a roster read that changed nothing still says when it
+    /// was read, which a restart under way waits on. A terminal redraws
+    /// only when its restart moves on.
+    pub(super) fn follow_restarts(&mut self, cx: &mut Context<Self>) {
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        for leaf in layout
+            .model()
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.tabs)
+            .flat_map(|tab| tab.tree.leaves())
+        {
+            let Some(terminal) = self.terminals.get(&leaf.id) else {
+                continue;
+            };
+            // Only while it still holds the connection that roster is from.
+            let current = self
+                .pane_connection(&leaf.id)
+                .ok()
+                .flatten()
+                .map(|connection| connection.connection_key());
+            let held = terminal
+                .read(cx)
+                .target
+                .connection
+                .as_ref()
+                .map(|connection| connection.connection_key());
+            if let Some(status) = (current.is_some() && held == current)
+                .then(|| self.pane_agent(leaf))
+                .flatten()
+            {
+                terminal.update(cx, |terminal, cx| terminal.set_restart(Some(status), cx));
+            }
+        }
+    }
+
     fn pane_agent(&self, leaf: &Leaf) -> Option<(String, agent_status::LiveAgents)> {
         let attachment = leaf.attachment.as_ref()?;
         let connection = self.pane_connection(&leaf.id).ok()??;
