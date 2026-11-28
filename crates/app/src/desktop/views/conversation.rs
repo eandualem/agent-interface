@@ -995,7 +995,9 @@ impl Conversation {
                     stored.earlier = entries;
                     stored.earlier_cursor = page.older;
                 }
-                cx.notify();
+                if conversation.shown() {
+                    cx.notify();
+                }
             });
         })
         .detach();
