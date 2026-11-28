@@ -148,6 +148,10 @@ pub(super) struct Conversation {
     thread_focus: FocusHandle,
     /// Redraws a thread drawn on its own when its day labels change.
     clock: super::Clock,
+    /// The newest entry a frame painted at the bottom of the open thread,
+    /// kept so a read marker that failed is asked again by the poll, which
+    /// no longer redraws when nothing changed.
+    painted: Option<u64>,
     _poll: Option<Task<()>>,
     _input: Subscription,
 }
@@ -722,6 +726,7 @@ impl Conversation {
             selection: RefCell::default(),
             thread_focus: cx.focus_handle(),
             clock: super::Clock::default(),
+            painted: None,
             _poll: None,
             _input: input,
         }
@@ -819,6 +824,9 @@ impl Conversation {
         let due = if self.open { OPEN_POLL } else { CLOSED_POLL };
         if self.shown() && stored.read_at.is_none_or(|at| at.elapsed() >= due) {
             self.refresh(cx);
+        }
+        if let Some(painted) = self.painted {
+            self.mark_read(painted, cx);
         }
         Some(OPEN_POLL)
     }
@@ -998,6 +1006,7 @@ impl Conversation {
         if !(self.open && self.shown()) {
             return;
         }
+        self.painted = self.painted.max(Some(painted_last));
         let target = self.target();
         let Some(stored) = self.stored.as_mut() else {
             return;
