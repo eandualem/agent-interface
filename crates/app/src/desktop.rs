@@ -3630,8 +3630,13 @@ impl Render for Browser {
                     && expanded.is_none_or(|focused| focused == id),
                 cx,
             );
+            // After this frame: a view told of a change while the window
+            // draws would not be drawn again.
             if appeared {
-                view.update(cx, |view, cx| view.wake(cx));
+                let view = view.downgrade();
+                window.on_next_frame(move |_, cx| {
+                    let _ = view.update(cx, |view, cx| view.wake(cx));
+                });
             }
             // Native child views are above GPUI drawing. Hide them while a
             // popover or geometry gesture needs that space or its pointer input.
