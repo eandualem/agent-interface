@@ -156,6 +156,13 @@ impl Summary {
     }
 }
 
+/// Sent after every overview read and on every change of the stream's
+/// state, for the Connections pane, which reads a connection's history
+/// again then. Windows, which draw only the summary and whether it failed,
+/// are notified only when those change.
+pub(super) struct Updated;
+impl gpui::EventEmitter<Updated> for Inbox {}
+
 #[derive(Default)]
 pub(super) struct Sources(HashMap<ConnectionKey, WeakEntity<Inbox>>);
 impl Global for Sources {}
@@ -293,6 +300,7 @@ impl Inbox {
             if self.error.as_deref() != Some(error) || self.lost != lost {
                 self.error = Some(error.into());
                 self.lost = lost;
+                cx.emit(Updated);
                 cx.notify();
             }
             return;
@@ -310,10 +318,10 @@ impl Inbox {
             let result = read.await;
             let _ = this.update(cx, |inbox, cx| {
                 inbox.reading = false;
-                // Whether the panel's counts may differ, for the global, and
-                // whether observers are told: after every overview read, but
-                // a repeated failure, or a read the stream's end discarded,
-                // changes nothing they show.
+                // Whether what is drawn changed, for the global and the
+                // windows, and whether the Connections pane is told: after
+                // every overview read, but a repeated failure, or a read the
+                // stream's end discarded, changes nothing it shows.
                 let mut changed = false;
                 let mut read = false;
                 if inbox.online.load(Ordering::Acquire) {
@@ -345,8 +353,11 @@ impl Inbox {
                 // Each read follows the stream's word of a change, its
                 // opening or an explicit refresh, never a timer: a change
                 // the overview does not show, such as a connection's
-                // history, is read again by whoever observes this.
+                // history, is read again by the Connections pane.
                 if read || changed {
+                    cx.emit(Updated);
+                }
+                if changed {
                     cx.notify();
                 }
             });

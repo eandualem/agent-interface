@@ -2,7 +2,7 @@
 use super::card::{self, LOCAL_AGENT};
 use super::rules;
 use super::*;
-use crate::desktop::peer_inbox::{Inbox, Selection, Summary, failure};
+use crate::desktop::peer_inbox::{Inbox, Selection, Summary, Updated, failure};
 use crate::desktop::views::clock::Local;
 use agent_interface_roster::profiles::{AddError, Connection, Error, peers as api};
 use api::{Direction, EventKind, Policy};
@@ -393,7 +393,7 @@ impl Live {
         cx: &mut Context<Pane>,
     ) -> Self {
         let inbox = Inbox::shared(&connection, cx);
-        let subscription = cx.observe(&inbox, |pane, _, cx| pane.inbox_updated(cx));
+        let subscription = cx.subscribe(&inbox, |pane, _, _: &Updated, cx| pane.inbox_updated(cx));
         let pane = cx.weak_entity();
         cx.defer(move |cx| {
             let _ = pane.update(cx, |p, cx| p.inbox_updated(cx));
