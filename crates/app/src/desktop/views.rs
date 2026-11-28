@@ -350,7 +350,9 @@ impl ViewPane {
         if let Some(card) = &self.bound_agent {
             card.update(cx, |card, cx| {
                 card.refresh(cx);
-                cx.notify();
+                if card.shown {
+                    cx.notify();
+                }
             });
         }
     }

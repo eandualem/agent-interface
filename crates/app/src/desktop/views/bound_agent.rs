@@ -148,7 +148,7 @@ pub(super) struct Card {
     registration: String,
     removal: Removal,
     /// False while its pane shows a reader over it.
-    shown: bool,
+    pub(super) shown: bool,
     removal_error: Option<&'static str>,
     action_in_flight: bool,
     action_notice: Option<String>,
@@ -382,7 +382,7 @@ impl Card {
                 if card.snapshot != snapshot || card.error != error {
                     card.snapshot = snapshot;
                     card.error = error;
-                    if card.visible.get() {
+                    if card.visible.get() && card.shown {
                         cx.notify();
                     }
                 }

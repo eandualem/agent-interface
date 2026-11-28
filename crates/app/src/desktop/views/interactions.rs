@@ -741,7 +741,9 @@ impl Interactions {
                     Ok(item) => this.selected = Some(item),
                     Err(error) => this.detail_error = Some(error),
                 }
-                cx.notify();
+                if this.shown && this.visible.get() {
+                    cx.notify();
+                }
             });
         })
         .detach();

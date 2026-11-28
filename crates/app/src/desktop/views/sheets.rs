@@ -280,7 +280,9 @@ impl Sheets {
                     }
                     Err(e) => s.error = Some(e.message().into()),
                 }
-                cx.notify();
+                if s.shown && s.visible.get() {
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -375,7 +377,9 @@ impl Sheets {
                     }
                     Err(e) => s.error = Some(e.message().into()),
                 }
-                cx.notify();
+                if s.shown && s.visible.get() {
+                    cx.notify();
+                }
             });
         })
         .detach();
