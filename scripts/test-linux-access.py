@@ -409,15 +409,31 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
                 wheel("5", 3)
                 return containing("SITE_")
             wait_for(secret_shown, "docs-site's secret, scrolled to")
-            # The detail keeps its scroll for the next agent, so it goes back
-            # to the top, where the confinement line and segment are.
-            wheel("4", 30)
-            wait_for(lambda: find("everything"), "docs-site's detail scrolled back to the top")
+            # The detail's first heading, ROLE AND PLACE, is now above view.
+            wait_for(lambda: not find("ROLE"), "docs-site's first heading scrolled out of view")
+
+            # Another agent's detail opens at its top, not at docs-site's
+            # scroll. Planner is not in docs-site's "answers to" line.
+            click_agent("planner")
+            # The header's role pill: planner is a coordinator, while builder,
+            # whose row names planner, and docs-site are main agents. A row
+            # shows no role.
+            wait_for(lambda: find("Coordinator"), "planner's detail")
+            wait_for(lambda: find("ROLE"), "planner's detail shown from its top")
+            # Planner's own detail scrolls far enough to hide that heading, so
+            # an offset carried over from docs-site would have hidden it too.
+            def planner_heading_hidden():
+                wheel("5", 3)
+                return not find("ROLE")
+            wait_for(planner_heading_hidden, "planner's first heading scrolled out of view")
 
             # Backbone refuses the confinement change; its reason is shown.
             click_agent("tester")
-            # A sandboxed agent's line, "Reaches only what is listed below.";
-            # docs-site's line also starts with "Reaches".
+            # Planner is sandboxed too, so its confinement line and segment
+            # match below until tester's detail replaces it: at its top, and
+            # without planner's Coordinator role.
+            wait_for(lambda: find("ROLE") and not find("Coordinator"), "tester's detail in place of planner's")
+            # A sandboxed agent's line, "Reaches only what is listed below.".
             wait_for(lambda: find("listed"), "tester's confinement line")
             # The detail's Unsandboxed segment is the lowest, below the
             # toolbar's filter chip of the same word.
