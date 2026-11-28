@@ -133,7 +133,8 @@ pub(super) fn serve(pane: &mut ViewPane, document: &DocumentRevision, cx: &mut C
             _ => html,
         };
         let _ = pane.update(cx, |pane, cx| {
-            if pane.documents.finish(made, served) {
+            // Hidden, the page is kept and drawn on show.
+            if pane.documents.finish(made, served) && pane.visible.get() {
                 cx.notify();
             }
         });

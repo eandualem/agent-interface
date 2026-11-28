@@ -134,7 +134,10 @@ impl ArtifactPane {
                         Ok(html) => pane.html = Some(Arc::from(html)),
                         Err(error) => pane.error = Some(error.to_string()),
                     }
-                    cx.notify();
+                    // Hidden, it is kept and drawn on show.
+                    if pane.visible.get() {
+                        cx.notify();
+                    }
                 }
             });
         })
