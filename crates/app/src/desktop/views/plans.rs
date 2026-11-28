@@ -80,7 +80,8 @@ struct Frame {
     agents: crate::desktop::agent_status::LiveAgents,
     /// The plans last read, kept when a later read fails.
     page: Option<PlansPage>,
-    /// When `page` was read, in seconds since the Unix epoch.
+    /// When Backbone made `page`, or else when it was read, in seconds
+    /// since the Unix epoch: what its ages count back from.
     read: f64,
     connection: Connection,
     /// Drafts and unresolved deliveries keep their observed plans accessible.
@@ -172,13 +173,16 @@ impl Plans {
         // An unchanged read must not redraw the window.
         let changed = match read {
             Ok(mut read) if self.source.accepts(&read) => {
+                // Ages were measured when Backbone made the page, by its clock.
+                let made = rfc3339(&read.page.generated_at)
+                    .unwrap_or(agent_interface_roster::views::now() as f64);
                 settle(&mut read);
                 let changed = self.frame.page.as_ref().map(drawn_page)
                     != Some(drawn_page(&read.page))
                     || !runtimes_alike(&self.frame.members, &read.members)
                     || self.frame.error.is_some();
                 self.frame.page = Some(read.page);
-                self.frame.read = agent_interface_roster::views::now() as f64;
+                self.frame.read = made;
                 self.frame.members = read.members;
                 self.frame.error = None;
                 changed
@@ -601,7 +605,12 @@ fn drawn_page(page: &PlansPage) -> PlansPage {
 
 /// When a plan was published, from its RFC 3339 time with any offset.
 fn published_at(record: &plans::Record) -> Option<f64> {
-    chrono::DateTime::parse_from_rfc3339(&record.updated_at)
+    rfc3339(&record.updated_at)
+}
+
+/// Seconds since the Unix epoch of an RFC 3339 time with any offset.
+fn rfc3339(text: &str) -> Option<f64> {
+    chrono::DateTime::parse_from_rfc3339(text)
         .ok()
         .map(|at| at.timestamp_millis() as f64 / 1000.0)
 }
