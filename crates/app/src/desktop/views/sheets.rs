@@ -182,10 +182,12 @@ impl Sheets {
     }
     /// Whether its section is selected; another section's drop its clock,
     /// and selecting it again draws it afresh.
-    pub fn set_shown(&mut self, shown: bool) {
+    pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
         self.shown = shown;
         if !shown {
             self.clock = super::Clock::default();
+            self.conversation
+                .update(cx, |conversation, _| conversation.rest());
         }
     }
     fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -650,7 +652,16 @@ impl Sheets {
                 self._inputs.push(Self::watch(&conversation, cx));
                 self.conversations.insert(sheet.clone(), conversation);
             }
-            self.conversation = self.conversations[&sheet].clone();
+            let shown = self.conversations[&sheet].clone();
+            if shown != self.conversation {
+                // The workbook left keeps its thread, but not its clock.
+                std::mem::replace(&mut self.conversation, shown)
+                    .update(cx, |conversation, _| conversation.rest());
+            }
+        } else {
+            // The shelf shows no thread.
+            self.conversation
+                .update(cx, |conversation, _| conversation.rest());
         }
         let frozen = self.busy || self.pending.is_some();
         let (agent, anchor) = self

@@ -728,7 +728,7 @@ impl ViewPane {
     /// redraw by itself.
     fn sheets_shown(&self, shown: bool, cx: &mut Context<Self>) {
         if let Some(sheets) = &self.sheets {
-            sheets.update(cx, |sheets, _| sheets.set_shown(shown));
+            sheets.update(cx, |sheets, cx| sheets.set_shown(shown, cx));
         }
     }
 

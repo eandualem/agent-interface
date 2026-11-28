@@ -787,6 +787,12 @@ impl Conversation {
         }
     }
 
+    /// Drop the wake its day labels asked for, for a thread no longer shown;
+    /// it asks again when it is drawn.
+    pub fn rest(&mut self) {
+        self.clock = super::Clock::default();
+    }
+
     /// Read at once if the person can see this conversation, as its pane
     /// asks when it shows again.
     pub fn read_now(&mut self, cx: &mut Context<Self>) {
