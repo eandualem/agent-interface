@@ -346,7 +346,8 @@ impl Card {
                 }
                 let (snapshot, error) = match result {
                     Ok(mut snapshot) => {
-                        super::settle_agent(&mut snapshot.agent);
+                        let previous = card.snapshot.as_ref().map(|previous| &previous.agent);
+                        super::settle_agent(&mut snapshot.agent, previous);
                         (Some(snapshot), None)
                     }
                     // A refused/replaced registration must not leave a card

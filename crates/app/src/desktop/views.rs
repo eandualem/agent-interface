@@ -1522,18 +1522,12 @@ fn apply_read(
 ) -> bool {
     match update {
         Ok(mut new) => {
-            if let Data::Agent(agent) = &mut new {
-                settle_agent(agent);
-            }
+            settle(&mut new, data.as_ref());
             let observed = match &new {
                 Data::Reports(page) => reports.observe(page),
                 _ => false,
             };
-            let changed = observed
-                || error.is_some()
-                || data
-                    .as_ref()
-                    .is_none_or(|old| presented(old) != presented(&new));
+            let changed = observed || error.is_some() || data.as_ref() != Some(&new);
             *data = Some(new);
             *error = None;
             *read_at = Some(std::time::Instant::now());
@@ -1575,22 +1569,34 @@ pub(super) fn ago_now(seconds: f64) -> String {
     ago(seconds)
 }
 
-/// When something Backbone reports `age` seconds old began, by this
-/// machine's clock to the second: stored in place of the age, which grows
-/// with every read, so an unchanged read compares equal and the label
-/// clock ages it.
-pub(super) fn began(age: f64) -> f64 {
-    began_at(views::now() as f64, age)
+/// When something Backbone reports only as `age` seconds old began, by
+/// this machine's clock to the second: stored in place of the age, which
+/// grows with every read, so the label clock ages it. `previous` is what an
+/// earlier read gave; within two seconds of it the start is taken as the
+/// same, since a read's latency and the rounding move it a little, so an
+/// unchanged state compares equal and its label never steps back.
+pub(super) fn began(previous: Option<f64>, age: f64) -> f64 {
+    began_at(previous, views::now() as f64, age)
 }
 
-fn began_at(now: f64, age: f64) -> f64 {
-    (now - age).round()
+fn began_at(previous: Option<f64>, now: f64, age: f64) -> f64 {
+    let began = (now - age).round();
+    previous
+        .filter(|previous| (previous - began).abs() <= 2.0)
+        .unwrap_or(began)
 }
 
-/// An agent card as it arrives: since when it is in its state, not for how
-/// long.
-pub(super) fn settle_agent(agent: &mut views::Agent) {
-    agent.state_began = agent.state_age_seconds.take().map(began);
+/// An agent card as it arrives, after `previous`: since when it is in its
+/// state, not for how long, and its evidence only while the card draws it.
+pub(super) fn settle_agent(agent: &mut views::Agent, previous: Option<&views::Agent>) {
+    let previous = previous.and_then(|previous| previous.state_began);
+    agent.state_began = agent
+        .state_age_seconds
+        .take()
+        .map(|age| began(previous, age));
+    if agent.state_source.as_deref() != Some("stale") {
+        agent.evidence.clear();
+    }
 }
 
 /// Members as a view shows them. Backbone sends the read time as an online
@@ -1603,22 +1609,20 @@ pub(super) fn quiet_members<'a>(members: impl IntoIterator<Item = &'a mut views:
     }
 }
 
-/// `data` as the pane presents it, so a read that changes only what is
-/// not drawn does not redraw the window.
-fn presented(data: &Data) -> std::borrow::Cow<'_, Data> {
-    use std::borrow::Cow;
+/// A read as it arrives, after `previous`, keeping only what the pane
+/// draws, so a read that changes nothing drawn compares equal.
+fn settle(data: &mut Data, previous: Option<&Data>) {
     match data {
-        Data::Team(team) => {
-            let mut team = team.clone();
-            quiet_members(&mut team.members);
-            Cow::Owned(Data::Team(team))
-        }
-        Data::Activity(activity) => {
-            let mut activity = activity.clone();
-            quiet_members(&mut activity.members);
-            Cow::Owned(Data::Activity(activity))
-        }
-        _ => Cow::Borrowed(data),
+        Data::Team(team) => quiet_members(&mut team.members),
+        Data::Activity(activity) => quiet_members(&mut activity.members),
+        Data::Agent(agent) => settle_agent(
+            agent,
+            match previous {
+                Some(Data::Agent(previous)) => Some(previous),
+                _ => None,
+            },
+        ),
+        _ => {}
     }
 }
 
@@ -1754,8 +1758,13 @@ mod tests {
         assert!(read_at.is_some());
         // An age Backbone reports is kept as when it began, which a later
         // read of an unchanged agent gives too.
-        assert_eq!(began_at(1_000.0, 130.4), began_at(1_003.0, 133.4));
-        assert_ne!(began_at(1_000.0, 130.4), began_at(1_003.0, 73.4));
+        let first = began_at(None, 1_000.0, 130.4);
+        assert_eq!(first, 870.0);
+        // A later read whose rounding falls on 869 keeps 870.
+        assert_eq!(began_at(None, 1_003.0, 133.6), 869.0);
+        assert_eq!(began_at(Some(first), 1_003.0, 133.6), first);
+        // A new state is a new start.
+        assert_eq!(began_at(Some(first), 1_003.0, 73.4), 930.0);
     }
 
     #[test]

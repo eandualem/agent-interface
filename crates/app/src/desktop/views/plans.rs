@@ -170,10 +170,9 @@ impl Plans {
         // An unchanged read must not redraw the window.
         let changed = match read {
             Ok(mut read) if self.source.accepts(&read) => {
-                settle(&mut read.page);
-                let changed = self.frame.page.as_ref().map(page_as_shown)
-                    != Some(page_as_shown(&read.page))
-                    || members_as_shown(&self.frame.members) != members_as_shown(&read.members)
+                settle(&mut read);
+                let changed = self.frame.page.as_ref() != Some(&read.page)
+                    || self.frame.members != read.members
                     || self.frame.error.is_some();
                 self.frame.page = Some(read.page);
                 self.frame.members = read.members;
@@ -542,38 +541,32 @@ fn short(target: &str) -> String {
     }
 }
 
-/// A page as it arrives: each plan's age as when it was published, which
-/// a later read of an unchanged plan gives too.
-fn settle(page: &mut PlansPage) {
-    for record in page
+/// A read as it arrives, keeping only what the section draws, so a later
+/// read of unchanged plans compares equal: not when the page was made, a
+/// plan's publication time rather than its growing age, and only the
+/// members' runtimes.
+fn settle(read: &mut Read) {
+    read.page.generated_at.clear();
+    for record in read
+        .page
         .items
         .iter_mut()
         .filter_map(|entry| entry.record.as_mut())
+        .filter(|record| published_at(record).is_some())
     {
-        record.published = Some(super::began(std::mem::take(&mut record.age_seconds) as f64));
+        record.age_seconds = 0;
     }
+    super::quiet_members(read.members.values_mut());
 }
 
-/// When a plan was published, by this machine's clock.
+fn published_at(record: &plans::Record) -> Option<f64> {
+    agent_interface_roster::views::epoch_seconds(&record.updated_at)
+}
+
+/// When a plan was published: its own time, or else as long ago as
+/// Backbone said.
 fn published(record: &plans::Record) -> f64 {
-    record
-        .published
-        .unwrap_or_else(|| super::began(record.age_seconds as f64))
-}
-
-/// A page as the section draws it, so a read that changes nothing drawn
-/// does not redraw: when the page was made is not shown.
-fn page_as_shown(page: &PlansPage) -> PlansPage {
-    let mut page = page.clone();
-    page.generated_at.clear();
-    page
-}
-
-/// The plan read's members as the section draws them: only their runtimes.
-fn members_as_shown(members: &BTreeMap<String, Member>) -> BTreeMap<String, Member> {
-    let mut members = members.clone();
-    super::quiet_members(members.values_mut());
-    members
+    published_at(record).unwrap_or_else(|| super::began(None, record.age_seconds as f64))
 }
 
 fn updated(record: &plans::Record) -> String {

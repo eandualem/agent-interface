@@ -44,11 +44,6 @@ pub struct Record {
     /// Seconds since then, as the provider measured.
     #[serde(default)]
     pub age_seconds: u64,
-    /// When this revision was published, in seconds since the Unix epoch by
-    /// this machine's clock: left for a reader to work out from
-    /// `age_seconds` and the time of its read.
-    #[serde(skip)]
-    pub published: Option<f64>,
     /// At least a day old; stale is not complete.
     #[serde(default)]
     pub stale: bool,
