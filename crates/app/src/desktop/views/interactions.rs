@@ -450,20 +450,32 @@ impl Interactions {
         .detach();
     }
 
-    /// What the view draws from its reads, to tell whether one changed it.
+    /// What the view draws from its reads, to tell whether one changed it:
+    /// not the server's snapshot tokens, when it computed coverage, or each
+    /// state span's observation bookkeeping, which change on every read;
+    /// of newer messages waiting, only how many.
     fn drawn(&self) -> impl PartialEq + use<> {
         (
             self.snapshot.as_ref().map(|snapshot| {
-                (
-                    snapshot.summary.clone(),
-                    snapshot.history.clone(),
-                    snapshot.states.clone(),
-                    snapshot.state_error,
-                )
+                let mut summary = snapshot.summary.clone();
+                summary.snapshot.clear();
+                summary.coverage.as_of.clear();
+                let history = snapshot.history.clone().map(|mut page| {
+                    page.snapshot.clear();
+                    page.coverage.as_of.clear();
+                    page
+                });
+                let states = snapshot.states.clone().map(|mut page| {
+                    page.snapshot.clear();
+                    for span in &mut page.items {
+                        span.last_observed_at.clear();
+                        span.observation_ids.clear();
+                    }
+                    page
+                });
+                (summary, history, states, snapshot.state_error)
             }),
-            self.pending
-                .as_ref()
-                .map(|(_, window, count)| (*window, *count)),
+            self.pending.as_ref().map(|(_, _, count)| *count),
             self.error,
             self.window,
         )
