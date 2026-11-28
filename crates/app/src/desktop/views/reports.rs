@@ -21,7 +21,7 @@ pub(super) struct State {
     pub query: ReportQuery,
     pub agent: Option<String>,
     choosing_agent: bool,
-    agents: Vec<String>,
+    pub(super) agents: Vec<String>,
     /// The CLI each configured agent runs in, for the reader's badge.
     runtimes: std::collections::BTreeMap<String, String>,
     pub(super) previous: Vec<ReportQuery>,

@@ -638,6 +638,7 @@ impl ViewPane {
                                 || pane.documents.loaded.as_ref() != Some(document);
                             documents::serve(pane, document, cx);
                         }
+                        let authors = pane.reports.agents.clone();
                         let changed = apply_read(
                             &mut pane.data,
                             &mut pane.error,
@@ -646,9 +647,11 @@ impl ViewPane {
                             update,
                         );
                         // Plans, interactions and sheets draw over a Reports
-                        // pane's feed, which is kept and drawn on return.
-                        let feed =
-                            pane.view.kind != ViewKind::Reports || pane.shown == Shown::Records;
+                        // pane's feed, which is kept and drawn on return; only
+                        // its agent filter, in the section bar, shows over them.
+                        let feed = pane.view.kind != ViewKind::Reports
+                            || pane.shown == Shown::Records
+                            || pane.reports.agents != authors;
                         if (served || changed) && feed {
                             cx.notify();
                         }
