@@ -1676,6 +1676,8 @@ fn settle(data: &mut Data, previous: Option<&Data>) {
     match data {
         Data::Team(team) => quiet_members(&mut team.members),
         Data::Activity(activity) => quiet_members(&mut activity.members),
+        Data::Skills(library) => quiet_members(&mut library.agents),
+        Data::Tags(library) => quiet_members(&mut library.agents),
         Data::Agent(agent) => settle_agent(
             agent,
             match previous {
