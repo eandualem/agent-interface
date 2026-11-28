@@ -511,8 +511,8 @@ filter. The refresh button returns to the newest documents.
 An open report, Response or Document has a conversation with its author: a
 pill at the right end of the reader's toolbar. Choose it, or press **C**, to open it
 as a card beside the record; choose the card's minimize button, or press **C**
-or Esc in the message field, to close it again, keeping the draft. Enter adds a
-paragraph and **⌘↵** sends. The app sets no length limit; Agent Backbone sets
+or Esc in the message field, to close it again, keeping the draft. Enter sends
+(as does **⌘↵**, Ctrl-Enter on Linux) and Shift-Enter adds a paragraph. The app sets no length limit; Agent Backbone sets
 its own. A message Backbone refuses, such as one over that limit, shows **Not
 sent**: with Backbone's reason when it keeps the conversation, otherwise with
 "Backbone refused this feedback. Your text is kept here." Each message includes a
@@ -682,7 +682,7 @@ Row and column paging keep large
 workbooks bounded; labels retain canonical A1 coordinates under saved views.
 
 The workbook's conversation with its author sits on the right, as it does
-beside Documents and Reports. Open it, write your message and press **⌘↵**.
+beside Documents and Reports. Open it, write your message and press Enter.
 The composer shows the cells it refers to, such as `Runs!C4`. Each message includes the
 displayed revision and selected cells (up to 100); without a selection it
 refers to the tab and whole workbook revision. Closing the conversation keeps

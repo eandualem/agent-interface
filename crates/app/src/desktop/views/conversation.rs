@@ -687,7 +687,7 @@ impl Conversation {
     }
 
     fn create(about: &'static str, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let field = cx.new(|cx| NameField::feedback(window, cx));
+        let field = cx.new(|cx| NameField::chat(window, cx));
         let input = cx.subscribe_in(
             &field,
             window,

@@ -28,6 +28,37 @@ pub(super) struct Text {
     search: bool,
     /// Line breaks and tabs are text, and there is no length limit.
     pub(super) feedback: bool,
+    /// A chat message: Enter sends and Shift+Enter starts a new line.
+    chat: bool,
+}
+
+/// What Enter does in a field.
+#[derive(Debug, PartialEq)]
+enum Enter {
+    Send,
+    Newline,
+}
+
+/// What Enter with `mods` does in `text`: a one-line field sends on plain
+/// Enter; multiline text sends on Cmd+Enter (Ctrl+Enter off macOS) and starts
+/// a line on Enter, except a chat message, which sends on Enter and starts a
+/// line on Shift+Enter.
+fn enter(text: &Text, mods: gpui::Modifiers) -> Option<Enter> {
+    let command = if cfg!(target_os = "macos") {
+        mods.platform
+    } else {
+        mods.control
+    };
+    let plain = !mods.platform && !mods.control && !mods.alt;
+    if (text.feedback && command && !mods.alt) || (text.chat && plain && !mods.shift) {
+        Some(Enter::Send)
+    } else if text.feedback && plain {
+        Some(Enter::Newline)
+    } else if plain && !mods.shift {
+        Some(Enter::Send)
+    } else {
+        None
+    }
 }
 
 impl Text {
@@ -257,6 +288,14 @@ impl NameField {
         field
     }
 
+    /// A chat message field: [`Self::feedback`], where Enter sends and
+    /// Shift+Enter starts a new line.
+    pub fn chat(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut field = Self::feedback(window, cx);
+        field.text.chat = true;
+        field
+    }
+
     /// Replace the text with `text`, the caret at its end, and announce it.
     pub fn set_value(&mut self, text: &str, cx: &mut Context<Self>) {
         self.text.value = text.to_owned();
@@ -338,13 +377,13 @@ impl NameField {
         let range = self.text.selection();
         match key.key.as_str() {
             "escape" => cx.emit(NameEvent::Cancel),
-            "enter" if self.text.feedback && command && !mods.alt => cx.emit(NameEvent::Save),
-            "enter" if self.text.feedback && !mods.platform && !mods.control && !mods.alt => {
-                self.text.replace(None, "\n", false);
-            }
-            "enter" if !mods.platform && !mods.control && !mods.alt && !mods.shift => {
-                cx.emit(NameEvent::Save)
-            }
+            "enter" => match enter(&self.text, mods) {
+                Some(Enter::Send) => cx.emit(NameEvent::Save),
+                Some(Enter::Newline) => {
+                    self.text.replace(None, "\n", false);
+                }
+                None => return,
+            },
             "u" if mods.control && !mods.alt && !mods.platform => {
                 self.text.anchor = 0;
                 self.text.cursor = self.text.value.len();
@@ -835,6 +874,36 @@ mod tests {
         // Feedback has no local length limit; Backbone answers for its own.
         text.replace(None, &"x".repeat(20_000), false);
         assert_eq!(text.value.chars().count(), message.chars().count() + 20_000);
+    }
+
+    #[test]
+    fn a_chat_message_sends_on_enter_and_breaks_lines_on_shift_enter() {
+        let command = if cfg!(target_os = "macos") {
+            gpui::Modifiers::command()
+        } else {
+            gpui::Modifiers::control()
+        };
+        let (plain, shift) = (gpui::Modifiers::none(), gpui::Modifiers::shift());
+        let chat = Text {
+            feedback: true,
+            chat: true,
+            ..Text::default()
+        };
+        assert_eq!(enter(&chat, plain), Some(Enter::Send));
+        assert_eq!(enter(&chat, shift), Some(Enter::Newline));
+        assert_eq!(enter(&chat, command), Some(Enter::Send));
+        // Other multiline text, such as a brief, keeps Enter for new lines.
+        let brief = Text {
+            feedback: true,
+            ..Text::default()
+        };
+        assert_eq!(enter(&brief, plain), Some(Enter::Newline));
+        assert_eq!(enter(&brief, command), Some(Enter::Send));
+        // A one-line field sends on plain Enter, and a chord no field uses passes on.
+        let line = Text::default();
+        assert_eq!(enter(&line, plain), Some(Enter::Send));
+        assert_eq!(enter(&line, shift), None);
+        assert_eq!(enter(&chat, gpui::Modifiers::alt()), None);
     }
 
     #[test]
