@@ -766,6 +766,11 @@ pub(super) fn window_shown(window: gpui::WindowId, visible: Option<bool>, cx: &m
         Some(visible) => windows.insert(window, visible),
         None => windows.remove(&window),
     };
+    // The last window closing leaves the pace as it was; the rosters go
+    // with it, and a new first window sets it again.
+    if windows.is_empty() {
+        return;
+    }
     let shown = rosters_shown(cx);
     let Some(sources) = cx.try_global::<Sources>() else {
         return;
