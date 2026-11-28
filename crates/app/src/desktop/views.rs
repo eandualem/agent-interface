@@ -634,9 +634,11 @@ impl ViewPane {
                             &mut pane.reports,
                             update,
                         );
-                        // Another pane may have opened a record this one lists.
+                        // Another pane may have opened a record this one
+                        // lists; only a records pane marks what was opened.
                         let now_seen = seen::changes();
-                        let reseen = std::mem::replace(&mut pane.seen, now_seen) != now_seen;
+                        let reseen = std::mem::replace(&mut pane.seen, now_seen) != now_seen
+                            && pane.view.kind == ViewKind::Reports;
                         if served || changed || reseen {
                             cx.notify();
                         }
