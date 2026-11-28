@@ -77,8 +77,12 @@ impl Local {
     /// "Today", "Yesterday" or the date, seen from `now`; it reads otherwise
     /// from the next local midnight.
     pub fn day_name(&self, now: &Self) -> String {
-        super::rolls_in(now.until_midnight());
         let days = now.0.date_naive().num_days_from_ce() - self.0.date_naive().num_days_from_ce();
+        // Only a name a midnight can change: Today, Yesterday, or a day
+        // still ahead; an older date stays as it is.
+        if days <= 1 {
+            super::rolls_in(now.until_midnight());
+        }
         match days {
             0 => "Today".into(),
             1 => "Yesterday".into(),
