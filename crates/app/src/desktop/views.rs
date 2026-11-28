@@ -1256,6 +1256,11 @@ impl Render for ViewPane {
 
 impl ViewPane {
     fn draw(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A reader opened over the agent card pauses its reads.
+        if let Some(card) = &self.bound_agent {
+            let shown = self.open.is_none();
+            card.update(cx, |card, cx| card.set_shown(shown, cx));
+        }
         if let Some(card) = self.bound_agent.clone().filter(|_| self.open.is_none()) {
             // Back from the reader: its conversation stops reading, kept with
             // its draft, and its text can no longer be selected or copied.

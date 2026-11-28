@@ -147,6 +147,8 @@ pub(super) struct Card {
     /// The registration this card shows; removal checks it first.
     registration: String,
     removal: Removal,
+    /// False while its pane shows a reader over it.
+    shown: bool,
     removal_error: Option<&'static str>,
     action_in_flight: bool,
     action_notice: Option<String>,
@@ -201,6 +203,7 @@ impl Card {
             agents,
             registration: registration.clone(),
             removal: Removal::None,
+            shown: true,
             removal_error: None,
             action_in_flight: false,
             action_notice: None,
@@ -318,8 +321,19 @@ impl Card {
         }
     }
 
+    /// Whether the card is drawn rather than covered by a reader; back in
+    /// view, it reads at once.
+    pub(super) fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        if self.shown != shown {
+            self.shown = shown;
+            if shown {
+                self.refresh(cx);
+            }
+        }
+    }
+
     pub(super) fn refresh(&mut self, cx: &mut Context<Self>) {
-        if !self.visible.get() || self.removal == Removal::Done {
+        if !self.visible.get() || !self.shown || self.removal == Removal::Done {
             return;
         }
         let Some(mut reader) = self.reader.take() else {
