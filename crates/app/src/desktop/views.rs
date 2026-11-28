@@ -1659,7 +1659,8 @@ pub(super) fn settle_agent(agent: &mut views::Agent, previous: Option<&views::Ag
         .state_age_seconds
         .take()
         .map(|age| began(previous, age));
-    if agent.state_source.as_deref() != Some("stale") {
+    let state = crate::desktop::components::AgentState::from_runtime(&agent.state);
+    if !super::agent_status::draws_evidence(agent.state_source.as_deref(), state) {
         agent.evidence.clear();
     }
 }

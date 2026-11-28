@@ -111,7 +111,7 @@ impl Status {
 
     pub fn from_stale(state: AgentState, state_source: Option<&str>, evidence: &[String]) -> Self {
         let mut status = Self::new(state);
-        if state_source == Some("stale") && state != AgentState::Offline {
+        if draws_evidence(state_source, state) {
             status.stale = true;
             status.stale_reason = stale_note(evidence);
             status.label = if state == AgentState::Unknown {
@@ -662,9 +662,7 @@ impl LiveAgents {
                         if let Some(suffix) = suffix.filter(|s| !s.is_empty()) {
                             status.label = format!("{} · {suffix}", status.state.word());
                         }
-                        if details.state_source.as_deref() == Some("stale")
-                            && status.state != AgentState::Offline
-                        {
+                        if draws_evidence(details.state_source.as_deref(), status.state) {
                             status.stale = true;
                             status.stale_reason = stale_note(&details.evidence);
                             status.label = if status.state == AgentState::Unknown {
@@ -715,14 +713,22 @@ impl LiveAgents {
     }
 }
 
-/// An agent's details as the views draw them, for telling whether a read
-/// changed anything shown. Backbone refreshes some with every read that
-/// nothing draws: an agent's evidence, with its ticking hook age, shows
-/// only while it is stale.
-fn drawn_details(
-    details: &agent_interface_roster::AgentDetails,
-) -> std::borrow::Cow<'_, agent_interface_roster::AgentDetails> {
-    if details.evidence.is_empty() || details.state_source.as_deref() == Some("stale") {
+/// Whether an agent's evidence is drawn: as the note of a stale state,
+/// which an offline agent does not show.
+pub(super) fn draws_evidence(state_source: Option<&str>, state: AgentState) -> bool {
+    state_source == Some("stale") && state != AgentState::Offline
+}
+
+/// An agent's details, in `state`, as the views draw them, for telling
+/// whether a read changed anything shown. Backbone refreshes some with
+/// every read that nothing draws: an agent's evidence, with its ticking
+/// hook age, shows only per [`draws_evidence`].
+fn drawn_details<'a>(
+    details: &'a agent_interface_roster::AgentDetails,
+    state: Option<&String>,
+) -> std::borrow::Cow<'a, agent_interface_roster::AgentDetails> {
+    let state = state.map_or(AgentState::Unknown, |state| AgentState::from_runtime(state));
+    if details.evidence.is_empty() || draws_evidence(details.state_source.as_deref(), state) {
         return std::borrow::Cow::Borrowed(details);
     }
     let mut drawn = details.clone();
@@ -731,11 +737,11 @@ fn drawn_details(
 }
 
 /// A machine as the views draw it: when it was last seen shows only while
-/// it is offline, so an online machine's heartbeat changes nothing.
+/// it is offline, so a heartbeat while it is anything else changes nothing.
 fn drawn_machine(
     machine: &agent_interface_roster::ProfileMachine,
 ) -> std::borrow::Cow<'_, agent_interface_roster::ProfileMachine> {
-    if machine.last_seen.is_none() || machine.state != agent_interface_roster::MachineState::Online
+    if machine.last_seen.is_none() || machine.state == agent_interface_roster::MachineState::Offline
     {
         return std::borrow::Cow::Borrowed(machine);
     }
@@ -752,7 +758,9 @@ fn drawn_alike(old: &Snapshot, new: &Snapshot) -> bool {
             .iter()
             .zip(&new.details)
             .all(|((a_name, a), (b_name, b))| {
-                a_name == b_name && drawn_details(a) == drawn_details(b)
+                a_name == b_name
+                    && drawn_details(a, old.states.get(a_name))
+                        == drawn_details(b, new.states.get(b_name))
             })
         && old.machines.len() == new.machines.len()
         && old

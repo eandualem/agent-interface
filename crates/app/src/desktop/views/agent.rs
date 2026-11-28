@@ -569,12 +569,11 @@ pub(super) fn overview<V: 'static>(
         .flatten()
         .map(|began| now() as f64 - began);
     let stale_evidence = (matching
-        && agent.state_source.as_deref() == Some("stale")
-        && state != AgentState::Offline)
-        .then(|| {
-            crate::desktop::agent_status::stale_note(&agent.evidence)
-                .unwrap_or_else(|| "State report is stale.".into())
-        });
+        && crate::desktop::agent_status::draws_evidence(agent.state_source.as_deref(), state))
+    .then(|| {
+        crate::desktop::agent_status::stale_note(&agent.evidence)
+            .unwrap_or_else(|| "State report is stale.".into())
+    });
     let mut body = list("agent-overview")
         .px(px(t.space.s18))
         .py(px(t.space.s16))
