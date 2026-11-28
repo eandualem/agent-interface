@@ -409,7 +409,9 @@ impl Interactions {
                     Ok((mut fresh, requested)) => {
                         if !this.source.accepts(&fresh) {
                             this.error = Some(Error::Unavailable);
-                            cx.notify();
+                            if this.shown && this.visible.get() {
+                                cx.notify();
+                            }
                             return;
                         }
                         if fresh.state_error.is_some() {
@@ -434,7 +436,11 @@ impl Interactions {
                                 })
                                 .map(|item| item.id.clone());
                             this.snapshot = Some(fresh);
-                            if let Some(id) = updated {
+                            // Hidden, the detail waits: showing reads again.
+                            if let Some(id) = updated
+                                && this.shown
+                                && this.visible.get()
+                            {
                                 this.load_detail(id, cx);
                             }
                             if this.selected.is_none() {
@@ -448,8 +454,9 @@ impl Interactions {
                 if this.dirty && this.shown && this.visible.get() {
                     this.refresh(cx);
                 }
-                // A read that brings nothing new does not redraw.
-                if this.drawn() != before {
+                // A read that brings nothing new does not redraw, nor one
+                // landing while hidden, which showing draws.
+                if this.drawn() != before && this.shown && this.visible.get() {
                     cx.notify();
                 }
             });
