@@ -899,6 +899,11 @@ mod tests {
         };
         assert_eq!(enter(&brief, plain), Some(Enter::Newline));
         assert_eq!(enter(&brief, command), Some(Enter::Send));
+        // A one-line field sends on plain Enter, and a chord no field uses passes on.
+        let line = Text::default();
+        assert_eq!(enter(&line, plain), Some(Enter::Send));
+        assert_eq!(enter(&line, shift), None);
+        assert_eq!(enter(&chat, gpui::Modifiers::alt()), None);
     }
 
     #[test]
