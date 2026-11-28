@@ -216,7 +216,16 @@ impl Management {
                 }
                 if let Ok(connection) = result {
                     let inbox = super::peer_inbox::Inbox::shared(&connection, cx);
-                    let sub = cx.observe(&inbox, |_, _, cx| cx.notify());
+                    // Only the connection ID is drawn from the inbox.
+                    let mut shown =
+                        drawn_peer_id(inbox.read(cx).summary.as_deref()).map(str::to_owned);
+                    let sub = cx.observe(&inbox, move |_, inbox, cx| {
+                        let id = drawn_peer_id(inbox.read(cx).summary.as_deref());
+                        if shown.as_deref() != id {
+                            shown = id.map(str::to_owned);
+                            cx.notify();
+                        }
+                    });
                     pane.peer_identity = Some((inbox, sub));
                     cx.notify();
                 }
@@ -820,14 +829,14 @@ impl Render for Management {
                         .flex_col()
                         .gap(px(t.space.s6))
                         .child("Connection identity");
-                    if let Some(summary) = self
+                    if let Some(shareable) = self
                         .peer_identity
                         .as_ref()
                         .map(|(i, _)| i.read(cx))
                         .filter(|i| i.profile_id() == item.profile_id)
-                        .and_then(|i| i.summary.as_ref())
+                        .and_then(|i| drawn_peer_id(i.summary.as_deref()))
                     {
-                        let shareable = summary.overview.local_id.clone();
+                        let shareable = shareable.to_owned();
                         section=section.child(ui::mono(shareable.clone())).child(ui::button("copy-profile-peer-id",if self.copied_peer_id{"Copied"}else{"Copy ID"},ui::Button::Secondary).on_click(cx.listener(move|p,_,_,cx|{
                             cx.write_to_clipboard(gpui::ClipboardItem::new_string(shareable.clone()));p.copied_peer_id=true;cx.notify();
                         }))).child("Share outside the app so another profile can send a connection request. Agent Backbone owns keys, encryption and relay delivery.");
@@ -1012,6 +1021,11 @@ impl Render for Management {
             }))
             .child(body)
     }
+}
+
+/// The connection ID a profile's detail page shows from its inbox summary.
+fn drawn_peer_id(summary: Option<&super::peer_inbox::Summary>) -> Option<&str> {
+    summary.map(|s| s.overview.local_id.as_str())
 }
 
 #[cfg(test)]

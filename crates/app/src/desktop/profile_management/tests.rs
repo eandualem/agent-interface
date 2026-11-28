@@ -248,3 +248,22 @@ fn uncached_scoped_history_keeps_page_offset_across_unrelated_profiles() {
     assert_eq!(offset, PAGE_SIZE);
     assert_eq!(rows.len(), 2);
 }
+
+#[test]
+fn an_overview_change_the_detail_page_does_not_draw_keeps_its_connection_id() {
+    use super::super::peer_inbox::Summary;
+    use agent_interface_roster::profiles::peers as api;
+    let overview = |local_id: &str, pending_reviews| api::Overview {
+        local_id: local_id.into(),
+        pending_reviews,
+        invitations: Vec::new(),
+        connections: Vec::new(),
+    };
+    let before = Summary::from_overview(overview("peer_local", 0));
+    let after = Summary::from_overview(overview("peer_local", 2));
+    assert!(before != after);
+    assert_eq!(drawn_peer_id(Some(&before)), drawn_peer_id(Some(&after)));
+    let other = Summary::from_overview(overview("peer_other", 0));
+    assert_ne!(drawn_peer_id(Some(&before)), drawn_peer_id(Some(&other)));
+    assert_eq!(drawn_peer_id(None), None);
+}
