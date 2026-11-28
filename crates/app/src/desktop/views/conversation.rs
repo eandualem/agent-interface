@@ -781,6 +781,9 @@ impl Conversation {
     pub fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
         let was = self.active;
         self.active = active;
+        if !active {
+            self.rest();
+        }
         if active && !was {
             self.refresh(cx);
             self.start_polling(cx);
@@ -899,8 +902,9 @@ impl Conversation {
                     Err(error) => failure = Some(error),
                 }
                 conversation.route_waiting(failure, cx);
-                // A poll that brings nothing new does not redraw.
-                if conversation.drawn() != before {
+                // A poll that brings nothing new does not redraw, nor one
+                // landing while it cannot be seen, which showing draws.
+                if conversation.drawn() != before && conversation.shown() {
                     cx.notify();
                 }
             });
