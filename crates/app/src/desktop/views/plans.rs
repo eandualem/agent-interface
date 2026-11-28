@@ -559,8 +559,11 @@ fn settle(read: &mut Read) {
     super::quiet_members(read.members.values_mut());
 }
 
+/// When a plan was published, from its RFC 3339 time with any offset.
 fn published_at(record: &plans::Record) -> Option<f64> {
-    agent_interface_roster::views::epoch_seconds(&record.updated_at)
+    chrono::DateTime::parse_from_rfc3339(&record.updated_at)
+        .ok()
+        .map(|at| at.timestamp_millis() as f64 / 1000.0)
 }
 
 /// When a plan was published: its own time, or else as long ago as
@@ -569,9 +572,14 @@ fn published(record: &plans::Record) -> f64 {
     published_at(record).unwrap_or_else(|| super::began(None, record.age_seconds as f64))
 }
 
+/// A time that grows with the clock, or else the age Backbone gave with
+/// the read, which changes only with the next read.
 fn updated(record: &plans::Record) -> String {
-    let age = agent_interface_roster::views::now() as f64 - published(record);
-    format!("updated {} ago", super::ago_now(age))
+    let age = match published_at(record) {
+        Some(at) => super::ago_now(agent_interface_roster::views::now() as f64 - at),
+        None => super::ago(record.age_seconds as f64),
+    };
+    format!("updated {age} ago")
 }
 
 /// One agent's card: its mark, name and runtime, the plan's title, the steps
