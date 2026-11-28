@@ -153,10 +153,22 @@ fn lanes<'a>(
             .chain(observed.iter().map(|(at, _)| at))
             .copied()
             .fold(if active { end } else { start }, f64::max);
+        // What moves visibly along the lane: deliveries, and the boundaries
+        // where its colour changes (the first state's start among them).
         let times = ticks
             .iter()
             .copied()
-            .chain(observed.iter().map(|(at, _)| *at))
+            .chain(
+                observed
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, (_, state))| {
+                        index.checked_sub(1).is_none_or(|previous| {
+                            span_color(observed[previous].1) != span_color(state)
+                        })
+                    })
+                    .map(|(_, (at, _))| *at),
+            )
             .collect();
         lanes.push((
             Lane {
@@ -519,6 +531,17 @@ mod tests {
         // A state ahead that brings no lane wakes nothing.
         assert_eq!(
             roll(vec![], vec![change("worker", "idle", end + 2.0)]),
+            None
+        );
+        // A boundary between two states drawn alike does not move visibly.
+        assert_eq!(
+            roll(
+                vec![],
+                vec![
+                    change("worker", "starting", end - 2.0 * HOUR),
+                    change("worker", "busy", end - 60.0),
+                ]
+            ),
             None
         );
         // Begun before the hour: its lane stays full.
