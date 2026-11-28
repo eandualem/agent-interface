@@ -1607,6 +1607,11 @@ pub(super) fn rolls_in(seconds: f64) {
 /// changes: each second under a minute, then each minute, hour or day.
 pub(super) fn ago_now(seconds: f64) -> String {
     let age = seconds.max(0.0);
+    // A time still ahead reads 0s until it is a second past.
+    if seconds < 0.0 {
+        rolls_in(1.0 - seconds);
+        return ago(seconds);
+    }
     let unit = if age < 60.0 {
         1.0
     } else if age < 3_600.0 {
@@ -1912,6 +1917,8 @@ mod tests {
         assert_eq!(ago_now(400.0), "6m");
         assert_eq!(ago_now(40.5), "40s");
         assert_eq!(ROLLS.with(Cell::take), Some(0.5));
+        assert_eq!(ago_now(-5.0), "0s");
+        assert_eq!(ROLLS.with(Cell::take), Some(6.0));
         // A label a moment from turning wakes just past the next whole
         // second, not at once and again and again.
         assert_eq!(wake_after(1_000.999, 0.001), 0.05);
