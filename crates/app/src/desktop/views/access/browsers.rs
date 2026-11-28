@@ -822,7 +822,10 @@ impl Pane {
             cx,
         ));
         let mut body = div()
-            .id("access-browser-detail")
+            .id(SharedString::from(format!(
+                "access-browser-detail-{}",
+                browser.id
+            )))
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()

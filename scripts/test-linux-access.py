@@ -409,10 +409,22 @@ with tempfile.TemporaryDirectory(prefix="access-smoke-", dir="/tmp") as director
                 wheel("5", 3)
                 return containing("SITE_")
             wait_for(secret_shown, "docs-site's secret, scrolled to")
-            # The detail keeps its scroll for the next agent, so it goes back
-            # to the top, where the confinement line and segment are.
-            wheel("4", 30)
-            wait_for(lambda: find("everything"), "docs-site's detail scrolled back to the top")
+            # The detail's first heading, ROLE AND PLACE, is now above view.
+            wait_for(lambda: not find("ROLE"), "docs-site's first heading scrolled out of view")
+
+            # Another agent's detail opens at its top, not at docs-site's
+            # scroll. Planner is not in docs-site's "answers to" line, so its
+            # name is read only from its row.
+            click_agent("planner")
+            # Only planner's detail names example/library among its repositories.
+            wait_for(lambda: containing("library"), "planner's detail")
+            wait_for(lambda: find("ROLE"), "planner's detail shown from its top")
+            # Planner's own detail scrolls far enough to hide that heading, so
+            # an offset carried over from docs-site would have hidden it too.
+            def planner_heading_hidden():
+                wheel("5", 3)
+                return not find("ROLE")
+            wait_for(planner_heading_hidden, "planner's first heading scrolled out of view")
 
             # Backbone refuses the confinement change; its reason is shown.
             click_agent("tester")

@@ -420,7 +420,7 @@ impl Pane {
             .children(self.notice_band(cx))
             .child(
                 div()
-                    .id("access-detail")
+                    .id(SharedString::from(format!("access-detail-{}", agent.name)))
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
