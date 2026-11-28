@@ -319,6 +319,10 @@ impl ViewPane {
     /// The view source reads at once by itself. Drawn again, the pane and
     /// its children bring their ages up to date and wake for the next.
     pub fn wake(&mut self, cx: &mut Context<Self>) {
+        // Hidden again before this frame came: nothing to read for.
+        if !self.visible.get() {
+            return;
+        }
         cx.notify();
         if let Some(artifacts) = &self.artifacts {
             artifacts.update(cx, |artifacts, cx| {
