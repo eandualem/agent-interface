@@ -567,9 +567,23 @@ fn settle(read: &mut Read) {
         .items
         .iter_mut()
         .filter_map(|entry| entry.record.as_mut())
-        .filter(|record| published_at(record).is_some())
     {
-        record.age_seconds = 0;
+        // With its own time, the age is not needed; without, it is kept
+        // only to the unit its label shows, so reads showing the same
+        // compare the same.
+        record.age_seconds = match published_at(record) {
+            Some(_) => 0,
+            None => {
+                let age = record.age_seconds;
+                let unit = match age {
+                    0..60 => 1,
+                    60..3_600 => 60,
+                    3_600..86_400 => 3_600,
+                    _ => 86_400,
+                };
+                age - age % unit
+            }
+        };
     }
 }
 
