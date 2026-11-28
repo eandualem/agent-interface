@@ -669,13 +669,17 @@ impl Conversation {
         names
     }
 
-    /// A conversation whose owning view delivers each message.
+    /// A conversation whose owning view delivers each message, in a pane
+    /// that can be seen while `visible`.
     pub fn delivered_by_owner(
         about: &'static str,
+        visible: Rc<Cell<bool>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::create(about, window, cx)
+        let mut conversation = Self::create(about, window, cx);
+        conversation.visible = visible;
+        conversation
     }
 
     fn create(about: &'static str, window: &mut Window, cx: &mut Context<Self>) -> Self {

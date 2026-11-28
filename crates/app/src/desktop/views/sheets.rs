@@ -134,8 +134,9 @@ impl Sheets {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let conversation =
-            cx.new(|cx| Conversation::delivered_by_owner("about this sheet", window, cx));
+        let conversation = cx.new(|cx| {
+            Conversation::delivered_by_owner("about this sheet", visible.clone(), window, cx)
+        });
         let input = Self::watch(&conversation, cx);
         let mut state = Self {
             focus: cx.focus_handle(),
@@ -620,8 +621,14 @@ impl Sheets {
         if let Some(open) = &self.open {
             let sheet = seen_keys(&open.record, self.source.identity())[1].clone();
             if !self.conversations.contains_key(&sheet) {
-                let conversation =
-                    cx.new(|cx| Conversation::delivered_by_owner("about this sheet", window, cx));
+                let conversation = cx.new(|cx| {
+                    Conversation::delivered_by_owner(
+                        "about this sheet",
+                        self.visible.clone(),
+                        window,
+                        cx,
+                    )
+                });
                 self._inputs.push(Self::watch(&conversation, cx));
                 self.conversations.insert(sheet.clone(), conversation);
             }
