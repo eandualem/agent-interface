@@ -3058,10 +3058,6 @@ impl Browser {
 }
 
 impl Browser {
-    /// The Backbone agent a pane attaches and the roster it comes from: a
-    /// local agent, or one on another machine of the bound profile. None for
-    /// another profile's agent, a session on another tmux server, whatever
-    /// its name, or a pane whose profile has no roster.
     /// Tell each terminal of its agent's restart from the roster, as a
     /// render does: a roster read that changed nothing still says when it
     /// was read, which a restart under way waits on. A terminal redraws
@@ -3101,6 +3097,10 @@ impl Browser {
         }
     }
 
+    /// The Backbone agent a pane attaches and the roster it comes from: a
+    /// local agent, or one on another machine of the bound profile. None for
+    /// another profile's agent, a session on another tmux server, whatever
+    /// its name, or a pane whose profile has no roster.
     fn pane_agent(&self, leaf: &Leaf) -> Option<(String, agent_status::LiveAgents)> {
         let attachment = leaf.attachment.as_ref()?;
         let connection = self.pane_connection(&leaf.id).ok()??;
