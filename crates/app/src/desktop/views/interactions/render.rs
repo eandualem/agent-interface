@@ -11,18 +11,25 @@ use ledger::Row;
 
 pub(super) fn ordered(view: &Interactions) -> Vec<&api::AgentSummary> {
     // Each time is parsed once, not on every comparison.
-    let mut agents: Vec<(f64, &api::AgentSummary)> = view
+    let mut agents: Vec<(Option<f64>, &api::AgentSummary)> = view
         .snapshot
         .as_ref()
         .map(|s| {
             s.summary
                 .items
                 .iter()
-                .map(|a| (a.latest.as_ref().map(|l| epoch(&l.time)).unwrap_or(0.), a))
+                .map(|a| (a.latest.as_ref().map(|l| epoch(&l.time)), a))
                 .collect()
         })
         .unwrap_or_default();
-    agents.sort_by(|(at, a), (bt, b)| bt.total_cmp(at).then(a.agent.name.cmp(&b.agent.name)));
+    agents.sort_by(|(at, a), (bt, b)| {
+        let newest = match (at, bt) {
+            (Some(at), Some(bt)) => bt.total_cmp(at),
+            // An agent without a latest interaction goes last.
+            _ => bt.is_some().cmp(&at.is_some()),
+        };
+        newest.then(a.agent.name.cmp(&b.agent.name))
+    });
     agents.into_iter().map(|(_, agent)| agent).collect()
 }
 pub(super) fn time(at: f64) -> String {
