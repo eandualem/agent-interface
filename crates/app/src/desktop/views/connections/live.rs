@@ -6,7 +6,7 @@ use crate::desktop::peer_inbox::{Inbox, Selection, Summary, failure};
 use crate::desktop::views::clock::Local;
 use agent_interface_roster::profiles::{AddError, Connection, Error, peers as api};
 use api::{Direction, EventKind, Policy};
-use std::{collections::HashSet, sync::Arc};
+use std::{cell::Cell, collections::HashSet, rc::Rc, sync::Arc};
 
 #[derive(Clone)]
 pub(super) enum Change {
@@ -345,8 +345,29 @@ struct PendingRetry {
     error: Option<String>,
 }
 
+/// Inbox changes while the pane is hidden: none is read then, and the
+/// pane reads once when it is shown again.
+#[derive(Debug, Default)]
+struct HiddenChange(bool);
+
+impl HiddenChange {
+    /// Whether an inbox change is read now; while hidden it waits.
+    fn read_now(&mut self, visible: bool) -> bool {
+        self.0 |= !visible;
+        visible
+    }
+
+    /// Whether the pane, shown again, has a change to read: once.
+    fn shown(&mut self) -> bool {
+        std::mem::take(&mut self.0)
+    }
+}
+
 pub(super) struct Live {
     connection: Connection,
+    /// Whether the pane is visible; its peers' history is read only then.
+    visible: Rc<Cell<bool>>,
+    hidden_change: HiddenChange,
     pub(super) selected: Option<Selection>,
     snapshot: Option<Snapshot>,
     stream_ok: bool,
@@ -366,7 +387,11 @@ pub(super) struct Live {
 }
 
 impl Live {
-    pub(super) fn new(connection: Connection, cx: &mut Context<Pane>) -> Self {
+    pub(super) fn new(
+        connection: Connection,
+        visible: Rc<Cell<bool>>,
+        cx: &mut Context<Pane>,
+    ) -> Self {
         let inbox = Inbox::shared(&connection, cx);
         let subscription = cx.observe(&inbox, |pane, _, cx| pane.inbox_updated(cx));
         let pane = cx.weak_entity();
@@ -375,6 +400,8 @@ impl Live {
         });
         Self {
             connection,
+            visible,
+            hidden_change: HiddenChange::default(),
             selected: None,
             snapshot: None,
             stream_ok: false,
@@ -399,19 +426,30 @@ impl Pane {
         let inbox = self.live.inbox.read(cx);
         self.live.stream_ok = inbox.error.is_none() && inbox.summary.is_some();
         if self.live.stream_ok {
-            self.refresh_live(cx);
+            let visible = self.live.visible.get();
+            if self.live.hidden_change.read_now(visible) {
+                self.refresh_live(cx);
+            }
         } else {
             self.live.status = inbox.error.clone();
             cx.notify();
         }
     }
 
+    /// Read an inbox change that came while the pane was hidden, now that it
+    /// is drawn again; after this draw, as reading redraws it.
+    pub(super) fn read_hidden_change(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if self.live.visible.get() && self.live.hidden_change.shown() {
+            cx.defer_in(window, |pane, _, cx| pane.inbox_updated(cx));
+        }
+    }
+
     /// When the shown records were read from Agent Backbone, for the view's
     /// header; nothing in the preview or before the first read.
-    pub(super) fn read_at(&self) -> Option<String> {
-        let at = self.live.read_at.as_ref()?;
+    pub(super) fn read_at(&self) -> Option<&str> {
+        let at = self.live.read_at.as_deref()?;
         (self.preview.is_none() && self.live.stream_ok && self.live.snapshot.is_some())
-            .then(|| format!("live from Agent Backbone · read {at}"))
+            .then_some(at)
     }
 
     pub(in crate::desktop) fn pick_peer(&mut self, target: Selection, cx: &mut Context<Self>) {
@@ -1253,7 +1291,7 @@ impl Pane {
                     if words {
                         el.child(label)
                     } else {
-                        el.tooltip(move |_, cx| cx.new(|_| Tip(label.into())).into())
+                        el.tooltip(move |_, cx| cx.new(|_| tip(label)).into())
                     }
                 }),
             );
@@ -1267,7 +1305,7 @@ impl Pane {
             {
                 let mut segment = gate_segment(direction, label, choice, on);
                 if choice == Policy::Auto {
-                    segment = segment.tooltip(|_, cx| cx.new(|_| Tip(AUTO_NOTE.into())).into());
+                    segment = segment.tooltip(|_, cx| cx.new(|_| tip(AUTO_NOTE)).into());
                 }
                 if let Some(change) = change.filter(|_| actions) {
                     segment = segment
@@ -2140,15 +2178,9 @@ fn band(message: String) -> Div {
 const AUTO_NOTE: &str =
     "Future messages on an Auto direction skip review. Already-waiting messages stay in review.";
 
-/// A line of help shown on hover.
-pub(super) struct Tip(pub(super) SharedString);
-
-impl Render for Tip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        ui::menu()
-            .max_w(px(tokens().size.connect_popover))
-            .child(self.0.clone())
-    }
+/// A line of help shown on hover, no wider than the connect popover.
+pub(super) fn tip(text: impl Into<SharedString>) -> ui::Tip {
+    ui::Tip::new(text).max_width(tokens().size.connect_popover)
 }
 
 /// A connection's mark: its name's first letter, or a dashed tile with a
@@ -2315,6 +2347,19 @@ fn revocation_note(peer: &api::Peer) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_inbox_change_while_hidden_is_read_once_when_shown() {
+        let mut hidden = HiddenChange::default();
+        assert!(hidden.read_now(true));
+        assert!(!hidden.shown());
+        // Hidden: no read, however many changes come.
+        assert!(!hidden.read_now(false));
+        assert!(!hidden.read_now(false));
+        // Shown: one read.
+        assert!(hidden.shown());
+        assert!(!hidden.shown());
+    }
 
     #[test]
     fn a_gate_segment_is_a_named_radio_button() {

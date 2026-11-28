@@ -92,7 +92,9 @@ impl Pane {
             .min_h_0()
             .flex()
             .flex_col()
-            .child(self.requests_header())
+            .child(self.header("shield", "Access", |profile| {
+                format!("what agents in {profile} have asked for")
+            }))
             .child(self.requests_toolbar(model, &now, cx))
             .children(self.notice_band(cx))
             .child(column)
@@ -105,22 +107,6 @@ impl Pane {
                 ],
                 "backbone access requests --pending",
             ))
-    }
-
-    fn requests_header(&self) -> Div {
-        let (t, c) = (tokens(), colors());
-        let profile = self.profile_name.as_deref().unwrap_or("this profile");
-        ui::view_header("shield", "Access")
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .text_color(c.muted)
-                    .child(format!("what agents in {profile} have asked for")),
-            )
-            .children(self.live_note().map(|note| ui::text(note, &t.text.meta)))
     }
 
     fn requests_toolbar(
@@ -456,11 +442,8 @@ impl Pane {
     /// The chip for the machine a request's grant is on, as board A names
     /// it; none for a repository.
     fn grant_machine(&self, grant: &Grant) -> Option<Div> {
-        if matches!(grant, Grant::Repository { .. } | Grant::Unknown) {
-            return None;
-        }
-        let id = model::machine_id(grant).map(str::to_owned);
-        Some(self.machine_chip(id.as_ref(), model::machine_of(grant).as_ref()))
+        let (id, name) = model::machine(grant)?;
+        Some(self.machine_chip(id, name))
     }
 }
 

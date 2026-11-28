@@ -33,7 +33,9 @@ impl Pane {
             .min_h_0()
             .flex()
             .flex_col()
-            .child(self.header())
+            .child(self.header("shield", "Access", |profile| {
+                format!("what each agent in {profile} may reach, and who is above whom")
+            }))
             .child(self.toolbar(model, cx))
             .child(
                 div()
@@ -45,10 +47,17 @@ impl Pane {
             )
     }
 
-    fn header(&self) -> Div {
-        let (t, c) = (tokens(), colors());
+    /// A header of the pane's views: its icon and title, what it shows of
+    /// this profile, by the profile's name, and when it was read.
+    pub(super) fn header(
+        &self,
+        icon: &str,
+        title: &'static str,
+        subtitle: impl FnOnce(&str) -> String,
+    ) -> Div {
+        let c = colors();
         let profile = self.profile_name.as_deref().unwrap_or("this profile");
-        ui::view_header("shield", "Access")
+        ui::view_header(icon, title)
             .child(
                 div()
                     .flex_1()
@@ -56,11 +65,9 @@ impl Pane {
                     .overflow_hidden()
                     .text_ellipsis()
                     .text_color(c.muted)
-                    .child(format!(
-                        "what each agent in {profile} may reach, and who is above whom"
-                    )),
+                    .child(subtitle(profile)),
             )
-            .children(self.live_note().map(|note| ui::text(note, &t.text.meta)))
+            .children(self.live_note())
     }
 
     /// The button that shows the waiting requests, and from them the agents
@@ -467,9 +474,7 @@ impl Pane {
             .flex_shrink_0()
             .child(button.on_click(cx.listener(move |pane, _, _, cx| {
                 // A press on the button of the menu it just closed only closes it.
-                let dismissed = pane.dismissed.take().is_some_and(|(closed, at)| {
-                    closed == menu && at.elapsed() < std::time::Duration::from_millis(400)
-                });
+                let dismissed = ui::just_dismissed(&mut pane.dismissed, menu);
                 pane.menu = if pane.menu == Some(menu) || dismissed {
                     None
                 } else {
@@ -805,14 +810,9 @@ impl Pane {
 
     /// A grant's machine as its chip: this app's own as "this Mac", another
     /// by the name Backbone serves, or "another machine" once it names none.
-    pub(super) fn machine_chip(&self, id: Option<&String>, name: Option<&String>) -> Div {
+    pub(super) fn machine_chip(&self, id: Option<&str>, name: Option<&str>) -> Div {
         let local = &self.connection.identity().installation_id;
-        ui::machine_chip(model::machine_label(
-            this_machine(),
-            local,
-            id.map(String::as_str),
-            name.map(String::as_str),
-        ))
+        ui::machine_chip(model::machine_label(this_machine(), local, id, name))
     }
 
     /// Whether a grant is on this app's own machine, or names none.
@@ -929,12 +929,10 @@ impl Pane {
                         &t.text.key,
                     ))
                     .when(!self.on_this_machine(Some(&browser.machine)), |el| {
-                        el.child(
-                            self.machine_chip(
-                                Some(&browser.machine),
-                                browser.machine_name.as_ref(),
-                            ),
-                        )
+                        el.child(self.machine_chip(
+                            Some(browser.machine.as_str()),
+                            browser.machine_name.as_deref(),
+                        ))
                     })
                     .child(div().flex_1())
                     .child(ui::text(div().text_color(c.muted), &t.text.meta).child(note))
@@ -991,7 +989,7 @@ impl Pane {
                         ui::mono(path.clone()).text_color(c.text),
                         &t.text.status,
                     ))
-                    .child(self.machine_chip(machine.as_ref(), machine_name.as_ref()))
+                    .child(self.machine_chip(machine.as_deref(), machine_name.as_deref()))
                     .child(div().flex_1())
                     .child(self.access_segments(
                         &key,
@@ -1043,7 +1041,7 @@ impl Pane {
                     ))
                     // The section says it is on this machine; others are named.
                     .when(!self.on_this_machine(id.as_ref()), |el| {
-                        el.child(self.machine_chip(id.as_ref(), name.as_ref()))
+                        el.child(self.machine_chip(id.as_deref(), name.as_deref()))
                     })
                     .child(div().flex_1())
                     .child(self.busy(
@@ -1094,7 +1092,7 @@ impl Pane {
                     .child(ui::icon("package", t.size.icon, c.muted))
                     .child("Docker")
                     .when(!self.on_this_machine(id.as_ref()), |el| {
-                        el.child(self.machine_chip(id.as_ref(), name.as_ref()))
+                        el.child(self.machine_chip(id.as_deref(), name.as_deref()))
                     })
                     .child(
                         ui::text(

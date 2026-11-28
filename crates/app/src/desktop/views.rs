@@ -518,7 +518,9 @@ impl ViewPane {
             return pane;
         };
         if pane.view.kind == ViewKind::Connections {
-            pane.connections = Some(cx.new(|cx| connections::Pane::new(connection, window, cx)));
+            let visible = pane.visible.clone();
+            pane.connections =
+                Some(cx.new(|cx| connections::Pane::new(connection, visible, window, cx)));
             return pane;
         }
         // The Access view reads through its own pane, never the view source.

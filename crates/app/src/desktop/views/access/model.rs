@@ -362,16 +362,41 @@ pub(super) fn machine_label(
     }
 }
 
-/// The machine a grant is on, by ID; none for a repository.
-pub(super) fn machine_id(grant: &Grant) -> Option<&str> {
+/// The machine a grant is on, by ID and by the name the reply gives it,
+/// when either is named; none for a repository, which is on no machine.
+pub(super) fn machine(grant: &Grant) -> Option<(Option<&str>, Option<&str>)> {
     match grant {
-        Grant::Folder { machine, .. }
-        | Grant::SecretFile { machine, .. }
-        | Grant::SecretVariable { machine, .. }
-        | Grant::Browser { machine, .. }
-        | Grant::Docker { machine, .. } => machine.as_deref(),
+        Grant::Folder {
+            machine,
+            machine_name,
+            ..
+        }
+        | Grant::SecretFile {
+            machine,
+            machine_name,
+            ..
+        }
+        | Grant::SecretVariable {
+            machine,
+            machine_name,
+            ..
+        }
+        | Grant::Browser {
+            machine,
+            machine_name,
+            ..
+        }
+        | Grant::Docker {
+            machine,
+            machine_name,
+        } => Some((machine.as_deref(), machine_name.as_deref())),
         Grant::Repository { .. } | Grant::Unknown => None,
     }
+}
+
+/// The machine a grant is on, by ID; none for a repository.
+pub(super) fn machine_id(grant: &Grant) -> Option<&str> {
+    machine(grant).and_then(|(id, _)| id)
 }
 
 /// Waiting requests as the board draws them: one card for an agent's
@@ -404,18 +429,6 @@ pub(super) fn thing(grant: &Grant) -> Option<String> {
         Grant::SecretVariable { name, .. } => Some(name.clone()),
         Grant::Browser { browser, .. } => browser.clone(),
         Grant::Docker { .. } | Grant::Unknown => None,
-    }
-}
-
-/// The machine a grant is on, by name, when the reply names one.
-pub(super) fn machine_of(grant: &Grant) -> Option<String> {
-    match grant {
-        Grant::Folder { machine_name, .. }
-        | Grant::SecretFile { machine_name, .. }
-        | Grant::SecretVariable { machine_name, .. }
-        | Grant::Browser { machine_name, .. }
-        | Grant::Docker { machine_name, .. } => machine_name.clone(),
-        Grant::Repository { .. } | Grant::Unknown => None,
     }
 }
 
@@ -991,7 +1004,10 @@ mod tests {
             phrase(&[&pending[1]]),
             ("asks to read".into(), Some("example/library".into()))
         );
-        assert_eq!(machine_of(&pending[0].grant).as_deref(), Some("laptop"));
+        assert_eq!(
+            machine(&pending[0].grant).and_then(|(_, name)| name),
+            Some("laptop")
+        );
         let mut secrets = pending[1].clone();
         secrets.grant = Grant::SecretVariable {
             machine: None,

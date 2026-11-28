@@ -106,6 +106,18 @@ enum Applied {
     Released(String, bool),
 }
 
+/// What a read can change of what the pane draws, compared before and
+/// after one so a read that changes none of it is not drawn again.
+#[derive(Debug, PartialEq)]
+struct Drawn {
+    model: Option<model::Model>,
+    browsing: browsers::Browsing,
+    error: Option<String>,
+    /// As HH:MM, so a read in the same minute leaves it the same.
+    read_at: Option<String>,
+    selected: Option<String>,
+}
+
 /// A line at the top of the pane about the last change: a warning Backbone
 /// served with it, or why it refused it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -373,6 +385,7 @@ impl Pane {
             let result = read.await;
             let _ = this.update(cx, |pane, cx| {
                 pane.reading = false;
+                let before = pane.drawn();
                 match result {
                     // Read before a change's reply was applied: the read that
                     // follows the change shows the newer state.
@@ -397,10 +410,24 @@ impl Pane {
                     pane.read(cx);
                 }
                 pane.read_newest(cx);
-                cx.notify();
+                // The poll reads every few seconds; most reads change nothing.
+                if pane.drawn() != before {
+                    cx.notify();
+                }
             });
         })
         .detach();
+    }
+
+    /// What a read can change of what is drawn.
+    fn drawn(&self) -> Drawn {
+        Drawn {
+            model: self.model.clone(),
+            browsing: self.browsing.clone(),
+            error: self.error.clone(),
+            read_at: self.read_at.clone(),
+            selected: self.selected.clone(),
+        }
     }
 
     /// Read each browser's newest session, for the shown agent's browser
@@ -760,7 +787,7 @@ impl Pane {
         let cards = self.card_order();
         let at = self
             .card
-            .and_then(|card| cards.iter().position(|ids| ids.last() == Some(&card)));
+            .and_then(|card| cards.iter().position(|ids| model::card_key(ids) == card));
         match key.key.as_str() {
             "down" | "up" => {
                 let next = match (at, key.key.as_str()) {
@@ -768,7 +795,7 @@ impl Pane {
                     (Some(at), "down") => (at + 1).min(cards.len().saturating_sub(1)),
                     (Some(at), _) => at.saturating_sub(1),
                 };
-                self.card = cards.get(next).and_then(|ids| ids.last().copied());
+                self.card = cards.get(next).map(|ids| model::card_key(ids));
             }
             "a" | "r" => {
                 let Some(ids) = at.and_then(|at| cards.get(at)).cloned() else {
@@ -777,10 +804,13 @@ impl Pane {
                 self.decide(ids, key.key == "a", window, cx);
             }
             "n" => {
-                let Some(first) = at.and_then(|at| cards.get(at)).and_then(|ids| ids.last()) else {
+                let Some(first) = at
+                    .and_then(|at| cards.get(at))
+                    .map(|ids| model::card_key(ids))
+                else {
                     return false;
                 };
-                self.open_note(*first, window, cx);
+                self.open_note(first, window, cx);
             }
             _ => return false,
         }
@@ -846,18 +876,8 @@ impl Pane {
 
     /// "live from Agent Backbone · read 10:31", once something was read.
     fn live_note(&self) -> Option<Div> {
-        let (t, c) = (tokens(), colors());
-        let at = self.read_at.as_ref()?;
-        Some(
-            div()
-                .flex()
-                .flex_shrink_0()
-                .items_center()
-                .gap(px(t.space.s6))
-                .text_color(c.muted)
-                .child(ui::dot(c.ok))
-                .child(format!("live from Agent Backbone · read {at}")),
-        )
+        let at = self.read_at.as_deref()?;
+        Some(ui::live_read_note(at).flex_shrink_0())
     }
 
     /// The last change's notice, with the button that dismisses it: a served
@@ -1097,6 +1117,37 @@ mod tests {
             },
             ..model::Model::default()
         }
+    }
+
+    #[test]
+    fn only_a_read_that_changes_what_is_drawn_draws_again() {
+        let text = include_str!("../../../../roster/src/profiles/browsers/fixtures/browser.json");
+        let detail: Detail = serde_json::from_str(text).unwrap();
+        let drawn = |detail: Detail| {
+            let mut browsing = browsers::Browsing {
+                chosen: Some(detail.browser.id.clone()),
+                ..browsers::Browsing::default()
+            };
+            browsing.read(Some(detail));
+            Drawn {
+                model: Some(model()),
+                browsing,
+                error: None,
+                read_at: Some("10:31".into()),
+                selected: Some("tester".into()),
+            }
+        };
+        // The poll's next read, the same records in the same minute.
+        assert_eq!(drawn(detail.clone()), drawn(detail.clone()));
+        let mut renamed = detail.clone();
+        renamed.browser.name.push_str(" (work)");
+        assert_ne!(drawn(renamed), drawn(detail.clone()));
+        // A read in the next minute shows its new time.
+        let later = Drawn {
+            read_at: Some("10:32".into()),
+            ..drawn(detail.clone())
+        };
+        assert_ne!(later, drawn(detail));
     }
 
     #[test]
