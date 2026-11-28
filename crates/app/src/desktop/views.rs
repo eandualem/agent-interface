@@ -238,8 +238,6 @@ pub(super) struct ViewPane {
     read_at: Option<std::time::Instant>,
     /// Redraws the pane when an age it shows changes.
     clock: Clock,
-    /// [`seen::changes`] when a read last drew the pane.
-    seen: u64,
     error: Option<&'static str>,
     range: Range,
     grouping: Grouping,
@@ -484,7 +482,6 @@ impl ViewPane {
             data: None,
             read_at: None,
             clock: Clock::default(),
-            seen: seen::changes(),
             error: None,
             range: Range::Day,
             grouping: Grouping::Folder,
@@ -518,6 +515,17 @@ impl ViewPane {
             _search: Vec::new(),
             view,
         };
+        // Another pane opened a record: a record list marks which were
+        // opened, an open record does not.
+        pane._search
+            .push(cx.observe_global::<seen::Opened>(|pane: &mut Self, cx| {
+                if pane.view.kind == ViewKind::Reports
+                    && pane.shown == Shown::Records
+                    && pane.reports.open.is_none()
+                {
+                    cx.notify();
+                }
+            }));
         if pane.connection.is_none() && pane.view.registration_id.is_some() {
             pane.error = Some("This saved agent view requires its original profile.");
             return pane;
@@ -636,14 +644,7 @@ impl ViewPane {
                             &mut pane.reports,
                             update,
                         );
-                        // Another pane may have opened a record this one
-                        // lists; only record feeds and the sheets shelf mark
-                        // what was opened.
-                        let now_seen = seen::changes();
-                        let reseen = std::mem::replace(&mut pane.seen, now_seen) != now_seen
-                            && pane.view.kind == ViewKind::Reports
-                            && matches!(pane.shown, Shown::Records | Shown::Sheets);
-                        if served || changed || reseen {
+                        if served || changed {
                             cx.notify();
                         }
                     }

@@ -138,6 +138,12 @@ impl Sheets {
             Conversation::delivered_by_owner("about this sheet", visible.clone(), window, cx)
         });
         let input = Self::watch(&conversation, cx);
+        // Its shelf marks which workbooks were opened; an open one does not.
+        let opened = cx.observe_global::<super::seen::Opened>(|sheets: &mut Self, cx| {
+            if sheets.open.is_none() {
+                cx.notify();
+            }
+        });
         let mut state = Self {
             focus: cx.focus_handle(),
             rows_scroll: UniformListScrollHandle::new(),
@@ -165,7 +171,7 @@ impl Sheets {
             error: None,
             notice: None,
             _input: input,
-            _inputs: Vec::new(),
+            _inputs: vec![opened],
         };
         state.catalog(cx);
         state
@@ -276,7 +282,7 @@ impl Sheets {
         if !self.clean(cx) {
             return;
         }
-        super::seen::mark_keys(&seen_keys(&record, self.source.identity()));
+        super::seen::mark_keys(&seen_keys(&record, self.source.identity()), cx);
         self.read_grid(record, tab, row, column, cx);
     }
     fn read_grid(

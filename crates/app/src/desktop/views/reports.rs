@@ -277,7 +277,7 @@ fn plural(count: usize, one: &'static str, many: &'static str) -> &'static str {
 
 fn open_record(pane: &mut ViewPane, item: ReportItem, cx: &mut Context<ViewPane>) {
     if let Some(connection) = &pane.connection {
-        seen::mark(&item, connection.identity());
+        seen::mark(&item, connection.identity(), cx);
     }
     pane.documents.clear();
     pane.reports.open = Some(item);

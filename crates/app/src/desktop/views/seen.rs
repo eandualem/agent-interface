@@ -96,17 +96,14 @@ pub(super) fn known(thing: &str) -> bool {
     lock().keys.iter().any(|key| key == thing)
 }
 
-/// Counts the changes to what was opened, so a list drawn before one can
-/// tell it is out of date.
-static CHANGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Told when what was opened changes, so the lists that mark it, observing
+/// this, redraw at once.
+#[derive(Default)]
+pub(super) struct Opened;
+impl gpui::Global for Opened {}
 
-/// How many times what was opened has changed.
-pub(super) fn changes() -> u64 {
-    CHANGES.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// Remember that these keys were opened.
-pub(super) fn mark_keys(keys: &[String]) {
+/// Remember that these keys were opened, and tell the lists that mark it.
+pub(super) fn mark_keys(keys: &[String], cx: &mut gpui::App) {
     let mut seen = lock();
     let mut changed = false;
     for key in keys {
@@ -122,7 +119,7 @@ pub(super) fn mark_keys(keys: &[String]) {
         seen.keys.pop_front();
     }
     drop(seen);
-    CHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    cx.default_global::<Opened>();
     save();
 }
 
@@ -137,13 +134,14 @@ pub(super) fn is_update(item: &ReportItem, origin: &Identity) -> bool {
 }
 
 /// Remember that the person opened `item`.
-pub(super) fn mark(item: &ReportItem, origin: &Identity) {
+pub(super) fn mark(item: &ReportItem, origin: &Identity, cx: &mut gpui::App) {
     let (revision, thing) = keys(item, origin);
     mark_keys(
         &[Some(revision), thing]
             .into_iter()
             .flatten()
             .collect::<Vec<_>>(),
+        cx,
     );
 }
 

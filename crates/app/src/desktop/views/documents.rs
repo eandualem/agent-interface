@@ -163,7 +163,7 @@ fn open(pane: &mut ViewPane, metadata: DocumentMetadata, cx: &mut Context<ViewPa
         content: ReportContent::Document(metadata),
     };
     if let Some(connection) = &pane.connection {
-        super::seen::mark(&item, connection.identity());
+        super::seen::mark(&item, connection.identity(), cx);
     }
     pane.documents.clear();
     pane.reports.open = Some(item);
