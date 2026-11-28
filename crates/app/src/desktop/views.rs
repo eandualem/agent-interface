@@ -222,6 +222,8 @@ pub(super) struct ViewPane {
     read_at: Option<std::time::Instant>,
     /// Redraws the pane when an age it shows changes.
     clock: Clock,
+    /// [`seen::changes`] when a read last drew the pane.
+    seen: u64,
     error: Option<&'static str>,
     range: Range,
     grouping: Grouping,
@@ -465,6 +467,7 @@ impl ViewPane {
             data: None,
             read_at: None,
             clock: Clock::default(),
+            seen: seen::changes(),
             error: None,
             range: Range::Day,
             grouping: Grouping::Folder,
@@ -609,7 +612,10 @@ impl ViewPane {
                             &mut pane.reports,
                             update,
                         );
-                        if served || changed {
+                        // Another pane may have opened a record this one lists.
+                        let now_seen = seen::changes();
+                        let reseen = std::mem::replace(&mut pane.seen, now_seen) != now_seen;
+                        if served || changed || reseen {
                             cx.notify();
                         }
                     }

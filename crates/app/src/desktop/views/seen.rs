@@ -96,6 +96,15 @@ pub(super) fn known(thing: &str) -> bool {
     lock().keys.iter().any(|key| key == thing)
 }
 
+/// Counts the changes to what was opened, so a list drawn before one can
+/// tell it is out of date.
+static CHANGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many times what was opened has changed.
+pub(super) fn changes() -> u64 {
+    CHANGES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Remember that these keys were opened.
 pub(super) fn mark_keys(keys: &[String]) {
     let mut seen = lock();
@@ -113,6 +122,7 @@ pub(super) fn mark_keys(keys: &[String]) {
         seen.keys.pop_front();
     }
     drop(seen);
+    CHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     save();
 }
 
