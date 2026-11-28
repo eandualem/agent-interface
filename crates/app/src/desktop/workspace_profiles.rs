@@ -645,7 +645,22 @@ impl Browser {
         for (id, connection) in ready {
             self.peer_inboxes.entry(id.clone()).or_insert_with(|| {
                 let inbox = super::peer_inbox::Inbox::shared(&connection, cx);
-                let watch = cx.observe(&inbox, |_, _, cx| cx.notify());
+                // The window draws the summary and whether it failed; a
+                // read that changes neither, such as a connection's
+                // history, is for the Connections pane alone.
+                let mut drawn = None;
+                let watch = cx.observe(&inbox, move |_, inbox, cx| {
+                    let inbox = inbox.read(cx);
+                    let now = (
+                        inbox.summary.clone(),
+                        inbox.error.is_some(),
+                        inbox.not_answering(),
+                    );
+                    if drawn.as_ref() != Some(&now) {
+                        drawn = Some(now);
+                        cx.notify();
+                    }
+                });
                 (connection.connection_key(), inbox, watch)
             });
             if !self.workspace_rosters.contains_key(&id)
