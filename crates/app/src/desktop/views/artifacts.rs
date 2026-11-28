@@ -100,9 +100,10 @@ impl ArtifactPane {
         .detach();
     }
 
-    pub fn set_visible(&self, visible: bool) {
+    /// Hidden with `dispose`, its native page goes too; otherwise it pauses.
+    pub fn set_visible(&self, visible: bool, dispose: bool) {
         self.visible.set(visible);
-        if !visible {
+        if !visible && dispose {
             self.surface.borrow_mut().clear();
         }
     }

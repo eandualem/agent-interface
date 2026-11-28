@@ -1726,7 +1726,8 @@ impl Browser {
         }
         if self.window_hidden {
             for (view, _) in self.views.values() {
-                view.read(cx).set_visible(false, cx);
+                // Paused, keeping its native page for when it shows again.
+                view.read(cx).set_visible(false, false, cx);
             }
             for (chooser, _) in self.new_panes.values() {
                 chooser.update(cx, |chooser, cx| chooser.set_visible(false, cx));
@@ -3680,11 +3681,14 @@ impl Render for Browser {
             }
         }
         for (id, (view, _)) in &self.views {
+            // A pane the layout hides goes with its native page; one hidden
+            // with the window only pauses.
             let appeared = view.read(cx).set_visible(
                 !self.window_hidden
                     && !self.profile_content_unavailable()
                     && shown.iter().any(|(shown, _)| shown == id)
                     && expanded.is_none_or(|focused| focused == id),
+                !self.window_hidden,
                 cx,
             );
             // After this frame: a view told of a change while the window

@@ -296,14 +296,16 @@ impl ViewPane {
     }
 
     /// Whether the pane can be seen; true when it just became visible, for
-    /// [`Self::wake`].
-    pub fn set_visible(&self, visible: bool, cx: &gpui::App) -> bool {
+    /// [`Self::wake`]. Hidden with `dispose`, as when the layout no longer
+    /// shows it, its native pages go too; hidden with the window, it only
+    /// pauses and keeps them, with their scroll and controls.
+    pub fn set_visible(&self, visible: bool, dispose: bool, cx: &gpui::App) -> bool {
         let appeared = show_source(&self.visible, self.source.as_ref(), visible);
-        if !visible {
+        if !visible && dispose {
             self.documents.surface.borrow_mut().clear();
         }
         if let Some(artifacts) = &self.artifacts {
-            artifacts.read(cx).set_visible(visible);
+            artifacts.read(cx).set_visible(visible, dispose);
         }
         appeared
     }
