@@ -1089,9 +1089,15 @@ fn still_listed(chosen: Option<&str>, machines: &[ProfileMachine]) -> bool {
     chosen.is_none_or(|id| {
         machines
             .iter()
+            .enumerate()
             .skip(1)
-            .any(|machine| machine.id == id && machine.state == MachineState::Online)
+            .any(|(at, machine)| machine.id == id && choosable(at, machine))
     })
+}
+/// Whether `machine`, at `at` in the machine choices, can be chosen: this
+/// one, the first, always; another only while it is online.
+fn choosable(at: usize, machine: &ProfileMachine) -> bool {
+    at == 0 || machine.state == MachineState::Online
 }
 /// Choose the machine `clicked`, `None` for this one, the first of
 /// `machines`. Another must be online. Returns whether the choice changed.
@@ -1103,12 +1109,7 @@ fn switch_machine(
     if chosen.as_deref() == clicked {
         return false;
     }
-    let open = clicked.is_none_or(|id| {
-        machines
-            .iter()
-            .skip(1)
-            .any(|machine| machine.id == id && machine.state == MachineState::Online)
-    });
+    let open = still_listed(clicked, machines);
     if open {
         *chosen = clicked.map(str::to_owned);
     }
@@ -1226,6 +1227,43 @@ fn card_state(value: Authentication) -> &'static str {
         _ => "Ready",
     }
 }
+/// A row of the form: `label` in the label column, then `control`.
+fn line(label: &'static str, control: gpui::AnyElement) -> gpui::Div {
+    let (t, c) = (tokens(), colors());
+    div()
+        .flex()
+        .items_center()
+        .gap(px(t.space.s12))
+        .child(
+            ui::text(
+                div()
+                    .w(px(t.space.s28 * 2.5))
+                    .flex_shrink_0()
+                    .text_color(c.muted),
+                &t.text.meta,
+            )
+            .child(label),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap(px(t.space.s8))
+                .child(control),
+        )
+}
+/// A note in the form, in muted text.
+fn note(text: SharedString) -> gpui::Div {
+    let (t, c) = (tokens(), colors());
+    ui::text(div().text_color(c.muted), &t.text.meta).child(text)
+}
+/// A note in the form that asks for attention.
+fn attention(text: SharedString) -> gpui::Div {
+    let (t, c) = (tokens(), colors());
+    ui::text(div().text_color(c.attention_text), &t.text.meta).child(text)
+}
 impl Render for Form {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.guide {
@@ -1233,137 +1271,39 @@ impl Render for Form {
         }
         let (t, c) = (tokens(), colors());
         let ticket = self.ticket.0.clone();
-        let line = |label: &'static str, control: gpui::AnyElement| {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(t.space.s12))
-                .child(
-                    ui::text(
-                        div()
-                            .w(px(t.space.s28 * 2.5))
-                            .flex_shrink_0()
-                            .text_color(c.muted),
-                        &t.text.meta,
-                    )
-                    .child(label),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .items_center()
-                        .gap(px(t.space.s8))
-                        .child(control),
-                )
-        };
-        let note =
-            |text: SharedString| ui::text(div().text_color(c.muted), &t.text.meta).child(text);
         let mut body = div().flex().flex_col().gap(px(t.space.s10));
         match &self.state {
             State::Loading => body = body.child(note("Checking this profile's tools…".into())),
             State::Unchecked(_) => {
                 body = body
-                    .child(note("A saved setup could not be read. Forget it under Earlier setups to continue, then check again.".into()))
-                    .child(
-                        div().flex().gap(px(t.space.s8))
-                            .child(ui::button("recover-pending-setup", "Earlier setups", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.recover(cx))))
-                            .child(ui::button("recheck-setup", "Check again", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.load(false, cx)))),
-                    )
+                    .child(note(
+                        "A saved setup could not be read. Forget it under Earlier setups to \
+                         continue, then check again."
+                            .into(),
+                    ))
+                    .child(self.recovery_buttons(cx))
             }
-            State::Failed => {
-                body = body.child(ui::button("retry-setup-catalog", "Check again", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| { form.load(false, cx); form.read_machines(cx); })))
-            }
+            State::Failed => body = body.child(self.retry_button(cx)),
             State::Ready { pending, .. } => {
                 if *pending > 0 {
-                    body = body.child(
-                        div().flex().items_center().gap(px(t.space.s8))
-                            .child(ui::step_dot(ui::Step::Waits))
-                            .child(div().flex_1().child(note(if *pending == 1 { "An earlier setup in this profile didn't finish.".into() } else { format!("{pending} earlier setups in this profile didn't finish.").into() })))
-                            .child(ui::button("recover-pending-setup", "Open", ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.recover(cx)))),
-                    );
+                    body = body.child(self.pending_row(*pending, cx));
                 }
                 let typed = self.name.read(cx).value().to_owned();
                 let name = agent_name(&typed);
-                let from_folder = self.folder_name.as_deref().is_some_and(|name| name == typed);
+                let from_folder = self
+                    .folder_name
+                    .as_deref()
+                    .is_some_and(|name| name == typed);
                 // The agent as it will be: its name, what it does, where it works.
                 let folder = self.folder(cx);
-                let attention = |text: SharedString| ui::text(div().text_color(c.attention_text), &t.text.meta).child(text);
                 let elsewhere = self.elsewhere_name();
                 let taken = elsewhere.is_some() && self.agents.contains(&name);
                 // Which machine it starts on, when the profile has another.
-                let mut machine_rows = Vec::new();
-                if !self.machines.is_empty() {
-                    let now = agent_interface_roster::views::now() as f64;
-                    let mut row = ui::segments().flex_wrap();
-                    let mut offline = Vec::new();
-                    for (at, machine) in self.machines.iter().enumerate() {
-                        let this = at == 0;
-                        let open = this || machine.state == MachineState::Online;
-                        let chosen = if this { self.machine.is_none() } else { self.machine.as_ref() == Some(&machine.id) };
-                        let label = super::super::agent_groups::machine_display_name(&machine.name, &machine.id);
-                        let segment = ui::segment(SharedString::from(format!("machine-{}", machine.id)), label.clone(), chosen)
-                            .gap(px(t.space.s6))
-                            .child(ui::dot(if open { c.ok } else { c.faint }));
-                        row = row.child(if open {
-                            let (expected, clicked) = (ticket.clone(), (!this).then(|| machine.id.clone()));
-                            segment.on_click(cx.listener(move |form, _, _, cx| {
-                                if form.ticket.accepts(&expected) { form.choose_machine(clicked.clone(), cx); }
-                            }))
-                        } else {
-                            segment.opacity(0.5).cursor_default()
-                        });
-                        if !open {
-                            offline.push(unavailable(&label, machine.state, machine.last_seen.as_deref(), now));
-                        }
-                    }
-                    machine_rows.push(line("Machine", row.into_any_element()));
-                    machine_rows.extend(offline.into_iter().map(|why| line("", note(why.into()).into_any_element())));
-                }
+                let machine_rows = self.machine_rows(cx);
                 let folder_rows = match &elsewhere {
                     // Typed for that machine, never looked for on this one.
-                    Some(there) => {
-                        let typed = self.place.read(cx).value().trim().to_owned();
-                        let hint: SharedString = format!("owner/name to clone or use there, or a folder on {there} (/path or ~/path)").into();
-                        vec![
-                            line(
-                                "Folder",
-                                ui::field_frame(self.place.read(cx).focus.is_focused(window))
-                                    .flex_1()
-                                    .child(div().flex_1().min_w_0().child(self.place.clone()))
-                                    .into_any_element(),
-                            ),
-                            line("", if typed.is_empty() || place(&typed).is_some() { note(hint) } else { attention(hint) }.into_any_element()),
-                        ]
-                    }
-                    None => vec![line(
-                                "Folder",
-                                div().flex().flex_1().min_w_0().items_center().gap(px(t.space.s8))
-                                    .child(ui::icon("folder", t.size.icon, c.muted))
-                                    .child(
-                                        div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap()
-                                            .text_color(if folder.is_some() { c.code } else { c.faint })
-                                            .child(match &folder {
-                                                Some((path, _)) => home_relative(path),
-                                                None => "Choose the folder it works in".into(),
-                                            }),
-                                    )
-                                    // Setup makes this folder for the agent.
-                                    .when(folder.as_ref().is_some_and(|(_, made)| *made), |el| {
-                                        el.child(
-                                            ui::text(
-                                                div().flex_shrink_0().px(px(t.space.s6)).rounded(px(t.radius.row))
-                                                    .border(px(t.size.hairline)).border_color(c.line_strong).text_color(c.muted),
-                                                &t.text.meta,
-                                            )
-                                            .child("New"),
-                                        )
-                                    })
-                                    .child(div().flex_1())
-                                    .child(ui::button("setup-folder", if self.project.is_some() || folder.is_some() { "Change…" } else { "Choose…" }, ui::Button::Secondary).on_click(cx.listener(|form, _, _, cx| form.choose_folder(cx))))
-                                    .into_any_element(),
-                            )],
+                    Some(there) => self.place_rows(there, window, cx),
+                    None => vec![line("Folder", self.folder_control(folder.as_ref(), cx))],
                 };
                 let card = div()
                     .flex()
@@ -1392,93 +1332,43 @@ impl Render for Form {
                             .flex_col()
                             .gap(px(t.space.s8))
                             .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .child(ui::text(div().text_color(c.text), &t.text.card_title).child("Your agent")),
+                                div().flex().flex_col().child(
+                                    ui::text(div().text_color(c.text), &t.text.card_title)
+                                        .child("Your agent"),
+                                ),
                             )
                             .child(line(
                                 "Name",
-                                div().flex().flex_1().min_w_0().items_center().gap(px(t.space.s8))
-                                    .child(div().flex_1().min_w_0().child(self.name.clone()))
-                                    .map(|el| {
-                                        if taken {
-                                            el.child(attention(format!("An agent named {name} already exists in this profile.").into()))
-                                        } else if from_folder {
-                                            el.child(note(self.named_from.into()))
-                                        } else if name.is_empty() {
-                                            el
-                                        } else if !agent_interface_roster::valid_agent(&name) {
-                                            el.child(ui::text(div().text_color(c.attention_text), &t.text.meta).child("Use letters, numbers, - _ or ."))
-                                        } else if name != typed {
-                                            el.child(note(format!("Named {name}").into()))
-                                        } else {
-                                            el
-                                        }
-                                    })
-                                    .into_any_element(),
+                                self.name_control(&name, &typed, taken, from_folder),
                             ))
                             .children(machine_rows)
                             .children(folder_rows),
                     );
                 body = body.child(card);
-                // The same cards onboarding's first agent uses.
-                let mut tools = div().w_full().grid().grid_cols(2).gap(px(t.space.s8));
-                let shown = self.catalog().map_or(&[][..], Catalog::items);
-                for runtime in shown.iter().filter(|r| eligible(r, false)) {
-                    let id = runtime.id.clone();
-                    let expected = ticket.clone();
-                    tools = tools.child(
-                        ui::tool_card(format!("runtime-{id}"), runtime.display_name.clone(), card_state(runtime.authentication), false, self.runtime.as_ref() == Some(&id), false, None)
-                            .on_click(cx.listener(move |form, _, _, cx| {
-                                if form.finished || !form.ticket.accepts(&expected) { return; }
-                                let Some(catalog) = form.catalog() else { return; };
-                                if catalog.items().iter().any(|r| r.id == id && eligible(r, false)) { choose_tool(&mut form.runtime, &mut form.model, &id); cx.notify(); }
-                            })),
-                    );
-                }
-                let there = elsewhere.clone().unwrap_or_default();
-                body = body.child(line(
-                    "Runs in",
-                    match &self.elsewhere {
-                        Some(Elsewhere::Reading) if elsewhere.is_some() => note(format!("Checking {there}'s tools…").into()).into_any_element(),
-                        Some(Elsewhere::NotListed(None)) if elsewhere.is_some() => note(format!("Backbone doesn't list {there}'s tools yet, so it starts in the profile's default tool.").into()).into_any_element(),
-                        Some(Elsewhere::NotListed(Some(why))) if elsewhere.is_some() => note(older_note(why).into()).into_any_element(),
-                        Some(Elsewhere::Refused(why)) if elsewhere.is_some() => attention(why.clone().into()).into_any_element(),
-                        _ if shown.iter().any(|r| eligible(r, false)) => tools.into_any_element(),
-                        _ if elsewhere.is_some() => note(format!("No tool on {there} can set up an agent yet.").into()).into_any_element(),
-                        _ => note("No tool in this profile can set up an agent yet.".into()).into_any_element(),
-                    },
-                ));
-                if let (Some(_), Some(Elsewhere::Listed { checked_at: Some(at), .. })) = (&elsewhere, &self.elsewhere)
+                body = body.child(line("Runs in", self.runs_in(elsewhere.as_deref(), cx)));
+                if let (
+                    Some(_),
+                    Some(Elsewhere::Listed {
+                        checked_at: Some(at),
+                        ..
+                    }),
+                ) = (&elsewhere, &self.elsewhere)
                     && let Some(at) = agent_interface_roster::views::epoch_seconds(at)
                 {
-                    let ago = super::super::agent_groups::relative_seen(agent_interface_roster::views::now() as f64 - at);
-                    body = body.child(line("", note(format!("Checked {ago}").into()).into_any_element()));
+                    let ago = super::super::agent_groups::relative_seen(
+                        agent_interface_roster::views::now() as f64 - at,
+                    );
+                    body = body.child(line(
+                        "",
+                        note(format!("Checked {ago}").into()).into_any_element(),
+                    ));
                 }
                 // The service's Add agent takes no instructions or greeting.
-                body = body.child(
-                    div().id("setup-more").flex().items_center().gap(px(t.space.s6)).cursor_pointer().text_color(c.muted)
-                        .child(ui::icon(if self.more { "chevron-down" } else { "chevron-right" }, t.size.icon, c.muted))
-                        .child(ui::text(div(), &t.text.meta).child("Model and repository"))
-                        .on_click(cx.listener(|form, _, _, cx| { form.more = !form.more; cx.notify(); })),
-                );
+                body = body.child(self.more_toggle(cx));
                 if self.more {
                     if let Some(runtime) = self.runtime() {
-                        let runtime_id = runtime.id.clone();
-                        let mut models = ui::segments().flex_wrap();
-                        for model in std::iter::once(None).chain(runtime.models.iter().cloned().map(Some)) {
-                            let expected = ticket.clone();
-                            let selected = self.model == model;
-                            let label = model.clone().unwrap_or_else(|| "Tool's default".into());
-                            let origin_runtime = runtime_id.clone();
-                            models = models.child(ui::segment(SharedString::from(format!("model-{label}")), label, selected)
-                                .on_click(cx.listener(move |form, _, _, cx| {
-                                    if form.finished || !form.ticket.accepts(&expected) || form.runtime.as_ref() != Some(&origin_runtime) { return; }
-                                    if form.runtime().is_some_and(|r| model.as_ref().is_none_or(|m| r.models.contains(m))) { form.model = model.clone(); cx.notify(); }
-                                })));
-                        }
-                        body = body.child(line("Model", models.into_any_element()));
+                        body =
+                            body.child(line("Model", self.models(runtime, cx).into_any_element()));
                     }
                     let typed = self.repository.read(cx).value().trim().to_owned();
                     body = body.child(line(
@@ -1493,7 +1383,7 @@ impl Render for Form {
                         if typed.is_empty() || repository(&typed) {
                             note("Optional: a GitHub repository it watches, as owner/name".into())
                         } else {
-                            ui::text(div().text_color(c.attention_text), &t.text.meta).child("Use owner/name, such as acme/app")
+                            attention("Use owner/name, such as acme/app".into())
                         }
                         .into_any_element(),
                     ));
@@ -1501,8 +1391,7 @@ impl Render for Form {
             }
         }
         if let Some(error) = self.error {
-            body =
-                body.child(ui::text(div().text_color(c.attention_text), &t.text.meta).child(error));
+            body = body.child(attention(error.into()));
         }
         let ready = self.can_start(cx);
         // The button says which agent it starts.
@@ -1579,6 +1468,347 @@ impl Render for Form {
 }
 
 impl Form {
+    /// Earlier setups and Check again, when a saved setup could not be read.
+    fn recovery_buttons(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = tokens();
+        div()
+            .flex()
+            .gap(px(t.space.s8))
+            .child(
+                ui::button(
+                    "recover-pending-setup",
+                    "Earlier setups",
+                    ui::Button::Secondary,
+                )
+                .on_click(cx.listener(|form, _, _, cx| form.recover(cx))),
+            )
+            .child(
+                ui::button("recheck-setup", "Check again", ui::Button::Secondary)
+                    .on_click(cx.listener(|form, _, _, cx| form.load(false, cx))),
+            )
+    }
+    /// Check again, when the profile's tools could not be read.
+    fn retry_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        ui::button("retry-setup-catalog", "Check again", ui::Button::Secondary).on_click(
+            cx.listener(|form, _, _, cx| {
+                form.load(false, cx);
+                form.read_machines(cx);
+            }),
+        )
+    }
+    /// The row that offers to open the `pending` earlier setups that didn't finish.
+    fn pending_row(&self, pending: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = tokens();
+        div()
+            .flex()
+            .items_center()
+            .gap(px(t.space.s8))
+            .child(ui::step_dot(ui::Step::Waits))
+            .child(div().flex_1().child(note(if pending == 1 {
+                "An earlier setup in this profile didn't finish.".into()
+            } else {
+                format!("{pending} earlier setups in this profile didn't finish.").into()
+            })))
+            .child(
+                ui::button("recover-pending-setup", "Open", ui::Button::Secondary)
+                    .on_click(cx.listener(|form, _, _, cx| form.recover(cx))),
+            )
+    }
+    /// The Machine row, and a note for each machine that can't be chosen,
+    /// when the profile has another machine.
+    fn machine_rows(&self, cx: &mut Context<Self>) -> Vec<gpui::Div> {
+        let (t, c) = (tokens(), colors());
+        let mut machine_rows = Vec::new();
+        if !self.machines.is_empty() {
+            let now = agent_interface_roster::views::now() as f64;
+            let mut row = ui::segments().flex_wrap();
+            let mut offline = Vec::new();
+            for (at, machine) in self.machines.iter().enumerate() {
+                let this = at == 0;
+                let open = choosable(at, machine);
+                let chosen = if this {
+                    self.machine.is_none()
+                } else {
+                    self.machine.as_ref() == Some(&machine.id)
+                };
+                let label =
+                    super::super::agent_groups::machine_display_name(&machine.name, &machine.id);
+                let segment = ui::segment(
+                    SharedString::from(format!("machine-{}", machine.id)),
+                    label.clone(),
+                    chosen,
+                )
+                .gap(px(t.space.s6))
+                .child(ui::dot(if open { c.ok } else { c.faint }));
+                row = row.child(if open {
+                    let (expected, clicked) =
+                        (self.ticket.0.clone(), (!this).then(|| machine.id.clone()));
+                    segment.on_click(cx.listener(move |form, _, _, cx| {
+                        if form.ticket.accepts(&expected) {
+                            form.choose_machine(clicked.clone(), cx);
+                        }
+                    }))
+                } else {
+                    segment.opacity(0.5).cursor_default()
+                });
+                if !open {
+                    offline.push(unavailable(
+                        &label,
+                        machine.state,
+                        machine.last_seen.as_deref(),
+                        now,
+                    ));
+                }
+            }
+            machine_rows.push(line("Machine", row.into_any_element()));
+            machine_rows.extend(
+                offline
+                    .into_iter()
+                    .map(|why| line("", note(why.into()).into_any_element())),
+            );
+        }
+        machine_rows
+    }
+    /// The Folder row and its hint for a start on another machine, `there`.
+    fn place_rows(&self, there: &str, window: &Window, cx: &mut Context<Self>) -> Vec<gpui::Div> {
+        let typed = self.place.read(cx).value().trim().to_owned();
+        let hint: SharedString =
+            format!("owner/name to clone or use there, or a folder on {there} (/path or ~/path)")
+                .into();
+        vec![
+            line(
+                "Folder",
+                ui::field_frame(self.place.read(cx).focus.is_focused(window))
+                    .flex_1()
+                    .child(div().flex_1().min_w_0().child(self.place.clone()))
+                    .into_any_element(),
+            ),
+            line(
+                "",
+                if typed.is_empty() || place(&typed).is_some() {
+                    note(hint)
+                } else {
+                    attention(hint)
+                }
+                .into_any_element(),
+            ),
+        ]
+    }
+    /// The folder it works in on this machine, and the button that chooses it.
+    fn folder_control(
+        &self,
+        folder: Option<&(PathBuf, bool)>,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let (t, c) = (tokens(), colors());
+        div()
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .items_center()
+            .gap(px(t.space.s8))
+            .child(ui::icon("folder", t.size.icon, c.muted))
+            .child(
+                div()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .text_color(if folder.is_some() { c.code } else { c.faint })
+                    .child(match folder {
+                        Some((path, _)) => home_relative(path),
+                        None => "Choose the folder it works in".into(),
+                    }),
+            )
+            // Setup makes this folder for the agent.
+            .when(folder.is_some_and(|(_, made)| *made), |el| {
+                el.child(
+                    ui::text(
+                        div()
+                            .flex_shrink_0()
+                            .px(px(t.space.s6))
+                            .rounded(px(t.radius.row))
+                            .border(px(t.size.hairline))
+                            .border_color(c.line_strong)
+                            .text_color(c.muted),
+                        &t.text.meta,
+                    )
+                    .child("New"),
+                )
+            })
+            .child(div().flex_1())
+            .child(
+                ui::button(
+                    "setup-folder",
+                    if self.project.is_some() || folder.is_some() {
+                        "Change…"
+                    } else {
+                        "Choose…"
+                    },
+                    ui::Button::Secondary,
+                )
+                .on_click(cx.listener(|form, _, _, cx| form.choose_folder(cx))),
+            )
+            .into_any_element()
+    }
+    /// The name field and what it says about the `name` made from `typed`.
+    fn name_control(
+        &self,
+        name: &str,
+        typed: &str,
+        taken: bool,
+        from_folder: bool,
+    ) -> gpui::AnyElement {
+        let t = tokens();
+        div()
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .items_center()
+            .gap(px(t.space.s8))
+            .child(div().flex_1().min_w_0().child(self.name.clone()))
+            .map(|el| {
+                if taken {
+                    el.child(attention(
+                        format!("An agent named {name} already exists in this profile.").into(),
+                    ))
+                } else if from_folder {
+                    el.child(note(self.named_from.into()))
+                } else if name.is_empty() {
+                    el
+                } else if !agent_interface_roster::valid_agent(name) {
+                    el.child(attention("Use letters, numbers, - _ or .".into()))
+                } else if name != typed {
+                    el.child(note(format!("Named {name}").into()))
+                } else {
+                    el
+                }
+            })
+            .into_any_element()
+    }
+    /// The tools it can run in, on this machine or on another, `elsewhere`.
+    fn runs_in(&self, elsewhere: Option<&str>, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let t = tokens();
+        // The same cards onboarding's first agent uses.
+        let mut tools = div().w_full().grid().grid_cols(2).gap(px(t.space.s8));
+        let shown = self.catalog().map_or(&[][..], Catalog::items);
+        for runtime in shown.iter().filter(|r| eligible(r, false)) {
+            let id = runtime.id.clone();
+            let expected = self.ticket.0.clone();
+            tools = tools.child(
+                ui::tool_card(
+                    format!("runtime-{id}"),
+                    runtime.display_name.clone(),
+                    card_state(runtime.authentication),
+                    false,
+                    self.runtime.as_ref() == Some(&id),
+                    false,
+                    None,
+                )
+                .on_click(cx.listener(move |form, _, _, cx| {
+                    if form.finished || !form.ticket.accepts(&expected) {
+                        return;
+                    }
+                    let Some(catalog) = form.catalog() else {
+                        return;
+                    };
+                    if catalog
+                        .items()
+                        .iter()
+                        .any(|r| r.id == id && eligible(r, false))
+                    {
+                        choose_tool(&mut form.runtime, &mut form.model, &id);
+                        cx.notify();
+                    }
+                })),
+            );
+        }
+        let there = elsewhere.unwrap_or_default();
+        match &self.elsewhere {
+            Some(Elsewhere::Reading) if elsewhere.is_some() => {
+                note(format!("Checking {there}'s tools…").into()).into_any_element()
+            }
+            Some(Elsewhere::NotListed(None)) if elsewhere.is_some() => note(
+                format!(
+                    "Backbone doesn't list {there}'s tools yet, so it starts in \
+                the profile's default tool."
+                )
+                .into(),
+            )
+            .into_any_element(),
+            Some(Elsewhere::NotListed(Some(why))) if elsewhere.is_some() => {
+                note(older_note(why).into()).into_any_element()
+            }
+            Some(Elsewhere::Refused(why)) if elsewhere.is_some() => {
+                attention(why.clone().into()).into_any_element()
+            }
+            _ if shown.iter().any(|r| eligible(r, false)) => tools.into_any_element(),
+            _ if elsewhere.is_some() => {
+                note(format!("No tool on {there} can set up an agent yet.").into())
+                    .into_any_element()
+            }
+            _ => note("No tool in this profile can set up an agent yet.".into()).into_any_element(),
+        }
+    }
+    /// The toggle that shows the Model and Repository rows.
+    fn more_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let (t, c) = (tokens(), colors());
+        div()
+            .id("setup-more")
+            .flex()
+            .items_center()
+            .gap(px(t.space.s6))
+            .cursor_pointer()
+            .text_color(c.muted)
+            .child(ui::icon(
+                if self.more {
+                    "chevron-down"
+                } else {
+                    "chevron-right"
+                },
+                t.size.icon,
+                c.muted,
+            ))
+            .child(ui::text(div(), &t.text.meta).child("Model and repository"))
+            .on_click(cx.listener(|form, _, _, cx| {
+                form.more = !form.more;
+                cx.notify();
+            }))
+    }
+    /// The models of `runtime` to choose from, its default first.
+    fn models(&self, runtime: &Runtime, cx: &mut Context<Self>) -> impl IntoElement {
+        let runtime_id = runtime.id.clone();
+        let mut models = ui::segments().flex_wrap();
+        for model in std::iter::once(None).chain(runtime.models.iter().cloned().map(Some)) {
+            let expected = self.ticket.0.clone();
+            let selected = self.model == model;
+            let label = model.clone().unwrap_or_else(|| "Tool's default".into());
+            let origin_runtime = runtime_id.clone();
+            models = models.child(
+                ui::segment(
+                    SharedString::from(format!("model-{label}")),
+                    label,
+                    selected,
+                )
+                .on_click(cx.listener(move |form, _, _, cx| {
+                    if form.finished
+                        || !form.ticket.accepts(&expected)
+                        || form.runtime.as_ref() != Some(&origin_runtime)
+                    {
+                        return;
+                    }
+                    if form
+                        .runtime()
+                        .is_some_and(|r| model.as_ref().is_none_or(|m| r.models.contains(m)))
+                    {
+                        form.model = model.clone();
+                        cx.notify();
+                    }
+                })),
+            );
+        }
+        models
+    }
     /// The guide screen's body: its name, the tool it runs in, Start, and
     /// everything else under More options.
     fn guide_body(

@@ -331,11 +331,6 @@ impl Connection {
         &self.identity
     }
 
-    /// Whether the connected machine reported itself as the profile's home.
-    pub fn is_home(&self) -> Option<bool> {
-        self.local_machine.home
-    }
-
     /// Display name of the connected machine from `GET /api/profile`, when reported.
     pub fn machine_name(&self) -> Option<&str> {
         self.local_machine.name.as_deref()

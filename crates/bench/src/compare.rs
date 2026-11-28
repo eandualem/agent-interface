@@ -1,5 +1,5 @@
-//! Comparing final screens, written by [`crate::dump::dump`]: between
-//! engines, and with tmux's own capture of the pane.
+//! Comparing final screens, written by [`crate::dump::dump`], with tmux's own
+//! capture of the pane.
 
 use agent_interface_term::{Cursor, Screen, Terminal};
 

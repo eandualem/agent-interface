@@ -1,7 +1,7 @@
 //! Records how the benchmark was built, for its reports.
 //!
 //! The app package uses this build script too: its benchmark window states
-//! the revision it was built from.
+//! the revision it was built from, and the app logs it at startup.
 
 use std::env;
 use std::path::Path;

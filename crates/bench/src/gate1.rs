@@ -23,8 +23,6 @@ use crate::payload::{self, Kind};
 use crate::record::{self, Recording};
 use crate::stats::{self, Summary};
 
-/// Every engine the gate can measure, the leading one first.
-const ENGINES: [&str; 1] = ["libghostty-vt"];
 /// The engine the pass or fail decision is about.
 const LEADING: &str = "libghostty-vt";
 /// The rate the ASCII payload must reach, in MB/s.
@@ -36,7 +34,6 @@ struct Settings {
     size: usize,
     seed: u64,
     payloads: Vec<Kind>,
-    engines: Vec<String>,
     tmux_warmup: usize,
     tmux_runs: usize,
     engine_warmup: usize,
@@ -69,7 +66,7 @@ struct PayloadResult {
     tmux_rows: Vec<String>,
     tmux_cursor: (u16, u16),
     tmux_history: usize,
-    engines: Vec<EngineResult>,
+    engine: EngineResult,
 }
 
 /// Runs gate 1 and writes `summary.md` and `raw.tsv` to `--out`.
@@ -86,7 +83,6 @@ pub fn run(options: &Options) -> Result<(), String> {
         .iter()
         .map(|name| Kind::from_name(name).ok_or(format!("unknown payload {name}")))
         .collect::<Result<_, _>>()?,
-        engines: list(options, "engines", &ENGINES),
         tmux_warmup: options.get("tmux-warmup", 1)?,
         tmux_runs: options.get("tmux-runs", 10)?,
         engine_warmup: options.get("engine-warmup", 2)?,
@@ -94,13 +90,6 @@ pub fn run(options: &Options) -> Result<(), String> {
         chunk: options.get("chunk", 64 * 1024)?,
         frame_rate: options.get("frame-rate", 120)?,
     };
-    if let Some(name) = settings
-        .engines
-        .iter()
-        .find(|name| !ENGINES.contains(&name.as_str()))
-    {
-        return Err(format!("unknown engine {name}"));
-    }
     if settings.tmux_runs == 0 || settings.engine_runs == 0 || settings.frame_rate == 0 {
         return Err("--tmux-runs, --engine-runs and --frame-rate must be above zero".to_owned());
     }
@@ -148,10 +137,9 @@ pub fn run(options: &Options) -> Result<(), String> {
 /// starts it.
 pub fn replay_child(options: &Options) -> Result<(), String> {
     use crate::child;
-    use crate::engines::Ghostty;
 
     match options.required("engine")? {
-        "libghostty-vt" => child::run::<Ghostty>(options),
+        "libghostty-vt" => child::run(options),
         other => Err(format!("this program does not measure {other}")),
     }
 }
@@ -212,19 +200,16 @@ fn measure(kind: Kind, settings: &Settings, work: &Path) -> Result<PayloadResult
     fs::write(work.join(format!("{name}.tmux.rows")), tmux_rows.join("\n"))
         .map_err(|error| error.to_string())?;
 
-    let mut engines = Vec::new();
-    for engine in &settings.engines {
-        eprintln!("{name}: {engine}");
-        let screen_path = work.join(format!("{name}.{engine}.screen"));
-        engines.push(replay(
-            engine,
-            &wire_path,
-            recording.pane,
-            read_every,
-            settings,
-            &screen_path,
-        )?);
-    }
+    eprintln!("{name}: {LEADING}");
+    let screen_path = work.join(format!("{name}.{LEADING}.screen"));
+    let engine = replay(
+        LEADING,
+        &wire_path,
+        recording.pane,
+        read_every,
+        settings,
+        &screen_path,
+    )?;
     Ok(PayloadResult {
         kind,
         payload_bytes: payload.len(),
@@ -236,7 +221,7 @@ fn measure(kind: Kind, settings: &Settings, work: &Path) -> Result<PayloadResult
         tmux_rows,
         tmux_cursor: recording.capture.cursor,
         tmux_history: recording.capture.history,
-        engines,
+        engine,
     })
 }
 
@@ -321,12 +306,10 @@ fn replay(
 fn raw(results: &[PayloadResult]) -> String {
     let mut out = String::from("payload\tpath\trun\telapsed_ns\tmegabytes_per_second\n");
     for result in results {
-        let paths = std::iter::once(("tmux", &result.tmux)).chain(
-            result
-                .engines
-                .iter()
-                .map(|engine| (engine.name.as_str(), &engine.times)),
-        );
+        let paths = [
+            ("tmux", &result.tmux),
+            (result.engine.name.as_str(), &result.engine.times),
+        ];
         for (path, times) in paths {
             for (run, time) in times.iter().enumerate() {
                 let _ = writeln!(
@@ -414,53 +397,40 @@ fn summary(
             tmux_rate,
             Err(result.tmux_history),
         );
-        for engine in &result.engines {
-            let times = stats::summarize(&engine.times);
-            rate_row(
-                &mut out,
-                &engine.name,
-                result.payload_bytes,
-                &times,
-                tmux_rate,
-                Ok(engine),
-            );
-        }
+        let engine = &result.engine;
+        let times = stats::summarize(&engine.times);
+        rate_row(
+            &mut out,
+            &engine.name,
+            result.payload_bytes,
+            &times,
+            tmux_rate,
+            Ok(engine),
+        );
 
         out.push_str(
-            "\n| Final screen | Against libghostty-vt | Text and cursor against tmux | \
-             Cells against tmux's capture, as libghostty-vt reads it |\n| --- | --- | --- | --- |\n",
+            "\n| Final screen | Text and cursor against tmux | \
+             Cells against tmux's capture, as libghostty-vt reads it |\n| --- | --- | --- |\n",
         );
-        let leading = result.engines.iter().find(|engine| engine.name == LEADING);
         let mut examples = String::new();
-        for engine in &result.engines {
-            let against_leading = match leading {
-                Some(leading) if leading.name != engine.name => describe(
-                    &compare::compare(&leading.screen, &engine.screen),
-                    &format!("{} against {}", engine.name, LEADING),
-                    &mut examples,
-                ),
-                _ => "-".to_owned(),
-            };
-            let rows =
-                compare::differing_rows(&result.tmux_rows, &compare::dump_rows(&engine.screen));
-            let cursor = compare::dump_cursor(&engine.screen) == Some(result.tmux_cursor);
-            let text_against_tmux = match (rows, cursor) {
-                (0, true) => "same".to_owned(),
-                (0, false) => "same rows; cursor differs".to_owned(),
-                (rows, true) => format!("{rows} rows differ"),
-                (rows, false) => format!("{rows} rows differ; cursor differs"),
-            };
-            let cells_against_tmux = describe(
-                &compare::compare(&result.tmux_screen, &engine.screen),
-                &format!("{} against tmux's capture (tmux first)", engine.name),
-                &mut examples,
-            );
-            let _ = writeln!(
-                out,
-                "| {} | {against_leading} | {text_against_tmux} | {cells_against_tmux} |",
-                engine.name
-            );
-        }
+        let rows = compare::differing_rows(&result.tmux_rows, &compare::dump_rows(&engine.screen));
+        let cursor = compare::dump_cursor(&engine.screen) == Some(result.tmux_cursor);
+        let text_against_tmux = match (rows, cursor) {
+            (0, true) => "same".to_owned(),
+            (0, false) => "same rows; cursor differs".to_owned(),
+            (rows, true) => format!("{rows} rows differ"),
+            (rows, false) => format!("{rows} rows differ; cursor differs"),
+        };
+        let cells_against_tmux = describe(
+            &compare::compare(&result.tmux_screen, &engine.screen),
+            &format!("{} against tmux's capture (tmux first)", engine.name),
+            &mut examples,
+        );
+        let _ = writeln!(
+            out,
+            "| {} | {text_against_tmux} | {cells_against_tmux} |",
+            engine.name
+        );
         if !examples.is_empty() {
             let _ = write!(out, "\nFirst differences:\n\n```text\n{examples}```\n");
         }
@@ -534,9 +504,7 @@ fn verdict(results: &[PayloadResult]) -> (&'static str, Vec<String>) {
     let mut ascii_measured = false;
     for result in results {
         let name = result.kind.name();
-        let Some(engine) = result.engines.iter().find(|engine| engine.name == LEADING) else {
-            continue;
-        };
+        let engine = &result.engine;
         let mut disqualified = Vec::new();
         let rows = compare::differing_rows(&result.tmux_rows, &compare::dump_rows(&engine.screen));
         if rows > 0 {

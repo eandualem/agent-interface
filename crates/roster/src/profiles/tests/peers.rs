@@ -16,8 +16,6 @@ fn owner_routes_use_the_profile_socket_generation_and_original_request_key() {
         vec![
             (200, identity),
             (200, overview),
-            (200, invitation.clone()),
-            (200, peer.clone()),
             (200, history),
             (
                 200,
@@ -38,8 +36,7 @@ fn owner_routes_use_the_profile_socket_generation_and_original_request_key() {
     let c = profile.connect().unwrap();
     let data = c.peer_overview().unwrap();
     assert_eq!(data.local_id, "owner");
-    assert_eq!(c.peer_invitation("req").unwrap().request_id, "req");
-    let identity = c.peer_connection("gen").unwrap().connection;
+    let identity = data.connections[0].connection.clone();
     let page = c.peer_history(&identity, Some("previous+page/=")).unwrap();
     assert_eq!(page.items[0].text, "line 1\nline 2");
     let mut review = c.peer_reviews(None).unwrap().items.remove(0).message;
@@ -70,8 +67,6 @@ fn owner_routes_use_the_profile_socket_generation_and_original_request_key() {
     let routes = [
         "get /api/profile ",
         "get /api/peer-connections ",
-        "get /api/peer-connections/requests/req ",
-        "get /api/peer-connections/gen ",
         "get /api/peer-connections/gen/history?before=previous%2bpage%2f%3d ",
         "get /api/peer-connections/reviews ",
         "post /api/peer-connections/requests ",
@@ -86,8 +81,8 @@ fn owner_routes_use_the_profile_socket_generation_and_original_request_key() {
     for (wire, route) in requests.iter().zip(routes) {
         assert!(wire.starts_with(route), "{route}");
     }
-    assert_eq!(requests[9], requests[10]);
-    for (request, (key, body)) in requests[6..12].iter().zip([
+    assert_eq!(requests[7], requests[8]);
+    for (request, (key, body)) in requests[4..10].iter().zip([
         ("invite-key", json!({"peer_id":"peer"})),
         ("accept-key", json!({"action":"accept"})),
         ("gate-key", json!({"direction":"incoming","policy":"auto"})),

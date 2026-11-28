@@ -1,4 +1,5 @@
-//! Small native filesystem bridge. Owns no application state or file paths.
+//! Small native bridge: descriptor-based filesystem checks and clearing a
+//! child's signal mask. Owns no application state or file paths.
 
 /// Inspect the open descriptor's Darwin extended ACL, without following paths.
 /// Requires explicit filesystem support and a successful security-property
