@@ -101,6 +101,22 @@ pub(super) enum ViewEvent {
     RunView(String),
     /// An embedded document received a pointer press; select its owning pane.
     Focus,
+    /// Show a browser Agent Backbone runs in a Browser pane.
+    WatchBrowser(WatchBrowser),
+}
+
+/// A browser Agent Backbone runs, to watch through the DevTools endpoint it
+/// gives the owner.
+#[derive(Clone, Debug)]
+pub(super) struct WatchBrowser {
+    /// Its ID.
+    pub id: String,
+    /// Its name for people.
+    pub name: String,
+    /// The endpoint's port on this machine.
+    pub port: u16,
+    /// The agent-browser session its holder drives it with, if it named one.
+    pub session: Option<String>,
 }
 
 /// How the team view groups agents.
@@ -560,7 +576,12 @@ impl ViewPane {
         // The Access view reads through its own pane, never the view source.
         if pane.view.kind == ViewKind::Access {
             let visible = pane.visible.clone();
-            pane.access = Some(cx.new(|cx| access::Pane::new(connection, visible, window, cx)));
+            let access = cx.new(|cx| access::Pane::new(connection, visible, window, cx));
+            pane._search
+                .push(cx.subscribe(&access, |_, _, watch: &WatchBrowser, cx| {
+                    cx.emit(ViewEvent::WatchBrowser(watch.clone()))
+                }));
+            pane.access = Some(access);
             return pane;
         }
         if matches!(pane.view.kind, ViewKind::Skills | ViewKind::Reports) {

@@ -1,7 +1,7 @@
 //! What each agent may reach, and changes to it, through the profile's
 //! access routes: the access fields of `GET /api/agents`,
 //! `GET /api/access/requests`, `POST /api/agents/{name}/grant` and
-//! `.../revoke`, `PUT /api/agents/{name}/mode` and `.../place`, and `POST /api/access/requests/{id}/approve` and
+//! `.../revoke`, `PUT /api/agents/{name}/mode`, `.../ceiling` and `.../place`, and `POST /api/access/requests/{id}/approve` and
 //! `.../refuse`.
 //!
 //! Backbone judges every change and replies with what the record holds
@@ -114,14 +114,17 @@ pub enum Grant {
         /// The variable's name.
         name: String,
     },
-    /// The profile's browser, with its data on the machine.
+    /// A named browser on the machine (see [`super::browsers`]).
     Browser {
-        /// The machine its data is on, by ID.
+        /// The machine its profile is on, by ID.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         machine: Option<String>,
         /// That machine's name, in a reply.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         machine_name: Option<String>,
+        /// The browser's ID; none from a Backbone before named browsers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        browser: Option<String>,
     },
     /// Control of Docker on the machine. Only the owner grants it.
     Docker {
@@ -426,6 +429,17 @@ impl Connection {
         self.change_access("PUT", agent_path(name, "mode")?, json!({ "mode": mode }))
     }
 
+    /// Set the widest access the agent `name` may grant to the agents below
+    /// it, replacing the one it has. Runs on an I/O worker.
+    pub fn set_ceiling(&self, name: &str, ceiling: &[Grant]) -> Result<AgentAccess, Failure> {
+        let ceiling = ceiling
+            .iter()
+            .map(sendable)
+            .collect::<Result<Vec<_>, _>>()?;
+        let body = json!({ "ceiling": ceiling });
+        self.change_access("PUT", agent_path(name, "ceiling")?, body)
+    }
+
     /// Give the agent `name` a role and the agent directly above it, none
     /// for directly under the owner. Runs on an I/O worker.
     pub fn place(&self, name: &str, role: Role, superior: Option<&str>) -> Result<Placed, Failure> {
@@ -453,18 +467,32 @@ impl Connection {
         self.change_access("POST", path, json!({ "note": note }))
     }
 
-    fn change_access<T: DeserializeOwned>(
+    pub(super) fn change_access<T: DeserializeOwned>(
         &self,
         method: &'static str,
         path: String,
         body: Value,
     ) -> Result<T, Failure> {
-        let body = serde_json::to_vec(&body).map_err(|_| Error::Invalid)?;
+        let response = self.send_change(method, &path, Some(body))?;
+        Ok(serde_json::from_slice(&response.body).map_err(|_| Error::Invalid)?)
+    }
+
+    /// Send a change with `body`, if any, and keep Backbone's refusal.
+    pub(super) fn send_change(
+        &self,
+        method: &'static str,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<local::Response, Failure> {
+        let body = body
+            .map(|body| serde_json::to_vec(&body))
+            .transpose()
+            .map_err(|_| Error::Invalid)?;
         // The access routes take no request ID: a repeated change records
         // the same state, and the pane reads it again after each reply.
-        let response = self.write(method, &path, Some(body), None)?;
+        let response = self.write(method, path, body, None)?;
         refusal(&response)?;
-        Ok(serde_json::from_slice(&response.body).map_err(|_| Error::Invalid)?)
+        Ok(response)
     }
 }
 
@@ -475,10 +503,10 @@ fn agent_path(name: &str, action: &str) -> Result<String, Error> {
     Ok(format!("/api/agents/{}/{action}", encode(name)))
 }
 
-/// A grant as a body carries it; one this version could not read is never
-/// sent, as it would not be the same grant.
+/// A grant as a body carries it; one this version could not read, or a
+/// browser without its ID, is never sent, as it would not be the same grant.
 fn sendable(grant: &Grant) -> Result<Value, Error> {
-    if *grant == Grant::Unknown {
+    if matches!(grant, Grant::Unknown | Grant::Browser { browser: None, .. }) {
         return Err(Error::Invalid);
     }
     serde_json::to_value(grant).map_err(|_| Error::Invalid)
@@ -486,7 +514,7 @@ fn sendable(grant: &Grant) -> Result<Value, Error> {
 
 /// A refused change keeps Backbone's code and message; one without a message
 /// keeps its status.
-fn refusal(response: &local::Response) -> Result<(), Failure> {
+pub(super) fn refusal(response: &local::Response) -> Result<(), Failure> {
     if (200..300).contains(&response.status) {
         return Ok(());
     }

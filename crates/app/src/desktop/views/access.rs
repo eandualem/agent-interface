@@ -9,22 +9,39 @@ use agent_interface_roster::profiles::{
         Access, AgentAccess, Failure, Grant, Mode, Overview, Placed, Request, RequestPage,
         RequestState, Requests, Role,
     },
+    browsers::{self as served, Browsers, Create, Detail, Policies, Save, Session},
 };
+use futures::StreamExt as _;
 use gpui::{Context, Div, Entity, Render, Subscription, Task, Window, div, prelude::*, px};
-use std::{cell::Cell, collections::HashSet, rc::Rc, time::Duration};
+use std::{
+    cell::Cell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 mod agents;
+mod browsers;
 mod model;
 mod requests;
 
 /// How often the pane reads Backbone again, as the other live views do.
 const EVERY: Duration = Duration::from_secs(3);
 
+/// What one read of the pane returns: the agents, the waiting requests, the
+/// browsers and the shown browser's detail.
+type Read = (Overview, RequestPage, Option<Browsers>, Option<Detail>);
+
 /// Which of the pane's two views is shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Shown {
     Agents,
     Requests,
+    Browsers,
 }
 
 /// Which small menu is open.
@@ -33,6 +50,14 @@ enum Menu {
     Role,
     Superior,
     AgentFilter,
+    /// A browser's More menu.
+    BrowserMore,
+    /// The agents a browser can be given to.
+    BrowserUser,
+    /// The orchestrators and coordinators that can be let give it out.
+    BrowserGiver,
+    /// The agents a new browser's sheet can offer besides its chips.
+    BrowserAnother,
 }
 
 /// A thing being added to the chosen agent, with the access chosen for it.
@@ -51,6 +76,21 @@ enum Change {
     Place(String, Role, Option<String>),
     /// Approve or refuse these requests, with the decider's note.
     Decide(Vec<i64>, bool, String),
+    Browser(BrowserChange),
+}
+
+/// A change to a named browser, by its ID.
+#[derive(Clone, Debug)]
+enum BrowserChange {
+    Create(Create),
+    Show(String),
+    Save(String, Save),
+    Check(String),
+    Policies(String, Policies),
+    TakeBack(String),
+    Delete(String),
+    /// Set an agent's whole ceiling, with or without a browser.
+    Ceiling(String, Vec<Grant>),
 }
 
 /// What Backbone returned for a change.
@@ -59,6 +99,11 @@ enum Applied {
     Placed(Placed),
     /// The requests decided, and why one after them was not.
     Decided(Vec<Request>, Option<Failure>),
+    /// A browser as Backbone returned it.
+    Browser(Box<Detail>),
+    /// A browser taken back or deleted, by its ID and whether it was
+    /// deleted.
+    Released(String, bool),
 }
 
 /// A line at the top of the pane about the last change: a warning Backbone
@@ -118,8 +163,33 @@ pub(super) struct Pane {
     /// The menu a press outside just closed, so the press on its own button
     /// does not open it again.
     dismissed: Option<(Menu, std::time::Instant)>,
+    /// The browsers view: the chosen browser and the new browser sheet.
+    browsing: browsers::Browsing,
+    /// Whether the next read is the poll's, which may check a new browser's
+    /// sign-in.
+    check_due: bool,
+    /// Whether the browsers' newest sessions are to be read again, and
+    /// whether a read of them is under way.
+    newest_due: bool,
+    reading_newest: bool,
+    /// The new browser's name and address.
+    name_field: Entity<NameField>,
+    opens_field: Entity<NameField>,
     _poll: Task<()>,
-    _fields: [Subscription; 3],
+    _stream: BrowserStream,
+    _fields: [Subscription; 5],
+}
+
+/// The worker that follows `browser.changed`, stopped when the pane goes.
+struct BrowserStream {
+    live: Arc<AtomicBool>,
+    _changes: Task<()>,
+}
+
+impl Drop for BrowserStream {
+    fn drop(&mut self) {
+        self.live.store(false, Ordering::Relaxed);
+    }
 }
 
 impl Pane {
@@ -139,6 +209,8 @@ impl Pane {
         let query = field(window, cx);
         let add_field = cx.new(|cx| NameField::bare("", window, cx));
         let note_field = field(window, cx);
+        let name_field = cx.new(|cx| NameField::bare("", window, cx));
+        let opens_field = cx.new(|cx| NameField::bare("", window, cx));
         let changed = cx.subscribe(&query, |_, _, event: &NameEvent, cx| {
             if matches!(event, NameEvent::Changed(_)) {
                 cx.notify();
@@ -174,9 +246,42 @@ impl Pane {
                 NameEvent::Changed(_) => cx.notify(),
             },
         );
+        // Enter in the new browser's fields opens it, or keeps a new name;
+        // Escape cancels the sheet.
+        let new_field = |field: &Entity<NameField>, window: &mut Window, cx: &mut Context<Self>| {
+            cx.subscribe_in(
+                field,
+                window,
+                |pane, _, event: &NameEvent, window, cx| match event {
+                    NameEvent::Save => {
+                        if pane
+                            .browsing
+                            .new
+                            .as_ref()
+                            .is_some_and(|new| new.id.is_none())
+                        {
+                            pane.create_browser(cx);
+                        } else if let Some(new) = &mut pane.browsing.new {
+                            new.renaming = false;
+                            new.before_rename = None;
+                        }
+                        pane.leave_field(window, cx);
+                    }
+                    NameEvent::Cancel => pane.escape_new(window, cx),
+                    NameEvent::Changed(_) => cx.notify(),
+                },
+            )
+        };
+        let named = new_field(&name_field, window, cx);
+        let opened = new_field(&opens_field, window, cx);
+        let stream = BrowserStream::start(connection.clone(), cx);
         let poll = cx.spawn(async move |this, cx| {
             loop {
-                if this.update(cx, |pane, cx| pane.read(cx)).is_err() {
+                let polled = this.update(cx, |pane, cx| {
+                    pane.check_due = true;
+                    pane.read(cx);
+                });
+                if polled.is_err() {
                     break;
                 }
                 cx.background_executor().timer(EVERY).await;
@@ -212,8 +317,15 @@ impl Pane {
             note_field,
             return_focus: None,
             dismissed: None,
+            browsing: browsers::Browsing::default(),
+            check_due: false,
+            newest_due: true,
+            reading_newest: false,
+            name_field,
+            opens_field,
             _poll: poll,
-            _fields: [changed, added, noted],
+            _stream: stream,
+            _fields: [changed, added, noted, named, opened],
         }
     }
 
@@ -240,10 +352,22 @@ impl Pane {
         self.reading = true;
         let writes = self.writes;
         let connection = self.connection.clone();
+        let shown = self.browsing.shown_id(self.shown == Shown::Browsers);
+        // Backbone reads a new browser's sign-in only when it is checked, so
+        // the poll checks it while the sheet waits for one and its Chrome
+        // runs; a read the check itself sets off does not check again.
+        let check = self.browsing.waits_for_sign_in() && std::mem::take(&mut self.check_due);
         let read = cx.background_executor().spawn(async move {
             let overview = connection.access_overview()?;
             let pending = connection.access_requests(Requests::Pending)?;
-            Ok::<(Overview, RequestPage), Error>((overview, pending))
+            // Browsers only add to the pane, so their own failure keeps the
+            // last ones read.
+            let browsers = connection.browsers(None).ok();
+            let detail = shown.and_then(|id| match check {
+                true => connection.check_browser(&id).ok(),
+                false => connection.browser(&id).ok(),
+            });
+            Ok::<Read, Error>((overview, pending, browsers, detail))
         });
         cx.spawn(async move |this, cx| {
             let result = read.await;
@@ -253,10 +377,16 @@ impl Pane {
                     // Read before a change's reply was applied: the read that
                     // follows the change shows the newer state.
                     Ok(_) if pane.writes != writes => pane.again = true,
-                    Ok((overview, pending)) => {
+                    Ok((overview, pending, browsers, detail)) => {
                         let model = pane.model.get_or_insert_with(Default::default);
                         model.overview = overview;
                         model.pending = pending.items;
+                        if let Some(browsers) = browsers {
+                            model.browsers = browsers;
+                        }
+                        pane.browsing.read(detail);
+                        pane.keep_new();
+                        pane.keep_browser();
                         pane.read_at = Some(chrono::Local::now().format("%H:%M").to_string());
                         pane.error = None;
                         pane.keep_selection();
@@ -266,6 +396,47 @@ impl Pane {
                 if std::mem::take(&mut pane.again) {
                     pane.read(cx);
                 }
+                pane.read_newest(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Read each browser's newest session, for the shown agent's browser
+    /// rows, once it is due: when the shown agent changes or a browser
+    /// changes. It runs beside the pane's own read, so a slow one holds
+    /// neither up.
+    fn read_newest(&mut self, cx: &mut Context<Self>) {
+        let Some(model) = &self.model else { return };
+        if !self.newest_due
+            || self.reading_newest
+            || self.shown != Shown::Agents
+            || self.selected.is_none()
+        {
+            return;
+        }
+        self.newest_due = false;
+        self.reading_newest = true;
+        let ids: Vec<String> = model.browsers.items.iter().map(|b| b.id.clone()).collect();
+        let connection = self.connection.clone();
+        let read = cx.background_executor().spawn(async move {
+            ids.into_iter()
+                .filter_map(|id| {
+                    let newest = connection.browser_sessions(&id, None, Some(1)).ok()?;
+                    Some((id, newest.items.into_iter().next()?))
+                })
+                .collect::<HashMap<String, Session>>()
+        });
+        cx.spawn(async move |this, cx| {
+            let newest = read.await;
+            let _ = this.update(cx, |pane, cx| {
+                pane.reading_newest = false;
+                if let Some(model) = pane.model.as_mut() {
+                    model.newest = newest;
+                }
+                // Due again while this read was under way.
+                pane.read_newest(cx);
                 cx.notify();
             });
         })
@@ -326,6 +497,7 @@ impl Pane {
             return;
         }
         let groups = model::groups(&model.overview, model::Filter::All);
+        self.newest_due = true;
         self.selected = groups
             .orchestrators
             .iter()
@@ -374,21 +546,70 @@ impl Pane {
                     }
                     Ok(Applied::Decided(decided, None))
                 }
+                Change::Browser(change) => match change {
+                    BrowserChange::Create(create) => connection
+                        .create_browser(&create)
+                        .map(|detail| Applied::Browser(Box::new(detail))),
+                    BrowserChange::Show(id) => connection
+                        .show_browser(&id)
+                        .map(|detail| Applied::Browser(Box::new(detail))),
+                    BrowserChange::Save(id, save) => connection
+                        .save_browser(&id, &save)
+                        .map(|detail| Applied::Browser(Box::new(detail))),
+                    BrowserChange::Check(id) => connection
+                        .check_browser(&id)
+                        .map(|detail| Applied::Browser(Box::new(detail))),
+                    BrowserChange::Policies(id, policies) => connection
+                        .set_browser_policies(&id, &policies)
+                        .map(|detail| Applied::Browser(Box::new(detail))),
+                    BrowserChange::TakeBack(id) => connection
+                        .take_back_browser(&id)
+                        .map(|()| Applied::Released(id, false)),
+                    BrowserChange::Delete(id) => connection
+                        .delete_browser(&id)
+                        .map(|()| Applied::Released(id, true)),
+                    BrowserChange::Ceiling(name, ceiling) => {
+                        connection.set_ceiling(&name, &ceiling).map(Applied::Access)
+                    }
+                },
             }
         });
         cx.spawn(async move |this, cx| {
             let result = sent.await;
             let _ = this.update(cx, |pane, cx| {
-                pane.sending = None;
+                let key = pane.sending.take().unwrap_or_default();
                 if matches!(result, Ok(Applied::Decided(..))) {
                     pane.noting = None;
                 }
                 if result.is_ok() {
                     pane.writes += 1;
                 }
-                pane.notice = match pane.model.as_mut() {
-                    Some(model) => settle(model, result),
-                    None => None,
+                // A browser cancelled that is gone already is as good as
+                // deleted.
+                let result = match result {
+                    Err(Failure::Refused { code, .. })
+                        if key == "access-browser-cancel" && code == "not_found" =>
+                    {
+                        let gone = pane.browsing.new.as_ref().and_then(|new| new.id.clone());
+                        Ok(Applied::Released(gone.unwrap_or_default(), true))
+                    }
+                    other => other,
+                };
+                // A browser's reply is shown in the browsers view itself.
+                let unsettled = match result {
+                    Ok(Applied::Browser(detail)) => {
+                        pane.browsed(&key, *detail);
+                        None
+                    }
+                    Ok(Applied::Released(id, deleted)) => {
+                        pane.released(&id, deleted);
+                        None
+                    }
+                    other => Some(other),
+                };
+                pane.notice = match (unsettled, pane.model.as_mut()) {
+                    (Some(result), Some(model)) => settle(model, result),
+                    _ => None,
                 };
                 pane.read(cx);
                 cx.notify();
@@ -457,11 +678,16 @@ impl Pane {
         cx.notify();
     }
 
-    /// Whether the add or note field has keyboard focus.
+    /// Whether one of the pane's own fields has keyboard focus.
     fn in_field(&self, window: &Window, cx: &gpui::App) -> bool {
-        [&self.add_field, &self.note_field]
-            .iter()
-            .any(|field| field.read(cx).focus.is_focused(window))
+        [
+            &self.add_field,
+            &self.note_field,
+            &self.name_field,
+            &self.opens_field,
+        ]
+        .iter()
+        .any(|field| field.read(cx).focus.is_focused(window))
     }
 
     /// Give focus back to what had it before a field took it. It is kept,
@@ -479,9 +705,10 @@ impl Pane {
     /// Show the requests, or the agents again.
     fn toggle_requests(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.shown = match self.shown {
-            Shown::Agents => Shown::Requests,
+            Shown::Agents | Shown::Browsers => Shown::Requests,
             Shown::Requests => Shown::Agents,
         };
+        self.browsing.deleting = None;
         self.menu = None;
         self.noting = None;
         self.adding = None;
@@ -501,15 +728,25 @@ impl Pane {
         if key.modifiers.modified() {
             return false;
         }
+        // A deletion waiting to be confirmed is kept by Escape and Return.
+        if matches!(key.key.as_str(), "escape" | "enter")
+            && self.shown == Shown::Browsers
+            && self.browsing.confirming()
+        {
+            self.browsing.deleting = None;
+            cx.notify();
+            return true;
+        }
         if key.key == "escape" {
             let closed = self.menu.take().is_some()
                 || self.adding.take().is_some()
                 || self.noting.take().is_some();
             if !closed {
-                if self.shown != Shown::Requests {
-                    return false;
+                match self.shown {
+                    Shown::Agents => return false,
+                    Shown::Browsers if self.browsing.new.is_some() => self.escape_new(window, cx),
+                    Shown::Requests | Shown::Browsers => self.shown = Shown::Agents,
                 }
-                self.shown = Shown::Agents;
             }
             cx.notify();
             return true;
@@ -688,6 +925,7 @@ fn settle(model: &mut model::Model, result: Result<Applied, Failure>) -> Option<
             model.apply_placed(reply);
             None
         }
+        Ok(Applied::Browser(_) | Applied::Released(..)) => None,
         Ok(Applied::Decided(replies, failure)) => {
             let warning = replies.iter().find_map(|r| r.warning.clone());
             for reply in replies {
@@ -753,6 +991,63 @@ fn band(message: String) -> Div {
     .child(message)
 }
 
+impl gpui::EventEmitter<super::WatchBrowser> for Pane {}
+
+impl BrowserStream {
+    /// Follow `browser.changed` on an I/O worker of its own while the pane
+    /// lives: a change replaces its browser in the list, or drops a deleted
+    /// one, and the pane reads again, which reads the shown browser anew.
+    fn start(connection: Connection, cx: &mut Context<Pane>) -> Self {
+        let live = Arc::new(AtomicBool::new(true));
+        let (sender, mut changes) = futures::channel::mpsc::unbounded();
+        let following = Arc::clone(&live);
+        let started = std::thread::Builder::new()
+            .name("access browsers stream".into())
+            .spawn(move || {
+                let live = || following.load(Ordering::Relaxed);
+                while live() {
+                    let ended = connection.watch_browsers(&live, &mut |change| {
+                        let _ = sender.unbounded_send(change);
+                    });
+                    if ended == Err(Error::Unsupported) {
+                        break;
+                    }
+                    if live() {
+                        std::thread::park_timeout(Duration::from_secs(2));
+                    }
+                }
+            });
+        if let Err(error) = started {
+            tracing::debug!(event = "access_browsers_stream", %error, "Browser stream did not start");
+        }
+        let task = cx.spawn(async move |this, cx| {
+            while let Some(change) = changes.next().await {
+                let applied = this.update(cx, |pane, cx| {
+                    if let (served::Change::Changed { id, browser, .. }, Some(model)) =
+                        (change, pane.model.as_mut())
+                    {
+                        match browser {
+                            Some(browser) => model.apply_browser(*browser),
+                            None => model.remove_browser(&id),
+                        }
+                    }
+                    pane.newest_due = true;
+                    pane.keep_new();
+                    pane.read(cx);
+                    cx.notify();
+                });
+                if applied.is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            live,
+            _changes: task,
+        }
+    }
+}
+
 impl Render for Pane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = colors();
@@ -767,6 +1062,7 @@ impl Render for Pane {
             },
             (Some(_), Shown::Agents) => self.agents_view(cx),
             (Some(_), Shown::Requests) => self.requests_view(cx),
+            (Some(_), Shown::Browsers) => self.browsers_view(cx),
         };
         div()
             .size_full()
