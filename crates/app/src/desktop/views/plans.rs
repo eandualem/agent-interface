@@ -80,6 +80,8 @@ struct Frame {
     agents: crate::desktop::agent_status::LiveAgents,
     /// The plans last read, kept when a later read fails.
     page: Option<PlansPage>,
+    /// When `page` was read, in seconds since the Unix epoch.
+    read: f64,
     connection: Connection,
     /// Drafts and unresolved deliveries keep their observed plans accessible.
     held: bool,
@@ -175,6 +177,7 @@ impl Plans {
                     || self.frame.members != read.members
                     || self.frame.error.is_some();
                 self.frame.page = Some(read.page);
+                self.frame.read = agent_interface_roster::views::now() as f64;
                 self.frame.members = read.members;
                 self.frame.error = None;
                 changed
@@ -319,6 +322,7 @@ impl Frame {
         Self {
             agents,
             page: None,
+            read: 0.0,
             connection,
             held: false,
             members: BTreeMap::new(),
@@ -398,7 +402,7 @@ impl Frame {
                 // Newest first.
                 (
                     u8::from(!waiting),
-                    std::cmp::Reverse(published(record) as i64),
+                    std::cmp::Reverse(published(record, self.read) as i64),
                 )
             }
             None => (2, std::cmp::Reverse(i64::MIN)),
@@ -566,10 +570,10 @@ fn published_at(record: &plans::Record) -> Option<f64> {
         .map(|at| at.timestamp_millis() as f64 / 1000.0)
 }
 
-/// When a plan was published: its own time, or else as long ago as
-/// Backbone said.
-fn published(record: &plans::Record) -> f64 {
-    published_at(record).unwrap_or_else(|| super::began(None, record.age_seconds as f64))
+/// When a plan was published: its own time, or else as long before the
+/// page was `read` as Backbone said then, so the order stays put.
+fn published(record: &plans::Record, read: f64) -> f64 {
+    published_at(record).unwrap_or(read - record.age_seconds as f64)
 }
 
 /// A time that grows with the clock, or else the age Backbone gave with
