@@ -255,7 +255,9 @@ impl Sheets {
         self.busy = true;
         self.error = None;
         self.notice = None;
-        cx.notify();
+        if self.shown && self.visible.get() {
+            cx.notify();
+        }
     }
     fn catalog(&mut self, cx: &mut Context<Self>) {
         if !self.clean(cx) {
