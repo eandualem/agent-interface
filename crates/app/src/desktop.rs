@@ -808,7 +808,8 @@ struct Browser {
     /// Whether the window is hidden, minimised or fully covered; its pane
     /// sources then stop reading.
     window_hidden: bool,
-    window_visibility: Option<gpui::Subscription>,
+    /// Following the window's visibility, and saying when it closes.
+    window_visibility: Option<(gpui::Subscription, gpui::Subscription)>,
     /// The view in each shown view pane, with its event subscription.
     views: HashMap<String, (gpui::Entity<views::ViewPane>, navigation_origin::ViewEvents)>,
     /// The chooser in each shown empty pane, with its event subscription.
@@ -1707,7 +1708,7 @@ impl Browser {
     /// Pause the pane sources while the window is not visible; nothing is
     /// drawn then, so they are told directly. Shown again, the next frame
     /// sets them as the layout shows them, and each reads at once. The
-    /// roster reads slowly only while no window of the app is visible.
+    /// roster reads slowly only while no navigation window is visible.
     fn window_shown(
         &mut self,
         visibility: gpui::WindowVisibility,
@@ -1715,15 +1716,8 @@ impl Browser {
         cx: &mut Context<Self>,
     ) {
         self.window_hidden = !visibility.is_visible();
-        let this = window.window_handle().window_id();
-        let any = visibility.is_visible()
-            || cx.windows().into_iter().any(|other| {
-                other.window_id() != this
-                    && other
-                        .update(cx, |_, window, _| window.is_visible())
-                        .unwrap_or(false)
-            });
-        agent_status::set_shown(any, cx);
+        let id = window.window_handle().window_id();
+        agent_status::window_shown(id, Some(visibility.is_visible()), cx);
         if self.window_hidden {
             for (view, _) in self.views.values() {
                 view.read(cx).set_visible(false, cx);
@@ -3114,15 +3108,16 @@ impl Render for Browser {
                 }));
         }
         if self.window_visibility.is_none() {
-            // A window opening while the others are hidden reads at full pace.
-            if window.is_visible() {
-                agent_status::set_shown(true, cx);
-            }
-            self.window_visibility = Some(
+            // As it is now, since a window can first draw while covered.
+            let id = window.window_handle().window_id();
+            self.window_hidden = !window.is_visible();
+            agent_status::window_shown(id, Some(window.is_visible()), cx);
+            self.window_visibility = Some((
                 cx.observe_window_visibility(window, |browser, visibility, window, cx| {
                     browser.window_shown(visibility, window, cx)
                 }),
-            );
+                cx.on_release(move |_, cx| agent_status::window_shown(id, None, cx)),
+            ));
         }
         if self.resize.as_ref().is_some_and(|drag| {
             !self

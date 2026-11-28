@@ -737,9 +737,33 @@ impl Sources {
     }
 }
 
-/// Slow every profile's roster reads while no window is visible; once one
-/// is, they read at once. Read-only, so it redraws no window.
-pub(super) fn set_shown(shown: bool, cx: &App) {
+/// Whether each open navigation window is visible. Only those windows show
+/// the roster; the settings window does not.
+#[derive(Default)]
+struct Windows(HashMap<gpui::WindowId, bool>);
+impl Global for Windows {}
+
+/// Whether the rosters are shown: while any navigation window is visible,
+/// or before one has said otherwise.
+fn shown<K>(windows: &HashMap<K, bool>) -> bool {
+    windows.is_empty() || windows.values().any(|visible| *visible)
+}
+
+fn rosters_shown(cx: &App) -> bool {
+    cx.try_global::<Windows>()
+        .is_none_or(|windows| shown(&windows.0))
+}
+
+/// Note whether a navigation window is visible, or `None` once it closed,
+/// and pace every profile's roster to match: slowed while none is visible,
+/// read at once when one is. Redraws no window.
+pub(super) fn window_shown(window: gpui::WindowId, visible: Option<bool>, cx: &mut App) {
+    let windows = &mut cx.default_global::<Windows>().0;
+    match visible {
+        Some(visible) => windows.insert(window, visible),
+        None => windows.remove(&window),
+    };
+    let shown = rosters_shown(cx);
     let Some(sources) = cx.try_global::<Sources>() else {
         return;
     };
@@ -840,6 +864,8 @@ pub(super) fn start_bound(connection: Connection, cx: &mut App) -> Option<LiveAg
         let _ = wake.unbounded_send(());
     })
     .ok()?;
+    // A roster started while every window is hidden reads slowly too.
+    roster.set_shown(rosters_shown(cx));
     let agents = LiveAgents(Rc::new(Source {
         origin: Some(origin),
         connection_key: Some(connection_key),
@@ -875,6 +901,18 @@ pub(super) fn start_bound(connection: Connection, cx: &mut App) -> Option<LiveAg
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rosters_are_shown_while_any_navigation_window_is_visible() {
+        let mut windows = HashMap::new();
+        assert!(shown(&windows));
+        windows.insert(1, false);
+        assert!(!shown(&windows));
+        windows.insert(2, true);
+        assert!(shown(&windows));
+        windows.remove(&2);
+        assert!(!shown(&windows));
+    }
 
     #[test]
     fn consumers_share_observations_through_stop_failure_and_recovery() {
