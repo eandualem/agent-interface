@@ -645,7 +645,11 @@ impl ViewPane {
                             &mut pane.reports,
                             update,
                         );
-                        if served || changed {
+                        // Plans, interactions and sheets draw over a Reports
+                        // pane's feed, which is kept and drawn on return.
+                        let feed =
+                            pane.view.kind != ViewKind::Reports || pane.shown == Shown::Records;
+                        if (served || changed) && feed {
                             cx.notify();
                         }
                     }
