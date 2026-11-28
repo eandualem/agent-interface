@@ -856,6 +856,7 @@ impl Conversation {
             let (result, older) = worker.await;
             let _ = this.update(cx, |conversation, cx| {
                 let seen = conversation.open && conversation.shown();
+                let before = conversation.drawn();
                 let Some(stored) = conversation.stored.as_mut() else {
                     return;
                 };
@@ -892,10 +893,33 @@ impl Conversation {
                     Err(error) => failure = Some(error),
                 }
                 conversation.route_waiting(failure, cx);
-                cx.notify();
+                // A poll that brings nothing new does not redraw.
+                if conversation.drawn() != before {
+                    cx.notify();
+                }
             });
         })
         .detach();
+    }
+
+    /// What the thread draws from its reads, to tell whether one changed it.
+    fn drawn(&self) -> impl PartialEq + use<> {
+        (
+            self.stored.as_ref().map(|stored| {
+                (
+                    stored.supported,
+                    stored.page.clone(),
+                    stored.earlier.clone(),
+                    stored.divider,
+                    stored.redelivery.clone(),
+                )
+            }),
+            self.read_error,
+            self.messages
+                .iter()
+                .map(|message| message.delivery.clone())
+                .collect::<Vec<_>>(),
+        )
     }
 
     /// Send the messages written before Backbone first answered, now that it

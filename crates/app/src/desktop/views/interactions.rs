@@ -391,6 +391,7 @@ impl Interactions {
             let result = worker.await;
             let _ = this.update(cx, |this, cx| {
                 this.reading = false;
+                let before = this.drawn();
                 if generation != this.generation {
                     if this.shown && this.visible.get() {
                         this.refresh(cx);
@@ -440,10 +441,32 @@ impl Interactions {
                 if this.dirty && this.shown && this.visible.get() {
                     this.refresh(cx);
                 }
-                cx.notify();
+                // A read that brings nothing new does not redraw.
+                if this.drawn() != before {
+                    cx.notify();
+                }
             });
         })
         .detach();
+    }
+
+    /// What the view draws from its reads, to tell whether one changed it.
+    fn drawn(&self) -> impl PartialEq + use<> {
+        (
+            self.snapshot.as_ref().map(|snapshot| {
+                (
+                    snapshot.summary.clone(),
+                    snapshot.history.clone(),
+                    snapshot.states.clone(),
+                    snapshot.state_error,
+                )
+            }),
+            self.pending
+                .as_ref()
+                .map(|(_, window, count)| (*window, *count)),
+            self.error,
+            self.window,
+        )
     }
 
     fn new_count(&self, fresh: &Snapshot) -> usize {
