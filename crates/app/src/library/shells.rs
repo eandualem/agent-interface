@@ -3,7 +3,7 @@ mod binding;
 use sha2::{Digest, Sha256};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt};
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 /// Locate the server owning an exact ordinary session in a resolved library.
@@ -94,7 +94,23 @@ pub fn reconnect_shells_from(directory: Option<&Path>, former: &Path) -> io::Res
     Ok(())
 }
 
+/// The current user's shell-server registry. Unit tests use a folder of their
+/// own, so a test never records a temporary library in the person's registry.
+/// It starts absent, as on a new account, and its short path under `/tmp`
+/// keeps socket paths inside it within macOS's Unix socket limit.
 fn socket_directory(uid: u32) -> PathBuf {
+    if cfg!(test) {
+        // A new private folder per test process, so no run reads another's registry.
+        static TESTS: std::sync::LazyLock<PathBuf> = std::sync::LazyLock::new(|| {
+            tempfile::Builder::new()
+                .prefix("ai-tests-")
+                .permissions(std::fs::Permissions::from_mode(0o700))
+                .tempdir_in("/tmp")
+                .expect("test registry folder")
+                .keep()
+        });
+        return TESTS.join(format!("agent-interface-{uid}"));
+    }
     PathBuf::from(format!("/tmp/agent-interface-{uid}"))
 }
 
@@ -266,6 +282,13 @@ mod tests {
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn tests_keep_out_of_the_persons_registry() {
+        let uid = uzers::get_current_uid();
+        let root = socket_directory(uid);
+        assert_ne!(root, PathBuf::from(format!("/tmp/agent-interface-{uid}")));
+    }
 
     #[test]
     fn the_server_is_selected_by_exact_session_ownership() {
