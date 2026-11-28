@@ -121,6 +121,8 @@ pub(super) struct Sheets {
     visible: std::rc::Rc<std::cell::Cell<bool>>,
     /// Redraws the shelf when an age it shows changes.
     clock: super::Clock,
+    /// Whether its section is selected in its pane.
+    shown: bool,
     busy: bool,
     error: Option<String>,
     notice: Option<String>,
@@ -138,9 +140,10 @@ impl Sheets {
             Conversation::delivered_by_owner("about this sheet", visible.clone(), window, cx)
         });
         let input = Self::watch(&conversation, cx);
-        // Its shelf marks which workbooks were opened; an open one does not.
+        // Its shelf marks which workbooks were opened; an open one does not,
+        // nor one in a section or pane not shown.
         let opened = cx.observe_global::<super::seen::Opened>(|sheets: &mut Self, cx| {
-            if sheets.open.is_none() {
+            if sheets.shown && sheets.visible.get() && sheets.open.is_none() {
                 cx.notify();
             }
         });
@@ -167,6 +170,7 @@ impl Sheets {
             feedback_receipt: None,
             visible,
             clock: super::Clock::default(),
+            shown: true,
             busy: false,
             error: None,
             notice: None,
@@ -175,6 +179,14 @@ impl Sheets {
         };
         state.catalog(cx);
         state
+    }
+    /// Whether its section is selected; another section's drop its clock,
+    /// and selecting it again draws it afresh.
+    pub fn set_shown(&mut self, shown: bool) {
+        self.shown = shown;
+        if !shown {
+            self.clock = super::Clock::default();
+        }
     }
     fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = &event.keystroke;

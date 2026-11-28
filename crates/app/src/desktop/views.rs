@@ -699,6 +699,7 @@ impl ViewPane {
     fn show_records(&mut self, query: views::ReportQuery, cx: &mut Context<Self>) {
         self.plans_shown(false, cx);
         self.interactions_shown(false, cx);
+        self.sheets_shown(false, cx);
         self.shown = Shown::Records;
         self.reports.query = query;
         self.reports.previous.clear();
@@ -719,8 +720,17 @@ impl ViewPane {
         }
     }
 
+    /// Whether the Sheets section is selected; only then does its shelf
+    /// redraw by itself.
+    fn sheets_shown(&self, shown: bool, cx: &mut Context<Self>) {
+        if let Some(sheets) = &self.sheets {
+            sheets.update(cx, |sheets, _| sheets.set_shown(shown));
+        }
+    }
+
     fn show_plans(&mut self, cx: &mut Context<Self>) {
         self.interactions_shown(false, cx);
+        self.sheets_shown(false, cx);
         let Some(connection) = &self.connection else {
             return;
         };
@@ -763,6 +773,7 @@ impl ViewPane {
                 .push(cx.observe(&sheets, |_, _, cx| cx.notify()));
             self.sheets = Some(sheets);
         }
+        self.sheets_shown(true, cx);
         self.shown = Shown::Sheets;
         cx.notify();
     }
@@ -783,6 +794,7 @@ impl ViewPane {
         }
         self.leave_reader(cx);
         self.plans_shown(false, cx);
+        self.sheets_shown(false, cx);
         if self.interactions.is_none() {
             let visible = self.visible.clone();
             // A linked report is read through the same connection as the history.
