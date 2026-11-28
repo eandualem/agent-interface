@@ -38,9 +38,16 @@ struct Lane<'a> {
     ticks: Vec<f32>,
     /// Each observed state: where it starts, where it ends, the state.
     spans: Vec<(f32, f32, &'a str)>,
-    /// When its deliveries and observations happened, those still ahead
-    /// included, for when it next looks different.
+    /// When its deliveries and observations in or before the hour happened,
+    /// for when it next looks different.
     times: Vec<f64>,
+}
+
+/// The lanes drawn at a moment, and the soonest delivery or observation
+/// still ahead that will change them as it enters the hour.
+struct Lanes<'a> {
+    drawn: Vec<Lane<'a>>,
+    ahead: Option<f64>,
 }
 
 /// Seconds until the `lanes` drawn at `end` look different: while a delivery
@@ -49,13 +56,15 @@ struct Lane<'a> {
 /// still draws on the next wake); when a later one enters the hour; never
 /// when all are older, as a state seen before the hour fills its lane
 /// unchanged.
-fn lanes_roll(lanes: &[Lane<'_>], end: f64, pixel: f64) -> Option<f64> {
+fn lanes_roll(lanes: &Lanes<'_>, end: f64, pixel: f64) -> Option<f64> {
     let start = end - HOUR;
     lanes
+        .drawn
         .iter()
         .flat_map(|lane| &lane.times)
-        .filter(|at| **at >= start)
-        .map(|at| if *at <= end { pixel.max(1.0) } else { at - end })
+        .filter(|at| **at >= start && **at <= end)
+        .map(|_| pixel.max(1.0))
+        .chain(lanes.ahead.map(|at| at - end))
         .reduce(f64::min)
 }
 
@@ -65,10 +74,17 @@ fn lanes<'a>(
     activity: &'a Activity,
     end: f64,
     agents: &crate::desktop::agent_status::LiveAgents,
-) -> Vec<Lane<'a>> {
+) -> Lanes<'a> {
     let start = end - HOUR;
     let share = |at: f64| ((at.clamp(start, end) - start) / HOUR) as f32;
+    let worked_state = |state: &str| {
+        matches!(
+            AgentState::from_runtime(state),
+            AgentState::Working | AgentState::Starting | AgentState::NeedsYou | AgentState::Blocked
+        )
+    };
     let mut lanes: Vec<(Lane<'_>, f64)> = Vec::new();
+    let mut ahead: Option<f64> = None;
     for member in &activity.members {
         let ticks: Vec<f64> = activity
             .entries
@@ -101,19 +117,33 @@ fn lanes<'a>(
         // Observations of an idle or offline agent are not activity: Backbone
         // records one for every agent when it starts keeping history.
         // A state begun this very moment counts, though it has no width yet.
-        let worked = spans.iter().any(|(from, to, state)| {
-            to >= from
-                && *to > 0.0
-                && matches!(
-                    AgentState::from_runtime(state),
-                    AgentState::Working
-                        | AgentState::Starting
-                        | AgentState::NeedsYou
-                        | AgentState::Blocked
-                )
-        });
+        let worked = spans
+            .iter()
+            .any(|(from, to, state)| to >= from && *to > 0.0 && worked_state(state));
         spans.retain(|(from, to, _)| to > from);
-        if ticks.is_empty() && !active && !worked {
+        let drawn = !ticks.is_empty() || active || worked;
+        // What is still ahead and will change the lanes as it enters the
+        // hour: a delivery, a state that brings a lane, or any state of an
+        // agent whose lane is drawn.
+        let soonest = activity
+            .entries
+            .iter()
+            .filter(|entry| entry.agent == member.name && delivered(entry))
+            .filter_map(|entry| entry.at)
+            .chain(
+                changes
+                    .iter()
+                    .filter(|change| {
+                        change.agent == member.name && (drawn || worked_state(&change.state))
+                    })
+                    .filter_map(|change| change.at),
+            )
+            .filter(|at| *at > end)
+            .reduce(f64::min);
+        if let Some(soonest) = soonest {
+            ahead = Some(ahead.map_or(soonest, |ahead| ahead.min(soonest)));
+        }
+        if !drawn {
             continue;
         }
         let latest = ticks
@@ -124,12 +154,7 @@ fn lanes<'a>(
         let times = ticks
             .iter()
             .copied()
-            .chain(
-                changes
-                    .iter()
-                    .filter(|change| change.agent == member.name)
-                    .filter_map(|change| change.at),
-            )
+            .chain(observed.iter().map(|(at, _)| *at))
             .collect();
         lanes.push((
             Lane {
@@ -145,11 +170,14 @@ fn lanes<'a>(
         b.1.total_cmp(&a.1)
             .then(a.0.member.name.cmp(&b.0.member.name))
     });
-    lanes
-        .into_iter()
-        .take(LANES)
-        .map(|(lane, _)| lane)
-        .collect()
+    Lanes {
+        drawn: lanes
+            .into_iter()
+            .take(LANES)
+            .map(|(lane, _)| lane)
+            .collect(),
+        ahead,
+    }
 }
 
 /// The colour a state is drawn in on the timeline.
@@ -206,7 +234,7 @@ fn timeline(
             .child(axis)
             .child(div().flex_shrink_0().w(px(t.size.fact_label))),
     );
-    if lanes.is_empty() {
+    if lanes.drawn.is_empty() {
         section = section.child("No recent activity to show.");
     }
     if agents.observed() && agents.active().is_none() {
@@ -217,7 +245,7 @@ fn timeline(
         ticks,
         spans,
         ..
-    } in lanes
+    } in lanes.drawn
     {
         let mut track = div()
             .relative()
@@ -447,25 +475,53 @@ mod tests {
     #[test]
     fn lanes_wake_only_when_they_can_look_different() {
         let end = 10_000.0;
-        let worker = Member::default();
-        let lane = |times: Vec<f64>| Lane {
-            member: &worker,
-            ticks: Vec::new(),
-            spans: Vec::new(),
-            times,
-        };
         let pixel = HOUR / 1_200.0;
-        // No lane drawn, however much an idle team has observed.
-        assert_eq!(lanes_roll(&[], end, pixel), None);
+        let member = |name: &str| Member {
+            name: name.into(),
+            state: "idle".into(),
+            ..Member::default()
+        };
+        let change = |agent: &str, state: &str, at: f64| Change {
+            agent: agent.into(),
+            state: state.into(),
+            at: Some(at),
+            ..Change::default()
+        };
+        let delivery = |at: f64| Entry {
+            agent: "worker".into(),
+            at: Some(at),
+            outcome: "delivered".into(),
+            ..Entry::default()
+        };
+        let roll = |entries: Vec<Entry>, changes: Vec<Change>| {
+            let activity = Activity {
+                entries,
+                members: vec![member("worker")],
+                history: History::Observed {
+                    changes,
+                    complete: true,
+                },
+            };
+            let agents = crate::desktop::agent_status::LiveAgents::default();
+            lanes_roll(&lanes(&activity, end, &agents), end, pixel)
+        };
+        // An idle agent's observation draws no lane and wakes nothing.
+        assert_eq!(
+            roll(vec![], vec![change("worker", "idle", end - 60.0)]),
+            None
+        );
         // Just begun, as wide as nothing yet: it grows by a pixel.
-        assert_eq!(lanes_roll(&[lane(vec![end])], end, pixel), Some(3.0));
-        // Never sooner than a second, however wide the window.
-        assert_eq!(lanes_roll(&[lane(vec![end])], end, 0.5), Some(1.0));
-        // About to enter the hour.
-        assert_eq!(lanes_roll(&[lane(vec![end + 2.0])], end, pixel), Some(2.0));
+        assert_eq!(roll(vec![], vec![change("worker", "busy", end)]), Some(3.0));
+        // A delivery about to arrive brings a lane as it does.
+        assert_eq!(roll(vec![delivery(end + 2.0)], vec![]), Some(2.0));
+        // A state ahead that brings no lane wakes nothing.
+        assert_eq!(
+            roll(vec![], vec![change("worker", "idle", end + 2.0)]),
+            None
+        );
         // Begun before the hour: its lane stays full.
         assert_eq!(
-            lanes_roll(&[lane(vec![end - 2.0 * HOUR])], end, pixel),
+            roll(vec![], vec![change("worker", "busy", end - 2.0 * HOUR)]),
             None
         );
     }
@@ -508,7 +564,7 @@ mod tests {
             br#"{"items":[{"name":"builder","state":"busy"},{"name":"worker","state":"idle"}]}"#,
         );
         agents.update(snapshot);
-        let lanes = lanes(&activity, end, &agents);
+        let lanes = lanes(&activity, end, &agents).drawn;
         let names: Vec<&str> = lanes.iter().map(|lane| lane.member.name.as_str()).collect();
         assert_eq!(names, ["builder", "worker"]);
         assert_eq!(lanes[1].ticks, [0.75]);
@@ -548,7 +604,7 @@ mod tests {
             br#"{"items":[{"name":"builder","state":"busy"},{"name":"worker","state":"idle"}]}"#,
         );
         agents.update(snapshot);
-        let lanes = lanes(&activity, end, &agents);
+        let lanes = lanes(&activity, end, &agents).drawn;
         let spans: Vec<(f32, f32, &str)> = lanes[0].spans.clone();
         assert_eq!(spans[0], (0.0, 0.5, "busy"));
         assert_eq!(spans[1], (0.5, 0.75, "idle"));
