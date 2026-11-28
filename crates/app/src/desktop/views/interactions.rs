@@ -139,6 +139,8 @@ pub(super) struct Interactions {
     selection: RefCell<Selection>,
     conversations: HashMap<String, Entity<Conversation>>,
     conversation: Option<Entity<Conversation>>,
+    /// Redraws the view when a time or day label it shows changes.
+    clock: super::Clock,
     _poll: Task<()>,
     subscriptions: Vec<Subscription>,
 }
@@ -287,6 +289,7 @@ impl Interactions {
             selection: RefCell::default(),
             conversations: HashMap::new(),
             conversation: None,
+            clock: super::Clock::default(),
             _poll: poll,
             subscriptions: vec![],
         }
@@ -295,6 +298,10 @@ impl Interactions {
     pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
         let returning = shown && !self.shown;
         self.shown = shown;
+        if !shown {
+            // Selected again, it is drawn afresh and asks again.
+            self.clock = super::Clock::default();
+        }
         if let Some(conversation) = &self.conversation {
             conversation.update(cx, |c, cx| c.set_active(shown, cx));
         }

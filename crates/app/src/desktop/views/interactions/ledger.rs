@@ -197,7 +197,10 @@ pub(super) fn build(
             let label = Local::at(start)
                 .zip(Local::at(end))
                 .map(|(a, b)| {
-                    let date = if Local::now().is_some_and(|now| now.same_day(&a)) {
+                    let today = Local::now().filter(|now| now.same_day(&a));
+                    let date = if let Some(now) = today {
+                        // Today's date is left out until midnight.
+                        crate::desktop::views::rolls_in(now.until_midnight());
                         String::new()
                     } else {
                         format!("{} · ", a.date())

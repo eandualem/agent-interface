@@ -60,7 +60,7 @@ impl Local {
 
     /// Seconds until the next local midnight, which is not always a day
     /// away: a daylight saving change shortens or lengthens the day.
-    fn until_midnight(&self) -> f64 {
+    pub(super) fn until_midnight(&self) -> f64 {
         self.0
             .date_naive()
             .succ_opt()

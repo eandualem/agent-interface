@@ -1294,6 +1294,16 @@ fn ledger(view: &mut Interactions, cx: &mut Context<Interactions>) -> AnyElement
 
 impl Render for Interactions {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Drawn after its pane, so it keeps its own time and day labels.
+        crate::desktop::views::Clock::begin();
+        let drawn = self.draw(window, cx).into_any_element();
+        self.clock.end(self.visible.clone(), cx);
+        drawn
+    }
+}
+
+impl Interactions {
+    fn draw(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (t, c) = (tokens(), colors());
         if self
             .ask_after_read
