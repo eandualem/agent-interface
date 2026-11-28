@@ -1721,6 +1721,9 @@ impl Browser {
         self.window_hidden = !visibility.is_visible();
         let id = window.window_handle().window_id();
         agent_status::window_shown(id, Some(visibility.is_visible()), cx);
+        if let Some(attaching) = &self.chooser {
+            attaching.view.read(cx).set_active(!self.window_hidden);
+        }
         if self.window_hidden {
             for (view, _) in self.views.values() {
                 view.read(cx).set_visible(false, cx);

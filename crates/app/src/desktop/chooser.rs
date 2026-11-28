@@ -95,6 +95,14 @@ impl SessionChooser {
         }
     }
 
+    /// Discover sessions only while its window can be seen; shown again,
+    /// it reads at once.
+    pub fn set_active(&self, active: bool) {
+        if let Some(source) = &self.source {
+            source.set_active(active);
+        }
+    }
+
     pub fn composing(&self, cx: &gpui::App) -> bool {
         self.field.read(cx).composing()
     }
