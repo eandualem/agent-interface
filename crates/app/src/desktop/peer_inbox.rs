@@ -310,8 +310,12 @@ impl Inbox {
             let result = read.await;
             let _ = this.update(cx, |inbox, cx| {
                 inbox.reading = false;
-                // Whether the panel's counts may differ, for the global.
+                // Whether the panel's counts may differ, for the global, and
+                // whether observers are told: after every overview read, but
+                // a repeated failure, or a read the stream's end discarded,
+                // changes nothing they show.
                 let mut changed = false;
+                let mut read = false;
                 if inbox.online.load(Ordering::Acquire) {
                     match result {
                         Ok(summary) => {
@@ -321,6 +325,7 @@ impl Inbox {
                             inbox.error = None;
                             inbox.lost = false;
                             inbox.read_at = Some(chrono::Local::now().format("%H:%M").to_string());
+                            read = true;
                         }
                         Err(error) => {
                             let unreached = lost(error);
@@ -341,7 +346,9 @@ impl Inbox {
                 // opening or an explicit refresh, never a timer: a change
                 // the overview does not show, such as a connection's
                 // history, is read again by whoever observes this.
-                cx.notify();
+                if read || changed {
+                    cx.notify();
+                }
             });
         })
         .detach();
