@@ -3069,33 +3069,33 @@ impl Browser {
         let Some(layout) = &self.layout else {
             return;
         };
-        for leaf in layout
-            .model()
-            .workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.tabs)
-            .flat_map(|tab| tab.tree.leaves())
-        {
-            let Some(terminal) = self.terminals.get(&leaf.id) else {
+        // Each workspace's connection and roster once, not once per pane.
+        for space in &layout.model().workspaces {
+            let workspace_profiles::Route::Bound(connection) = self.workspace_profiles.route(space)
+            else {
                 continue;
             };
-            // Only while it still holds the connection that roster is from.
-            let current = self
-                .pane_connection(&leaf.id)
-                .ok()
-                .flatten()
-                .map(|connection| connection.connection_key());
-            let held = terminal
-                .read(cx)
-                .target
-                .connection
-                .as_ref()
-                .map(|connection| connection.connection_key());
-            if let Some(status) = (current.is_some() && held == current)
-                .then(|| self.pane_agent(leaf))
-                .flatten()
-            {
-                terminal.update(cx, |terminal, cx| terminal.set_restart(Some(status), cx));
+            let Some(agents) = self.workspace_agents(space) else {
+                continue;
+            };
+            let current = connection.connection_key();
+            for leaf in space.tabs.iter().flat_map(|tab| tab.tree.leaves()) {
+                let Some(terminal) = self.terminals.get(&leaf.id) else {
+                    continue;
+                };
+                // Only while it still holds the connection that roster is from.
+                let held = terminal
+                    .read(cx)
+                    .target
+                    .connection
+                    .as_ref()
+                    .map(|connection| connection.connection_key());
+                if held.as_ref() != Some(&current) {
+                    continue;
+                }
+                if let Some(status) = attached_agent(leaf, connection, agents) {
+                    terminal.update(cx, |terminal, cx| terminal.set_restart(Some(status), cx));
+                }
             }
         }
     }
@@ -3105,24 +3105,33 @@ impl Browser {
     /// another profile's agent, a session on another tmux server, whatever
     /// its name, or a pane whose profile has no roster.
     fn pane_agent(&self, leaf: &Leaf) -> Option<(String, agent_status::LiveAgents)> {
-        let attachment = leaf.attachment.as_ref()?;
         let connection = self.pane_connection(&leaf.id).ok()??;
-        if attachment
-            .remote_profile
-            .as_deref()
-            .is_some_and(|profile| profile != connection.identity().profile_id)
-            || attachment.remote_profile.is_none()
-                && attachment
-                    .source_socket
-                    .as_deref()
-                    .is_some_and(|path| std::path::Path::new(path) != connection.tmux_socket())
-        {
-            return None;
-        }
         let space = self.layout.as_ref()?.model().workspace_for_pane(&leaf.id)?;
-        let agents = self.workspace_agents(space)?.clone();
-        Some((attachment.session.clone(), agents))
+        attached_agent(leaf, &connection, self.workspace_agents(space)?)
     }
+}
+
+/// [`Browser::pane_agent`] for a pane of a workspace bound to `connection`,
+/// whose roster is `agents`.
+fn attached_agent(
+    leaf: &Leaf,
+    connection: &agent_interface_roster::profiles::Connection,
+    agents: &agent_status::LiveAgents,
+) -> Option<(String, agent_status::LiveAgents)> {
+    let attachment = leaf.attachment.as_ref()?;
+    if attachment
+        .remote_profile
+        .as_deref()
+        .is_some_and(|profile| profile != connection.identity().profile_id)
+        || attachment.remote_profile.is_none()
+            && attachment
+                .source_socket
+                .as_deref()
+                .is_some_and(|path| std::path::Path::new(path) != connection.tmux_socket())
+    {
+        return None;
+    }
+    Some((attachment.session.clone(), agents.clone()))
 }
 
 impl Render for Browser {
