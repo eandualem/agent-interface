@@ -1630,7 +1630,10 @@ fn began_at(previous: Option<f64>, now: f64, age: f64) -> f64 {
 /// An agent card as it arrives, after `previous`: since when it is in its
 /// state, not for how long, and its evidence only while the card draws it.
 pub(super) fn settle_agent(agent: &mut views::Agent, previous: Option<&views::Agent>) {
-    let previous = previous.and_then(|previous| previous.state_began);
+    // Only the same state keeps its start; a new one starts afresh.
+    let previous = previous
+        .filter(|previous| previous.state == agent.state)
+        .and_then(|previous| previous.state_began);
     agent.state_began = agent
         .state_age_seconds
         .take()
