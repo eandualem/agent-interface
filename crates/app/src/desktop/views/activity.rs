@@ -154,17 +154,24 @@ fn lanes<'a>(
             .copied()
             .fold(if active { end } else { start }, f64::max);
         // What moves visibly along the lane: deliveries, and the boundaries
-        // where its colour changes (the first state's start among them).
+        // where its drawn colour changes (the first state's start among
+        // them). A state replaced at the same moment is not drawn; the
+        // newest is, though it has no width yet.
+        let kept: Vec<&(f64, &str)> = observed
+            .iter()
+            .enumerate()
+            .filter(|(index, (at, _))| observed.get(index + 1).is_none_or(|(next, _)| next > at))
+            .map(|(_, observation)| observation)
+            .collect();
         let times = ticks
             .iter()
             .copied()
             .chain(
-                observed
-                    .iter()
+                kept.iter()
                     .enumerate()
                     .filter(|(index, (_, state))| {
                         index.checked_sub(1).is_none_or(|previous| {
-                            span_color(observed[previous].1) != span_color(state)
+                            span_color(kept[previous].1) != span_color(state)
                         })
                     })
                     .map(|(_, (at, _))| *at),
@@ -539,6 +546,19 @@ mod tests {
                 vec![],
                 vec![
                     change("worker", "starting", end - 2.0 * HOUR),
+                    change("worker", "busy", end - 60.0),
+                ]
+            ),
+            None
+        );
+        // A state replaced at the same moment is not drawn, so it is no
+        // colour change either.
+        assert_eq!(
+            roll(
+                vec![],
+                vec![
+                    change("worker", "busy", end - 2.0 * HOUR),
+                    change("worker", "idle", end - 60.0),
                     change("worker", "busy", end - 60.0),
                 ]
             ),
