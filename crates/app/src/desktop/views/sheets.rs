@@ -244,7 +244,10 @@ impl Sheets {
     }
     fn fail(&mut self, message: impl Into<String>, cx: &mut Context<Self>) {
         self.error = Some(message.into());
-        cx.notify();
+        // Kept while not shown; showing it draws it.
+        if self.shown && self.visible.get() {
+            cx.notify();
+        }
     }
     fn begin(&mut self, cx: &mut Context<Self>) {
         // Block native input before yielding; waiting for render leaves an input gap.
