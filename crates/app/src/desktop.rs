@@ -3682,15 +3682,13 @@ impl Render for Browser {
         }
         for (id, (view, _)) in &self.views {
             // A pane the layout hides goes with its native page; one hidden
-            // with the window only pauses.
-            let appeared = view.read(cx).set_visible(
-                !self.window_hidden
-                    && !self.profile_content_unavailable()
-                    && shown.iter().any(|(shown, _)| shown == id)
-                    && expanded.is_none_or(|focused| focused == id),
-                !self.window_hidden,
-                cx,
-            );
+            // only with the window pauses.
+            let in_layout = !self.profile_content_unavailable()
+                && shown.iter().any(|(shown, _)| shown == id)
+                && expanded.is_none_or(|focused| focused == id);
+            let appeared =
+                view.read(cx)
+                    .set_visible(!self.window_hidden && in_layout, !in_layout, cx);
             // After this frame: a view told of a change while the window
             // draws would not be drawn again.
             if appeared {
