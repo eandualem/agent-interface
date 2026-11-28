@@ -173,8 +173,8 @@ struct Current {
     activity: HashMap<String, Rc<Activity>>,
     /// The profile's running and queued runs together, when it has any.
     background: Option<gpui::SharedString>,
-    /// Minute bucket for ticking relative `last_seen` labels while a machine is offline.
-    offline_tick: Option<u64>,
+    /// The offline machines' labels as last drawn, with their last-seen ages.
+    offline_tick: Vec<String>,
     /// Whether the newest failure was a read that could not be made, not a
     /// refusal.
     not_answering: bool,
@@ -203,7 +203,7 @@ impl Default for Current {
             runs: Runs::default(),
             activity: HashMap::new(),
             background: None,
-            offline_tick: None,
+            offline_tick: Vec::new(),
             not_answering: false,
             said: None,
         }
@@ -623,12 +623,24 @@ impl LiveAgents {
                 details.state_since = None;
             }
         }
-        let offline_tick = (snapshot.error.is_none()
-            && snapshot.machines.iter().any(|machine| {
-                machine.state == agent_interface_roster::MachineState::Offline
+        // Each offline machine's label as drawn, whose last-seen age moves
+        // on while the roster stays: compared on each read, it changes only
+        // when one of them reads otherwise.
+        let offline_tick: Vec<String> = snapshot
+            .machines
+            .iter()
+            .filter(|machine| {
+                snapshot.error.is_none()
+                    && machine.state == agent_interface_roster::MachineState::Offline
                     && machine.last_seen.is_some()
-            }))
-        .then(|| agent_interface_roster::views::now() / 60);
+            })
+            .map(|machine| {
+                super::agent_groups::MachinePresence::Offline {
+                    last_seen: machine.last_seen.clone(),
+                }
+                .label()
+            })
+            .collect();
         let mut current = self.0.current.borrow_mut();
         let tick_changed = current.offline_tick != offline_tick;
         // The newest observation is kept, but compared as drawn.
